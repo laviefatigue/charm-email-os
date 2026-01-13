@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ls -la \"d:\\\\Work\\\\charm-email-os\\\\charm-email-os\"\" | grep -E \"^d \")",
+      "Bash(tree:*)",
+      "Bash(dir:*)",
+      "Bash(ls:*)",
+      "Skill(foam-docs)",
+      "Skill(foam-docs:*)",
+      "mcp__coolify__get_infrastructure_overview",
+      "mcp__coolify__list_servers"
+    ]
+  }
+}

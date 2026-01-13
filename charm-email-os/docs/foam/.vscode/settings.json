@@ -1,0 +1,28 @@
+{
+  "foam.edit.linkReferenceDefinitions": "withExtensions",
+  "foam.openDailyNote.onStartup": false,
+  "foam.graph.style": {
+    "background": "#1a1a2e",
+    "fontSize": 12,
+    "highlightedForeground": "#f1c40f",
+    "node": {
+      "note": "#9b59b6",
+      "placeholder": "#3498db",
+      "tag": "#2ecc71"
+    }
+  },
+  "editor.suggest.showSnippets": true,
+  "editor.quickSuggestions": {
+    "comments": false,
+    "strings": true,
+    "other": true
+  },
+  "[markdown]": {
+    "editor.wordWrap": "on",
+    "editor.quickSuggestions": {
+      "comments": false,
+      "strings": true,
+      "other": true
+    }
+  }
+}

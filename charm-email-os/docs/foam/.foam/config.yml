@@ -1,0 +1,22 @@
+# Foam Configuration
+# https://foambubble.github.io/foam/user/features/note-properties
+
+# Configure graph visualization
+graph:
+  titleMaxLength: 30
+  style:
+    background: '#1a1a2e'
+    fontSize: 12
+    highlightedForeground: '#f1c40f'
+    node:
+      note: '#9b59b6'
+      placeholder: '#3498db'
+      tag: '#2ecc71'
+
+# Configure wikilinks
+wikilinks:
+  enabled: true
+
+# Configure daily notes (disabled)
+daily-notes:
+  enabled: false
