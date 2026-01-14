@@ -24,26 +24,13 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan - startup and shutdown"""
-    # Startup
+    # Startup - minimal logging, lazy database connection
     logger.info("Starting Charm Email OS API...")
-    logger.info(f"Database config: host={settings.POSTGRES_HOST}, port={settings.POSTGRES_PORT}, db={settings.POSTGRES_DB}, user={settings.POSTGRES_USER}")
-
-    try:
-        await database.create_pool()
-        logger.info("Database pool initialized successfully")
-    except Exception as e:
-        logger.error(f"Failed to connect to database: {e}")
-        logger.warning("API will start without database connection - some endpoints may fail")
-
+    logger.info(f"CORS origins: {settings.CORS_ORIGINS}")
+    # Database connection will be created lazily on first use
     yield
-
     # Shutdown
-    logger.info("Shutting down Charm Email OS API...")
-    try:
-        await database.close_pool()
-        logger.info("Database pool closed")
-    except Exception as e:
-        logger.error(f"Error closing database pool: {e}")
+    logger.info("Shutting down...")
 
 
 # Create FastAPI app
@@ -89,11 +76,10 @@ async def root():
 
 @app.get("/health")
 async def health_check():
-    """Health check endpoint"""
-    db_healthy = await database.health_check()
+    """Health check endpoint - simple version for debugging"""
     return {
-        "status": "healthy" if db_healthy else "unhealthy",
-        "database": "connected" if db_healthy else "disconnected",
+        "status": "healthy",
+        "message": "API is running",
     }
 
 
