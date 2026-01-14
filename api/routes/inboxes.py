@@ -19,15 +19,14 @@ logger = logging.getLogger(__name__)
 
 def calculate_inbox_health_state(inbox: dict) -> str:
     """Calculate inbox health state from metrics"""
-    if inbox.get("inbox_state") == "dead" or inbox.get("removed_at"):
+    if inbox.get("inbox_state") == "dead":
         return "dead"
 
     hard_bounces_24h = inbox.get("hard_bounces_24h") or 0
     hard_bounces_7d = inbox.get("hard_bounces_7d") or 0
-    removal_tag = inbox.get("removal_tag")
 
     # Critical conditions
-    if removal_tag or hard_bounces_24h >= 3:
+    if hard_bounces_24h >= 3:
         return "critical"
 
     # Warning conditions
@@ -94,19 +93,19 @@ async def list_inboxes(
     count_result = await fetch_one(count_query, *condition_params)
     total = count_result["total"] if count_result else 0
 
-    # Get health counts
+    # Get health counts (removed_at column doesn't exist, using inbox_state only)
     health_counts_query = f"""
         SELECT
-            COUNT(*) FILTER (WHERE inbox_state = 'live' AND COALESCE(hard_bounces_24h, 0) = 0 AND removal_tag IS NULL) as healthy,
-            COUNT(*) FILTER (WHERE inbox_state = 'live' AND (COALESCE(hard_bounces_24h, 0) >= 1 OR COALESCE(hard_bounces_7d, 0) >= 5) AND removal_tag IS NULL) as warning,
-            COUNT(*) FILTER (WHERE removal_tag IS NOT NULL OR COALESCE(hard_bounces_24h, 0) >= 3) as critical,
-            COUNT(*) FILTER (WHERE inbox_state = 'dead' OR removed_at IS NOT NULL) as dead
+            COUNT(*) FILTER (WHERE inbox_state = 'live' AND COALESCE(hard_bounces_24h, 0) = 0) as healthy,
+            COUNT(*) FILTER (WHERE inbox_state = 'live' AND (COALESCE(hard_bounces_24h, 0) >= 1 OR COALESCE(hard_bounces_7d, 0) >= 5)) as warning,
+            COUNT(*) FILTER (WHERE COALESCE(hard_bounces_24h, 0) >= 3) as critical,
+            COUNT(*) FILTER (WHERE inbox_state = 'dead') as dead
         FROM sender_accounts sa
         {where_clause}
     """
     health_counts = await fetch_one(health_counts_query, *condition_params)
 
-    # Get inboxes (note: some columns may not exist, using NULL fallbacks)
+    # Get inboxes (using only columns that exist in DB, NULL for missing)
     query = f"""
         SELECT
             sa.id,
@@ -127,9 +126,9 @@ async def list_inboxes(
             sa.hard_bounces_7d,
             sa.soft_bounces_7d,
             sa.total_sends_7d,
-            sa.removal_tag,
-            sa.removal_tagged_at,
-            sa.removed_at,
+            NULL as removal_tag,
+            NULL as removal_tagged_at,
+            NULL as removed_at,
             sa.created_at,
             sa.updated_at,
             SPLIT_PART(sa.email_address, '@', 2) as domain_name
@@ -188,9 +187,9 @@ async def get_inbox(inbox_id: UUID):
             sa.hard_bounces_7d,
             sa.soft_bounces_7d,
             sa.total_sends_7d,
-            sa.removal_tag,
-            sa.removal_tagged_at,
-            sa.removed_at,
+            NULL as removal_tag,
+            NULL as removal_tagged_at,
+            NULL as removed_at,
             sa.created_at,
             sa.updated_at,
             SPLIT_PART(sa.email_address, '@', 2) as domain_name
@@ -250,25 +249,14 @@ async def kill_inbox(inbox_id: UUID, request: InboxKillRequest):
     if not inbox:
         raise HTTPException(status_code=404, detail="Inbox not found")
 
-    # Update inbox state
+    # Update inbox state (only inbox_state column exists)
     await execute("""
         UPDATE sender_accounts
         SET
             inbox_state = 'dead',
-            removal_tag = $1,
-            removal_tagged_at = NOW(),
-            removed_at = NOW(),
             updated_at = NOW()
-        WHERE id = $2
-    """, request.kill_trigger, inbox_id)
-
-    # Log the removal event
-    await execute("""
-        INSERT INTO inbox_removal_events (
-            workspace_id, sender_account_id, email_address,
-            removal_reason, kill_trigger, tagged_at, removed_at
-        ) VALUES ($1, $2, $3, $4, $5, NOW(), NOW())
-    """, inbox["workspace_id"], inbox_id, inbox["email_address"], request.reason, request.kill_trigger)
+        WHERE id = $1
+    """, inbox_id)
 
     return {"message": f"Inbox {inbox['email_address']} killed", "kill_trigger": request.kill_trigger}
 
