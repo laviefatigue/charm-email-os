@@ -415,12 +415,12 @@ export const mockCampaignIdeas: CampaignIdea[] = [
 // ============ CAMPAIGNS ============
 export const mockCampaigns: Campaign[] = [
   // TechFlow campaigns
-  { id: 'campaign-1', clientId: 'client-1', ideaId: 'idea-1', name: 'Remote Team Pain Points', industry: 'SaaS', segment: 'Series A Startups', angle: 'Address the communication gaps that plague distributed teams.', status: 'active', leadsTotal: 1250, leadsContacted: 890, leadsCapacity: 3000, repliesCount: 67, createdAt: daysAgo(32) },
-  { id: 'campaign-2', clientId: 'client-1', ideaId: 'idea-2', name: 'Productivity Benchmark', industry: 'SaaS', segment: 'Series B Startups', angle: 'Share data on how top-performing remote teams operate.', status: 'active', leadsTotal: 800, leadsContacted: 320, leadsCapacity: 3000, repliesCount: 28, createdAt: daysAgo(28) },
+  { id: 'campaign-1', clientId: 'client-1', workspaceId: 'ws-techflow-1', ideaId: 'idea-1', name: 'Remote Team Pain Points', industry: 'SaaS', segment: 'Series A Startups', angle: 'Address the communication gaps that plague distributed teams.', status: 'active', leadsTotal: 1250, leadsContacted: 890, leadsCapacity: 3000, repliesCount: 67, createdAt: daysAgo(32) },
+  { id: 'campaign-2', clientId: 'client-1', workspaceId: 'ws-techflow-1', ideaId: 'idea-2', name: 'Productivity Benchmark', industry: 'SaaS', segment: 'Series B Startups', angle: 'Share data on how top-performing remote teams operate.', status: 'active', leadsTotal: 800, leadsContacted: 320, leadsCapacity: 3000, repliesCount: 28, createdAt: daysAgo(28) },
   // GrowthMetrics campaigns
-  { id: 'campaign-3', clientId: 'client-2', ideaId: 'idea-5', name: 'ABM Success Stories', industry: 'Marketing Agency', segment: 'B2B Tech', angle: 'Lead with case studies of similar companies achieving 3x pipeline growth.', status: 'active', leadsTotal: 650, leadsContacted: 480, leadsCapacity: 3000, repliesCount: 42, createdAt: daysAgo(22) },
+  { id: 'campaign-3', clientId: 'client-2', workspaceId: 'ws-growth-1', ideaId: 'idea-5', name: 'ABM Success Stories', industry: 'Marketing Agency', segment: 'B2B Tech', angle: 'Lead with case studies of similar companies achieving 3x pipeline growth.', status: 'active', leadsTotal: 650, leadsContacted: 480, leadsCapacity: 3000, repliesCount: 42, createdAt: daysAgo(22) },
   // CloudScale campaigns
-  { id: 'campaign-4', clientId: 'client-4', ideaId: 'idea-8', name: 'Cloud Cost Shock', industry: 'Technology', segment: 'High Cloud Spend', angle: 'Lead with the surprising statistic that most companies overspend on cloud.', status: 'draft', leadsTotal: 200, leadsContacted: 0, leadsCapacity: 3000, repliesCount: 0, createdAt: daysAgo(8) },
+  { id: 'campaign-4', clientId: 'client-4', workspaceId: 'ws-cloud-1', ideaId: 'idea-8', name: 'Cloud Cost Shock', industry: 'Technology', segment: 'High Cloud Spend', angle: 'Lead with the surprising statistic that most companies overspend on cloud.', status: 'draft', leadsTotal: 200, leadsContacted: 0, leadsCapacity: 3000, repliesCount: 0, createdAt: daysAgo(8) },
 ];
 
 // ============ LEADS ============
