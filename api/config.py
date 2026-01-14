@@ -3,9 +3,11 @@ Configuration settings for Charm Email OS API
 Loads from environment variables
 """
 
-import os
+import json
 from pydantic_settings import BaseSettings
+from pydantic import field_validator
 from functools import lru_cache
+from typing import Any
 
 
 class Settings(BaseSettings):
@@ -31,6 +33,23 @@ class Settings(BaseSettings):
 
     # CORS Configuration
     CORS_ORIGINS: list[str] = ["*"]
+
+    @field_validator('CORS_ORIGINS', mode='before')
+    @classmethod
+    def parse_cors_origins(cls, v: Any) -> list[str]:
+        """Parse CORS_ORIGINS from string or list"""
+        if isinstance(v, list):
+            return v
+        if isinstance(v, str):
+            # Try parsing as JSON first
+            if v.startswith('['):
+                try:
+                    return json.loads(v)
+                except json.JSONDecodeError:
+                    pass
+            # Fall back to comma-separated
+            return [origin.strip() for origin in v.split(',') if origin.strip()]
+        return ["*"]
 
     @property
     def database_url(self) -> str:
