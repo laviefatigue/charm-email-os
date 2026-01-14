@@ -3,6 +3,7 @@ Database connection and utilities for Charm Email OS API
 Uses asyncpg for async PostgreSQL queries
 """
 
+import asyncio
 import asyncpg
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator, Optional
@@ -15,22 +16,33 @@ logger = logging.getLogger(__name__)
 # Connection pool
 _pool: Optional[asyncpg.Pool] = None
 
+# Connection timeout in seconds
+CONNECTION_TIMEOUT = 10.0
+
 
 async def create_pool() -> asyncpg.Pool:
-    """Create database connection pool"""
+    """Create database connection pool with timeout to prevent hanging"""
     global _pool
     if _pool is None:
-        _pool = await asyncpg.create_pool(
-            host=settings.POSTGRES_HOST,
-            port=settings.POSTGRES_PORT,
-            database=settings.POSTGRES_DB,
-            user=settings.POSTGRES_USER,
-            password=settings.POSTGRES_PASSWORD,
-            min_size=2,
-            max_size=10,
-            command_timeout=60,
-        )
-        logger.info(f"Database pool created: {settings.POSTGRES_HOST}:{settings.POSTGRES_PORT}/{settings.POSTGRES_DB}")
+        try:
+            # Wrap pool creation with timeout to prevent indefinite hanging
+            _pool = await asyncio.wait_for(
+                asyncpg.create_pool(
+                    host=settings.POSTGRES_HOST,
+                    port=settings.POSTGRES_PORT,
+                    database=settings.POSTGRES_DB,
+                    user=settings.POSTGRES_USER,
+                    password=settings.POSTGRES_PASSWORD,
+                    min_size=1,
+                    max_size=10,
+                    command_timeout=60,
+                ),
+                timeout=CONNECTION_TIMEOUT
+            )
+            logger.info(f"Database pool created: {settings.POSTGRES_HOST}:{settings.POSTGRES_PORT}/{settings.POSTGRES_DB}")
+        except asyncio.TimeoutError:
+            logger.error(f"Database connection timed out after {CONNECTION_TIMEOUT} seconds")
+            raise
     return _pool
 
 
