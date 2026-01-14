@@ -80,7 +80,7 @@ export const useCampaignStore = create<CampaignStore>((set, get) => ({
   fetchCampaignsByClient: async (clientId) => {
     set({ isLoading: true, error: null });
     try {
-      const data = await api.campaigns.listByClient(clientId);
+      const data = await api.campaigns.list({ clientId });
       set((state) => {
         const otherCampaigns = state.campaigns.filter((c) => c.clientId !== clientId);
         return { campaigns: [...otherCampaigns, ...data.items], isLoading: false };
