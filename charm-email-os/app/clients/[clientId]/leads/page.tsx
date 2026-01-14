@@ -2,10 +2,11 @@
 
 import { useState, useMemo, useEffect } from 'react';
 import { useParams } from 'next/navigation';
-import { Plus, Megaphone } from 'lucide-react';
+import { Plus, Megaphone, Loader2, AlertCircle } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Alert, AlertDescription } from '@/components/ui/alert';
 import {
   Dialog,
   DialogContent,
@@ -31,14 +32,23 @@ export default function LeadsPage() {
   const params = useParams();
   const clientId = params.clientId as string;
 
-  const { getClient, selectClient } = useClientStore();
-  const { getCampaignsByClient, getLeadsByCampaign, runCampaign, pauseCampaign, simulateUploadLeads } =
-    useCampaignStore();
+  const { getClient, selectClient, fetchClients, clients } = useClientStore();
+  const isLoadingClients = useClientStore((state) => state.isLoading);
+
+  const campaigns = useCampaignStore((state) => state.campaigns);
+  const leads = useCampaignStore((state) => state.leads);
+  const isLoading = useCampaignStore((state) => state.isLoading);
+  const error = useCampaignStore((state) => state.error);
+  const fetchCampaignsByClient = useCampaignStore((state) => state.fetchCampaignsByClient);
+  const fetchLeadsByCampaign = useCampaignStore((state) => state.fetchLeadsByCampaign);
+  const runCampaign = useCampaignStore((state) => state.runCampaign);
+  const pauseCampaign = useCampaignStore((state) => state.pauseCampaign);
+  const simulateUploadLeads = useCampaignStore((state) => state.simulateUploadLeads);
 
   const client = getClient(clientId);
-  const campaigns = useMemo(
-    () => getCampaignsByClient(clientId),
-    [getCampaignsByClient, clientId]
+  const clientCampaigns = useMemo(
+    () => campaigns.filter((c) => c.clientId === clientId),
+    [campaigns, clientId]
   );
 
   const [selectedCampaignId, setSelectedCampaignId] = useState<string | null>(null);
@@ -47,22 +57,63 @@ export default function LeadsPage() {
   const [scriptPullOpen, setScriptPullOpen] = useState(false);
   const [selectedSource, setSelectedSource] = useState<LeadSourceOption>('upload');
 
-  // Compute effective campaign ID (selected or first available)
-  const effectiveCampaignId = selectedCampaignId ?? campaigns[0]?.id ?? null;
-
-  const selectedCampaign = useMemo(
-    () => campaigns.find((c) => c.id === effectiveCampaignId) ?? null,
-    [campaigns, effectiveCampaignId]
-  );
-
-  const leads = useMemo(
-    () => (effectiveCampaignId ? getLeadsByCampaign(effectiveCampaignId) : []),
-    [getLeadsByCampaign, effectiveCampaignId]
-  );
-
+  // Fetch campaigns on mount
   useEffect(() => {
     selectClient(clientId);
-  }, [clientId, selectClient]);
+    fetchCampaignsByClient(clientId);
+    // Also fetch clients if not loaded
+    if (clients.length === 0) {
+      fetchClients();
+    }
+  }, [clientId, selectClient, fetchCampaignsByClient, fetchClients, clients.length]);
+
+  // Compute effective campaign ID (selected or first available)
+  const effectiveCampaignId = selectedCampaignId ?? clientCampaigns[0]?.id ?? null;
+
+  // Fetch leads when campaign is selected
+  useEffect(() => {
+    if (effectiveCampaignId) {
+      fetchLeadsByCampaign(effectiveCampaignId);
+    }
+  }, [effectiveCampaignId, fetchLeadsByCampaign]);
+
+  const selectedCampaign = useMemo(
+    () => clientCampaigns.find((c) => c.id === effectiveCampaignId) ?? null,
+    [clientCampaigns, effectiveCampaignId]
+  );
+
+  const campaignLeads = useMemo(
+    () => (effectiveCampaignId ? leads.filter((l) => l.campaignId === effectiveCampaignId) : []),
+    [leads, effectiveCampaignId]
+  );
+
+  // Loading state
+  if ((isLoading || isLoadingClients) && clientCampaigns.length === 0) {
+    return (
+      <PageContainer>
+        <div className="flex items-center justify-center h-64">
+          <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+        </div>
+      </PageContainer>
+    );
+  }
+
+  // Error state
+  if (error && clientCampaigns.length === 0) {
+    return (
+      <PageContainer>
+        <Alert variant="destructive">
+          <AlertCircle className="h-4 w-4" />
+          <AlertDescription className="flex items-center gap-2">
+            Failed to load campaigns: {error}
+            <Button variant="link" size="sm" onClick={() => fetchCampaignsByClient(clientId)}>
+              Retry
+            </Button>
+          </AlertDescription>
+        </Alert>
+      </PageContainer>
+    );
+  }
 
   if (!client) {
     return (
@@ -114,7 +165,7 @@ export default function LeadsPage() {
       <TabNavigation clientId={clientId} />
 
       <PageContainer>
-        {campaigns.length === 0 ? (
+        {clientCampaigns.length === 0 ? (
           <Card>
             <CardContent className="py-12">
               <EmptyState
@@ -134,7 +185,7 @@ export default function LeadsPage() {
                 </CardHeader>
                 <CardContent>
                   <CampaignSidebar
-                    campaigns={campaigns}
+                    campaigns={clientCampaigns}
                     selectedId={effectiveCampaignId}
                     onSelect={setSelectedCampaignId}
                   />
@@ -164,7 +215,7 @@ export default function LeadsPage() {
                     </div>
 
                     <div className="pt-4">
-                      {leads.length === 0 ? (
+                      {campaignLeads.length === 0 ? (
                         <EmptyState
                           icon={Plus}
                           title="No leads yet"
@@ -175,7 +226,7 @@ export default function LeadsPage() {
                           }}
                         />
                       ) : (
-                        <LeadsTable leads={leads} />
+                        <LeadsTable leads={campaignLeads} />
                       )}
                     </div>
                   </CardContent>

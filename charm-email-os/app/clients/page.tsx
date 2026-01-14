@@ -1,9 +1,10 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Plus, Users } from 'lucide-react';
+import { Plus, Users, AlertCircle, Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { Alert, AlertDescription } from '@/components/ui/alert';
 import { PageContainer } from '@/components/layout';
 import { ClientCard, ClientForm } from '@/components/clients';
 import { EmptyState } from '@/components/shared';
@@ -12,11 +13,43 @@ import { useClientStore } from '@/lib/stores';
 export default function ClientsPage() {
   const router = useRouter();
   const [showForm, setShowForm] = useState(false);
-  const { clients } = useClientStore();
+  const { clients, isLoading, error, fetchClients } = useClientStore();
+
+  useEffect(() => {
+    fetchClients();
+  }, [fetchClients]);
 
   const handleClientCreated = (clientId: string) => {
     router.push(`/clients/${clientId}`);
   };
+
+  // Loading state
+  if (isLoading && clients.length === 0) {
+    return (
+      <PageContainer>
+        <div className="flex items-center justify-center h-64">
+          <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+        </div>
+      </PageContainer>
+    );
+  }
+
+  // Error state
+  if (error && clients.length === 0) {
+    return (
+      <PageContainer>
+        <Alert variant="destructive">
+          <AlertCircle className="h-4 w-4" />
+          <AlertDescription className="flex items-center gap-2">
+            Failed to load clients: {error}
+            <Button variant="link" size="sm" onClick={() => fetchClients()}>
+              Retry
+            </Button>
+          </AlertDescription>
+        </Alert>
+      </PageContainer>
+    );
+  }
 
   return (
     <PageContainer>

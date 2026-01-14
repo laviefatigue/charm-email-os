@@ -2,10 +2,11 @@
 
 import { useEffect } from 'react';
 import { useParams } from 'next/navigation';
-import { RefreshCw, AlertTriangle, CheckCircle, XCircle } from 'lucide-react';
+import { RefreshCw, AlertTriangle, CheckCircle, XCircle, Loader2, AlertCircle } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
+import { Alert, AlertDescription } from '@/components/ui/alert';
 import { ClientHeader, TabNavigation, PageContainer } from '@/components/layout';
 import {
   KillTriggerMonitor,
@@ -16,14 +17,15 @@ import {
   ESPHealthSummary,
 } from '@/components/health';
 import { useClientStore, useHealthStore } from '@/lib/stores';
-import { initializeHealthData } from '@/lib/mock-health-data';
 import { cn } from '@/lib/utils';
 
 export default function HealthPage() {
   const params = useParams();
   const clientId = params.clientId as string;
 
-  const { getClient, selectClient } = useClientStore();
+  const { getClient, selectClient, fetchClients, clients } = useClientStore();
+  const isLoadingClients = useClientStore((state) => state.isLoading);
+
   const {
     overallSummary,
     killTriggers,
@@ -32,57 +34,26 @@ export default function HealthPage() {
     campaignMetrics,
     contaminationSources,
     espSummaries,
-    setInboxMetrics,
-    setDomainMetrics,
-    setCampaignMetrics,
-    setKillTriggers,
-    setAlerts,
-    setBackupCapacity,
-    setContaminationSources,
-    setESPSummaries,
-    setOverallSummary,
+    isLoading,
+    error,
+    fetchHealthOverview,
+    fetchAlerts,
     refreshHealth,
     lastRefresh,
   } = useHealthStore();
 
   const client = getClient(clientId);
 
-  // Initialize health data on mount
+  // Fetch health data on mount
   useEffect(() => {
     selectClient(clientId);
-    const data = initializeHealthData(clientId);
-    setInboxMetrics(data.inboxMetrics);
-    setDomainMetrics(data.domainMetrics);
-    setCampaignMetrics(data.campaignMetrics);
-    setKillTriggers(data.killTriggers);
-    setAlerts(data.alerts);
-    setBackupCapacity(data.backupCapacity);
-    setContaminationSources(data.contaminationSources);
-    setESPSummaries(data.espSummaries);
-    setOverallSummary(data.overallSummary);
-  }, [
-    clientId,
-    selectClient,
-    setInboxMetrics,
-    setDomainMetrics,
-    setCampaignMetrics,
-    setKillTriggers,
-    setAlerts,
-    setBackupCapacity,
-    setContaminationSources,
-    setESPSummaries,
-    setOverallSummary,
-  ]);
-
-  if (!client) {
-    return (
-      <PageContainer>
-        <div className="flex items-center justify-center h-64">
-          <p className="text-muted-foreground">Client not found</p>
-        </div>
-      </PageContainer>
-    );
-  }
+    fetchHealthOverview(clientId);
+    fetchAlerts(clientId);
+    // Also fetch clients if not loaded
+    if (clients.length === 0) {
+      fetchClients();
+    }
+  }, [clientId, selectClient, fetchHealthOverview, fetchAlerts, fetchClients, clients.length]);
 
   const pendingTriggers = killTriggers.filter((t) => t.actionTaken === 'pending');
 
@@ -97,19 +68,49 @@ export default function HealthPage() {
   const StatusIcon = currentStatus.icon;
 
   const handleRefresh = () => {
-    const data = initializeHealthData(clientId);
-    setInboxMetrics(data.inboxMetrics);
-    setDomainMetrics(data.domainMetrics);
-    setCampaignMetrics(data.campaignMetrics);
-    setKillTriggers(data.killTriggers);
-    setAlerts(data.alerts);
-    setBackupCapacity(data.backupCapacity);
-    setContaminationSources(data.contaminationSources);
-    setESPSummaries(data.espSummaries);
-    setOverallSummary(data.overallSummary);
-    refreshHealth();
+    fetchHealthOverview(clientId);
+    fetchAlerts(clientId);
+    refreshHealth(clientId);
     toast.success('Health data refreshed');
   };
+
+  // Loading state
+  if ((isLoading || isLoadingClients) && !overallSummary) {
+    return (
+      <PageContainer>
+        <div className="flex items-center justify-center h-64">
+          <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+        </div>
+      </PageContainer>
+    );
+  }
+
+  // Error state
+  if (error && !overallSummary) {
+    return (
+      <PageContainer>
+        <Alert variant="destructive">
+          <AlertCircle className="h-4 w-4" />
+          <AlertDescription className="flex items-center gap-2">
+            Failed to load health data: {error}
+            <Button variant="link" size="sm" onClick={handleRefresh}>
+              Retry
+            </Button>
+          </AlertDescription>
+        </Alert>
+      </PageContainer>
+    );
+  }
+
+  if (!client) {
+    return (
+      <PageContainer>
+        <div className="flex items-center justify-center h-64">
+          <p className="text-muted-foreground">Client not found</p>
+        </div>
+      </PageContainer>
+    );
+  }
 
   return (
     <>
@@ -138,8 +139,8 @@ export default function HealthPage() {
                 Last refresh: {lastRefresh.toLocaleTimeString()}
               </span>
             )}
-            <Button variant="outline" size="sm" onClick={handleRefresh}>
-              <RefreshCw className="h-4 w-4 mr-2" />
+            <Button variant="outline" size="sm" onClick={handleRefresh} disabled={isLoading}>
+              <RefreshCw className={cn("h-4 w-4 mr-2", isLoading && "animate-spin")} />
               Refresh
             </Button>
           </div>

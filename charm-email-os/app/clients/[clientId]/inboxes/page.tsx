@@ -2,7 +2,7 @@
 
 import { useState, useMemo, useEffect } from 'react';
 import { useParams } from 'next/navigation';
-import { Plus, Globe, Mail, Info, Sparkles, AlertTriangle, CheckCheck } from 'lucide-react';
+import { Plus, Globe, Mail, Info, Sparkles, AlertTriangle, CheckCheck, Loader2, AlertCircle } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
@@ -25,17 +25,33 @@ export default function InboxesPage() {
   const params = useParams();
   const clientId = params.clientId as string;
 
-  const { getClient, selectClient } = useClientStore();
+  const { getClient, selectClient, fetchClients, clients } = useClientStore();
+  const isLoadingClients = useClientStore((state) => state.isLoading);
 
   // Subscribe to the actual arrays in the store for reactivity
   const allDomains = useInfrastructureStore((state) => state.domains);
   const allStoreInboxes = useInfrastructureStore((state) => state.inboxes);
+  const isLoading = useInfrastructureStore((state) => state.isLoading);
+  const error = useInfrastructureStore((state) => state.error);
+  const fetchDomainsByClient = useInfrastructureStore((state) => state.fetchDomainsByClient);
+  const fetchInboxesByClient = useInfrastructureStore((state) => state.fetchInboxesByClient);
   const generateDomainsFromOnboarding = useInfrastructureStore((state) => state.generateDomainsFromOnboarding);
   const generateInboxesFromOnboarding = useInfrastructureStore((state) => state.generateInboxesFromOnboarding);
   const approveDomain = useInfrastructureStore((state) => state.approveDomain);
   const approveInbox = useInfrastructureStore((state) => state.approveInbox);
 
   const client = getClient(clientId);
+
+  // Fetch data on mount
+  useEffect(() => {
+    selectClient(clientId);
+    fetchDomainsByClient(clientId);
+    fetchInboxesByClient(clientId);
+    // Also fetch clients if not loaded
+    if (clients.length === 0) {
+      fetchClients();
+    }
+  }, [clientId, selectClient, fetchDomainsByClient, fetchInboxesByClient, fetchClients, clients.length]);
 
   // Filter domains/inboxes for this client - now reactive because we subscribe to the arrays
   const domains = useMemo(() => allDomains.filter((d) => d.clientId === clientId), [allDomains, clientId]);
@@ -50,10 +66,6 @@ export default function InboxesPage() {
   const [editingDomain, setEditingDomain] = useState<Domain | null>(null);
   const [editingInbox, setEditingInbox] = useState<Inbox | null>(null);
 
-  useEffect(() => {
-    selectClient(clientId);
-  }, [clientId, selectClient]);
-
   const filteredInboxes = useMemo(() => {
     if (!selectedDomainId) return allInboxes;
     return allInboxes.filter((i) => i.domainId === selectedDomainId);
@@ -62,6 +74,37 @@ export default function InboxesPage() {
   // Count pending approvals
   const pendingDomains = domains.filter((d) => d.status === 'pending_approval').length;
   const pendingInboxes = allInboxes.filter((i) => i.status === 'pending_approval').length;
+
+  // Loading state
+  if ((isLoading || isLoadingClients) && domains.length === 0 && allInboxes.length === 0) {
+    return (
+      <PageContainer>
+        <div className="flex items-center justify-center h-64">
+          <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+        </div>
+      </PageContainer>
+    );
+  }
+
+  // Error state
+  if (error && domains.length === 0 && allInboxes.length === 0) {
+    return (
+      <PageContainer>
+        <Alert variant="destructive">
+          <AlertCircle className="h-4 w-4" />
+          <AlertDescription className="flex items-center gap-2">
+            Failed to load infrastructure: {error}
+            <Button variant="link" size="sm" onClick={() => {
+              fetchDomainsByClient(clientId);
+              fetchInboxesByClient(clientId);
+            }}>
+              Retry
+            </Button>
+          </AlertDescription>
+        </Alert>
+      </PageContainer>
+    );
+  }
 
   if (!client) {
     return (
