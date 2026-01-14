@@ -19,13 +19,13 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Cache bust - change this value to force rebuild
-ARG CACHEBUST=2026011427
+ARG CACHEBUST=2026011428
 
 # Copy application code
 COPY . .
 
-# Make start script executable
-RUN chmod +x start.sh
+# Fix Windows line endings and make start script executable
+RUN sed -i 's/\r$//' start.sh && chmod +x start.sh
 
 # Create non-root user
 RUN adduser --disabled-password --gecos '' appuser
