@@ -105,16 +105,16 @@ async def list_inboxes(
     """
     health_counts = await fetch_one(health_counts_query, *condition_params)
 
-    # Get inboxes (using only columns that exist in DB, NULL for missing)
+    # Get inboxes (minimal columns - many expected columns don't exist in DB)
     query = f"""
         SELECT
             sa.id,
             sa.workspace_id,
             sa.emailbison_account_id,
             sa.email_address,
-            sa.first_name,
-            sa.last_name,
-            sa.display_name,
+            NULL as first_name,
+            NULL as last_name,
+            NULL as display_name,
             'active' as status,
             COALESCE(sa.inbox_state, 'live') as inbox_state,
             sa.esp_type,
@@ -173,9 +173,9 @@ async def get_inbox(inbox_id: UUID):
             sa.workspace_id,
             sa.emailbison_account_id,
             sa.email_address,
-            sa.first_name,
-            sa.last_name,
-            sa.display_name,
+            NULL as first_name,
+            NULL as last_name,
+            NULL as display_name,
             'active' as status,
             COALESCE(sa.inbox_state, 'live') as inbox_state,
             sa.esp_type,

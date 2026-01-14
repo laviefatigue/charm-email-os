@@ -215,17 +215,17 @@ async def get_domain_inboxes(domain_id: UUID, page: int = Query(1, ge=1), page_s
 
     offset = (page - 1) * page_size
 
-    # Get inboxes where email ends with domain
+    # Get inboxes where email ends with domain (using only columns that exist)
     query = """
         SELECT
             sa.id,
             sa.workspace_id,
             sa.emailbison_account_id,
             sa.email_address,
-            sa.first_name,
-            sa.last_name,
-            sa.display_name,
-            sa.status,
+            NULL as first_name,
+            NULL as last_name,
+            NULL as display_name,
+            'active' as status,
             COALESCE(sa.inbox_state, 'live') as inbox_state,
             sa.esp_type,
             sa.warmup_enabled,
@@ -235,9 +235,9 @@ async def get_domain_inboxes(domain_id: UUID, page: int = Query(1, ge=1), page_s
             sa.hard_bounces_7d,
             sa.soft_bounces_7d,
             sa.total_sends_7d,
-            sa.removal_tag,
-            sa.removal_tagged_at,
-            sa.removed_at,
+            NULL as removal_tag,
+            NULL as removal_tagged_at,
+            NULL as removed_at,
             sa.created_at,
             sa.updated_at
         FROM sender_accounts sa
