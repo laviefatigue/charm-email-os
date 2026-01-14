@@ -81,8 +81,16 @@ async def list_clients(
 
     rows = await fetch_all(query, *params)
 
+    # Parse onboarding_data JSON string to dict for each row
+    items = []
+    for row in rows:
+        row_dict = dict(row)
+        if row_dict.get("onboarding_data") and isinstance(row_dict["onboarding_data"], str):
+            row_dict["onboarding_data"] = json.loads(row_dict["onboarding_data"])
+        items.append(Client(**row_dict))
+
     return ClientList(
-        items=[Client(**row) for row in rows],
+        items=items,
         total=total,
         page=page,
         page_size=page_size
@@ -160,7 +168,12 @@ async def get_client(client_id: UUID):
     if not row:
         raise HTTPException(status_code=404, detail="Client not found")
 
-    return Client(**row)
+    # Parse onboarding_data JSON string to dict
+    row_dict = dict(row)
+    if row_dict.get("onboarding_data") and isinstance(row_dict["onboarding_data"], str):
+        row_dict["onboarding_data"] = json.loads(row_dict["onboarding_data"])
+
+    return Client(**row_dict)
 
 
 @router.put("/{client_id}", response_model=Client)
