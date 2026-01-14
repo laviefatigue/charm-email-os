@@ -113,19 +113,12 @@ export const useCampaignStore = create<CampaignStore>((set, get) => ({
   },
 
   updateCampaign: async (id, data) => {
-    set({ isLoading: true, error: null });
-    try {
-      const updated = await api.campaigns.update(id, data);
-      set((state) => ({
-        campaigns: state.campaigns.map((campaign) =>
-          campaign.id === id ? updated : campaign
-        ),
-        isLoading: false,
-      }));
-    } catch (error) {
-      set({ error: (error as Error).message, isLoading: false });
-      throw error;
-    }
+    // Local-only update - api.campaigns.update does not exist
+    set((state) => ({
+      campaigns: state.campaigns.map((campaign) =>
+        campaign.id === id ? { ...campaign, ...data } : campaign
+      ),
+    }));
   },
 
   runCampaign: async (id) => {
@@ -175,7 +168,7 @@ export const useCampaignStore = create<CampaignStore>((set, get) => ({
   fetchLeadsByCampaign: async (campaignId) => {
     set({ isLoading: true, error: null });
     try {
-      const data = await api.leads.listByCampaign(campaignId);
+      const data = await api.leads.getByCampaign(campaignId);
       set((state) => {
         const otherLeads = state.leads.filter((l) => l.campaignId !== campaignId);
         return { leads: [...otherLeads, ...data.items], isLoading: false };
@@ -188,10 +181,14 @@ export const useCampaignStore = create<CampaignStore>((set, get) => ({
   uploadLeads: async (campaignId, newLeads) => {
     set({ isLoading: true, error: null });
     try {
-      const uploaded = await api.leads.bulkCreate(campaignId, newLeads);
+      const result = await api.leads.bulkCreate(campaignId, newLeads);
+      // bulkCreate returns { total_uploaded, successful, failed, duplicates_skipped }
+      // Re-fetch leads to get actual lead objects
+      const data = await api.leads.getByCampaign(campaignId);
       set((state) => {
-        const updatedLeads = [...state.leads, ...uploaded];
-        const totalForCampaign = updatedLeads.filter((l) => l.campaignId === campaignId).length;
+        const otherLeads = state.leads.filter((l) => l.campaignId !== campaignId);
+        const updatedLeads = [...otherLeads, ...data.items];
+        const totalForCampaign = data.items.length;
 
         return {
           leads: updatedLeads,

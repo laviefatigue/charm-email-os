@@ -106,7 +106,7 @@ export const useClientStore = create<ClientStore>((set, get) => ({
   completeOnboarding: async (id, data) => {
     set({ isLoading: true, error: null });
     try {
-      const updated = await api.clients.onboard(id, data);
+      const updated = await api.clients.completeOnboarding(id, data);
       set((state) => ({
         clients: state.clients.map((client) =>
           client.id === id ? updated : client

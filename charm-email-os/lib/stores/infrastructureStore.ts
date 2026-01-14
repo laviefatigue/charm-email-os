@@ -95,7 +95,7 @@ export const useInfrastructureStore = create<InfrastructureStore>((set, get) => 
   fetchDomainsByClient: async (clientId) => {
     set({ isLoading: true, error: null });
     try {
-      const data = await api.domains.listByClient(clientId);
+      const data = await api.domains.list({ clientId });
       // Merge with existing domains (update if exists, add if not)
       set((state) => {
         const otherDomains = state.domains.filter((d) => d.clientId !== clientId);
@@ -109,9 +109,11 @@ export const useInfrastructureStore = create<InfrastructureStore>((set, get) => 
   addDomain: async (data) => {
     set({ isLoading: true, error: null });
     try {
-      const newDomain = await api.domains.create(data);
+      // api.domains.create does not exist - use generate with count=1
+      const result = await api.domains.generate(data.clientId, data.domain, 1);
+      const newDomain = result.domain as unknown as Domain;
       set((state) => ({
-        domains: [...state.domains, newDomain],
+        domains: newDomain ? [...state.domains, newDomain] : state.domains,
         isLoading: false,
       }));
       return newDomain;
@@ -122,19 +124,12 @@ export const useInfrastructureStore = create<InfrastructureStore>((set, get) => 
   },
 
   updateDomain: async (id, data) => {
-    set({ isLoading: true, error: null });
-    try {
-      const updated = await api.domains.update(id, data);
-      set((state) => ({
-        domains: state.domains.map((domain) =>
-          domain.id === id ? updated : domain
-        ),
-        isLoading: false,
-      }));
-    } catch (error) {
-      set({ error: (error as Error).message, isLoading: false });
-      throw error;
-    }
+    // Local-only update - api.domains.update does not exist
+    set((state) => ({
+      domains: state.domains.map((domain) =>
+        domain.id === id ? { ...domain, ...data } : domain
+      ),
+    }));
   },
 
   approveDomain: async (id) => {
@@ -154,42 +149,31 @@ export const useInfrastructureStore = create<InfrastructureStore>((set, get) => 
   },
 
   rejectDomain: async (id) => {
-    // Optimistic update
+    // Local-only update - api.domains.update does not exist
     set((state) => ({
       domains: state.domains.map((domain) =>
         domain.id === id ? { ...domain, status: 'rejected' as DomainStatus } : domain
       ),
     }));
-    try {
-      await api.domains.update(id, { status: 'rejected' });
-    } catch (error) {
-      // Rollback on error
-      set((state) => ({
-        domains: state.domains.map((domain) =>
-          domain.id === id ? { ...domain, status: 'pending_approval' as DomainStatus } : domain
-        ),
-        error: (error as Error).message,
-      }));
-    }
   },
 
   resetDomainStatus: async (id) => {
+    // Local-only update - api.domains.update does not exist
     set((state) => ({
       domains: state.domains.map((domain) =>
         domain.id === id ? { ...domain, status: 'pending_approval' as DomainStatus } : domain
       ),
     }));
-    try {
-      await api.domains.update(id, { status: 'pending_approval' });
-    } catch (error) {
-      set({ error: (error as Error).message });
-    }
   },
 
   generateDomainsFromOnboarding: async (clientId, onboarding) => {
     set({ isLoading: true, error: null });
     try {
-      const newDomains = await api.domains.generate(clientId, onboarding);
+      const primaryDomain = onboarding.primaryDomain || '';
+      const result = await api.domains.generate(clientId, primaryDomain, 5);
+      // generate returns { message, domain? } - domain is a single optional domain
+      const newDomain = result.domain as unknown as Domain | undefined;
+      const newDomains = newDomain ? [newDomain] : [];
       set((state) => ({
         domains: [...state.domains, ...newDomains],
         isLoading: false,
@@ -205,7 +189,7 @@ export const useInfrastructureStore = create<InfrastructureStore>((set, get) => 
   fetchInboxesByClient: async (clientId) => {
     set({ isLoading: true, error: null });
     try {
-      const data = await api.inboxes.listByClient(clientId);
+      const data = await api.inboxes.list({ clientId });
       set((state) => {
         const otherInboxes = state.inboxes.filter((i) => i.clientId !== clientId);
         return { inboxes: [...otherInboxes, ...data.items], isLoading: false };
@@ -218,7 +202,7 @@ export const useInfrastructureStore = create<InfrastructureStore>((set, get) => 
   fetchInboxesByDomain: async (domainId) => {
     set({ isLoading: true, error: null });
     try {
-      const data = await api.inboxes.listByDomain(domainId);
+      const data = await api.inboxes.list({ domainId });
       set((state) => {
         const otherInboxes = state.inboxes.filter((i) => i.domainId !== domainId);
         return { inboxes: [...otherInboxes, ...data.items], isLoading: false };
@@ -231,9 +215,11 @@ export const useInfrastructureStore = create<InfrastructureStore>((set, get) => 
   addInbox: async (data) => {
     set({ isLoading: true, error: null });
     try {
-      const newInbox = await api.inboxes.create(data);
+      // api.inboxes.create does not exist - use generate with single name
+      const result = await api.inboxes.generate(data.clientId, data.domainId, [data.firstName], 1);
+      const newInbox = result.inboxes?.[0] as unknown as Inbox;
       set((state) => ({
-        inboxes: [...state.inboxes, newInbox],
+        inboxes: newInbox ? [...state.inboxes, newInbox] : state.inboxes,
         isLoading: false,
       }));
       return newInbox;
@@ -244,19 +230,12 @@ export const useInfrastructureStore = create<InfrastructureStore>((set, get) => 
   },
 
   updateInbox: async (id, data) => {
-    set({ isLoading: true, error: null });
-    try {
-      const updated = await api.inboxes.update(id, data);
-      set((state) => ({
-        inboxes: state.inboxes.map((inbox) =>
-          inbox.id === id ? updated : inbox
-        ),
-        isLoading: false,
-      }));
-    } catch (error) {
-      set({ error: (error as Error).message, isLoading: false });
-      throw error;
-    }
+    // Local-only update - api.inboxes.update does not exist
+    set((state) => ({
+      inboxes: state.inboxes.map((inbox) =>
+        inbox.id === id ? { ...inbox, ...data } : inbox
+      ),
+    }));
   },
 
   approveInbox: async (id) => {
@@ -276,41 +255,31 @@ export const useInfrastructureStore = create<InfrastructureStore>((set, get) => 
   },
 
   rejectInbox: async (id) => {
-    // Optimistic update
+    // Local-only update - api.inboxes.update does not exist
     set((state) => ({
       inboxes: state.inboxes.map((inbox) =>
         inbox.id === id ? { ...inbox, status: 'rejected' as InboxStatus } : inbox
       ),
     }));
-    try {
-      await api.inboxes.update(id, { status: 'rejected' });
-    } catch (error) {
-      set((state) => ({
-        inboxes: state.inboxes.map((inbox) =>
-          inbox.id === id ? { ...inbox, status: 'pending_approval' as InboxStatus } : inbox
-        ),
-        error: (error as Error).message,
-      }));
-    }
   },
 
   resetInboxStatus: async (id) => {
+    // Local-only update - api.inboxes.update does not exist
     set((state) => ({
       inboxes: state.inboxes.map((inbox) =>
         inbox.id === id ? { ...inbox, status: 'pending_approval' as InboxStatus } : inbox
       ),
     }));
-    try {
-      await api.inboxes.update(id, { status: 'pending_approval' });
-    } catch (error) {
-      set({ error: (error as Error).message });
-    }
   },
 
-  generateInboxesFromOnboarding: async (clientId, domainId, domain, onboarding) => {
+  generateInboxesFromOnboarding: async (clientId, domainId, _domain, onboarding) => {
     set({ isLoading: true, error: null });
     try {
-      const newInboxes = await api.inboxes.generate(clientId, domainId, domain, onboarding);
+      // Extract first names from onboarding data
+      const firstNames = onboarding.contactFirstNames?.length > 0 ? onboarding.contactFirstNames : ['Sales', 'Support'];
+      const result = await api.inboxes.generate(clientId, domainId, firstNames, firstNames.length);
+      // generate returns { message, inboxes: Record<string, unknown>[] }
+      const newInboxes = (result.inboxes || []) as unknown as Inbox[];
       set((state) => ({
         inboxes: [...state.inboxes, ...newInboxes],
         isLoading: false,
