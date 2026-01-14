@@ -45,36 +45,30 @@ async def list_clients(
 
     where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
 
-    # Get total count
-    count_query = f"SELECT COUNT(*) as total FROM clients c {where_clause}"
+    # Get total count - using view for consistency
+    count_where = where_clause.replace('c.', '') if where_clause else ""
+    count_query = f"SELECT COUNT(*) as total FROM vw_client_summary {count_where}"
     count_result = await fetch_one(count_query, *params)
     total = count_result["total"] if count_result else 0
 
-    # Get clients with workspace info
+    # Get clients with workspace info - using vw_client_summary view for reliability
     query = f"""
         SELECT
-            c.id,
-            c.name,
-            c.workspace_id,
-            w.workspace_name,
-            c.logo_url,
-            c.onboarding_complete,
-            c.onboarding_data,
-            c.created_at,
-            c.updated_at,
-            COALESCE(w.sender_account_count, 0) as inbox_count,
-            COALESCE(
-                (SELECT COUNT(*) FROM domains d WHERE d.workspace_id = c.workspace_id),
-                0
-            ) as domain_count,
-            COALESCE(
-                (SELECT COUNT(*) FROM emailbison_campaigns ec WHERE ec.workspace_id = c.workspace_id),
-                0
-            ) as campaign_count
-        FROM clients c
-        LEFT JOIN workspaces w ON c.workspace_id = w.id
-        {where_clause}
-        ORDER BY c.created_at DESC
+            id,
+            name,
+            workspace_id,
+            workspace_name,
+            logo_url,
+            onboarding_complete,
+            NULL as onboarding_data,
+            created_at,
+            updated_at,
+            inbox_count,
+            domain_count,
+            campaign_count
+        FROM vw_client_summary
+        {where_clause.replace('c.', '')}
+        ORDER BY created_at DESC
         LIMIT ${param_idx} OFFSET ${param_idx + 1}
     """
     params.extend([page_size, offset])
