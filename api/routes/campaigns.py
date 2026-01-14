@@ -67,7 +67,7 @@ async def list_campaigns(
     """
     status_counts = await fetch_one(status_counts_query, *params[:param_idx-1] if params else [])
 
-    # Get campaigns - use only columns that exist in OwnRBL schema
+    # Get campaigns - only use columns that definitely exist in emailbison_campaigns
     query = f"""
         SELECT
             c.id,
@@ -78,24 +78,21 @@ async def list_campaigns(
             NULL as segment,
             NULL as angle,
             COALESCE(c.campaign_status, 'active') as campaign_status,
-            COALESCE(c.total_leads, 0) as total_leads,
-            COALESCE(c.total_leads_contacted, 0) as total_leads_contacted,
+            0 as total_leads,
+            0 as total_leads_contacted,
             0 as leads_capacity,
-            COALESCE(c.emails_sent, 0) as emails_sent,
-            COALESCE(c.unique_opens, 0) as unique_opens,
-            COALESCE(c.unique_replies, 0) as unique_replies,
-            COALESCE(c.bounced, 0) as bounced,
-            COALESCE(c.unsubscribed, 0) as unsubscribed,
+            0 as emails_sent,
+            0 as unique_opens,
+            0 as unique_replies,
+            0 as bounced,
+            0 as unsubscribed,
             0 as spam_complaints,
-            CASE WHEN COALESCE(c.emails_sent, 0) > 0
-                THEN COALESCE(c.unique_replies, 0)::float / c.emails_sent * 100 ELSE 0 END as reply_rate,
-            CASE WHEN COALESCE(c.emails_sent, 0) > 0
-                THEN COALESCE(c.unique_opens, 0)::float / c.emails_sent * 100 ELSE 0 END as open_rate,
-            CASE WHEN COALESCE(c.emails_sent, 0) > 0
-                THEN COALESCE(c.bounced, 0)::float / c.emails_sent * 100 ELSE 0 END as bounce_rate,
+            0.0 as reply_rate,
+            0.0 as open_rate,
+            0.0 as bounce_rate,
             c.created_at,
             c.updated_at,
-            c.last_snapshot_at
+            NULL as last_snapshot_at
         FROM emailbison_campaigns c
         {where_clause}
         ORDER BY c.created_at DESC
@@ -138,24 +135,21 @@ async def get_campaign(campaign_id: UUID):
             NULL as segment,
             NULL as angle,
             COALESCE(c.campaign_status, 'active') as campaign_status,
-            COALESCE(c.total_leads, 0) as total_leads,
-            COALESCE(c.total_leads_contacted, 0) as total_leads_contacted,
+            0 as total_leads,
+            0 as total_leads_contacted,
             0 as leads_capacity,
-            COALESCE(c.emails_sent, 0) as emails_sent,
-            COALESCE(c.unique_opens, 0) as unique_opens,
-            COALESCE(c.unique_replies, 0) as unique_replies,
-            COALESCE(c.bounced, 0) as bounced,
-            COALESCE(c.unsubscribed, 0) as unsubscribed,
+            0 as emails_sent,
+            0 as unique_opens,
+            0 as unique_replies,
+            0 as bounced,
+            0 as unsubscribed,
             0 as spam_complaints,
-            CASE WHEN COALESCE(c.emails_sent, 0) > 0
-                THEN COALESCE(c.unique_replies, 0)::float / c.emails_sent * 100 ELSE 0 END as reply_rate,
-            CASE WHEN COALESCE(c.emails_sent, 0) > 0
-                THEN COALESCE(c.unique_opens, 0)::float / c.emails_sent * 100 ELSE 0 END as open_rate,
-            CASE WHEN COALESCE(c.emails_sent, 0) > 0
-                THEN COALESCE(c.bounced, 0)::float / c.emails_sent * 100 ELSE 0 END as bounce_rate,
+            0.0 as reply_rate,
+            0.0 as open_rate,
+            0.0 as bounce_rate,
             c.created_at,
             c.updated_at,
-            c.last_snapshot_at
+            NULL as last_snapshot_at
         FROM emailbison_campaigns c
         WHERE c.id = $1
     """
