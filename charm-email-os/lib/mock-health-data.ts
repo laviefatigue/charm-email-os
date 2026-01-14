@@ -53,7 +53,7 @@ export function generateInboxHealthMetrics(clientId: string): InboxHealthMetrics
     return {
       inboxId: inbox.id,
       email: inbox.email,
-      state: inbox.healthState || 'live',
+      state: inbox.inboxState || 'live',
       emailsSent24h,
       emailsSent7d,
       dailySendLimit: inbox.dailySendLimit || 50,
