@@ -87,9 +87,12 @@ async def list_campaigns(
             COALESCE(c.bounced, 0) as bounced,
             COALESCE(c.unsubscribed, 0) as unsubscribed,
             0 as spam_complaints,
-            COALESCE(c.reply_rate, 0) as reply_rate,
-            COALESCE(c.open_rate, 0) as open_rate,
-            COALESCE(c.bounce_rate, 0) as bounce_rate,
+            CASE WHEN COALESCE(c.emails_sent, 0) > 0
+                THEN COALESCE(c.unique_replies, 0)::float / c.emails_sent * 100 ELSE 0 END as reply_rate,
+            CASE WHEN COALESCE(c.emails_sent, 0) > 0
+                THEN COALESCE(c.unique_opens, 0)::float / c.emails_sent * 100 ELSE 0 END as open_rate,
+            CASE WHEN COALESCE(c.emails_sent, 0) > 0
+                THEN COALESCE(c.bounced, 0)::float / c.emails_sent * 100 ELSE 0 END as bounce_rate,
             c.created_at,
             c.updated_at,
             c.last_snapshot_at
@@ -144,9 +147,12 @@ async def get_campaign(campaign_id: UUID):
             COALESCE(c.bounced, 0) as bounced,
             COALESCE(c.unsubscribed, 0) as unsubscribed,
             0 as spam_complaints,
-            COALESCE(c.reply_rate, 0) as reply_rate,
-            COALESCE(c.open_rate, 0) as open_rate,
-            COALESCE(c.bounce_rate, 0) as bounce_rate,
+            CASE WHEN COALESCE(c.emails_sent, 0) > 0
+                THEN COALESCE(c.unique_replies, 0)::float / c.emails_sent * 100 ELSE 0 END as reply_rate,
+            CASE WHEN COALESCE(c.emails_sent, 0) > 0
+                THEN COALESCE(c.unique_opens, 0)::float / c.emails_sent * 100 ELSE 0 END as open_rate,
+            CASE WHEN COALESCE(c.emails_sent, 0) > 0
+                THEN COALESCE(c.bounced, 0)::float / c.emails_sent * 100 ELSE 0 END as bounce_rate,
             c.created_at,
             c.updated_at,
             c.last_snapshot_at

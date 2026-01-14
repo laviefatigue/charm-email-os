@@ -64,13 +64,19 @@ async def get_health_overview(client_id: UUID):
         WHERE workspace_id = $1
     """, workspace_id)
 
-    # Get campaign stats
+    # Get campaign stats - calculate rates from raw metrics (reply_rate/bounce_rate columns don't exist)
     campaign_stats = await fetch_one("""
         SELECT
             COUNT(*) FILTER (WHERE campaign_status = 'active') as active,
             COALESCE(SUM(emails_sent), 0) as total_sent,
-            COALESCE(AVG(reply_rate), 0) as avg_reply_rate,
-            COALESCE(AVG(bounce_rate), 0) as avg_bounce_rate
+            CASE WHEN SUM(emails_sent) > 0
+                THEN COALESCE(SUM(unique_replies)::float / SUM(emails_sent) * 100, 0)
+                ELSE 0
+            END as avg_reply_rate,
+            CASE WHEN SUM(emails_sent) > 0
+                THEN COALESCE(SUM(bounced)::float / SUM(emails_sent) * 100, 0)
+                ELSE 0
+            END as avg_bounce_rate
         FROM emailbison_campaigns
         WHERE workspace_id = $1
     """, workspace_id)
