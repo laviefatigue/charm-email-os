@@ -104,3 +104,28 @@ async def health_check() -> bool:
     except Exception as e:
         logger.error(f"Database health check failed: {e}")
         return False
+
+
+async def init_schema() -> None:
+    """Initialize required tables if they don't exist"""
+    # Create clients table if it doesn't exist
+    create_clients_table = """
+        CREATE TABLE IF NOT EXISTS clients (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            name VARCHAR(255) NOT NULL,
+            workspace_id UUID REFERENCES workspaces(id) ON DELETE SET NULL,
+            logo_url TEXT,
+            onboarding_complete BOOLEAN DEFAULT FALSE,
+            onboarding_data JSONB,
+            created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+            updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+        );
+
+        -- Create index on workspace_id for faster joins
+        CREATE INDEX IF NOT EXISTS idx_clients_workspace_id ON clients(workspace_id);
+    """
+    try:
+        await execute(create_clients_table)
+        logger.info("Database schema initialized (clients table ready)")
+    except Exception as e:
+        logger.error(f"Failed to initialize schema: {e}")

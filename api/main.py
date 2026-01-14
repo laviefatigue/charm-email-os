@@ -32,6 +32,8 @@ async def lifespan(app: FastAPI):
     try:
         await database.create_pool()
         logger.info("Database pool initialized successfully")
+        # Initialize schema (create tables if they don't exist)
+        await database.init_schema()
     except Exception as e:
         logger.error(f"Failed to connect to database: {e}")
         logger.warning("API will start without database - endpoints requiring DB will fail")
