@@ -1,6 +1,5 @@
 'use client';
 
-import { useState } from 'react';
 import {
   Building2,
   Users,
@@ -8,13 +7,10 @@ import {
   Globe,
   Inbox,
   FileText,
-  Edit,
   User,
 } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { OnboardingForm } from '@/components/clients';
 import type { Client } from '@/lib/types';
 
 interface OnboardingSummaryProps {
@@ -22,7 +18,6 @@ interface OnboardingSummaryProps {
 }
 
 export function OnboardingSummary({ client }: OnboardingSummaryProps) {
-  const [showEdit, setShowEdit] = useState(false);
   const data = client.onboardingData;
 
   if (!data) {
@@ -32,40 +27,22 @@ export function OnboardingSummary({ client }: OnboardingSummaryProps) {
           <div className="text-center">
             <User className="h-10 w-10 mx-auto mb-3 text-muted-foreground opacity-50" />
             <p className="font-medium text-muted-foreground">
-              Complete onboarding to set up client profile
+              No client profile data available
             </p>
-            <Button
-              size="sm"
-              variant="outline"
-              className="mt-4"
-              onClick={() => setShowEdit(true)}
-            >
-              Start Onboarding
-            </Button>
           </div>
         </CardContent>
-        <OnboardingForm
-          client={client}
-          open={showEdit}
-          onOpenChange={setShowEdit}
-        />
       </Card>
     );
   }
 
   return (
-    <>
-      <Card>
-        <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-4">
-          <CardTitle className="text-base font-semibold flex items-center gap-2">
-            <User className="h-4 w-4" />
-            Client Profile
-          </CardTitle>
-          <Button size="sm" variant="outline" onClick={() => setShowEdit(true)}>
-            <Edit className="h-4 w-4 mr-1" />
-            Edit
-          </Button>
-        </CardHeader>
+    <Card>
+      <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-4">
+        <CardTitle className="text-base font-semibold flex items-center gap-2">
+          <User className="h-4 w-4" />
+          Client Profile
+        </CardTitle>
+      </CardHeader>
         <CardContent>
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
             {/* Primary Domain */}
@@ -163,13 +140,6 @@ export function OnboardingSummary({ client }: OnboardingSummaryProps) {
             </div>
           )}
         </CardContent>
-      </Card>
-
-      <OnboardingForm
-        client={client}
-        open={showEdit}
-        onOpenChange={setShowEdit}
-      />
-    </>
+    </Card>
   );
 }
