@@ -41,7 +41,7 @@ export function ClientForm({ open, onOpenChange, onSuccess }: ClientFormProps) {
     // Simulate a small delay
     await new Promise((resolve) => setTimeout(resolve, 300));
 
-    const client = addClient({ name: name.trim(), domain: domain.trim() });
+    const client = await addClient({ name: name.trim(), domain: domain.trim() });
     toast.success('Client created successfully');
 
     setName('');
