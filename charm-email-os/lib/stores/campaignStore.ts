@@ -94,13 +94,12 @@ export const useCampaignStore = create<CampaignStore>((set, get) => ({
     set({ isLoading: true, error: null });
     try {
       const newCampaign = await api.campaigns.create({
-        clientId: idea.clientId,
+        workspaceId: `ws-${idea.clientId}`,  // TODO: get actual workspaceId from client
         ideaId: idea.id,
-        name: idea.title,
+        campaignName: idea.title,
         industry: idea.industry,
         segment: idea.segment,
         angle: idea.angle,
-        status: 'draft',
       });
       set((state) => ({
         campaigns: [...state.campaigns, newCampaign],
