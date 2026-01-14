@@ -73,16 +73,16 @@ export default function InboxesPage() {
     );
   }
 
-  const handleGenerateDomains = () => {
+  const handleGenerateDomains = async () => {
     if (!client.onboardingData) {
       toast.error('Please complete onboarding first');
       return;
     }
-    const generated = generateDomainsFromOnboarding(clientId, client.onboardingData);
+    const generated = await generateDomainsFromOnboarding(clientId, client.onboardingData);
     toast.success(`Generated ${generated.length} domain suggestions`);
   };
 
-  const handleGenerateInboxes = (domainId: string) => {
+  const handleGenerateInboxes = async (domainId: string) => {
     if (!client.onboardingData) {
       toast.error('Please complete onboarding first');
       return;
@@ -90,7 +90,7 @@ export default function InboxesPage() {
     const domain = domains.find((d) => d.id === domainId);
     if (!domain) return;
 
-    const generated = generateInboxesFromOnboarding(clientId, domainId, domain.domain, client.onboardingData);
+    const generated = await generateInboxesFromOnboarding(clientId, domainId, domain.domain, client.onboardingData);
     toast.success(`Generated ${generated.length} inbox suggestions for ${domain.domain}`);
   };
 
