@@ -67,29 +67,29 @@ async def list_campaigns(
     """
     status_counts = await fetch_one(status_counts_query, *params[:param_idx-1] if params else [])
 
-    # Get campaigns with latest snapshot metrics
+    # Get campaigns - use only columns that exist in OwnRBL schema
     query = f"""
         SELECT
             c.id,
             c.workspace_id,
             c.emailbison_campaign_id,
             c.campaign_name,
-            c.industry,
-            c.segment,
-            c.angle,
-            COALESCE(c.campaign_status, 'draft') as campaign_status,
-            c.total_leads,
-            c.total_leads_contacted,
-            c.leads_capacity,
-            c.emails_sent,
-            c.unique_opens,
-            c.unique_replies,
-            c.bounced,
-            c.unsubscribed,
-            c.spam_complaints,
-            c.reply_rate,
-            c.open_rate,
-            c.bounce_rate,
+            NULL as industry,
+            NULL as segment,
+            NULL as angle,
+            COALESCE(c.campaign_status, 'active') as campaign_status,
+            COALESCE(c.total_leads, 0) as total_leads,
+            COALESCE(c.total_leads_contacted, 0) as total_leads_contacted,
+            0 as leads_capacity,
+            COALESCE(c.emails_sent, 0) as emails_sent,
+            COALESCE(c.unique_opens, 0) as unique_opens,
+            COALESCE(c.unique_replies, 0) as unique_replies,
+            COALESCE(c.bounced, 0) as bounced,
+            COALESCE(c.unsubscribed, 0) as unsubscribed,
+            0 as spam_complaints,
+            COALESCE(c.reply_rate, 0) as reply_rate,
+            COALESCE(c.open_rate, 0) as open_rate,
+            COALESCE(c.bounce_rate, 0) as bounce_rate,
             c.created_at,
             c.updated_at,
             c.last_snapshot_at
@@ -131,22 +131,22 @@ async def get_campaign(campaign_id: UUID):
             c.workspace_id,
             c.emailbison_campaign_id,
             c.campaign_name,
-            c.industry,
-            c.segment,
-            c.angle,
-            COALESCE(c.campaign_status, 'draft') as campaign_status,
-            c.total_leads,
-            c.total_leads_contacted,
-            c.leads_capacity,
-            c.emails_sent,
-            c.unique_opens,
-            c.unique_replies,
-            c.bounced,
-            c.unsubscribed,
-            c.spam_complaints,
-            c.reply_rate,
-            c.open_rate,
-            c.bounce_rate,
+            NULL as industry,
+            NULL as segment,
+            NULL as angle,
+            COALESCE(c.campaign_status, 'active') as campaign_status,
+            COALESCE(c.total_leads, 0) as total_leads,
+            COALESCE(c.total_leads_contacted, 0) as total_leads_contacted,
+            0 as leads_capacity,
+            COALESCE(c.emails_sent, 0) as emails_sent,
+            COALESCE(c.unique_opens, 0) as unique_opens,
+            COALESCE(c.unique_replies, 0) as unique_replies,
+            COALESCE(c.bounced, 0) as bounced,
+            COALESCE(c.unsubscribed, 0) as unsubscribed,
+            0 as spam_complaints,
+            COALESCE(c.reply_rate, 0) as reply_rate,
+            COALESCE(c.open_rate, 0) as open_rate,
+            COALESCE(c.bounce_rate, 0) as bounce_rate,
             c.created_at,
             c.updated_at,
             c.last_snapshot_at
@@ -171,34 +171,8 @@ async def get_campaign_metrics(campaign_id: UUID):
     """Get detailed metrics for a campaign"""
     campaign = await get_campaign(campaign_id)
 
-    # Get snapshot history
-    snapshots = await fetch_all("""
-        SELECT
-            emails_sent,
-            unique_opens,
-            unique_replies,
-            bounced,
-            interested_replies,
-            automated_replies,
-            snapshot_timestamp
-        FROM campaign_snapshots
-        WHERE campaign_id = $1
-        ORDER BY snapshot_timestamp DESC
-        LIMIT 30
-    """, campaign_id)
-
-    # Get event counts
-    events = await fetch_one("""
-        SELECT
-            COUNT(*) FILTER (WHERE event_type = 'reply') as total_replies,
-            COUNT(*) FILTER (WHERE event_type = 'interested_reply') as interested_replies,
-            COUNT(*) FILTER (WHERE event_type = 'automated_reply') as automated_replies,
-            COUNT(*) FILTER (WHERE event_type = 'bounce') as bounces,
-            COUNT(*) FILTER (WHERE event_type = 'unsubscribe') as unsubscribes,
-            COUNT(*) FILTER (WHERE event_type = 'spam') as spam_complaints
-        FROM campaign_events
-        WHERE campaign_id = $1
-    """, campaign_id)
+    # Note: campaign_snapshots and campaign_events tables don't exist in OwnRBL
+    # Return metrics based on campaign data only
 
     # Calculate days active and daily rate
     days_active = 0
@@ -206,13 +180,11 @@ async def get_campaign_metrics(campaign_id: UUID):
     if campaign.created_at:
         from datetime import datetime, timezone
         now = datetime.now(timezone.utc)
-        days_active = max(1, (now - campaign.created_at.replace(tzinfo=timezone.utc)).days)
+        created = campaign.created_at
+        if created.tzinfo is None:
+            created = created.replace(tzinfo=timezone.utc)
+        days_active = max(1, (now - created).days)
         daily_send_rate = (campaign.emails_sent or 0) / days_active
-
-    # Calculate interested rate
-    total_replies = campaign.unique_replies or 0
-    interested = events["interested_replies"] if events else 0
-    interested_rate = (interested / total_replies * 100) if total_replies > 0 else 0
 
     return CampaignMetrics(
         campaign_id=campaign.id,
@@ -222,18 +194,18 @@ async def get_campaign_metrics(campaign_id: UUID):
         leads_contacted=campaign.total_leads_contacted or 0,
         unique_opens=campaign.unique_opens or 0,
         unique_replies=campaign.unique_replies or 0,
-        interested_replies=events["interested_replies"] if events else 0,
-        automated_replies=events["automated_replies"] if events else 0,
+        interested_replies=0,
+        automated_replies=0,
         bounced=campaign.bounced or 0,
         unsubscribed=campaign.unsubscribed or 0,
         spam_complaints=campaign.spam_complaints or 0,
         reply_rate=campaign.reply_rate or 0.0,
         open_rate=campaign.open_rate or 0.0,
         bounce_rate=campaign.bounce_rate or 0.0,
-        interested_rate=interested_rate,
+        interested_rate=0.0,
         days_active=days_active,
         daily_send_rate=daily_send_rate,
-        snapshots=[dict(s) for s in snapshots] if snapshots else None
+        snapshots=None
     )
 
 
