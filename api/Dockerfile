@@ -19,7 +19,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Cache bust - change this value to force rebuild
-ARG CACHEBUST=2026011424
+ARG CACHEBUST=2026011425
 
 # Copy application code
 COPY . .
