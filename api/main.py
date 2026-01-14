@@ -26,15 +26,24 @@ async def lifespan(app: FastAPI):
     """Application lifespan - startup and shutdown"""
     # Startup
     logger.info("Starting Charm Email OS API...")
-    await database.create_pool()
-    logger.info("Database pool initialized")
+    logger.info(f"Database config: host={settings.POSTGRES_HOST}, port={settings.POSTGRES_PORT}, db={settings.POSTGRES_DB}, user={settings.POSTGRES_USER}")
+
+    try:
+        await database.create_pool()
+        logger.info("Database pool initialized successfully")
+    except Exception as e:
+        logger.error(f"Failed to connect to database: {e}")
+        logger.warning("API will start without database connection - some endpoints may fail")
 
     yield
 
     # Shutdown
     logger.info("Shutting down Charm Email OS API...")
-    await database.close_pool()
-    logger.info("Database pool closed")
+    try:
+        await database.close_pool()
+        logger.info("Database pool closed")
+    except Exception as e:
+        logger.error(f"Error closing database pool: {e}")
 
 
 # Create FastAPI app
