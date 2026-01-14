@@ -5,9 +5,7 @@ Loads from environment variables
 
 import json
 from pydantic_settings import BaseSettings
-from pydantic import field_validator
 from functools import lru_cache
-from typing import Any
 
 
 class Settings(BaseSettings):
@@ -31,25 +29,21 @@ class Settings(BaseSettings):
     API_PREFIX: str = "/api"
     DEBUG: bool = False
 
-    # CORS Configuration
-    CORS_ORIGINS: list[str] = ["*"]
+    # CORS Configuration - stored as string, parsed by property
+    CORS_ORIGINS_RAW: str = "*"
 
-    @field_validator('CORS_ORIGINS', mode='before')
-    @classmethod
-    def parse_cors_origins(cls, v: Any) -> list[str]:
-        """Parse CORS_ORIGINS from string or list"""
-        if isinstance(v, list):
-            return v
-        if isinstance(v, str):
-            # Try parsing as JSON first
-            if v.startswith('['):
-                try:
-                    return json.loads(v)
-                except json.JSONDecodeError:
-                    pass
-            # Fall back to comma-separated
-            return [origin.strip() for origin in v.split(',') if origin.strip()]
-        return ["*"]
+    @property
+    def CORS_ORIGINS(self) -> list[str]:
+        """Parse CORS_ORIGINS from string"""
+        v = self.CORS_ORIGINS_RAW
+        # Try parsing as JSON first
+        if v.startswith('['):
+            try:
+                return json.loads(v)
+            except json.JSONDecodeError:
+                pass
+        # Fall back to comma-separated or single value
+        return [origin.strip() for origin in v.split(',') if origin.strip()]
 
     @property
     def database_url(self) -> str:
