@@ -107,25 +107,68 @@ async def health_check() -> bool:
 
 
 async def init_schema() -> None:
-    """Initialize required tables if they don't exist"""
-    # Create clients table if it doesn't exist
-    create_clients_table = """
-        CREATE TABLE IF NOT EXISTS clients (
-            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            name VARCHAR(255) NOT NULL,
-            workspace_id UUID REFERENCES workspaces(id) ON DELETE SET NULL,
-            logo_url TEXT,
-            onboarding_complete BOOLEAN DEFAULT FALSE,
-            onboarding_data JSONB,
-            created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-            updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-        );
-
-        -- Create index on workspace_id for faster joins
-        CREATE INDEX IF NOT EXISTS idx_clients_workspace_id ON clients(workspace_id);
+    """Initialize required tables and columns if they don't exist"""
+    # Check if clients table exists and has the right columns
+    check_table = """
+        SELECT EXISTS (
+            SELECT FROM information_schema.tables
+            WHERE table_name = 'clients'
+        ) as table_exists;
     """
-    try:
-        await execute(create_clients_table)
-        logger.info("Database schema initialized (clients table ready)")
-    except Exception as e:
-        logger.error(f"Failed to initialize schema: {e}")
+    result = await fetch_one(check_table)
+    table_exists = result and result.get("table_exists", False)
+
+    if not table_exists:
+        # Create clients table from scratch
+        create_clients_table = """
+            CREATE TABLE clients (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                name VARCHAR(255) NOT NULL,
+                workspace_id UUID REFERENCES workspaces(id) ON DELETE SET NULL,
+                logo_url TEXT,
+                onboarding_complete BOOLEAN DEFAULT FALSE,
+                onboarding_data JSONB,
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+            );
+            CREATE INDEX idx_clients_workspace_id ON clients(workspace_id);
+        """
+        try:
+            await execute(create_clients_table)
+            logger.info("Created clients table")
+        except Exception as e:
+            logger.error(f"Failed to create clients table: {e}")
+            return
+    else:
+        # Table exists - ensure all required columns exist
+        columns_to_add = [
+            ("workspace_id", "UUID REFERENCES workspaces(id) ON DELETE SET NULL"),
+            ("logo_url", "TEXT"),
+            ("onboarding_complete", "BOOLEAN DEFAULT FALSE"),
+            ("onboarding_data", "JSONB"),
+            ("created_at", "TIMESTAMP WITH TIME ZONE DEFAULT NOW()"),
+            ("updated_at", "TIMESTAMP WITH TIME ZONE DEFAULT NOW()"),
+        ]
+
+        for col_name, col_def in columns_to_add:
+            check_col = f"""
+                SELECT EXISTS (
+                    SELECT FROM information_schema.columns
+                    WHERE table_name = 'clients' AND column_name = '{col_name}'
+                ) as col_exists;
+            """
+            col_result = await fetch_one(check_col)
+            if col_result and not col_result.get("col_exists", False):
+                try:
+                    await execute(f"ALTER TABLE clients ADD COLUMN {col_name} {col_def}")
+                    logger.info(f"Added column {col_name} to clients table")
+                except Exception as e:
+                    logger.error(f"Failed to add column {col_name}: {e}")
+
+        # Create index if not exists
+        try:
+            await execute("CREATE INDEX IF NOT EXISTS idx_clients_workspace_id ON clients(workspace_id)")
+        except Exception as e:
+            logger.warning(f"Index creation note: {e}")
+
+    logger.info("Database schema initialized (clients table ready)")
