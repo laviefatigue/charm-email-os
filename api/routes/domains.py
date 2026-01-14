@@ -62,7 +62,7 @@ async def list_domains(
     count_result = await fetch_one(count_query, *params)
     total = count_result["total"] if count_result else 0
 
-    # Get domains with health metrics
+    # Get domains with health metrics (using only columns that exist in DB)
     query = f"""
         SELECT
             d.id,
@@ -74,8 +74,8 @@ async def list_domains(
             d.latest_whitelist_count,
             d.is_clean,
             d.last_checked_at,
-            d.flagged_at,
-            d.dead_at,
+            NULL as flagged_at,
+            NULL as dead_at,
             d.created_at,
             d.updated_at,
             COALESCE(
@@ -125,8 +125,8 @@ async def get_domain(domain_id: UUID):
             d.latest_whitelist_count,
             d.is_clean,
             d.last_checked_at,
-            d.flagged_at,
-            d.dead_at,
+            NULL as flagged_at,
+            NULL as dead_at,
             d.created_at,
             d.updated_at,
             COALESCE(
