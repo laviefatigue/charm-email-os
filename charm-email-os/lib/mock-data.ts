@@ -72,23 +72,23 @@ export const mockClients: Client[] = [
 // ============ DOMAINS ============
 export const mockDomains: Domain[] = [
   // TechFlow domains - mix of active, warming, pending, and rejected
-  { id: 'domain-1', clientId: 'client-1', domain: 'techflow.io', status: 'active', healthScore: 92, createdAt: daysAgo(40) },
-  { id: 'domain-2', clientId: 'client-1', domain: 'techflow-mail.com', status: 'warming', healthScore: 78, createdAt: daysAgo(20) },
-  { id: 'domain-3', clientId: 'client-1', domain: 'tf-outreach.com', status: 'pending_approval', createdAt: daysAgo(1) },
-  { id: 'domain-3a', clientId: 'client-1', domain: 'mail-techflow.io', status: 'pending_approval', createdAt: daysAgo(1) },
-  { id: 'domain-3b', clientId: 'client-1', domain: 'go-techflow.io', status: 'pending_approval', createdAt: daysAgo(1) },
-  { id: 'domain-3c', clientId: 'client-1', domain: 'techflow-hq.com', status: 'rejected', createdAt: daysAgo(2) },
+  { id: 'domain-1', clientId: 'client-1', workspaceId: 'ws-techflow-1', domain: 'techflow.io', status: 'active', healthScore: 92, createdAt: daysAgo(40) },
+  { id: 'domain-2', clientId: 'client-1', workspaceId: 'ws-techflow-2', domain: 'techflow-mail.com', status: 'warming', healthScore: 78, createdAt: daysAgo(20) },
+  { id: 'domain-3', clientId: 'client-1', workspaceId: 'ws-techflow-3', domain: 'tf-outreach.com', status: 'pending_approval', createdAt: daysAgo(1) },
+  { id: 'domain-3a', clientId: 'client-1', workspaceId: 'ws-techflow-4', domain: 'mail-techflow.io', status: 'pending_approval', createdAt: daysAgo(1) },
+  { id: 'domain-3b', clientId: 'client-1', workspaceId: 'ws-techflow-5', domain: 'go-techflow.io', status: 'pending_approval', createdAt: daysAgo(1) },
+  { id: 'domain-3c', clientId: 'client-1', workspaceId: 'ws-techflow-6', domain: 'techflow-hq.com', status: 'rejected', createdAt: daysAgo(2) },
   // GrowthMetrics domains
-  { id: 'domain-4', clientId: 'client-2', domain: 'growthmetrics.co', status: 'active', healthScore: 88, createdAt: daysAgo(28) },
-  { id: 'domain-5', clientId: 'client-2', domain: 'gm-connect.io', status: 'active', healthScore: 85, createdAt: daysAgo(25) },
-  { id: 'domain-5a', clientId: 'client-2', domain: 'mail-growthmetrics.co', status: 'pending_approval', createdAt: daysAgo(1) },
-  { id: 'domain-5b', clientId: 'client-2', domain: 'gm-outbound.io', status: 'rejected', createdAt: daysAgo(3) },
+  { id: 'domain-4', clientId: 'client-2', workspaceId: 'ws-growth-1', domain: 'growthmetrics.co', status: 'active', healthScore: 88, createdAt: daysAgo(28) },
+  { id: 'domain-5', clientId: 'client-2', workspaceId: 'ws-growth-2', domain: 'gm-connect.io', status: 'active', healthScore: 85, createdAt: daysAgo(25) },
+  { id: 'domain-5a', clientId: 'client-2', workspaceId: 'ws-growth-3', domain: 'mail-growthmetrics.co', status: 'pending_approval', createdAt: daysAgo(1) },
+  { id: 'domain-5b', clientId: 'client-2', workspaceId: 'ws-growth-4', domain: 'gm-outbound.io', status: 'rejected', createdAt: daysAgo(3) },
   // CloudScale domains
-  { id: 'domain-6', clientId: 'client-4', domain: 'cloudscale.dev', status: 'active', healthScore: 95, createdAt: daysAgo(14) },
-  { id: 'domain-7', clientId: 'client-4', domain: 'cs-reach.com', status: 'warming', healthScore: 65, createdAt: daysAgo(7) },
-  { id: 'domain-7a', clientId: 'client-4', domain: 'mail-cloudscale.dev', status: 'pending_approval', createdAt: daysAgo(1) },
-  { id: 'domain-7b', clientId: 'client-4', domain: 'try-cloudscale.io', status: 'pending_approval', createdAt: daysAgo(1) },
-  { id: 'domain-7c', clientId: 'client-4', domain: 'cloudscale-app.com', status: 'pending_approval', createdAt: daysAgo(1) },
+  { id: 'domain-6', clientId: 'client-4', workspaceId: 'ws-cloud-1', domain: 'cloudscale.dev', status: 'active', healthScore: 95, createdAt: daysAgo(14) },
+  { id: 'domain-7', clientId: 'client-4', workspaceId: 'ws-cloud-2', domain: 'cs-reach.com', status: 'warming', healthScore: 65, createdAt: daysAgo(7) },
+  { id: 'domain-7a', clientId: 'client-4', workspaceId: 'ws-cloud-3', domain: 'mail-cloudscale.dev', status: 'pending_approval', createdAt: daysAgo(1) },
+  { id: 'domain-7b', clientId: 'client-4', workspaceId: 'ws-cloud-4', domain: 'try-cloudscale.io', status: 'pending_approval', createdAt: daysAgo(1) },
+  { id: 'domain-7c', clientId: 'client-4', workspaceId: 'ws-cloud-5', domain: 'cloudscale-app.com', status: 'pending_approval', createdAt: daysAgo(1) },
 ];
 
 // ============ INBOXES ============
