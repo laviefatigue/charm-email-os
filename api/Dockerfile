@@ -19,10 +19,13 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Cache bust - change this value to force rebuild
-ARG CACHEBUST=2026011422
+ARG CACHEBUST=2026011423
 
 # Copy application code
 COPY . .
+
+# Make start script executable
+RUN chmod +x start.sh
 
 # Create non-root user
 RUN adduser --disabled-password --gecos '' appuser
@@ -35,5 +38,5 @@ EXPOSE 8000
 # Health check disabled temporarily for debugging
 HEALTHCHECK NONE
 
-# Run the application
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Run the application with diagnostics
+CMD ["./start.sh"]
