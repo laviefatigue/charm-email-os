@@ -16,8 +16,8 @@ import type {
   Alert,
 } from './types';
 
-// API base URL - use environment variable or default to localhost
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+// API base URL - use environment variable or default to deployed API
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://ccssgc4gowsog04wck400o0w.31.97.142.123.sslip.io';
 
 // ===== API UTILITIES =====
 

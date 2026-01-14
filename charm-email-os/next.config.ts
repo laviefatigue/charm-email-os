@@ -6,7 +6,7 @@ const nextConfig: NextConfig = {
 
   // Environment variables accessible in browser
   env: {
-    NEXT_PUBLIC_API_URL: process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000",
+    NEXT_PUBLIC_API_URL: process.env.NEXT_PUBLIC_API_URL || "http://ccssgc4gowsog04wck400o0w.31.97.142.123.sslip.io",
   },
 };
 
