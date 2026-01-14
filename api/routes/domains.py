@@ -227,7 +227,7 @@ async def get_domain_inboxes(domain_id: UUID, page: int = Query(1, ge=1), page_s
             NULL as display_name,
             'active' as status,
             COALESCE(sa.inbox_state, 'live') as inbox_state,
-            sa.esp_type,
+            NULL as esp_type,
             sa.warmup_enabled,
             sa.warmup_score,
             sa.daily_send_limit,
