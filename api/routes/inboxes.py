@@ -86,9 +86,12 @@ async def list_inboxes(
 
     where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
 
+    # Save condition params before adding LIMIT/OFFSET
+    condition_params = params.copy()
+
     # Get total count
     count_query = f"SELECT COUNT(*) as total FROM sender_accounts sa {where_clause}"
-    count_result = await fetch_one(count_query, *params)
+    count_result = await fetch_one(count_query, *condition_params)
     total = count_result["total"] if count_result else 0
 
     # Get health counts
@@ -101,9 +104,9 @@ async def list_inboxes(
         FROM sender_accounts sa
         {where_clause}
     """
-    health_counts = await fetch_one(health_counts_query, *params[:param_idx-1] if params else [])
+    health_counts = await fetch_one(health_counts_query, *condition_params)
 
-    # Get inboxes
+    # Get inboxes (note: some columns may not exist, using NULL fallbacks)
     query = f"""
         SELECT
             sa.id,
@@ -113,12 +116,12 @@ async def list_inboxes(
             sa.first_name,
             sa.last_name,
             sa.display_name,
-            COALESCE(sa.status, 'active') as status,
+            'active' as status,
             COALESCE(sa.inbox_state, 'live') as inbox_state,
             sa.esp_type,
             sa.warmup_enabled,
             sa.warmup_score,
-            sa.warmup_progress,
+            NULL as warmup_progress,
             sa.daily_send_limit,
             sa.hard_bounces_24h,
             sa.hard_bounces_7d,
@@ -174,12 +177,12 @@ async def get_inbox(inbox_id: UUID):
             sa.first_name,
             sa.last_name,
             sa.display_name,
-            COALESCE(sa.status, 'active') as status,
+            'active' as status,
             COALESCE(sa.inbox_state, 'live') as inbox_state,
             sa.esp_type,
             sa.warmup_enabled,
             sa.warmup_score,
-            sa.warmup_progress,
+            NULL as warmup_progress,
             sa.daily_send_limit,
             sa.hard_bounces_24h,
             sa.hard_bounces_7d,

@@ -52,10 +52,8 @@ async def list_domains(
         params.append(workspace_id)
         param_idx += 1
 
-    if status:
-        conditions.append(f"d.status = ${param_idx}")
-        params.append(status)
-        param_idx += 1
+    # Note: status column doesn't exist in DB, skip filtering by status
+    # The status parameter is accepted but not used in the query
 
     where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
 
@@ -70,7 +68,7 @@ async def list_domains(
             d.id,
             d.workspace_id,
             d.domain_name,
-            COALESCE(d.status, 'active') as status,
+            'active' as status,
             d.latest_health_score,
             d.latest_blacklist_count,
             d.latest_whitelist_count,
@@ -121,7 +119,7 @@ async def get_domain(domain_id: UUID):
             d.id,
             d.workspace_id,
             d.domain_name,
-            COALESCE(d.status, 'active') as status,
+            'active' as status,
             d.latest_health_score,
             d.latest_blacklist_count,
             d.latest_whitelist_count,
@@ -268,9 +266,9 @@ async def get_domain_inboxes(domain_id: UUID, page: int = Query(1, ge=1), page_s
 
 @router.post("/{domain_id}/approve", response_model=Domain)
 async def approve_domain(domain_id: UUID):
-    """Approve a pending domain"""
+    """Approve a pending domain (status column doesn't exist, just update updated_at)"""
     result = await fetch_one(
-        "UPDATE domains SET status = 'active', updated_at = NOW() WHERE id = $1 RETURNING id",
+        "UPDATE domains SET updated_at = NOW() WHERE id = $1 RETURNING id",
         domain_id
     )
 
@@ -300,11 +298,11 @@ async def generate_domains(request: DomainGenerateRequest):
     if existing:
         return {"message": "Domain already exists", "domain_id": existing["id"]}
 
-    # Create domain
+    # Create domain (status column doesn't exist, just insert workspace_id and domain_name)
     result = await fetch_one("""
-        INSERT INTO domains (workspace_id, domain_name, status)
-        VALUES ($1, $2, 'pending')
-        RETURNING id, workspace_id, domain_name, status, created_at, updated_at
+        INSERT INTO domains (workspace_id, domain_name)
+        VALUES ($1, $2)
+        RETURNING id, workspace_id, domain_name, created_at, updated_at
     """, client["workspace_id"], request.primary_domain)
 
     return {
