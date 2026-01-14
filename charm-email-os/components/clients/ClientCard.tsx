@@ -1,26 +1,17 @@
 'use client';
 
 import Link from 'next/link';
-import { Building2, Inbox, Megaphone, AlertCircle } from 'lucide-react';
+import { Building2, Inbox, Megaphone } from 'lucide-react';
 import { Card, CardContent } from '@/components/ui/card';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import type { Client } from '@/lib/types';
 import { getInitials } from '@/lib/utils';
-import { useInfrastructureStore, useCampaignStore } from '@/lib/stores';
 
 interface ClientCardProps {
   client: Client;
 }
 
 export function ClientCard({ client }: ClientCardProps) {
-  const { getInboxesByClient } = useInfrastructureStore();
-  const { getCampaignsByClient } = useCampaignStore();
-
-  const inboxes = getInboxesByClient(client.id);
-  const campaigns = getCampaignsByClient(client.id);
-  const activeCampaigns = campaigns.filter((c) => c.status === 'active');
-  const activeInboxes = inboxes.filter((i) => i.status === 'active');
-
   return (
     <Link href={`/clients/${client.id}`}>
       <Card className="transition-all hover:shadow-md hover:-translate-y-0.5 cursor-pointer">
@@ -34,30 +25,23 @@ export function ClientCard({ client }: ClientCardProps) {
 
             <div className="flex-1 min-w-0">
               <h3 className="font-semibold text-lg truncate">{client.name}</h3>
-              <p className="text-sm text-muted-foreground flex items-center gap-1">
-                <Building2 className="h-3 w-3" />
-                {client.domain}
-              </p>
-
-              {!client.onboardingComplete && (
-                <div className="mt-2 flex items-center gap-1.5 text-amber-600 text-sm">
-                  <AlertCircle className="h-4 w-4" />
-                  <span>Onboarding needed</span>
-                </div>
+              {client.workspaceName && (
+                <p className="text-sm text-muted-foreground flex items-center gap-1">
+                  <Building2 className="h-3 w-3" />
+                  {client.workspaceName}
+                </p>
               )}
 
-              {client.onboardingComplete && (
-                <div className="mt-3 flex items-center gap-4 text-sm text-muted-foreground">
-                  <span className="flex items-center gap-1">
-                    <Inbox className="h-4 w-4" />
-                    {activeInboxes.length} inboxes
-                  </span>
-                  <span className="flex items-center gap-1">
-                    <Megaphone className="h-4 w-4" />
-                    {activeCampaigns.length} active
-                  </span>
-                </div>
-              )}
+              <div className="mt-3 flex items-center gap-4 text-sm text-muted-foreground">
+                <span className="flex items-center gap-1">
+                  <Inbox className="h-4 w-4" />
+                  {client.inboxCount || 0} inboxes
+                </span>
+                <span className="flex items-center gap-1">
+                  <Megaphone className="h-4 w-4" />
+                  {client.campaignCount || 0} campaigns
+                </span>
+              </div>
             </div>
           </div>
         </CardContent>

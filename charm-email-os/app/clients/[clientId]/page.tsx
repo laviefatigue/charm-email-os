@@ -1,10 +1,10 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { useClientStore } from '@/lib/stores';
-import { OnboardingForm } from '@/components/clients';
 import { PageContainer } from '@/components/layout';
+import { Loader2 } from 'lucide-react';
 
 export default function ClientDetailPage() {
   const params = useParams();
@@ -14,21 +14,11 @@ export default function ClientDetailPage() {
   const { getClient, selectClient } = useClientStore();
   const client = getClient(clientId);
 
-  // Modal state managed separately from derived condition
-  const [onboardingDismissed, setOnboardingDismissed] = useState(false);
-
-  // Determine if onboarding should be shown (derived from client state)
-  const needsOnboarding = Boolean(client && !client.onboardingComplete);
-  const showOnboarding = needsOnboarding && !onboardingDismissed;
-
   useEffect(() => {
     if (client) {
       selectClient(clientId);
-
-      // Navigate to inboxes if onboarding is complete
-      if (client.onboardingComplete) {
-        router.replace(`/clients/${clientId}/inboxes`);
-      }
+      // Always navigate to inboxes page
+      router.replace(`/clients/${clientId}/inboxes`);
     }
   }, [client, clientId, router, selectClient]);
 
@@ -42,30 +32,11 @@ export default function ClientDetailPage() {
     );
   }
 
-  const handleOnboardingComplete = () => {
-    router.push(`/clients/${clientId}/inboxes`);
-  };
-
-  const handleOpenChange = (open: boolean) => {
-    if (!open) {
-      setOnboardingDismissed(true);
-    }
-  };
-
   return (
-    <>
-      <PageContainer>
-        <div className="flex items-center justify-center h-64">
-          <p className="text-muted-foreground">Loading...</p>
-        </div>
-      </PageContainer>
-
-      <OnboardingForm
-        client={client}
-        open={showOnboarding}
-        onOpenChange={handleOpenChange}
-        onComplete={handleOnboardingComplete}
-      />
-    </>
+    <PageContainer>
+      <div className="flex items-center justify-center h-64">
+        <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+      </div>
+    </PageContainer>
   );
 }

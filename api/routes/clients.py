@@ -272,3 +272,46 @@ async def complete_onboarding(client_id: UUID, onboard: ClientOnboard):
         raise HTTPException(status_code=404, detail="Client not found")
 
     return await get_client(client_id)
+
+
+@router.post("/backfill/from-workspaces")
+async def backfill_clients_from_workspaces():
+    """
+    Create client records for each workspace that doesn't have one.
+    Each workspace should have exactly one corresponding client.
+    """
+    # Get all workspaces that don't have a client record
+    query = """
+        SELECT w.id, w.workspace_name
+        FROM workspaces w
+        LEFT JOIN clients c ON c.workspace_id = w.id
+        WHERE c.id IS NULL
+    """
+    workspaces_without_clients = await fetch_all(query)
+
+    created = []
+    for workspace in workspaces_without_clients:
+        # Create a client for this workspace
+        result = await fetch_one(
+            """
+            INSERT INTO clients (name, workspace_id, onboarding_complete)
+            VALUES ($1, $2, true)
+            RETURNING id, name, workspace_id
+            """,
+            workspace["workspace_name"],
+            workspace["id"]
+        )
+        if result:
+            created.append(dict(result))
+
+    # Also get count of existing clients that are already linked
+    existing_count = await fetch_one(
+        "SELECT COUNT(*) as count FROM clients WHERE workspace_id IS NOT NULL"
+    )
+
+    return {
+        "message": f"Backfill complete",
+        "created_count": len(created),
+        "created_clients": created,
+        "already_linked_count": existing_count["count"] if existing_count else 0
+    }
