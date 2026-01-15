@@ -79,7 +79,12 @@ function toCamelCase<T>(obj: Record<string, unknown>): T {
 
   const result: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(obj)) {
-    const camelKey = key.replace(/_([a-z])/g, (_, letter) => letter.toUpperCase());
+    // Convert snake_case to camelCase:
+    // 1. _a → A (uppercase letters after underscore)
+    // 2. _7 → 7 (remove underscore before digits, e.g., hard_bounces_7d → hardBounces7d)
+    const camelKey = key
+      .replace(/_([a-z])/g, (_, letter) => letter.toUpperCase())
+      .replace(/_(\d)/g, '$1');
     result[camelKey] =
       typeof value === 'object' && value !== null
         ? toCamelCase(value as Record<string, unknown>)
