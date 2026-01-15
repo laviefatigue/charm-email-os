@@ -9,6 +9,8 @@ Integrates with the HyperTide automation module for:
 
 from fastapi import APIRouter, HTTPException, BackgroundTasks
 from typing import Optional
+from uuid import UUID
+from database import fetch_one, fetch_all, execute
 import logging
 import sys
 from pathlib import Path
@@ -277,6 +279,7 @@ async def purchase_domains(request: DomainPurchaseRequest):
 
     Executes purchases on Porkbun and/or Dynadot based on the
     registrar selection for each domain. Sets nameservers after purchase.
+    Creates domain records in the database upon successful purchase.
     """
     ht = _import_hypertide_modules()
     if not ht:
@@ -285,8 +288,17 @@ async def purchase_domains(request: DomainPurchaseRequest):
             detail="HyperTide automation module not available"
         )
 
+    # Get workspace_id from client
+    client = await fetch_one("SELECT workspace_id FROM clients WHERE id = $1", UUID(request.client_id))
+    if not client:
+        raise HTTPException(status_code=404, detail="Client not found")
+    if not client["workspace_id"]:
+        raise HTTPException(status_code=400, detail="Client not linked to a workspace")
+
+    workspace_id = client["workspace_id"]
     results = []
     total_cost = 0.0
+    created_domain_ids = []
 
     for domain_data in request.approved_domains:
         domain_name = domain_data.get("domain_name")
@@ -310,6 +322,26 @@ async def purchase_domains(request: DomainPurchaseRequest):
                 )
 
             if purchase_result.get("success"):
+                # Create domain record in database
+                try:
+                    existing = await fetch_one(
+                        "SELECT id FROM domains WHERE workspace_id = $1 AND domain_name = $2",
+                        workspace_id, domain_name
+                    )
+                    if existing:
+                        domain_id = existing["id"]
+                        logger.info(f"Domain {domain_name} already exists with id {domain_id}")
+                    else:
+                        new_domain = await fetch_one(
+                            "INSERT INTO domains (workspace_id, domain_name) VALUES ($1, $2) RETURNING id",
+                            workspace_id, domain_name
+                        )
+                        domain_id = new_domain["id"]
+                        logger.info(f"Created domain record for {domain_name} with id {domain_id}")
+                    created_domain_ids.append(str(domain_id))
+                except Exception as db_error:
+                    logger.error(f"Failed to create domain record for {domain_name}: {db_error}")
+
                 results.append(DomainPurchaseResult(
                     domain_name=domain_name,
                     registrar=registrar_name,
@@ -339,6 +371,8 @@ async def purchase_domains(request: DomainPurchaseRequest):
 
     successful = [r for r in results if r.success]
     failed = [r for r in results if not r.success]
+
+    logger.info(f"Domain purchase complete: {len(successful)} successful, {len(failed)} failed, {len(created_domain_ids)} DB records created")
 
     return DomainPurchaseResponse(
         client_id=request.client_id,

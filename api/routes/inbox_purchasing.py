@@ -16,6 +16,9 @@ import uuid
 import asyncio
 import random
 from pathlib import Path
+from uuid import UUID
+
+from database import fetch_one, fetch_all, execute
 from datetime import datetime, timezone
 
 # Add HyperTide automation to path
@@ -402,6 +405,48 @@ async def _execute_purchase_task(
 
         if result.success:
             job["status"] = OrderStatus.COMPLETED
+            job["current_step"] = "Saving inboxes to database"
+            
+            # Save inboxes to database
+            try:
+                client = await fetch_one(
+                    "SELECT workspace_id FROM clients WHERE id = $1",
+                    UUID(job["client_id"])
+                )
+                if client and client["workspace_id"]:
+                    workspace_id = client["workspace_id"]
+                    created_count = 0
+                    
+                    for order_result in result.order_results:
+                        if order_result.success:
+                            # Get the domains from this order result
+                            domains = order_result.domains_created or []
+                            inboxes = request.inbox_names
+                            
+                            # Create inbox records for each domain and name combination
+                            for domain in domains:
+                                for name in inboxes[:order_result.total_inboxes // len(domains) if domains else 0]:
+                                    email = f"{name.first_name.lower()}.{name.last_name.lower()}@{domain}"
+                                    
+                                    # Check if exists
+                                    existing = await fetch_one(
+                                        "SELECT id FROM sender_accounts WHERE workspace_id = $1 AND email_address = $2",
+                                        workspace_id, email
+                                    )
+                                    
+                                    if not existing:
+                                        await execute(
+                                            "INSERT INTO sender_accounts (workspace_id, email_address, inbox_state) VALUES ($1, $2, 'live')",
+                                            workspace_id, email
+                                        )
+                                        created_count += 1
+                    
+                    logger.info(f"Created {created_count} inbox records in database")
+                    job["db_records_created"] = created_count
+            except Exception as db_error:
+                logger.error(f"Failed to save inboxes to database: {db_error}")
+                job["db_error"] = str(db_error)
+            
             job["current_step"] = "Purchase completed successfully"
         else:
             job["status"] = OrderStatus.FAILED
