@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useMemo } from 'react';
-import { ChevronRight, ChevronDown, Globe, Mail, AlertCircle, CheckCircle, AlertTriangle, XCircle } from 'lucide-react';
+import { ChevronRight, ChevronDown, Globe, Mail, AlertCircle, CheckCircle, AlertTriangle, XCircle, Filter, SortAsc } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { Domain, Inbox } from '@/lib/types';
 
@@ -10,6 +10,9 @@ interface DomainInboxTreeProps {
   inboxes: Inbox[];
   className?: string;
 }
+
+type FilterType = 'all' | 'healthy' | 'warning' | 'with-inboxes' | 'no-inboxes';
+type SortType = 'name' | 'inboxes' | 'health';
 
 // Status badge colors
 const STATUS_STYLES: Record<string, { bg: string; text: string; icon: typeof CheckCircle }> = {
@@ -47,8 +50,9 @@ interface DomainRowProps {
 
 function DomainRow({ domain, inboxes, isExpanded, onToggle }: DomainRowProps) {
   const healthState = domain.healthState || 'unknown';
-  const liveInboxes = inboxes.filter(i => i.inboxState === 'live' || i.healthState === 'healthy').length;
-  const deadInboxes = inboxes.filter(i => i.inboxState === 'dead' || i.healthState === 'dead').length;
+  // Use API's inboxCount if available, otherwise fall back to local count
+  const inboxCount = domain.inboxCount ?? inboxes.length;
+  const loadedInboxes = inboxes.length;
 
   return (
     <div className="border rounded-lg overflow-hidden">
@@ -66,9 +70,9 @@ function DomainRow({ domain, inboxes, isExpanded, onToggle }: DomainRowProps) {
         <span className="font-medium truncate flex-1">{domain.domain || domain.domainName}</span>
         <div className="flex items-center gap-3 flex-shrink-0">
           <span className="text-sm text-muted-foreground">
-            {inboxes.length} inbox{inboxes.length !== 1 ? 'es' : ''}
-            {deadInboxes > 0 && (
-              <span className="text-red-600 ml-1">({deadInboxes} dead)</span>
+            {inboxCount} inbox{inboxCount !== 1 ? 'es' : ''}
+            {loadedInboxes > 0 && loadedInboxes < inboxCount && (
+              <span className="text-blue-600 ml-1">({loadedInboxes} loaded)</span>
             )}
           </span>
           <StatusBadge status={healthState} />
@@ -77,14 +81,20 @@ function DomainRow({ domain, inboxes, isExpanded, onToggle }: DomainRowProps) {
 
       {/* Inboxes List */}
       {isExpanded && inboxes.length > 0 && (
-        <div className="border-t divide-y">
+        <div className="border-t divide-y max-h-96 overflow-y-auto">
           {inboxes.map((inbox) => (
             <InboxRow key={inbox.id} inbox={inbox} />
           ))}
         </div>
       )}
 
-      {isExpanded && inboxes.length === 0 && (
+      {isExpanded && inboxes.length === 0 && inboxCount > 0 && (
+        <div className="px-4 py-3 text-sm text-muted-foreground border-t">
+          {inboxCount} inboxes (not loaded - expand to fetch)
+        </div>
+      )}
+
+      {isExpanded && inboxCount === 0 && (
         <div className="px-4 py-3 text-sm text-muted-foreground border-t">
           No inboxes for this domain
         </div>
@@ -115,17 +125,17 @@ function InboxRow({ inbox }: { inbox: Inbox }) {
 
 export function DomainInboxTree({ domains, inboxes, className }: DomainInboxTreeProps) {
   const [expandedDomains, setExpandedDomains] = useState<Set<string>>(new Set());
+  const [filter, setFilter] = useState<FilterType>('all');
+  const [sortBy, setSortBy] = useState<SortType>('name');
 
   // Group inboxes by domain
   const inboxesByDomain = useMemo(() => {
     const map = new Map<string, Inbox[]>();
 
     for (const inbox of inboxes) {
-      // Try to match by domainId first, then by domain name
       let domainKey = inbox.domainId;
 
       if (!domainKey) {
-        // Extract domain from email address
         const emailDomain = (inbox.email || inbox.emailAddress || '').split('@')[1];
         if (emailDomain) {
           const matchingDomain = domains.find(d =>
@@ -147,6 +157,43 @@ export function DomainInboxTree({ domains, inboxes, className }: DomainInboxTree
     return map;
   }, [domains, inboxes]);
 
+  // Filter and sort domains
+  const filteredDomains = useMemo(() => {
+    let result = [...domains];
+
+    // Apply filter
+    switch (filter) {
+      case 'healthy':
+        result = result.filter(d => d.healthState === 'healthy' || d.healthState === 'live');
+        break;
+      case 'warning':
+        result = result.filter(d => d.healthState === 'warning' || d.healthState === 'critical' || d.healthState === 'dead');
+        break;
+      case 'with-inboxes':
+        result = result.filter(d => (d.inboxCount ?? 0) > 0);
+        break;
+      case 'no-inboxes':
+        result = result.filter(d => (d.inboxCount ?? 0) === 0);
+        break;
+    }
+
+    // Apply sort
+    switch (sortBy) {
+      case 'name':
+        result.sort((a, b) => (a.domain || a.domainName || '').localeCompare(b.domain || b.domainName || ''));
+        break;
+      case 'inboxes':
+        result.sort((a, b) => (b.inboxCount ?? 0) - (a.inboxCount ?? 0));
+        break;
+      case 'health':
+        const healthOrder: Record<string, number> = { healthy: 0, live: 0, warning: 1, critical: 2, dead: 3, unknown: 4 };
+        result.sort((a, b) => (healthOrder[a.healthState || 'unknown'] || 4) - (healthOrder[b.healthState || 'unknown'] || 4));
+        break;
+    }
+
+    return result;
+  }, [domains, filter, sortBy]);
+
   const toggleDomain = (domainId: string) => {
     setExpandedDomains(prev => {
       const next = new Set(prev);
@@ -160,38 +207,73 @@ export function DomainInboxTree({ domains, inboxes, className }: DomainInboxTree
   };
 
   const expandAll = () => {
-    setExpandedDomains(new Set(domains.map(d => d.id)));
+    setExpandedDomains(new Set(filteredDomains.map(d => d.id)));
   };
 
   const collapseAll = () => {
     setExpandedDomains(new Set());
   };
 
-  // Summary stats
-  const totalInboxes = inboxes.length;
-  const liveInboxes = inboxes.filter(i => i.inboxState === 'live' || i.healthState === 'healthy').length;
-  const deadInboxes = inboxes.filter(i => i.inboxState === 'dead' || i.healthState === 'dead').length;
-  const warningInboxes = inboxes.filter(i => i.healthState === 'warning' || i.healthState === 'critical').length;
+  // Summary stats using API's inboxCount
+  const totalInboxesFromApi = domains.reduce((sum, d) => sum + (d.inboxCount ?? 0), 0);
+  const healthyDomains = domains.filter(d => d.healthState === 'healthy' || d.healthState === 'live').length;
+  const warningDomains = domains.filter(d => d.healthState === 'warning' || d.healthState === 'critical').length;
+  const deadDomains = domains.filter(d => d.healthState === 'dead').length;
+  const domainsWithInboxes = domains.filter(d => (d.inboxCount ?? 0) > 0).length;
 
   return (
     <div className={cn('space-y-4', className)}>
       {/* Summary Bar */}
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-4 text-sm">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex items-center gap-4 text-sm flex-wrap">
           <span className="font-medium">{domains.length} domains</span>
           <span className="text-muted-foreground">|</span>
-          <span>{totalInboxes} inboxes</span>
-          {liveInboxes > 0 && (
-            <span className="text-green-600">{liveInboxes} live</span>
+          <span>{totalInboxesFromApi.toLocaleString()} inboxes</span>
+          {healthyDomains > 0 && (
+            <span className="text-green-600">{healthyDomains} healthy</span>
           )}
-          {warningInboxes > 0 && (
-            <span className="text-yellow-600">{warningInboxes} warning</span>
+          {warningDomains > 0 && (
+            <span className="text-yellow-600">{warningDomains} warning</span>
           )}
-          {deadInboxes > 0 && (
-            <span className="text-red-600">{deadInboxes} dead</span>
+          {deadDomains > 0 && (
+            <span className="text-red-600">{deadDomains} dead</span>
           )}
         </div>
+      </div>
+
+      {/* Filter & Sort Controls */}
+      <div className="flex flex-wrap items-center gap-3 text-sm border-b pb-3">
         <div className="flex items-center gap-2">
+          <Filter className="h-4 w-4 text-muted-foreground" />
+          <span className="text-muted-foreground">Filter:</span>
+          <select
+            value={filter}
+            onChange={(e) => setFilter(e.target.value as FilterType)}
+            className="border rounded px-2 py-1 text-sm bg-background"
+          >
+            <option value="all">All domains ({domains.length})</option>
+            <option value="healthy">Healthy only ({healthyDomains})</option>
+            <option value="warning">Warning/Critical ({warningDomains + deadDomains})</option>
+            <option value="with-inboxes">With inboxes ({domainsWithInboxes})</option>
+            <option value="no-inboxes">No inboxes ({domains.length - domainsWithInboxes})</option>
+          </select>
+        </div>
+
+        <div className="flex items-center gap-2">
+          <SortAsc className="h-4 w-4 text-muted-foreground" />
+          <span className="text-muted-foreground">Sort:</span>
+          <select
+            value={sortBy}
+            onChange={(e) => setSortBy(e.target.value as SortType)}
+            className="border rounded px-2 py-1 text-sm bg-background"
+          >
+            <option value="name">Name (A-Z)</option>
+            <option value="inboxes">Inbox count</option>
+            <option value="health">Health status</option>
+          </select>
+        </div>
+
+        <div className="flex items-center gap-2 ml-auto">
           <button
             onClick={expandAll}
             className="text-xs text-muted-foreground hover:text-foreground transition-colors"
@@ -208,14 +290,21 @@ export function DomainInboxTree({ domains, inboxes, className }: DomainInboxTree
         </div>
       </div>
 
+      {/* Showing count */}
+      {filter !== 'all' && (
+        <div className="text-sm text-muted-foreground">
+          Showing {filteredDomains.length} of {domains.length} domains
+        </div>
+      )}
+
       {/* Domain List */}
       <div className="space-y-2">
-        {domains.length === 0 ? (
+        {filteredDomains.length === 0 ? (
           <div className="text-center py-8 text-muted-foreground">
-            No domains found
+            No domains match the current filter
           </div>
         ) : (
-          domains.map((domain) => (
+          filteredDomains.map((domain) => (
             <DomainRow
               key={domain.id}
               domain={domain}

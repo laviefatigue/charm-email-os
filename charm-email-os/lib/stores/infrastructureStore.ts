@@ -95,7 +95,8 @@ export const useInfrastructureStore = create<InfrastructureStore>((set, get) => 
   fetchDomainsByClient: async (clientId) => {
     set({ isLoading: true, error: null });
     try {
-      const data = await api.domains.list({ clientId });
+      // Fetch all domains with large page size
+      const data = await api.domains.list({ clientId, pageSize: 500 });
       // Merge with existing domains (update if exists, add if not)
       set((state) => {
         const otherDomains = state.domains.filter((d) => d.clientId !== clientId);
@@ -189,7 +190,8 @@ export const useInfrastructureStore = create<InfrastructureStore>((set, get) => 
   fetchInboxesByClient: async (clientId) => {
     set({ isLoading: true, error: null });
     try {
-      const data = await api.inboxes.list({ clientId });
+      // Fetch inboxes with larger page size (domains have inbox_count for totals)
+      const data = await api.inboxes.list({ clientId, pageSize: 200 });
       set((state) => {
         const otherInboxes = state.inboxes.filter((i) => i.clientId !== clientId);
         return { inboxes: [...otherInboxes, ...data.items], isLoading: false };
