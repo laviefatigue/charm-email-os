@@ -57,7 +57,8 @@ function DomainRow({ domain, inboxes, isExpanded, isLoading, onToggle }: DomainR
   const inboxCount = domain.inboxCount ?? inboxes.length;
   const liveCount = domain.liveInboxCount ?? 0;
   const deadCount = domain.deadInboxCount ?? 0;
-  const blacklistCount = domain.latestBlacklistCount ?? 0;
+  const blacklistNames = domain.blacklistNames ?? [];
+  const blacklistCount = blacklistNames.length || (domain.latestBlacklistCount ?? 0);
 
   return (
     <div className="border rounded-lg overflow-hidden">
@@ -86,8 +87,8 @@ function DomainRow({ domain, inboxes, isExpanded, isLoading, onToggle }: DomainR
             )}
           </span>
           {blacklistCount > 0 && (
-            <span className="text-xs text-orange-600">
-              {blacklistCount} blacklist{blacklistCount !== 1 ? 's' : ''}
+            <span className="text-xs text-orange-600" title={blacklistNames.length > 0 ? blacklistNames.join(', ') : undefined}>
+              {blacklistNames.length > 0 ? blacklistNames.join(', ') : `${blacklistCount} blacklist${blacklistCount !== 1 ? 's' : ''}`}
             </span>
           )}
           <StatusBadge status={healthState} />

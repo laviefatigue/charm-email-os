@@ -52,6 +52,9 @@ class Domain(BaseModel):
     live_inbox_count: int = 0
     dead_inbox_count: int = 0
 
+    # Blacklist details (names of RBLs domain is listed on)
+    blacklist_names: Optional[list[str]] = None
+
     class Config:
         from_attributes = True
 

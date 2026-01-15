@@ -64,7 +64,7 @@ async def list_domains(
 
     # Get domains with health metrics (using only columns that exist in DB)
     # Join with clients to get client_id for frontend filtering
-    # Include inbox health breakdown counts
+    # Include inbox health breakdown counts and blacklist names
     query = f"""
         SELECT
             d.id,
@@ -100,7 +100,12 @@ async def list_domains(
                  AND sa.workspace_id = d.workspace_id
                  AND sa.inbox_state = 'dead'),
                 0
-            ) as dead_inbox_count
+            ) as dead_inbox_count,
+            (SELECT ARRAY_AGG(rd.rbl_name ORDER BY rd.severity DESC, rd.rbl_name)
+             FROM domain_check_results dcr
+             JOIN rbl_definitions rd ON dcr.rbl_id = rd.id
+             WHERE dcr.domain_id = d.id AND dcr.is_listed = true
+            ) as blacklist_names
         FROM domains d
         LEFT JOIN clients c ON c.workspace_id = d.workspace_id
         {where_clause}

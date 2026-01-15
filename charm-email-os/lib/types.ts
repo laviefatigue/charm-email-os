@@ -87,6 +87,8 @@ export interface Domain {
   inboxCount?: number;
   liveInboxCount?: number;
   deadInboxCount?: number;
+  // Blacklist details (names of RBLs domain is listed on)
+  blacklistNames?: string[];
 }
 
 // Inbox status enum (aligned with OwnRBL)
