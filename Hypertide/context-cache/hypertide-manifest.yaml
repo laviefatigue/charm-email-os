@@ -1,0 +1,194 @@
+# Hypertide Context Cache Manifest
+# Version: 1.3.0
+# Last Updated: 2025-12-11
+# Last Validated: 2025-12-11
+# Source: Hypertide Playbook, Help Guide, and Automation Package
+
+name: hypertide-operations
+version: "1.3.0"
+last_validated: "2025-12-11"
+source_document_date: "2025-08-30"
+description: |
+  Operational knowledge base for Hypertide cold email infrastructure.
+  Enterprise Entra-based sending infrastructure with domain-centric reputation model.
+
+  IMPORTANT: Hypertide has NO API. All operations are web-based only.
+  PRIMARY EMAIL SEQUENCER: EmailBison (Bison)
+
+  Note: Smartlead/Instantly configurations retained for reference only.
+  All operational guidance defaults to Bison settings.
+
+# Core paradigm that governs all operations
+paradigm:
+  primary_insight: "Domain reputation supersedes individual inbox reputation"
+  acceptable_warmup_failure_rate: 0.15  # 15%
+  enterprise_receive_send_ratio: "80/20"
+  scaling_strategy: "horizontal"  # Add orders, not per-inbox volume
+
+# Knowledge modules
+modules:
+  - name: warmup-configurations
+    path: knowledge/warmup-config.yaml
+    last_validated: "2025-12-10"
+    description: Platform and inbox-type specific warmup settings
+
+  - name: campaign-rules
+    path: knowledge/campaign-rules.yaml
+    last_validated: "2025-12-10"
+    description: Non-negotiable campaign configuration rules
+
+  - name: outbound-settings
+    path: knowledge/outbound-settings.yaml
+    last_validated: "2025-12-10"
+    description: Post-warmup sending configurations
+
+  - name: domain-strategy
+    path: knowledge/domain-strategy.yaml
+    last_validated: "2025-12-10"
+    description: Domain selection and management guidelines
+
+  - name: troubleshooting
+    path: decision-trees/troubleshooting.yaml
+    last_validated: "2025-12-10"
+    description: Issue diagnosis decision trees
+
+  - name: thresholds
+    path: knowledge/thresholds.yaml
+    last_validated: "2025-12-10"
+    description: Operational thresholds and alerts
+
+  - name: platform-architecture
+    path: knowledge/platform-architecture.yaml
+    last_validated: "2025-12-11"
+    description: Comprehensive Hypertide web platform documentation (UI, order flow, billing, automation)
+
+  - name: order-calculations
+    path: knowledge/order-calculations.yaml
+    last_validated: "2025-12-11"
+    description: Order calculation formulas for mixed Entra+Google inbox purchases
+
+# Agent skills
+skills:
+  - name: configure-order
+    path: skills/configure-order.md
+    last_validated: "2025-12-10"
+    description: "Guide users through setting up a new Hypertide order with correct warmup and campaign settings"
+    triggers:
+      - "new hypertide order"
+      - "setup hypertide"
+      - "configure inboxes"
+    example_prompts:
+      - "I just got my Hypertide order, how do I set it up?"
+      - "What warmup settings should I use for Bison?"
+      - "How do I configure my new inboxes?"
+      - "Setting up Hypertide for the first time"
+      - "What should my Bison reply to inbound setting be?"
+    related_knowledge:
+      - knowledge/warmup-config.yaml
+      - knowledge/campaign-rules.yaml
+      - knowledge/outbound-settings.yaml
+
+  - name: diagnose-issue
+    path: skills/diagnose-issue.md
+    last_validated: "2025-12-10"
+    description: "Diagnose Hypertide infrastructure issues using decision trees for bounce rates, warmup failures, and disconnections"
+    triggers:
+      - "hypertide problem"
+      - "bounce rate"
+      - "warmup not working"
+      - "inboxes disconnected"
+    example_prompts:
+      - "My bounce rate is over 5%, what's wrong?"
+      - "Some of my inboxes aren't warming up"
+      - "I'm getting code requests for warmup"
+      - "My inboxes keep disconnecting"
+      - "Test emails aren't arriving"
+      - "Why are my emails bouncing?"
+      - "Warmup stopped working on some inboxes"
+    related_knowledge:
+      - decision-trees/troubleshooting.yaml
+      - knowledge/thresholds.yaml
+
+  - name: recommend-settings
+    path: skills/recommend-settings.md
+    last_validated: "2025-12-10"
+    description: "Recommend optimal Hypertide settings based on platform (Smartlead/Instantly/Bison) and inbox type (Entra/Google)"
+    triggers:
+      - "what settings"
+      - "how should I configure"
+      - "best practices"
+    example_prompts:
+      - "What's the best reply to inbound setting for Bison Entra?"
+      - "How many emails per day should I send?"
+      - "What are the recommended Bison warmup settings?"
+      - "What should my warmup configuration be?"
+      - "Best practices for Hypertide campaigns"
+      - "How do I avoid burning my domains?"
+    related_knowledge:
+      - knowledge/warmup-config.yaml
+      - knowledge/outbound-settings.yaml
+      - knowledge/domain-strategy.yaml
+
+  - name: audit-campaign
+    path: skills/audit-campaign.md
+    last_validated: "2025-12-10"
+    description: "Audit Hypertide campaign settings against best practices and compliance rules"
+    triggers:
+      - "check my campaign"
+      - "audit"
+      - "review settings"
+    example_prompts:
+      - "Can you check if my campaign is set up correctly?"
+      - "Audit my Hypertide settings"
+      - "Is my campaign compliant with best practices?"
+      - "Review my warmup configuration"
+      - "What am I doing wrong with my campaign?"
+      - "Check my settings against Hypertide recommendations"
+    related_knowledge:
+      - knowledge/campaign-rules.yaml
+      - knowledge/thresholds.yaml
+      - knowledge/warmup-config.yaml
+
+  - name: calculate-order
+    path: skills/calculate-order.md
+    last_validated: "2025-12-11"
+    description: "Calculate optimal Hypertide order quantities from inbox targets or sending volume"
+    triggers:
+      - "how many orders"
+      - "calculate inboxes"
+      - "mixed order"
+      - "entra and google"
+    example_prompts:
+      - "How many orders do I need for 500 inboxes?"
+      - "I need 50k emails per month, what do I order?"
+      - "Calculate orders for 300 Entra and 100 Google inboxes"
+      - "What's the cost for 1000 inboxes?"
+      - "How many Entra orders for 500 inboxes?"
+      - "What's the difference between Entra and Google orders?"
+    related_knowledge:
+      - knowledge/order-calculations.yaml
+      - knowledge/platform-architecture.yaml
+
+# Platform identifiers (Bison is PRIMARY)
+platforms:
+  - id: bison
+    bulk_tool: null
+    is_primary: true
+    notes: "Primary email sequencer - all operations default to Bison"
+  - id: smartlead
+    bulk_tool: "smartlead.hypertide.io"
+    is_primary: false
+    notes: "Reference only - not actively used"
+  - id: instantly
+    bulk_tool: "instantly.hypertide.io"
+    is_primary: false
+    notes: "Reference only - not actively used"
+
+# Inbox types
+inbox_types:
+  - id: entra
+    provider: "Microsoft Enterprise"
+    is_primary: true
+  - id: google
+    provider: "Google Workspace"
+    is_primary: false

@@ -1,0 +1,66 @@
+# Hypertide Outbound Settings (Post-Warmup)
+# Applied AFTER 14 days of warmup
+
+post_warmup_settings:
+  entra:
+    emails_per_day:
+      baseline: 2
+      good_performance: 3
+      excellent_performance: 4
+      maximum_recommended: 4
+      notes: |
+        - Start at 2 emails/day
+        - Scale to 3-4 ONLY if campaign performing well
+        - Scaling faster risks burning domains/inboxes
+
+    wait_time_between_emails:
+      minutes: 60
+      notes: "Full hour between sends for conservative delivery"
+
+    risk_levels:
+      2: "safe"       # Baseline, recommended
+      3: "moderate"   # Good performance required
+      4: "elevated"   # Monitor closely
+      5: "high"       # Not recommended, domain burning risk
+
+  google:
+    emails_per_day:
+      baseline: 20
+      notes: "Google allows significantly higher volume than Entra"
+
+    wait_time_between_emails:
+      minutes: 35
+      notes: "Shorter wait time acceptable for Google"
+
+# Capacity calculations
+capacity:
+  per_order:
+    domains: 2
+    inboxes_per_domain: "50-52"
+    total_inboxes: "100-104"
+
+  daily_capacity:
+    formula: "emails_per_inbox * total_inboxes"
+    at_baseline:
+      entra_only: 200  # 2 * 100
+      calculation: "2 emails/inbox * 100 inboxes"
+
+  monthly_capacity:
+    at_baseline: 5000
+    calculation: "200 emails/day * ~25 working days"
+
+# Scaling strategy
+scaling:
+  approach: "horizontal"
+  description: |
+    Scale by adding more orders, NOT by increasing per-inbox sends.
+    This maximizes domain longevity.
+
+  example:
+    orders_1: "200 emails/day → 5k/month"
+    orders_2: "400 emails/day → 10k/month"
+    orders_3: "600 emails/day → 15k/month"
+
+  anti_pattern: |
+    DO NOT scale by pushing inbox limits (5+ emails/day/inbox).
+    This burns domains faster.

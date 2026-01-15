@@ -85,6 +85,16 @@ function toCamelCase<T>(obj: Record<string, unknown>): T {
         ? toCamelCase(value as Record<string, unknown>)
         : value;
   }
+
+  // Add backward-compatible aliases for Domain and Inbox types
+  // API returns domain_name/email_address, but frontend expects domain/email
+  if ('domainName' in result && !('domain' in result)) {
+    result.domain = result.domainName;
+  }
+  if ('emailAddress' in result && !('email' in result)) {
+    result.email = result.emailAddress;
+  }
+
   return result as T;
 }
 

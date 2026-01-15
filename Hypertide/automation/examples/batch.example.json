@@ -1,0 +1,23 @@
+[
+  {
+    "client_name": "Client A",
+    "forwarding_domain": "clienta.com",
+    "order_type": "hypertide_entra",
+    "quantity": 1,
+    "sending_tool": "Email Bison"
+  },
+  {
+    "client_name": "Client B",
+    "forwarding_domain": "clientb.io",
+    "order_type": "hypertide_entra",
+    "quantity": 3,
+    "sending_tool": "Email Bison"
+  },
+  {
+    "client_name": "Client C (Google)",
+    "forwarding_domain": "clientc.com",
+    "order_type": "hypertide_google",
+    "quantity": 2,
+    "sending_tool": "Email Bison"
+  }
+]

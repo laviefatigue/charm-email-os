@@ -1,0 +1,270 @@
+# Hypertide Order Calculations
+# How to calculate optimal orders for inbox targets
+# Last Validated: 2025-12-11
+# Source: Automation package implementation
+
+purpose: |
+  This file documents the order calculation logic for Hypertide purchases.
+  Use these formulas to convert client inbox requirements into optimal
+  Hypertide order quantities.
+
+# ============================================================================
+# ORDER SPECIFICATIONS
+# ============================================================================
+
+order_specs:
+  entra:
+    display_name: "Hypertide Entra"
+    domains_per_order: 2
+    inboxes_per_domain: 50
+    inboxes_per_order: 100  # 2 × 50
+    monthly_capacity_per_order: 5000
+    base_cost_per_order: 50.00  # USD/month
+    max_orders_per_purchase: 20
+
+    # Quick reference table
+    order_table:
+      1: { domains: 2, inboxes: 100, capacity: "5k/mo" }
+      2: { domains: 4, inboxes: 200, capacity: "10k/mo" }
+      3: { domains: 6, inboxes: 300, capacity: "15k/mo" }
+      5: { domains: 10, inboxes: 500, capacity: "25k/mo" }
+      10: { domains: 20, inboxes: 1000, capacity: "50k/mo" }
+      15: { domains: 30, inboxes: 1500, capacity: "75k/mo" }
+      20: { domains: 40, inboxes: 2000, capacity: "100k/mo" }
+
+  google:
+    display_name: "Hypertide Google"
+    domains_per_order: 5
+    inboxes_per_domain: 3
+    inboxes_per_order: 15  # 5 × 3
+    monthly_capacity_per_order: 5000
+    base_cost_per_order: 50.00  # USD/month
+    max_orders_per_purchase: 20
+
+    # Quick reference table
+    order_table:
+      1: { domains: 5, inboxes: 15, capacity: "5k+/mo" }
+      2: { domains: 10, inboxes: 30, capacity: "10k+/mo" }
+      3: { domains: 15, inboxes: 45, capacity: "15k+/mo" }
+      5: { domains: 25, inboxes: 75, capacity: "25k+/mo" }
+      7: { domains: 35, inboxes: 105, capacity: "35k+/mo" }
+      10: { domains: 50, inboxes: 150, capacity: "50k+/mo" }
+      15: { domains: 75, inboxes: 225, capacity: "75k+/mo" }
+      20: { domains: 100, inboxes: 300, capacity: "100k+/mo" }
+
+# ============================================================================
+# CALCULATION FORMULAS
+# ============================================================================
+
+calculation_formulas:
+  inbox_to_orders:
+    description: "Convert target inbox count to required orders"
+
+    entra:
+      formula: "ceil(target_inboxes / 100)"
+      example:
+        target: 500
+        calculation: "ceil(500 / 100) = 5 orders"
+        result: "5 orders → 500 inboxes"
+
+    google:
+      formula: "ceil(target_inboxes / 15)"
+      example:
+        target: 100
+        calculation: "ceil(100 / 15) = 7 orders"
+        result: "7 orders → 105 inboxes"
+        note: "Rounds UP to meet target, may exceed slightly"
+
+  volume_to_orders:
+    description: "Convert monthly sending volume to required orders"
+    formula: "ceil(target_volume / 5000)"
+    example:
+      target: 50000  # 50k emails/month
+      calculation: "ceil(50000 / 5000) = 10 orders"
+      note: "Same capacity per order regardless of type"
+
+  combined_calculation:
+    description: "Factor in both inbox count AND volume needs"
+    rule: "Use the LARGER of the two calculations"
+    example:
+      target_inboxes: 300
+      target_volume: 25000
+      inbox_based: "ceil(300 / 100) = 3 Entra orders"
+      volume_based: "ceil(25000 / 5000) = 5 orders"
+      final: "5 orders (volume is limiting factor)"
+
+# ============================================================================
+# MIXED ORDER CALCULATIONS
+# ============================================================================
+
+mixed_orders:
+  description: |
+    Clients often need BOTH Entra and Google inboxes.
+    Hypertide only allows ONE order type per checkout.
+    Mixed orders require TWO separate purchase flows.
+
+  constraint: "Single order type per checkout flow"
+  solution: "Sequential purchase execution"
+
+  calculation_process:
+    step_1: "Determine target inbox counts for each type"
+    step_2: "Calculate Entra orders: ceil(entra_target / 100)"
+    step_3: "Calculate Google orders: ceil(google_target / 15)"
+    step_4: "Execute Entra purchase first"
+    step_5: "Return to dashboard"
+    step_6: "Execute Google purchase second"
+
+  examples:
+    - name: "Typical agency client"
+      target:
+        entra_inboxes: 500
+        google_inboxes: 100
+      breakdown:
+        entra_orders: 5  # 5 × 100 = 500 inboxes
+        google_orders: 7  # 7 × 15 = 105 inboxes
+        total_inboxes: 605
+        total_capacity: "60k emails/mo"
+        monthly_cost: "$600 (12 orders × $50)"
+
+    - name: "Entra-heavy client (B2B focus)"
+      target:
+        entra_inboxes: 1000
+        google_inboxes: 0
+      breakdown:
+        entra_orders: 10
+        google_orders: 0
+        total_inboxes: 1000
+        total_capacity: "50k emails/mo"
+        monthly_cost: "$500"
+
+    - name: "Google-heavy client (consumer focus)"
+      target:
+        entra_inboxes: 0
+        google_inboxes: 150
+      breakdown:
+        entra_orders: 0
+        google_orders: 10  # 10 × 15 = 150 inboxes
+        total_inboxes: 150
+        total_capacity: "50k emails/mo"
+        monthly_cost: "$500"
+
+# ============================================================================
+# VOLUME PLANNING GUIDELINES
+# ============================================================================
+
+volume_planning:
+  rule_of_thumb:
+    description: "Estimate inbox needs from monthly volume target"
+    formula: "total_inboxes = monthly_volume / 100"
+    explanation: "Each inbox sends ~100 emails/month safely"
+
+  recommended_split:
+    b2b_focused:
+      entra_percentage: 80
+      google_percentage: 20
+      rationale: "Business emails prefer Entra/Outlook"
+
+    consumer_focused:
+      entra_percentage: 40
+      google_percentage: 60
+      rationale: "Consumer emails perform well on Gmail"
+
+    balanced:
+      entra_percentage: 70
+      google_percentage: 30
+      rationale: "Default recommendation for mixed targeting"
+
+  example_calculation:
+    scenario: "Client needs 50,000 emails/month with B2B focus"
+    steps:
+      - "Total inboxes: 50,000 / 100 = 500 inboxes"
+      - "Entra (80%): 400 inboxes → 4 orders"
+      - "Google (20%): 100 inboxes → 7 orders"
+      - "Total: 11 orders, ~$550/month"
+
+# ============================================================================
+# AUTOMATION INTEGRATION
+# ============================================================================
+
+automation:
+  location: "D:\\BrainOn\\Hypertide\\automation"
+  version: "0.2.0"
+
+  primary_function: "purchase_mixed_order(request)"
+
+  input_models:
+    MixedOrderRequest:
+      description: "High-level order specification"
+      fields:
+        - client_name: "Client/project name"
+        - forwarding_domain: "Client's main domain"
+        - inbox_target: "InboxTarget with entra/google counts"
+        - bison_credentials: "BisonCredentials for Bison connection"
+        - users: "List of InboxConfig for inbox naming"
+
+    InboxTarget:
+      description: "Target inbox counts"
+      fields:
+        - entra_inboxes: "Target Entra inbox count"
+        - google_inboxes: "Target Google inbox count"
+
+    BisonCredentials:
+      description: "EmailBison connection details"
+      fields:
+        - username: "Bison login email"
+        - password: "Bison password"
+        - workspace: "Bison workspace name"
+        - bison_url: "Bison instance URL"
+
+  output_models:
+    BundleResult:
+      description: "Aggregated results from mixed order"
+      fields:
+        - success: "True if all orders completed"
+        - total_inboxes: "Total inboxes provisioned"
+        - total_monthly_capacity: "Combined email capacity"
+        - order_results: "Individual OrderResult objects"
+
+  utility_functions:
+    calculate_optimal_orders:
+      input: "InboxTarget"
+      output: "OrderBreakdown"
+      purpose: "Convert inbox targets to order quantities"
+
+    create_order_bundle:
+      input: "MixedOrderRequest"
+      output: "OrderBundle"
+      purpose: "Create executable order collection"
+
+# ============================================================================
+# QUICK REFERENCE TABLES
+# ============================================================================
+
+quick_reference:
+  entra_inboxes_needed:
+    100: "1 order"
+    200: "2 orders"
+    300: "3 orders"
+    500: "5 orders"
+    750: "8 orders"
+    1000: "10 orders"
+    1500: "15 orders"
+    2000: "20 orders (max per purchase)"
+
+  google_inboxes_needed:
+    15: "1 order"
+    30: "2 orders"
+    45: "3 orders"
+    75: "5 orders"
+    105: "7 orders"
+    150: "10 orders"
+    225: "15 orders"
+    300: "20 orders (max per purchase)"
+
+  monthly_volume_to_total_orders:
+    5000: "1 order"
+    10000: "2 orders"
+    25000: "5 orders"
+    50000: "10 orders"
+    75000: "15 orders"
+    100000: "20 orders"

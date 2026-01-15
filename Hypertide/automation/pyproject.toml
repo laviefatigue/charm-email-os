@@ -1,0 +1,60 @@
+[project]
+name = "hypertide-automation"
+version = "0.4.0"
+description = "Automated Hypertide inbox infrastructure purchasing with Prefect flows and Google Sheets integration"
+requires-python = ">=3.11"
+dependencies = [
+    "playwright>=1.40.0",
+    "pydantic>=2.0.0",
+    "python-dotenv>=1.0.0",
+    "structlog>=23.0.0",
+    # Domain sourcing dependencies
+    "httpx>=0.25.0",
+    "typer>=0.9.0",
+    "rich>=13.0.0",
+    # Database and pipeline dependencies
+    "asyncpg>=0.29.0",
+    # Prefect orchestration
+    "prefect>=3.0.0",
+    # Google Sheets integration
+    "gspread>=6.0.0",
+    "google-auth>=2.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-asyncio>=0.21.0",
+    "pytest-playwright>=0.4.0",
+]
+ai = [
+    # Optional AI generation support
+    "openai>=1.0.0",
+    "anthropic>=0.15.0",
+]
+
+[project.scripts]
+hypertide-purchase = "hypertide_automation.cli:main"
+domain-source = "hypertide_automation.domain_sourcing.cli:main"
+# Pipeline scripts
+ht-check-domains = "hypertide_automation.scripts.check_domains:main"
+ht-purchase-domains = "hypertide_automation.scripts.purchase_domains:main"
+ht-generate-inboxes = "hypertide_automation.scripts.generate_inboxes:main"
+ht-provision-inboxes = "hypertide_automation.scripts.provision_inboxes:main"
+ht-upload-emailbison = "hypertide_automation.scripts.upload_to_emailbison:main"
+# Dashboard and Prefect flow runners
+ht-create-dashboard = "hypertide_automation.flows.sheet_creator:main"
+ht-flow-generate = "hypertide_automation.flows.domain_generation_flow:main"
+ht-flow-purchase = "hypertide_automation.flows.domain_purchase_flow:main"
+ht-flow-provision = "hypertide_automation.flows.inbox_provision_flow:main"
+ht-flow-pipeline = "hypertide_automation.flows.pipeline:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/hypertide_automation"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"

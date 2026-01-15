@@ -1,0 +1,15 @@
+{
+  "client_name": "Acme Corp",
+  "forwarding_domain": "acme.com",
+  "order_type": "hypertide_entra",
+  "quantity": 2,
+  "sending_tool": "Email Bison",
+  "domains": [
+    {"name": "outreach-acme", "tld": "com", "use_hypertide_domain": true},
+    {"name": "connect-acme", "tld": "com", "use_hypertide_domain": true},
+    {"name": "reach-acme", "tld": "io", "use_hypertide_domain": true},
+    {"name": "hello-acme", "tld": "io", "use_hypertide_domain": true}
+  ],
+  "inbox_names": [],
+  "use_saved_payment": true
+}

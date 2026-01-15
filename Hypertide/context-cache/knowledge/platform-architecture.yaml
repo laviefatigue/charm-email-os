@@ -1,0 +1,345 @@
+# Hypertide Platform Architecture
+# Comprehensive documentation of the Hypertide web interface
+# Last Validated: 2025-12-10
+# Source: Live platform exploration
+
+platform:
+  name: "Hypertide"
+  url: "https://app2.hypertide.io"
+  type: "Web-only interface (NO API)"
+  purpose: "Cold email infrastructure management"
+
+# Access Model
+access:
+  type: "Invitation-only"
+  signin_url: "https://app2.hypertide.io/signin"
+  signup: false  # No self-service signup
+  onboarding: "Contact support@hypertide.io for access"
+
+# Main Navigation
+navigation:
+  - name: "Dashboard"
+    url: "/dashboard"
+    description: "Main order management interface"
+  - name: "Billing"
+    url: "/billing"
+    description: "Subscription and invoice management"
+  - name: "Instantly Update"
+    url: "https://instantly.hypertide.io/"
+    description: "Bulk settings tool for Instantly"
+  - name: "Smartlead Update"
+    url: "https://smartlead.hypertide.io/"
+    description: "Bulk settings tool for Smartlead"
+  - name: "Help"
+    url: "https://help.hypertide.io/"
+    description: "Documentation and guides"
+
+# Organization Model
+organization:
+  hierarchy:
+    level_1: "Forwarding Domain"
+    description: "Client identifier - groups all orders for one client"
+    example: "hirecharm.com, guardare.com, spoutwater.com"
+
+    level_2: "Orders"
+    description: "Individual purchases under a forwarding domain"
+    attributes:
+      - order_type  # Hypertide Entra, Hypertide Google, Hypertide Premium, Hypertide Azure
+      - sending_tool  # Email Bison, Smartlead.ai, Instantly
+      - status  # done, cancelled, pending
+
+    level_3: "Associated Domains"
+    description: "Sending domains within an order"
+    attributes:
+      - domain_name
+      - inbox_type  # Azure (Entra) or Gmail (Google)
+      - inboxes_count
+
+# Order Types and Pricing
+order_types:
+  hypertide_entra:
+    display_name: "Hypertide Entra"
+    recommended: true
+    description: "The most powerful solution for B2B cold email outreach at scale"
+    tagline: "Top 1% of agencies build their infrastructure on Entra"
+    base_price: "$50/month"
+    per_order:
+      domains: 2
+      inboxes_per_domain: 50
+      emails_per_day_per_inbox: 2
+      monthly_capacity: "5,000 emails"
+    domain_pricing:
+      com: "$15.50"
+      other: "$9.00"
+    bulk_options:
+      - "1 order - 2 Entra Domains, 5k emails/mo"
+      - "2 orders - 4 Entra Domains, 10k emails/mo"
+      - "3 orders - 6 Entra Domains, 15k emails/mo"
+      - "4 orders - 8 Entra Domains, 20k emails/mo"
+      - "5 orders - 10 Entra Domains, 25k emails/mo"
+      - "6 orders - 12 Entra Domains, 30k emails/mo"
+      - "7 orders - 14 Entra Domains, 35k emails/mo"
+      - "8 orders - 16 Entra Domains, 40k emails/mo"
+      - "9 orders - 18 Entra Domains, 45k emails/mo"
+      - "10 orders - 20 Entra Domains, 50k emails/mo"
+      - "15 orders - 30 Entra Domains, 75k emails/mo"
+      - "20 orders - 40 Entra Domains, 100k emails/mo"
+
+  hypertide_google:
+    display_name: "Hypertide Google"
+    recommended: false
+    description: "Perfect for reaching out to personal emails with high deliverability rates"
+    base_price: "$50/month"
+    per_order:
+      domains: 5
+      inboxes_per_domain: 3
+      emails_per_day_per_inbox: "15-20"
+      monthly_capacity: "5,000+ emails"
+    domain_pricing:
+      com: "$15.50"
+      other: "$9.00"
+    bulk_options:
+      - "1 order - 5 Google Domains, 5k+ emails/mo"
+      - "2 orders - 10 Google Domains, 10k+ emails/mo"
+      - "3 orders - 15 Google Domains, 15k+ emails/mo"
+      - "4 orders - 20 Google Domains, 20k+ emails/mo"
+      - "5 orders - 25 Google Domains, 25k+ emails/mo"
+      - "6 orders - 30 Google Domains, 30k+ emails/mo"
+      - "7 orders - 35 Google Domains, 35k+ emails/mo"
+      - "8 orders - 40 Google Domains, 40k+ emails/mo"
+      - "9 orders - 45 Google Domains, 45k+ emails/mo"
+      - "10 orders - 50 Google Domains, 50k+ emails/mo"
+      - "15 orders - 75 Google Domains, 75k+ emails/mo"
+      - "20 orders - 100 Google Domains, 100k+ emails/mo"
+
+# Order Flow (4 Steps)
+order_flow:
+  step_1:
+    name: "Choose Plan"
+    url: "/choose-plan"
+    actions:
+      - Select order type (Entra or Google)
+      - Select quantity (bulk orders)
+  step_2:
+    name: "Select Domains"
+    actions:
+      - Choose domain names
+      - Option: Hypertide-provided or BYOD
+  step_3:
+    name: "Setup Domain Settings"
+    actions:
+      - Configure forwarding domain
+      - Set sending tool (Email Bison, Smartlead, Instantly)
+  step_4:
+    name: "Review Order"
+    actions:
+      - Verify configuration
+      - Proceed to Stripe checkout
+
+# Dashboard Features
+dashboard:
+  stats:
+    - metric: "Time saved"
+      description: "Hours saved with automated inbox setups"
+    - metric: "Inboxes"
+      description: "Total inboxes set up with zero manual work"
+    - metric: "Money saved"
+      description: "Savings from automating inbox management"
+
+  filters:
+    - "Search by domain name, forwarding domain, or sending tool"
+    - "All Sending Tools" (dropdown)
+    - "All Statuses" (dropdown)
+    - "All Order Types" (dropdown)
+
+  order_panel:
+    summary:
+      - Total Domains
+      - Active Domains
+      - Monthly Capacity
+      - Last Updated date
+    actions:
+      - Download  # Export inbox credentials
+      - Configure  # Opens submenu
+      - Order  # Add more capacity
+    configure_submenu:
+      - Update Forwarding
+      - Update Usernames
+      - Replace Domains
+
+# Domain Status
+domain_statuses:
+  active:
+    color: "green"
+    description: "Domain is active and working"
+  to_be_cancelled:
+    color: "yellow/orange"
+    description: "Domain will be cancelled soon"
+  cancelled:
+    color: "red/gray"
+    description: "Domain is no longer active"
+
+# Billing Section
+billing:
+  url: "/billing"
+  features:
+    - "Subscription Records list"
+    - "Search subscriptions"
+    - "View Details per subscription"
+    - "View Invoices per subscription"
+    - "Domain status color coding"
+    - "Pagination (5/10/25 per page)"
+  subscription_record:
+    fields:
+      - domains_list
+      - created_date
+      - actions
+
+# Sending Tools Integration
+sending_tools:
+  primary:
+    name: "Email Bison"
+    bulk_tool: null
+    notes: "Current primary sequencer"
+  legacy:
+    - name: "Smartlead.ai"
+      bulk_tool: "https://smartlead.hypertide.io/"
+    - name: "Instantly"
+      bulk_tool: "https://instantly.hypertide.io/"
+
+# Purchase Automation Package
+automation:
+  location: "D:\\BrainOn\\Hypertide\\automation"
+  version: "0.2.0"
+  framework: "Playwright (Python)"
+  documentation:
+    flow_map: "docs/purchase-flow-map.yaml"
+    examples: "examples/"
+
+  # Mixed Order Support (Primary Feature)
+  mixed_orders:
+    description: |
+      Clients often need BOTH Entra and Google inboxes.
+      The automation handles this by executing TWO sequential purchase flows.
+
+    constraint: "Hypertide allows only ONE order type per checkout"
+    solution: "BundlePurchaseAutomation executes orders sequentially"
+
+    workflow:
+      step_1: "MixedOrderRequest specifies inbox targets"
+      step_2: "calculate_optimal_orders() determines order quantities"
+      step_3: "create_order_bundle() builds OrderBundle"
+      step_4: "Execute Entra purchase flow (if needed)"
+      step_5: "Return to dashboard"
+      step_6: "Execute Google purchase flow (if needed)"
+      step_7: "Aggregate results into BundleResult"
+
+    calculation_formulas:
+      entra: "orders = ceil(target_inboxes / 100)"
+      google: "orders = ceil(target_inboxes / 15)"
+
+    example:
+      scenario: "500 Entra + 100 Google inboxes"
+      entra_orders: 5  # 5 × 100 = 500 inboxes
+      google_orders: 7  # 7 × 15 = 105 inboxes
+      total_inboxes: 605
+      monthly_cost: "$600"
+
+  # Key Functions
+  primary_functions:
+    - name: "purchase_mixed_order(request)"
+      purpose: "One-call automation for mixed Entra+Google orders"
+      input: "MixedOrderRequest"
+      output: "BundleResult"
+
+    - name: "calculate_optimal_orders(target)"
+      purpose: "Convert inbox targets to order quantities"
+      input: "InboxTarget"
+      output: "OrderBreakdown"
+
+    - name: "purchase_order(request)"
+      purpose: "Single order type purchase"
+      input: "OrderRequest"
+      output: "OrderResult"
+
+  # UI Selectors (from flow map)
+  selectors:
+    step_1_choose_plan:
+      entra_plan: "text=Hypertide Entra"
+      google_plan: "text=Hypertide Google"
+      entra_dropdown: "combobox[value*='Entra']"
+      google_dropdown: "combobox[value*='Google']"
+
+    step_2_domains:
+      purchase_option: "text=Purchase domains"
+      byod_option: "text=Use my own domains"
+      domain_input: "textbox[placeholder*='example1.com']"
+      continue_btn: "button:has-text('Continue to Domain Settings')"
+
+    step_3_settings:
+      forwarding_input: "textbox[placeholder*='example.com']"
+      company_input: "textbox[placeholder*='Acme Corp']"
+      bison_tool: "text=Bison"
+      username_input: "textbox[placeholder='name@example.com']"
+      password_input: "textbox[placeholder='Enter your password']"
+      bison_url_input: "textbox[placeholder*='send.example.com']"
+
+    step_4_review:
+      checkout_btn: "button:has-text('Checkout')"
+
+  # Timing
+  timing_ms:
+    page_transition: 1000
+    dropdown_open: 300
+    form_save: 500
+    domain_search: 90000
+    stripe_checkout: 60000
+
+  # Capabilities
+  feasible:
+    - name: "Mixed order automation"
+      method: "BundlePurchaseAutomation"
+      risk: "Medium - payment involved"
+      status: "Implemented"
+
+    - name: "Single order automation"
+      method: "PurchaseAutomation"
+      risk: "Medium - payment involved"
+      status: "Implemented"
+
+    - name: "Order preview/calculation"
+      method: "calculate_optimal_orders()"
+      risk: "None - no browser needed"
+      status: "Implemented"
+
+    - name: "Flow documentation"
+      method: "Chrome DevTools MCP"
+      risk: "Low"
+      status: "Completed"
+
+  not_recommended:
+    - name: "Unattended payment"
+      reason: "Stripe checkout requires verification"
+      workaround: "Use saved payment methods"
+
+    - name: "Domain replacement"
+      reason: "Requires support coordination"
+
+# Screenshots Captured
+screenshots:
+  - path: "screenshots/hypertide-signin-page.png"
+    description: "Login page showing invitation-only access"
+  - path: "screenshots/hypertide-dashboard-main.png"
+    description: "Main dashboard with orders by forwarding domain"
+  - path: "screenshots/hypertide-choose-plan.png"
+    description: "Plan selection page (Entra vs Google)"
+  - path: "screenshots/hypertide-entra-bulk-options.png"
+    description: "Entra bulk order dropdown (1-20 orders)"
+  - path: "screenshots/hypertide-google-bulk-options.png"
+    description: "Google bulk order dropdown (1-20 orders)"
+  - path: "screenshots/hypertide-order-details-hirecharm.png"
+    description: "Order details showing domains and statuses"
+  - path: "screenshots/hypertide-configure-options.png"
+    description: "Configure menu (Update Forwarding/Usernames/Replace)"
+  - path: "screenshots/hypertide-billing-page.png"
+    description: "Billing page with subscription records"

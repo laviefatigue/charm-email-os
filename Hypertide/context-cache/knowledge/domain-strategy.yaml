@@ -1,0 +1,91 @@
+# Hypertide Domain Strategy
+# Guidelines for domain selection and management
+
+domain_selection:
+  age:
+    requirement: "aged"
+    penalty_period: "2-4 weeks"
+    description: |
+      Domains registered within 2-4 weeks are penalized more heavily.
+      Use aged domains for better deliverability.
+    recommendation: "Acquire domains at least 1 month before use"
+
+  tld:
+    recommended:
+      - ".com"  # Primary recommendation
+      - ".co"   # Secondary recommendation
+    description: "Good results observed with .com and .co TLDs"
+    safe_default: ".com"
+
+  pricing:
+    hypertide_com: 15.50  # One-time fee per .com domain
+    byod: 0  # Bring your own domain - any TLD works
+
+# Order structure
+order_composition:
+  domains_per_order: 2
+  inboxes_per_domain: "50-52"
+  total_inboxes: "100-104"
+  campaign_rule: "Use BOTH domains in each campaign for diversity"
+
+# Domain health indicators
+health_signals:
+  domain_reputation:
+    importance: "PRIMARY"
+    description: "Domain reputation supersedes individual inbox reputation"
+
+  individual_inbox_reputation:
+    importance: "SECONDARY"
+    description: "Less important than domain-level reputation for Hypertide setup"
+
+# Domain management
+management:
+  forwarding:
+    changeable: true
+    process: "Email support@hypertide.io with new forwarding URL"
+
+  inbox_names:
+    changeable: true
+    process: "Email support@hypertide.io with new names"
+    critical_note: |
+      You MUST delete the old inboxes after name changes.
+      Old inboxes will start disconnecting and flood you with notifications.
+
+  burned_domain_swap:
+    available: true
+    process: "Email support@hypertide.io with replacement domain"
+    requirement: "Must provide your own domain for swap (BYOD required)"
+
+# Burning indicators
+burn_detection:
+  symptoms:
+    - "Bounce rate consistently >5%"
+    - "Sudden spike in disconnections"
+    - "ESPs blocking domain"
+    - "Copy changes not improving metrics"
+
+  causes:
+    - "Over-sending (>4 emails/day/inbox sustained)"
+    - "Tracking enabled"
+    - "ESP matching enabled"
+    - "Sending to catchalls/invalids"
+    - "Launching before 14-day warmup"
+
+  recovery:
+    timeline: "1-6 months depending on severity"
+    steps:
+      - "Change campaign copy immediately"
+      - "Reduce sending volume"
+      - "Increase warmup variability"
+      - "If tenant-level issue, contact support for migration"
+
+# Custom tracking DNS (NOT RECOMMENDED)
+custom_tracking:
+  recommended: false
+  reason: "Drops deliverability despite auto-setup"
+  subdomains:
+    instantly: "inst"
+    smartlead: "smart"
+  note: |
+    Custom tracking DNS should be added by default via automation.
+    However, Hypertide team does NOT recommend using it.

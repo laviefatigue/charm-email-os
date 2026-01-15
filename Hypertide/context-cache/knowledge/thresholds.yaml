@@ -1,0 +1,111 @@
+# Hypertide Operational Thresholds
+# These values define normal vs problematic states
+
+thresholds:
+  bounce_rate:
+    healthy: 0.05  # <5%
+    action_required: 0.05  # >=5%
+    unit: "percentage"
+    description: |
+      Bounce rate above 5% indicates:
+      1. Copy has been flagged by ESPs, OR
+      2. Tenant lockdown has occurred
+    diagnostic_question: "Are ALL bounces from ONE domain?"
+    if_yes: "Alert Support - tenant lockdown, can migrate in 24h"
+    if_no: "Copy flagged - change copy, recovery takes 1-6 months"
+
+  warmup_failures:
+    acceptable: 0.15  # <=15%
+    concerning: 0.15  # >15%
+    unit: "percentage of inboxes"
+    description: |
+      Up to 15% of inboxes not warming up is ACCEPTABLE and BY DESIGN.
+      Domain reputation > Individual inbox reputation.
+      These inboxes WILL still send campaign emails.
+    action_if_exceeded: "Contact support@hypertide.io"
+
+  warmup_sending:
+    normal_not_sending: 0.80  # <80% not sending warmup is normal
+    concerning: 0.80  # >=80% not sending warmup
+    unit: "percentage of inboxes"
+    description: |
+      Enterprise pattern: 80/20 receive/send ratio
+      Some inboxes intentionally receive-only to mimic enterprise behavior.
+    action_if_exceeded: "Contact support - this indicates a problem"
+
+  copy_rotation:
+    recommended_interval_months:
+      min: 1.5
+      max: 2.0
+    description: |
+      ESPs track message frequency across users.
+      Spintax helps but full copy rotation recommended every 1.5-2 months.
+
+  warmup_duration:
+    minimum_days: 14
+    description: |
+      Launching before 14 days of warmup WILL cause bounce rate issues.
+
+# Alert definitions
+alerts:
+  critical:
+    - id: bounce_rate_high
+      condition: "bounce_rate >= 5%"
+      message: "Bounce rate exceeds 5% threshold"
+      action: "Check if all bounces from one domain. If yes, contact support. If no, change copy."
+
+    - id: warmup_failure_high
+      condition: "warmup_failures > 15%"
+      message: "More than 15% of inboxes failing to warm up"
+      action: "Contact support@hypertide.io"
+
+    - id: warmup_not_sending_high
+      condition: "inboxes_not_sending_warmup >= 80%"
+      message: "80%+ of inboxes not sending warmup emails"
+      action: "Contact support - this is abnormal"
+
+  warning:
+    - id: copy_stale
+      condition: "copy_age > 2 months"
+      message: "Campaign copy has not been rotated in over 2 months"
+      action: "Rotate email copy to prevent ESP flagging"
+
+    - id: approaching_inbox_limit
+      condition: "emails_per_inbox >= 4"
+      message: "Sending 4+ emails per inbox per day"
+      action: "Monitor closely or reduce to prevent domain burning"
+
+# Health score calculation (for monitoring dashboards)
+health_score:
+  factors:
+    - name: bounce_rate
+      weight: 0.40
+      scoring:
+        excellent: "<2%"
+        good: "2-4%"
+        fair: "4-5%"
+        poor: ">5%"
+
+    - name: warmup_compliance
+      weight: 0.30
+      scoring:
+        excellent: ">90% warming"
+        good: "85-90% warming"
+        fair: "80-85% warming"
+        poor: "<80% warming"
+
+    - name: copy_freshness
+      weight: 0.20
+      scoring:
+        excellent: "<1 month"
+        good: "1-1.5 months"
+        fair: "1.5-2 months"
+        poor: ">2 months"
+
+    - name: settings_compliance
+      weight: 0.10
+      scoring:
+        excellent: "All rules followed"
+        good: "Minor deviations"
+        fair: "Some warnings"
+        poor: "Critical violations"

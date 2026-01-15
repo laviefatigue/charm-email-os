@@ -1,0 +1,599 @@
+# Hypertide Purchase Flow Map
+# Complete UI element mapping for browser automation
+# Last Updated: 2025-12-10
+# Source: Live platform exploration
+
+flow:
+  name: "Hypertide Purchase Flow"
+  base_url: "https://app2.hypertide.io"
+  steps: 4
+  progress_indicator: "Choose Plan → Select Domains → Setup Domain Settings → Review Order"
+
+# =============================================================================
+# STEP 1: CHOOSE PLAN
+# =============================================================================
+step_1_choose_plan:
+  url: "/choose-plan"
+  purpose: "Select inbox type (Entra vs Google) and quantity"
+
+  navigation:
+    from_dashboard:
+      element: "Place New Order"
+      selector: "text=Place New Order"
+
+  plan_cards:
+    entra:
+      heading: "Hypertide Entra"
+      recommended: true
+      tagline: "The most powerful solution for B2B cold email outreach at scale"
+      base_price: "$50/month"
+      selector: "text=Hypertide Entra"
+
+      quantity_dropdown:
+        selector: "combobox[value*='Entra']"
+        options:
+          - value: "1 order - 2 Entra Domains, 5k emails/mo"
+            orders: 1
+            domains: 2
+            inboxes: 100
+            capacity: 5000
+          - value: "2 orders - 4 Entra Domains, 10k emails/mo"
+            orders: 2
+            domains: 4
+            inboxes: 200
+            capacity: 10000
+          - value: "3 orders - 6 Entra Domains, 15k emails/mo"
+            orders: 3
+            domains: 6
+            inboxes: 300
+            capacity: 15000
+          - value: "4 orders - 8 Entra Domains, 20k emails/mo"
+            orders: 4
+            domains: 8
+            inboxes: 400
+            capacity: 20000
+          - value: "5 orders - 10 Entra Domains, 25k emails/mo"
+            orders: 5
+            domains: 10
+            inboxes: 500
+            capacity: 25000
+          - value: "6 orders - 12 Entra Domains, 30k emails/mo"
+            orders: 6
+            domains: 12
+            inboxes: 600
+            capacity: 30000
+          - value: "7 orders - 14 Entra Domains, 35k emails/mo"
+            orders: 7
+            domains: 14
+            inboxes: 700
+            capacity: 35000
+          - value: "8 orders - 16 Entra Domains, 40k emails/mo"
+            orders: 8
+            domains: 16
+            inboxes: 800
+            capacity: 40000
+          - value: "9 orders - 18 Entra Domains, 45k emails/mo"
+            orders: 9
+            domains: 18
+            inboxes: 900
+            capacity: 45000
+          - value: "10 orders - 20 Entra Domains, 50k emails/mo"
+            orders: 10
+            domains: 20
+            inboxes: 1000
+            capacity: 50000
+          - value: "15 orders - 30 Entra Domains, 75k emails/mo"
+            orders: 15
+            domains: 30
+            inboxes: 1500
+            capacity: 75000
+          - value: "20 orders - 40 Entra Domains, 100k emails/mo"
+            orders: 20
+            domains: 40
+            inboxes: 2000
+            capacity: 100000
+
+      select_button:
+        text: "Select Plan - $50/mo"
+        selector: "button:has-text('Select Plan'):near(:text('Hypertide Entra'))"
+
+      specs:
+        domains_per_order: 2
+        inboxes_per_domain: 50
+        emails_per_day_per_inbox: 2
+        domain_pricing:
+          com: "$15.50"
+          other: "$9.00"
+
+    google:
+      heading: "Hypertide Google"
+      recommended: false
+      tagline: "Perfect for reaching out to personal emails with high deliverability rates"
+      base_price: "$50/month"
+      selector: "text=Hypertide Google"
+
+      quantity_dropdown:
+        selector: "combobox[value*='Google']"
+        options:
+          - value: "1 order - 5 Google Domains, 5k+ emails/mo"
+            orders: 1
+            domains: 5
+            inboxes: 15
+            capacity: 5000
+          - value: "2 orders - 10 Google Domains, 10k+ emails/mo"
+            orders: 2
+            domains: 10
+            inboxes: 30
+            capacity: 10000
+          - value: "3 orders - 15 Google Domains, 15k+ emails/mo"
+            orders: 3
+            domains: 15
+            inboxes: 45
+            capacity: 15000
+          - value: "4 orders - 20 Google Domains, 20k+ emails/mo"
+            orders: 4
+            domains: 20
+            inboxes: 60
+            capacity: 20000
+          - value: "5 orders - 25 Google Domains, 25k+ emails/mo"
+            orders: 5
+            domains: 25
+            inboxes: 75
+            capacity: 25000
+          - value: "6 orders - 30 Google Domains, 30k+ emails/mo"
+            orders: 6
+            domains: 30
+            inboxes: 90
+            capacity: 30000
+          - value: "7 orders - 35 Google Domains, 35k+ emails/mo"
+            orders: 7
+            domains: 35
+            inboxes: 105
+            capacity: 35000
+          - value: "8 orders - 40 Google Domains, 40k+ emails/mo"
+            orders: 8
+            domains: 40
+            inboxes: 120
+            capacity: 40000
+          - value: "9 orders - 45 Google Domains, 45k+ emails/mo"
+            orders: 9
+            domains: 45
+            inboxes: 135
+            capacity: 45000
+          - value: "10 orders - 50 Google Domains, 50k+ emails/mo"
+            orders: 10
+            domains: 50
+            inboxes: 150
+            capacity: 50000
+          - value: "15 orders - 75 Google Domains, 75k+ emails/mo"
+            orders: 15
+            domains: 75
+            inboxes: 225
+            capacity: 75000
+          - value: "20 orders - 100 Google Domains, 100k+ emails/mo"
+            orders: 20
+            domains: 100
+            inboxes: 300
+            capacity: 100000
+
+      select_button:
+        text: "Select Plan - $50/mo"
+        selector: "button:has-text('Select Plan'):near(:text('Hypertide Google'))"
+
+      specs:
+        domains_per_order: 5
+        inboxes_per_domain: 3
+        emails_per_day_per_inbox: "15-20"
+        domain_pricing:
+          com: "$15.50"
+          other: "$9.00"
+
+# =============================================================================
+# STEP 2: SELECT DOMAINS
+# =============================================================================
+step_2_select_domains:
+  url: "/select-domains"
+  purpose: "Choose domain source (purchase vs BYOD) and specify domains"
+
+  navigation:
+    continue_button:
+      text: "Continue to Domain Settings"
+      selector: "button:has-text('Continue to Domain Settings')"
+      enabled_when: "minimum domains added AND (DNS confirmed OR purchasing)"
+
+    back_button:
+      text: "Go Back"
+      selector: "button:has-text('Go Back')"
+
+  step_1_domain_option:
+    heading: "Step 1) Select Domain Option"
+
+    purchase_domains:
+      heading: "Purchase domains"
+      price: "$9-$15.50/domain"
+      selector: "text=Purchase domains"
+      note: ".com = $15.50, other TLDs = $9.00"
+
+    use_own_domains:
+      heading: "Use my own domains"
+      price: "$0.00"
+      selector: "text=Use my own domains"
+      note: "Must point DNS to DNSimple nameservers"
+
+  step_2_add_domains:
+    heading_pattern: "Step 2) {Purchase/Enter Your} {Entra/Google} Domains ({N} required for {M} order set)"
+
+    # For PURCHASE mode
+    purchase_mode:
+      search_modes:
+        discovery:
+          button: "Discovery Search"
+          selector: "button:has-text('Discovery Search')"
+          description: "Find available variations with prefixes/suffixes/TLDs"
+          duration: "~1 minute"
+        exact:
+          button: "Exact Search"
+          selector: "button:has-text('Exact Search')"
+          description: "Check exact domain availability"
+
+      search_input:
+        placeholder: "Search for a domain (.com, .net, .org, etc.)"
+        selector: "textbox[placeholder*='Search for a domain']"
+        validation: "Must include TLD (e.g., example.com)"
+
+      search_button:
+        text: "Search Domains"
+        selector: "button:has-text('Search Domains')"
+        enabled_when: "valid domain entered"
+
+      results:
+        # Results appear as selectable domain cards
+        # Each shows: domain name, availability, price
+        add_to_cart: "Click domain to add"
+
+    # For BYOD (Use Own Domains) mode
+    byod_mode:
+      domain_input:
+        placeholder: "example1.com\nexample2.com\nexample3.com"
+        selector: "textbox[placeholder*='example1.com']"
+        type: "multiline"
+        format: "One domain per line"
+
+      add_button:
+        text: "Add Your Domain"
+        selector: "button:has-text('Add Your Domain')"
+        enabled_when: "domains entered"
+
+      max_reached:
+        text: "Max Domains Added"
+        selector: "button:has-text('Max Domains Added')"
+
+    cart_status:
+      domains_in_cart: "text=Domains in cart"
+      more_needed: "text=more needed"
+
+    domain_requirements:
+      entra:
+        domains_per_order: 2
+        formula: "orders * 2"
+      google:
+        domains_per_order: 5
+        formula: "orders * 5"
+
+  step_3_dns_configuration:
+    heading: "Step 3) Point your DNS properly"
+    visible_when: "BYOD mode selected"
+
+    domains_to_configure:
+      heading: "Your domains to configure:"
+      # Lists all added domains
+
+    nameservers:
+      heading: "DNSimple Nameservers"
+      servers:
+        - "ns1.dnsimple.com"
+        - "ns2.dnsimple-edge.net"
+        - "ns3.dnsimple.com"
+        - "ns4.dnsimple-edge.org"
+      copy_button:
+        text: "Copy all"
+        selector: "button:has-text('Copy all')"
+
+    registrar_guides:
+      - name: "GoDaddy"
+        url: "https://www.godaddy.com/help/change-nameservers-for-my-domains-664"
+      - name: "Namecheap"
+        url: "https://www.namecheap.com/support/knowledgebase/article.aspx/767/10/how-to-change-dns-for-a-domain/"
+      - name: "Dynadot"
+        url: "https://www.dynadot.com/community/help/question/set-nameservers"
+      - name: "Porkbun"
+        url: "https://kb.porkbun.com/article/22-how-to-change-your-nameservers"
+      - name: "Google Domains"
+        url: "https://support.google.com/domains/answer/3290309"
+      - name: "Name.com"
+        url: "https://www.name.com/support/articles/205934547-changing-nameservers-for-dns-management"
+
+    confirm_button:
+      text: "I have configured DNS"
+      selector: "button:has-text('I have configured DNS')"
+      becomes: "✓ Completed"
+
+    warnings:
+      - "Domains must NOT be registered in DNSimple or Cloudflare"
+      - "Disconnect any existing Microsoft tenant connections first"
+
+# =============================================================================
+# STEP 3: SETUP DOMAIN SETTINGS
+# =============================================================================
+step_3_setup_domain_settings:
+  url: "/setup-domain-settings"
+  purpose: "Configure forwarding, email tool, and inbox users"
+
+  navigation:
+    continue_button:
+      text: "Continue to Review"
+      selector: "button:has-text('Continue to Review')"
+      enabled_when: "all steps completed"
+
+    alternative_continue:
+      text: "Save & Continue to Review"
+      selector: "button:has-text('Save & Continue to Review')"
+      location: "bottom of page"
+
+  selected_domains_display:
+    heading_pattern: "Your Selected {Entra/Google} Domains ({N}/{M})"
+    # Lists all domains being configured
+
+  step_1_basic_configuration:
+    heading: "Step 1) Basic Configuration"
+
+    forwarding_url:
+      label: "1) What URL should we forward your domains to?"
+      description: "Destination users reach when visiting domains"
+      placeholder: "example.com or https://example.com"
+      selector: "textbox[placeholder*='example.com']"
+      format: "domain.com or https://domain.com/path"
+
+    company_client:
+      label: "2) What Company/Client is this for?"
+      placeholder: "example: Acme Corp (letters and numbers only)"
+      selector: "textbox[placeholder*='Acme Corp']"
+      validation: "alphanumeric only"
+
+    save_button:
+      text: "Save Basic Configuration"
+      selector: "button:has-text('Save Basic Configuration')"
+      enabled_when: "both fields filled"
+      success_toast: "Basic Configuration Saved"
+
+  step_2_email_automation_tool:
+    heading: "Step 2) Connect Your Email Automation Tool"
+    label: "Select your email tool:"
+
+    tools:
+      saved_credentials:
+        button: "Saved Credentials"
+        selector: "button:has-text('Saved Credentials')"
+        description: "Load previously saved credentials"
+        modal:
+          heading: "Saved Credentials"
+          instruction: "Click on any credential to auto-fill"
+
+      instantly:
+        text: "Instantly"
+        selector: "text=Instantly"
+        fields:
+          - username
+          - password
+          - workspace
+
+      smartlead:
+        text: "Smartlead"
+        selector: "text=Smartlead"
+        fields:
+          - username
+          - password
+          - workspace
+
+      bison:
+        text: "Bison"
+        selector: "text=Bison"
+        fields:
+          - username
+          - password
+          - workspace
+          - bison_url  # Additional field for Bison
+        bison_url:
+          label: "Bison URL"
+          placeholder: "https://send.example.com"
+          selector: "textbox[placeholder*='send.example.com']"
+
+      other:
+        text: "Other"
+        selector: "text=Other"
+        fields:
+          - username
+          - password
+
+    credential_fields:
+      username:
+        label: "Username"
+        required: true
+        placeholder: "name@example.com"
+        selector: "textbox[placeholder='name@example.com']"
+
+      password:
+        label: "Password"
+        required: true
+        placeholder: "Enter your password"
+        selector: "textbox[placeholder='Enter your password']"
+        has_visibility_toggle: true
+
+      workspace:
+        label: "Workspace"
+        required: true
+        selector: "text=Click to select workspace"
+        type: "dropdown/selector"
+
+    actions:
+      save_and_continue:
+        button: "Save & Continue"
+        selector: "button:has-text('Save & Continue')"
+        description: "Save credentials for future orders"
+
+      next_without_saving:
+        button: "Next"
+        selector: "button:has-text('Next')"
+        description: "Continue without storing credentials"
+
+  step_3_user_configuration:
+    heading: "Step 3) Setup Your User Configuration"
+    note: "Hypertide auto-splits inboxes; usernames created from first/last names"
+    max_users: 10
+
+    user_input:
+      first_name:
+        placeholder: "Enter first name"
+        selector: "textbox[placeholder='Enter first name']"
+
+      last_name:
+        placeholder: "Enter last name"
+        selector: "textbox[placeholder='Enter last name']"
+
+      add_button:
+        text: "+ Add User"
+        selector: "button:has-text('+ Add User')"
+
+    user_table:
+      columns:
+        - "Full Name"
+        - "Entra Domain Inboxes"  # or "Google Domain Inboxes"
+      empty_state: "No users added yet. Please add at least one user to continue."
+
+    inbox_distribution:
+      entra:
+        per_domain: 50
+        per_order: 100
+        note: "Inboxes distributed evenly among users"
+      google:
+        per_domain: 3
+        per_order: 15
+        note: "Inboxes distributed evenly among users"
+
+    save_button:
+      text: "Save & Continue to Review"
+      selector: "button:has-text('Save & Continue to Review')"
+      enabled_when: "at least one user added"
+
+# =============================================================================
+# STEP 4: REVIEW ORDER
+# =============================================================================
+step_4_review_order:
+  url: "/review-order"  # Assumed - couldn't navigate due to credential requirements
+  purpose: "Final verification before payment"
+
+  expected_sections:
+    order_summary:
+      - order_type
+      - quantity
+      - total_domains
+      - total_inboxes
+      - monthly_capacity
+
+    domain_list:
+      - all domains being purchased/added
+
+    pricing_breakdown:
+      - subscription_cost
+      - domain_costs
+      - total
+
+    configuration_summary:
+      - forwarding_url
+      - company_client
+      - email_tool
+      - users
+
+  actions:
+    edit_buttons: "Modify previous steps"
+    checkout_button:
+      text: "Proceed to Checkout"  # Or similar
+      selector: "button:has-text('Checkout')"
+
+# =============================================================================
+# STEP 5: STRIPE CHECKOUT
+# =============================================================================
+step_5_stripe_checkout:
+  type: "Stripe hosted checkout OR embedded iframe"
+
+  scenarios:
+    saved_payment:
+      description: "If saved payment method exists"
+      behavior: "Auto-selects saved card, may auto-complete"
+
+    new_payment:
+      description: "Manual card entry required"
+      fields:
+        - card_number
+        - expiry
+        - cvc
+        - billing_info
+
+  success_indicators:
+    - url_contains: "success"
+    - url_contains: "confirmation"
+    - text: "Order confirmed"
+
+  timeout: 60000  # 60 seconds for payment completion
+
+# =============================================================================
+# AUTOMATION CONSIDERATIONS
+# =============================================================================
+automation:
+  mixed_orders:
+    scenario: "Client needs both Entra AND Google inboxes"
+    example:
+      target: "100 Gmail + 500 Entra inboxes"
+      breakdown:
+        google_orders: 7  # 7 orders × 15 inboxes = 105 inboxes
+        entra_orders: 5   # 5 orders × 100 inboxes = 500 inboxes
+
+    approach: "Execute as TWO separate purchase flows"
+    sequence:
+      1: "Complete Entra purchase flow"
+      2: "Return to dashboard"
+      3: "Complete Google purchase flow"
+
+    shared_config:
+      - forwarding_domain  # Same client
+      - company_name       # Same client
+      - email_tool         # Same Bison credentials
+      - users              # Can reuse or vary
+
+  selector_strategies:
+    prefer:
+      - "text= selectors for buttons/links"
+      - "placeholder-based for inputs"
+      - "role-based for form elements"
+
+    avoid:
+      - "uid-based (changes on each page load)"
+      - "class-based (may change with UI updates)"
+
+    fallback:
+      - "Use get_by_text() with exact=False"
+      - "Chain selectors: near(), has-text()"
+
+  timing:
+    page_transitions: 1000  # ms to wait after navigation
+    dropdown_open: 300      # ms to wait after clicking dropdown
+    form_save: 500          # ms to wait after save action
+    domain_search: 90000    # ms for domain availability search
+
+  error_handling:
+    screenshot_on_failure: true
+    retry_on_timeout: 3
+    validation_messages:
+      - "Please fill in all Bison credentials"
+      - "Please enter a domain with a valid TLD"
+      - "Maximum domains reached"

@@ -1,0 +1,2 @@
+# Log files from pipeline script execution
+# Each script logs to: {script_name}_{timestamp}.log

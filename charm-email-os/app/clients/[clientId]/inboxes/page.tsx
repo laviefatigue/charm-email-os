@@ -18,6 +18,7 @@ import {
   InboxForm,
   DomainEditModal,
   InboxEditModal,
+  DomainInboxTree,
 } from '@/components/inboxes';
 import { DomainSourcingWizard, InboxPurchaseWizard } from '@/components/purchasing';
 import { useClientStore, useInfrastructureStore } from '@/lib/stores';
@@ -221,190 +222,69 @@ export default function InboxesPage() {
           </Alert>
         )}
 
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          {/* Domains Column */}
-          <div className="lg:col-span-1">
-            <Card>
-              <CardHeader className="pb-4">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <CardTitle className="text-base font-semibold flex items-center gap-2">
-                      <Globe className="h-4 w-4" />
-                      Domains
-                    </CardTitle>
-                    <CardDescription className="mt-1">
-                      Approve domains before creating inboxes
-                    </CardDescription>
-                  </div>
-                </div>
-                <div className="flex gap-2 mt-3">
-                  {hasOnboardingData && (
-                    <Button
-                      size="sm"
-                      variant="default"
-                      onClick={handleGenerateDomains}
-                      className="flex-1"
-                    >
-                      <Sparkles className="h-4 w-4 mr-1" />
-                      Generate
-                    </Button>
-                  )}
+        {/* Domain/Inbox Tree View */}
+        <Card>
+          <CardHeader className="pb-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <CardTitle className="text-base font-semibold flex items-center gap-2">
+                  <Globe className="h-4 w-4" />
+                  Domains & Inboxes
+                </CardTitle>
+                <CardDescription className="mt-1">
+                  Click a domain to expand and see its inboxes
+                </CardDescription>
+              </div>
+              <div className="flex gap-2">
+                {hasOnboardingData && (
                   <Button
                     size="sm"
-                    variant="outline"
-                    onClick={() => setShowDomainForm(true)}
-                    className={hasOnboardingData ? '' : 'flex-1'}
+                    variant="default"
+                    onClick={handleGenerateDomains}
                   >
-                    <Plus className="h-4 w-4 mr-1" />
-                    Manual
+                    <Sparkles className="h-4 w-4 mr-1" />
+                    Generate Domains
                   </Button>
-                </div>
-              </CardHeader>
-              <CardContent className="space-y-3">
-                {domains.length === 0 ? (
-                  <EmptyState
-                    icon={Globe}
-                    title="No domains"
-                    description={
-                      hasOnboardingData
-                        ? 'Click Generate to create domain suggestions from onboarding.'
-                        : 'Complete onboarding or add domains manually.'
-                    }
-                  />
-                ) : (
-                  <>
-                    <button
-                      onClick={() => setSelectedDomainId(null)}
-                      className={`w-full text-left px-3 py-2 rounded-lg text-sm transition-colors ${
-                        selectedDomainId === null
-                          ? 'bg-primary/10 text-primary font-medium'
-                          : 'text-muted-foreground hover:bg-muted'
-                      }`}
-                    >
-                      All Domains ({domains.length})
-                    </button>
-                    {domains.map((domain) => (
-                      <DomainCard
-                        key={domain.id}
-                        domain={domain}
-                        isSelected={selectedDomainId === domain.id}
-                        onSelect={() => setSelectedDomainId(domain.id)}
-                        onEdit={setEditingDomain}
-                      />
-                    ))}
-                    {pendingDomains > 0 && (
-                      <Button
-                        variant="default"
-                        size="sm"
-                        className="w-full mt-2"
-                        onClick={handleApproveAllDomains}
-                      >
-                        <CheckCheck className="h-4 w-4 mr-2" />
-                        Approve All ({pendingDomains})
-                      </Button>
-                    )}
-                  </>
                 )}
-              </CardContent>
-            </Card>
-          </div>
-
-          {/* Inboxes Column */}
-          <div className="lg:col-span-2">
-            <Card>
-              <CardHeader className="pb-4">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <CardTitle className="text-base font-semibold flex items-center gap-2">
-                      <Mail className="h-4 w-4" />
-                      Inboxes
-                      {selectedDomainId && (
-                        <span className="text-muted-foreground font-normal">
-                          ({filteredInboxes.length} of {allInboxes.length})
-                        </span>
-                      )}
-                    </CardTitle>
-                    <CardDescription className="mt-1">
-                      {approvedDomains.length === 0
-                        ? 'Approve a domain first to create inboxes'
-                        : 'Generate or add inboxes for approved domains'}
-                    </CardDescription>
-                  </div>
-                </div>
-                {approvedDomains.length > 0 && (
-                  <div className="flex gap-2 mt-3">
-                    {hasOnboardingData && selectedDomainId && approvedDomains.find(d => d.id === selectedDomainId) && (
-                      <Button
-                        size="sm"
-                        variant="default"
-                        onClick={() => handleGenerateInboxes(selectedDomainId)}
-                      >
-                        <Sparkles className="h-4 w-4 mr-1" />
-                        Generate for Selected
-                      </Button>
-                    )}
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() => setShowInboxForm(true)}
-                    >
-                      <Plus className="h-4 w-4 mr-1" />
-                      Add Inbox
-                    </Button>
-                  </div>
-                )}
-              </CardHeader>
-              <CardContent>
-                {approvedDomains.length === 0 ? (
-                  <Alert>
-                    <AlertTriangle className="h-4 w-4" />
-                    <AlertDescription>
-                      You need to approve at least one domain before creating inboxes.
-                      Approve a domain from the list on the left.
-                    </AlertDescription>
-                  </Alert>
-                ) : filteredInboxes.length === 0 ? (
-                  <EmptyState
-                    icon={Mail}
-                    title="No inboxes"
-                    description={
-                      hasOnboardingData
-                        ? 'Select an approved domain and click Generate to create inbox suggestions.'
-                        : 'Add inboxes manually for your approved domains.'
-                    }
-                    action={{
-                      label: 'Add Inbox',
-                      onClick: () => setShowInboxForm(true),
-                    }}
-                  />
-                ) : (
-                  <>
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                      {filteredInboxes.map((inbox) => (
-                        <InboxCard
-                          key={inbox.id}
-                          inbox={inbox}
-                          onEdit={setEditingInbox}
-                        />
-                      ))}
-                    </div>
-                    {filteredInboxes.filter((i) => i.status === 'pending_approval').length > 0 && (
-                      <Button
-                        variant="default"
-                        size="sm"
-                        className="w-full mt-4"
-                        onClick={handleApproveAllInboxes}
-                      >
-                        <CheckCheck className="h-4 w-4 mr-2" />
-                        Approve All Inboxes ({filteredInboxes.filter((i) => i.status === 'pending_approval').length})
-                      </Button>
-                    )}
-                  </>
-                )}
-              </CardContent>
-            </Card>
-          </div>
-        </div>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => setShowDomainForm(true)}
+                >
+                  <Plus className="h-4 w-4 mr-1" />
+                  Add Domain
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => setShowInboxForm(true)}
+                  disabled={approvedDomains.length === 0}
+                >
+                  <Plus className="h-4 w-4 mr-1" />
+                  Add Inbox
+                </Button>
+              </div>
+            </div>
+          </CardHeader>
+          <CardContent>
+            {domains.length === 0 ? (
+              <EmptyState
+                icon={Globe}
+                title="No domains"
+                description={
+                  hasOnboardingData
+                    ? 'Click Generate Domains to create domain suggestions from onboarding.'
+                    : 'Complete onboarding or add domains manually.'
+                }
+              />
+            ) : (
+              <DomainInboxTree
+                domains={domains}
+                inboxes={allInboxes}
+              />
+            )}
+          </CardContent>
+        </Card>
           </TabsContent>
 
           {/* Purchase New Tab */}

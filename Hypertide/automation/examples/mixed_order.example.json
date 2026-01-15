@@ -1,0 +1,20 @@
+{
+  "client_name": "Acme Corp",
+  "forwarding_domain": "acme.com",
+  "inbox_target": {
+    "entra_inboxes": 500,
+    "google_inboxes": 100
+  },
+  "bison_credentials": {
+    "username": "your-bison-user@email.com",
+    "password": "your-bison-password",
+    "workspace": "Acme Workspace",
+    "bison_url": "https://send.hirecharm.com"
+  },
+  "users": [
+    {"first_name": "alex", "last_name": "morgan"},
+    {"first_name": "jordan", "last_name": "smith"},
+    {"first_name": "taylor", "last_name": "chen"}
+  ],
+  "use_saved_payment": true
+}

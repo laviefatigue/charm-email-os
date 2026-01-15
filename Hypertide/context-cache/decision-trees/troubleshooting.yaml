@@ -1,0 +1,190 @@
+# Hypertide Troubleshooting Decision Trees
+# Structured diagnostic flows for common issues
+
+decision_trees:
+  # ===========================================
+  # WARMUP CODE REQUEST
+  # ===========================================
+  warmup_code_request:
+    name: "Inboxes Requesting Code for Warmup"
+    trigger_phrases:
+      - "code to re-enable warmup"
+      - "warmup not turning on"
+      - "inbox needs code"
+
+    root:
+      question: "What percentage of inboxes are affected?"
+      branches:
+        less_than_15_percent:
+          condition: "< 15%"
+          verdict: "NORMAL - BY DESIGN"
+          explanation: |
+            This is intentional. Enterprise Entra infrastructure throttles warmup
+            emails specifically (not campaign emails). Sending tools classify these
+            as "bounces" but they are NOT true bounces.
+          key_insight: "Domain reputation >> Individual inbox reputation"
+          action: |
+            No action required. The domain will still achieve strong deliverability.
+            Inboxes WILL still send and receive CAMPAIGN emails.
+            There is NO deliverability difference.
+          optional_action: |
+            If you insist on enabling warmup for all inboxes, login to each inbox
+            to get the code. However, this adds operational complexity with no benefit.
+
+        more_than_15_percent:
+          condition: ">= 15%"
+          verdict: "PROBLEM - CONTACT SUPPORT"
+          action: "Email support@hypertide.io immediately"
+
+  # ===========================================
+  # HIGH BOUNCE RATE
+  # ===========================================
+  high_bounce_rate:
+    name: "Bounce Rate Above 5%"
+    trigger_phrases:
+      - "bounce rate high"
+      - "bounces over 5%"
+      - "too many bounces"
+
+    root:
+      question: "Are ALL bounces coming from ONE domain?"
+      branches:
+        all_from_one_domain:
+          condition: "Yes - all bounces from single domain"
+          verdict: "TENANT LOCKDOWN"
+          explanation: |
+            Smartlead sometimes sends too many warmup emails at once,
+            causing the Entra tenant to lock down. This is rare but happens.
+          action: |
+            1. Alert support@hypertide.io IMMEDIATELY
+            2. Support will migrate inboxes to a new, fresh tenant
+            3. Turnaround: 24 hours
+          note: "This is NOT a domain/copy issue - tenant change WILL help"
+
+        distributed_bounces:
+          condition: "No - bounces spread across domains"
+          verdict: "COPY FLAGGED BY ESPs"
+          explanation: |
+            Your email copy has been flagged. This can happen after 1-6 months
+            of sending similar content.
+          action: |
+            1. Change campaign email copy IMMEDIATELY
+            2. Consider increasing warmup variability
+            3. Do NOT request tenant change (won't help for copy issues)
+          recovery_timeline: "1-6 months depending on severity"
+
+    pre_check:
+      question: "Did you launch before 14 days of warmup?"
+      if_yes: |
+        This is likely the cause. Launching early causes high bounce rates.
+        Wait full 14 days for future campaigns.
+
+  # ===========================================
+  # INBOX DISCONNECTIONS
+  # ===========================================
+  inbox_disconnection:
+    name: "Inboxes Getting Disconnected"
+    trigger_phrases:
+      - "inbox disconnected"
+      - "inboxes disconnecting"
+      - "need to reconnect"
+
+    root:
+      question: "What type of reconnection is needed?"
+      branches:
+        bulk_reconnect:
+          condition: "Bulk reconnect works (no password needed)"
+          verdict: "EASY FIX"
+          action: |
+            Use the bulk reconnect feature in Smartlead or Instantly.
+            This is a minor issue and easily resolved.
+
+        full_reconnect:
+          condition: "Full reconnect required (needs password)"
+          verdict: "CONTACT SUPPORT"
+          action: |
+            Email support@hypertide.io with list of affected inboxes.
+            Support will reconnect within 24 hours.
+
+  # ===========================================
+  # TEST EMAILS NOT ARRIVING
+  # ===========================================
+  test_email_missing:
+    name: "Test Emails Not Received"
+    trigger_phrases:
+      - "test email not received"
+      - "didn't get test email"
+      - "test not working"
+
+    root:
+      verdict: "EXPECTED BEHAVIOR"
+      explanation: |
+        Test emails use a DIFFERENT protocol than actual campaign sends.
+        The test feature may not work properly with Entra inboxes.
+      action: |
+        1. Create an actual campaign
+        2. Add your test email addresses as leads
+        3. Send via campaign (not test feature)
+        4. This uses the proper campaign protocol
+      note: "Do NOT be concerned if test emails don't arrive - test via actual campaigns"
+
+  # ===========================================
+  # WARMUP NOT SENDING
+  # ===========================================
+  warmup_not_sending:
+    name: "Inboxes Not SENDING Warmup Emails"
+    trigger_phrases:
+      - "inbox not sending warmup"
+      - "warmup emails not going out"
+      - "no outbound warmup"
+
+    root:
+      question: "What percentage of inboxes are not sending warmup?"
+      branches:
+        less_than_80_percent:
+          condition: "< 80%"
+          verdict: "NORMAL - BY DESIGN"
+          explanation: |
+            In larger enterprises like Hypertide's Entra infrastructure,
+            many inboxes primarily RECEIVE rather than send.
+            This follows an 80/20 received-to-sent ratio.
+          key_insight: |
+            - This mimics natural enterprise behavior
+            - Domain health > Individual inbox health
+            - These inboxes WILL achieve strong deliverability for outbound
+            - If they sent both warmup AND outbound, metrics would be distorted
+          action: "No action required. This is intentional design."
+
+        more_than_80_percent:
+          condition: ">= 80%"
+          verdict: "PROBLEM - CONTACT SUPPORT"
+          action: "Email support@hypertide.io - this indicates an issue"
+
+# Quick diagnostic lookup
+quick_diagnostics:
+  bounce_5_percent:
+    symptom: "Bounce rate > 5%"
+    first_check: "All bounces from one domain?"
+    if_yes: "Tenant lockdown - contact support"
+    if_no: "Copy flagged - change copy"
+
+  warmup_code:
+    symptom: "Inboxes requesting code for warmup"
+    threshold: "15%"
+    below: "Normal, no action"
+    above: "Contact support"
+
+  warmup_not_sending:
+    symptom: "Inboxes not sending warmup emails"
+    threshold: "80%"
+    below: "Normal, enterprise behavior"
+    above: "Contact support"
+
+  disconnections:
+    symptom: "Inboxes disconnected"
+    bulk_works: "Easy fix via platform"
+    bulk_fails: "Contact support for full reconnect"
+
+  test_emails:
+    symptom: "Test emails not arriving"
+    verdict: "Expected - use actual campaign to test"

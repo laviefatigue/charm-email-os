@@ -1,0 +1,129 @@
+# Hypertide Campaign Rules
+# These are NON-NEGOTIABLE rules for all campaigns
+
+rules:
+  tracking:
+    open_tracking:
+      allowed: false
+      severity: critical
+      reason: |
+        - Tracking pixels add small images to emails
+        - ESPs and mail servers recognize tracking pixel domains
+        - Additional HTML triggers spam filters
+        - DMARC may fail due to third-party server redirects
+
+    link_tracking:
+      allowed: false
+      severity: critical
+      reason: |
+        - Third-party redirect domains are flagged
+        - Same deliverability concerns as open tracking
+
+    custom_tracking_dns:
+      allowed: false
+      severity: warning
+      reason: |
+        - Despite auto-setup, drops deliverability
+        - Hypertide does NOT recommend using custom tracking
+      tracking_subdomains:
+        instantly: "inst"
+        smartlead: "smart"
+
+  list_management:
+    mx_esp_matching:
+      allowed: false
+      severity: critical
+      reason: |
+        - Makes Hypertide domains EASY to get flagged
+        - Key difference: Hypertide = all inboxes from 1 domain
+        - Normal setups have 2-3 inboxes per domain (natural gap)
+        - 50 inboxes on 1 domain = no natural gap between ESP emails
+
+    lead_list_splitting_by_esp:
+      allowed: false
+      severity: critical
+      reason: |
+        - Similar to MX matching risk
+        - Single domain emailing many users of one ESP in short period
+        - Sending tools don't control gap between same-DOMAIN emails
+        - Google/Microsoft will notice and flag
+
+    email_validation:
+      required: true
+      allowed_types:
+        - safe
+        - valid
+      disallowed_types:
+        - catchall
+        - invalid
+      reason: "Catchalls and invalids increase bounces, risk burning domain"
+
+  content:
+    images:
+      allowed: false
+      severity: critical
+      reason: "Images reduce deliverability, triggers spam filters"
+
+    links:
+      allowed: false
+      severity: critical
+      reason: "Links reduce deliverability, especially tracked links"
+
+    format:
+      recommended: "plain_text"
+      reason: "Plain text has highest deliverability"
+
+  domain_usage:
+    use_both_domains:
+      required: true
+      severity: critical
+      reason: |
+        - Each order includes 2 domains
+        - Using both provides diversity
+        - Prevents single-domain pattern detection
+
+  platform_specific:
+    smartlead:
+      domain_level_rate_limiting:
+        required: true
+        severity: critical
+        reason: "Prevents domain from sending too fast to any single ESP"
+
+# Quick validation checklist
+validation_checklist:
+  - id: no_open_tracking
+    check: "Open tracking is disabled"
+    rule_ref: tracking.open_tracking
+
+  - id: no_link_tracking
+    check: "Link tracking is disabled"
+    rule_ref: tracking.link_tracking
+
+  - id: no_mx_matching
+    check: "MX/ESP matching is disabled"
+    rule_ref: list_management.mx_esp_matching
+
+  - id: no_esp_split
+    check: "Lead list is NOT split by inbox provider"
+    rule_ref: list_management.lead_list_splitting_by_esp
+
+  - id: valid_emails_only
+    check: "Only safe/valid emails in lead list (no catchalls/invalids)"
+    rule_ref: list_management.email_validation
+
+  - id: no_images
+    check: "No images in email copy"
+    rule_ref: content.images
+
+  - id: no_links
+    check: "No links in email copy"
+    rule_ref: content.links
+
+  - id: both_domains
+    check: "Both Hypertide domains are used in campaign"
+    rule_ref: domain_usage.use_both_domains
+
+  - id: rate_limiting
+    check: "Domain-Level Rate Limiting enabled (Smartlead)"
+    rule_ref: platform_specific.smartlead.domain_level_rate_limiting
+    platform: smartlead

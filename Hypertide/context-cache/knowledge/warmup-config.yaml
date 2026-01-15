@@ -1,0 +1,124 @@
+# Hypertide Warmup Configuration Matrix
+# This is the authoritative source for warmup settings
+# PRIMARY PLATFORM: EmailBison (Bison)
+# Smartlead/Instantly retained for reference only
+# Last Validated: 2025-12-10
+
+warmup_duration_days: 14  # Universal across all platforms/inbox types
+
+# =============================================================================
+# PRIMARY PLATFORM: BISON (EmailBison)
+# =============================================================================
+# All operations should default to Bison settings unless explicitly told otherwise
+# Bison uses "Reply to Inbound" count instead of reply rate percentage
+
+configurations:
+  # BISON - PRIMARY PLATFORM (USE THESE SETTINGS)
+  bison:
+    entra:
+      emails_per_day: 5
+      reply_rate_percent: null  # Bison uses inbound reply count instead
+      ramp_up_per_day: null
+      warmup_days: 14
+      reply_to_inbound_warmup: 3  # KEY SETTING for Bison Entra
+      auto_adjust_enabled: null
+      notes: |
+        PRIMARY CONFIGURATION - Use for all Hypertide orders
+        - Bison uses "Reply to Inbound" count instead of reply rate percentage
+        - Simpler configuration model than Smartlead/Instantly
+        - 3 is the optimal reply to inbound value for Entra
+
+    google:
+      emails_per_day: 10
+      reply_rate_percent: null
+      ramp_up_per_day: null
+      warmup_days: 14
+      reply_to_inbound_warmup: 6  # Higher for Google
+      auto_adjust_enabled: null
+      notes: |
+        - Google allows higher volume (10 vs 5 for Entra)
+        - Reply to inbound is 6 for Google (vs 3 for Entra)
+
+  # =============================================================================
+  # REFERENCE ONLY: SMARTLEAD (Not actively used)
+  # =============================================================================
+  smartlead:
+    entra:
+      emails_per_day: 5
+      reply_rate_percent: 60  # CRITICAL: Not 100%
+      ramp_up_per_day: 1
+      warmup_days: 14
+      reply_to_inbound_warmup: 8
+      auto_adjust_enabled: false  # NEVER enable
+      notes: |
+        REFERENCE ONLY - Smartlead is not actively used
+        - 60% reply rate is platform-specific optimization for Smartlead
+        - Auto-adjust must remain OFF to maintain control
+
+    google:
+      emails_per_day: 10
+      reply_rate_percent: 30
+      ramp_up_per_day: 1
+      warmup_days: 14
+      reply_to_inbound_warmup: null
+      auto_adjust_enabled: false
+      notes: |
+        REFERENCE ONLY - Smartlead is not actively used
+
+  # =============================================================================
+  # REFERENCE ONLY: INSTANTLY (Not actively used)
+  # =============================================================================
+  instantly:
+    entra:
+      emails_per_day: 5
+      reply_rate_percent: 100  # CRITICAL: 100% for Instantly (different from Smartlead!)
+      ramp_up_per_day: 1
+      warmup_days: 14
+      reply_to_inbound_warmup: null
+      auto_adjust_enabled: false
+      notes: |
+        REFERENCE ONLY - Instantly is not actively used
+        - Instantly requires 100% reply rate for Entra (vs 60% for Smartlead)
+        - Different warmup algorithm than Smartlead
+
+    google:
+      emails_per_day: 10
+      reply_rate_percent: 30
+      ramp_up_per_day: 1
+      warmup_days: 14
+      reply_to_inbound_warmup: null
+      auto_adjust_enabled: false
+
+# Quick reference lookup for Bison (PRIMARY)
+bison_quick_reference:
+  entra:
+    emails_per_day: 5
+    reply_to_inbound: 3
+    warmup_days: 14
+  google:
+    emails_per_day: 10
+    reply_to_inbound: 6
+    warmup_days: 14
+
+# Platform-specific reply rate lookup (for reference)
+reply_rate_lookup:
+  bison_entra: null  # Uses inbound count: 3
+  bison_google: null  # Uses inbound count: 6
+  smartlead_entra: 60  # Reference only
+  smartlead_google: 30  # Reference only
+  instantly_entra: 100  # Reference only
+  instantly_google: 30  # Reference only
+
+# Common mistakes to prevent (Bison-focused)
+anti_patterns:
+  - mistake: "Using reply rate percentage for Bison"
+    correct: "Use Reply to Inbound count: 3 for Entra, 6 for Google"
+
+  - mistake: "Using same email volume for Entra and Google"
+    correct: "Entra: 5 emails/day, Google: 10 emails/day"
+
+  - mistake: "Launching campaigns before 14-day warmup"
+    correct: "Always complete full 14-day warmup period"
+
+  - mistake: "Confusing Bison settings with Smartlead/Instantly"
+    correct: "Bison uses Reply to Inbound count, not reply rate percentage"

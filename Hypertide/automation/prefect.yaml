@@ -1,0 +1,186 @@
+# Prefect Deployment Configuration for Hypertide Automation
+# Deploy to existing BrainOn Prefect infrastructure
+#
+# Usage:
+#   cd D:\BrainOn\Hypertide\automation
+#   prefect deploy --all
+#
+# Prerequisites:
+#   1. Set PREFECT_API_URL=http://localhost:4200/api
+#   2. Configure Google Sheets credentials
+#   3. Set HYPERTIDE_SHEET_ID environment variable
+
+name: hypertide-automation
+prefect-version: ">=3.0.0"
+
+# Build configuration - install the package
+build:
+  - prefect.deployments.steps.run_shell_script:
+      script: pip install -e .
+      stream_output: true
+
+# Pull configuration - local filesystem
+pull:
+  - prefect.deployments.steps.set_working_directory:
+      directory: D:/BrainOn/Hypertide/automation
+
+# Deployments
+deployments:
+  # ==========================================================================
+  # Domain Generation Flow (NEW - reads Requests, generates variations, checks prices)
+  # ==========================================================================
+  - name: domain-generation-manual
+    description: |
+      Generate domain variations from requests and check prices.
+      Reads Requests tab, generates variations, queries registrar prices,
+      populates Domains tab with quotes for approval.
+    entrypoint: src/hypertide_automation/flows/domain_generation_flow.py:domain_generation_flow
+    work_pool:
+      name: default-agent-pool
+    parameters:
+      sheet_id: "{{ env.HYPERTIDE_SHEET_ID }}"
+      use_ai: false
+      variations_per_request: 20
+    tags:
+      - hypertide
+      - domains
+      - generation
+      - manual
+
+  - name: domain-generation-ai
+    description: |
+      AI-powered domain generation with price lookup.
+      Uses OpenAI/Anthropic for creative domain suggestions.
+    entrypoint: src/hypertide_automation/flows/domain_generation_flow.py:domain_generation_flow
+    work_pool:
+      name: default-agent-pool
+    parameters:
+      sheet_id: "{{ env.HYPERTIDE_SHEET_ID }}"
+      use_ai: true
+      variations_per_request: 30
+    tags:
+      - hypertide
+      - domains
+      - generation
+      - ai
+
+  # ==========================================================================
+  # Domain Purchase Flow
+  # ==========================================================================
+  - name: domain-purchase-manual
+    description: |
+      Manually triggered domain purchase flow.
+      Reads approved domains from Google Sheet and purchases via Hypertide.
+    entrypoint: src/hypertide_automation/flows/domain_purchase_flow.py:domain_purchase_flow
+    work_pool:
+      name: default-agent-pool
+    parameters:
+      sheet_id: "{{ env.HYPERTIDE_SHEET_ID }}"
+      headless: false
+      dry_run: true  # Default to dry run for safety
+      max_domains: 10
+    tags:
+      - hypertide
+      - domains
+      - manual
+
+  - name: domain-purchase-headless
+    description: |
+      Headless domain purchase for scheduled runs.
+      Use for automated processing of approved domains.
+    entrypoint: src/hypertide_automation/flows/domain_purchase_flow.py:domain_purchase_flow
+    work_pool:
+      name: default-agent-pool
+    parameters:
+      sheet_id: "{{ env.HYPERTIDE_SHEET_ID }}"
+      headless: true
+      dry_run: false
+      max_domains: 20
+    tags:
+      - hypertide
+      - domains
+      - scheduled
+    schedules:
+      - cron: "0 9 * * 1-5"  # Weekdays at 9 AM
+        timezone: America/New_York
+        active: false  # Disabled by default - enable when ready
+
+  # ==========================================================================
+  # Inbox Provision Flow
+  # ==========================================================================
+  - name: inbox-provision-manual
+    description: |
+      Manually triggered inbox provisioning flow.
+      Generates inbox specs, verifies in Hypertide, uploads to Email Bison.
+    entrypoint: src/hypertide_automation/flows/inbox_provision_flow.py:inbox_provision_flow
+    work_pool:
+      name: default-agent-pool
+    parameters:
+      sheet_id: "{{ env.HYPERTIDE_SHEET_ID }}"
+      headless: false
+      dry_run: true
+      skip_emailbison: false
+      generate_new: true
+    tags:
+      - hypertide
+      - inboxes
+      - manual
+
+  - name: inbox-provision-headless
+    description: |
+      Headless inbox provisioning for scheduled runs.
+      Processes purchased domains into Email Bison automatically.
+    entrypoint: src/hypertide_automation/flows/inbox_provision_flow.py:inbox_provision_flow
+    work_pool:
+      name: default-agent-pool
+    parameters:
+      sheet_id: "{{ env.HYPERTIDE_SHEET_ID }}"
+      headless: true
+      dry_run: false
+      skip_emailbison: false
+      generate_new: true
+    tags:
+      - hypertide
+      - inboxes
+      - scheduled
+    schedules:
+      - cron: "0 10 * * 1-5"  # Weekdays at 10 AM (1 hour after domain purchase)
+        timezone: America/New_York
+        active: false
+
+  - name: inbox-provision-pending
+    description: |
+      Process pending inboxes (already in sheet) without generating new ones.
+      Use when inboxes were added manually or from previous failed runs.
+    entrypoint: src/hypertide_automation/flows/inbox_provision_flow.py:inbox_provision_flow
+    work_pool:
+      name: default-agent-pool
+    parameters:
+      sheet_id: "{{ env.HYPERTIDE_SHEET_ID }}"
+      headless: false
+      dry_run: false
+      skip_emailbison: false
+      generate_new: false  # Process existing pending inboxes
+    tags:
+      - hypertide
+      - inboxes
+      - recovery
+
+  # ==========================================================================
+  # Combined Pipeline
+  # ==========================================================================
+  - name: full-pipeline-dry-run
+    description: |
+      Full pipeline dry run for testing.
+      Runs both domain purchase and inbox provision in sequence.
+    entrypoint: src/hypertide_automation/flows/pipeline.py:full_pipeline_flow
+    work_pool:
+      name: default-agent-pool
+    parameters:
+      sheet_id: "{{ env.HYPERTIDE_SHEET_ID }}"
+      headless: false
+      dry_run: true
+    tags:
+      - hypertide
+      - pipeline
+      - testing
