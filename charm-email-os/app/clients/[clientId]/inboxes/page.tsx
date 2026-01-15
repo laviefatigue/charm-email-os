@@ -577,8 +577,8 @@ export default function InboxesPage() {
             clientId={clientId}
             clientName={client.name}
             industry={client.onboardingData?.industry || 'Technology'}
-            brandKeywords={client.onboardingData?.brandKeywords || [client.name]}
-            targetAudience={client.onboardingData?.targetAudience}
+            brandKeywords={client.onboardingData?.product ? [client.onboardingData.product, client.name] : [client.name]}
+            targetAudience={client.onboardingData?.industry}
             onComplete={(purchasedDomains) => {
               toast.success(`Purchased ${purchasedDomains.length} domains!`);
               // Refresh domains list
