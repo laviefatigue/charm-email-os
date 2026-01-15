@@ -2,12 +2,13 @@
 
 import { useState, useMemo, useEffect } from 'react';
 import { useParams } from 'next/navigation';
-import { Plus, Globe, Mail, Info, Sparkles, AlertTriangle, CheckCheck, Loader2, AlertCircle } from 'lucide-react';
+import { Plus, Globe, Mail, Info, Sparkles, AlertTriangle, CheckCheck, Loader2, AlertCircle, ShoppingCart, Package } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { Alert, AlertDescription } from '@/components/ui/alert';
+import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { ClientHeader, TabNavigation, PageContainer } from '@/components/layout';
 import { EmptyState } from '@/components/shared';
 import {
@@ -18,6 +19,7 @@ import {
   DomainEditModal,
   InboxEditModal,
 } from '@/components/inboxes';
+import { DomainSourcingWizard, InboxPurchaseWizard } from '@/components/purchasing';
 import { useClientStore, useInfrastructureStore } from '@/lib/stores';
 import type { Domain, Inbox } from '@/lib/types';
 
@@ -65,6 +67,9 @@ export default function InboxesPage() {
   const [showInboxForm, setShowInboxForm] = useState(false);
   const [editingDomain, setEditingDomain] = useState<Domain | null>(null);
   const [editingInbox, setEditingInbox] = useState<Inbox | null>(null);
+  const [activeTab, setActiveTab] = useState<string>('inventory');
+  const [showDomainSourcingWizard, setShowDomainSourcingWizard] = useState(false);
+  const [showInboxPurchaseWizard, setShowInboxPurchaseWizard] = useState(false);
 
   const filteredInboxes = useMemo(() => {
     if (!selectedDomainId) return allInboxes;
@@ -157,8 +162,23 @@ export default function InboxesPage() {
       <TabNavigation clientId={clientId} />
 
       <PageContainer>
-        {/* Infrastructure Status */}
-        <div className="mb-6 flex items-center gap-4 flex-wrap">
+        {/* Tab Navigation */}
+        <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
+          <TabsList className="mb-6">
+            <TabsTrigger value="inventory" className="flex items-center gap-2">
+              <Package className="h-4 w-4" />
+              Current Inventory
+            </TabsTrigger>
+            <TabsTrigger value="purchase" className="flex items-center gap-2">
+              <ShoppingCart className="h-4 w-4" />
+              Purchase New
+            </TabsTrigger>
+          </TabsList>
+
+          {/* Current Inventory Tab */}
+          <TabsContent value="inventory">
+            {/* Infrastructure Status */}
+            <div className="mb-6 flex items-center gap-4 flex-wrap">
           <div className="flex items-center gap-2 px-3 py-1.5 bg-green-50 text-green-700 rounded-full text-sm">
             <div className="h-2 w-2 rounded-full bg-green-500" />
             <span>Infrastructure Active</span>
@@ -385,6 +405,144 @@ export default function InboxesPage() {
             </Card>
           </div>
         </div>
+          </TabsContent>
+
+          {/* Purchase New Tab */}
+          <TabsContent value="purchase">
+            <div className="space-y-6">
+              {/* Purchase Overview */}
+              <Alert>
+                <Sparkles className="h-4 w-4" />
+                <AlertDescription>
+                  <strong>Purchase Workflow:</strong> First, generate and purchase domains from registrars (Porkbun, Dynadot).
+                  Then, configure and purchase inboxes from HyperTide for your approved domains.
+                </AlertDescription>
+              </Alert>
+
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                {/* Domain Sourcing Card */}
+                <Card>
+                  <CardHeader>
+                    <CardTitle className="flex items-center gap-2">
+                      <Globe className="h-5 w-5" />
+                      Step 1: Purchase Domains
+                    </CardTitle>
+                    <CardDescription>
+                      Generate AI-powered domain suggestions, search registrar pricing, and purchase domains
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="space-y-4">
+                      <div className="text-sm text-muted-foreground">
+                        <ul className="space-y-2">
+                          <li className="flex items-center gap-2">
+                            <div className="h-1.5 w-1.5 rounded-full bg-primary" />
+                            AI domain generation based on client profile
+                          </li>
+                          <li className="flex items-center gap-2">
+                            <div className="h-1.5 w-1.5 rounded-full bg-primary" />
+                            Multi-registrar price comparison (Porkbun, Dynadot)
+                          </li>
+                          <li className="flex items-center gap-2">
+                            <div className="h-1.5 w-1.5 rounded-full bg-primary" />
+                            Value scoring and deal detection
+                          </li>
+                        </ul>
+                      </div>
+                      <Button
+                        className="w-full"
+                        disabled={!client?.onboardingData}
+                        onClick={() => setShowDomainSourcingWizard(true)}
+                      >
+                        <Sparkles className="h-4 w-4 mr-2" />
+                        Start Domain Sourcing
+                      </Button>
+                      {!client?.onboardingData && (
+                        <p className="text-xs text-muted-foreground text-center">
+                          Complete onboarding first to enable AI domain generation
+                        </p>
+                      )}
+                    </div>
+                  </CardContent>
+                </Card>
+
+                {/* Inbox Purchasing Card */}
+                <Card>
+                  <CardHeader>
+                    <CardTitle className="flex items-center gap-2">
+                      <Mail className="h-5 w-5" />
+                      Step 2: Purchase Inboxes
+                    </CardTitle>
+                    <CardDescription>
+                      Generate inbox names and purchase from HyperTide (Entra or Google)
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="space-y-4">
+                      <div className="text-sm text-muted-foreground">
+                        <ul className="space-y-2">
+                          <li className="flex items-center gap-2">
+                            <div className="h-1.5 w-1.5 rounded-full bg-primary" />
+                            Entra: 100 inboxes/order (2 domains × 50 inboxes)
+                          </li>
+                          <li className="flex items-center gap-2">
+                            <div className="h-1.5 w-1.5 rounded-full bg-primary" />
+                            Google: 15 inboxes/order (5 domains × 3 inboxes)
+                          </li>
+                          <li className="flex items-center gap-2">
+                            <div className="h-1.5 w-1.5 rounded-full bg-primary" />
+                            Automatic EmailBison integration
+                          </li>
+                        </ul>
+                      </div>
+                      <Button
+                        variant="outline"
+                        className="w-full"
+                        disabled={approvedDomains.length === 0}
+                        onClick={() => setShowInboxPurchaseWizard(true)}
+                      >
+                        <ShoppingCart className="h-4 w-4 mr-2" />
+                        Purchase Inboxes
+                      </Button>
+                      {approvedDomains.length === 0 && (
+                        <p className="text-xs text-muted-foreground text-center">
+                          Purchase and approve domains first before buying inboxes
+                        </p>
+                      )}
+                    </div>
+                  </CardContent>
+                </Card>
+              </div>
+
+              {/* Summary Stats */}
+              <Card>
+                <CardHeader className="pb-3">
+                  <CardTitle className="text-base">Current Inventory Summary</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                    <div className="text-center p-3 bg-muted rounded-lg">
+                      <div className="text-2xl font-bold">{domains.length}</div>
+                      <div className="text-xs text-muted-foreground">Total Domains</div>
+                    </div>
+                    <div className="text-center p-3 bg-muted rounded-lg">
+                      <div className="text-2xl font-bold">{approvedDomains.length}</div>
+                      <div className="text-xs text-muted-foreground">Approved Domains</div>
+                    </div>
+                    <div className="text-center p-3 bg-muted rounded-lg">
+                      <div className="text-2xl font-bold">{allInboxes.length}</div>
+                      <div className="text-xs text-muted-foreground">Total Inboxes</div>
+                    </div>
+                    <div className="text-center p-3 bg-muted rounded-lg">
+                      <div className="text-2xl font-bold">{allInboxes.filter(i => i.inboxState === 'live').length}</div>
+                      <div className="text-xs text-muted-foreground">Active Inboxes</div>
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+            </div>
+          </TabsContent>
+        </Tabs>
 
         {/* Forms */}
         <DomainForm
@@ -410,6 +568,46 @@ export default function InboxesPage() {
           open={editingInbox !== null}
           onOpenChange={(open) => !open && setEditingInbox(null)}
         />
+
+        {/* Domain Sourcing Wizard */}
+        {client && (
+          <DomainSourcingWizard
+            open={showDomainSourcingWizard}
+            onOpenChange={setShowDomainSourcingWizard}
+            clientId={clientId}
+            clientName={client.name}
+            industry={client.onboardingData?.industry || 'Technology'}
+            brandKeywords={client.onboardingData?.brandKeywords || [client.name]}
+            targetAudience={client.onboardingData?.targetAudience}
+            onComplete={(purchasedDomains) => {
+              toast.success(`Purchased ${purchasedDomains.length} domains!`);
+              // Refresh domains list
+              fetchDomainsByClient(clientId);
+            }}
+          />
+        )}
+
+        {/* Inbox Purchase Wizard */}
+        {client && (
+          <InboxPurchaseWizard
+            open={showInboxPurchaseWizard}
+            onOpenChange={setShowInboxPurchaseWizard}
+            clientId={clientId}
+            clientName={client.name}
+            forwardingDomain={client.onboardingData?.primaryDomain || client.name.toLowerCase().replace(/\s+/g, '') + '.com'}
+            domains={approvedDomains.map(d => ({
+              id: d.id,
+              domainName: d.domain,
+              status: d.status,
+              inboxCount: allInboxes.filter(i => i.domainId === d.id).length,
+            }))}
+            onComplete={(totalInboxes) => {
+              toast.success(`Created ${totalInboxes} inboxes!`);
+              // Refresh inboxes list
+              fetchInboxesByClient(clientId);
+            }}
+          />
+        )}
       </PageContainer>
     </TooltipProvider>
   );
