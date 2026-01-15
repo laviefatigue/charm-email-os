@@ -233,21 +233,21 @@ async def get_domain_inboxes(domain_id: UUID, page: int = Query(1, ge=1), page_s
 
     offset = (page - 1) * page_size
 
-    # Get inboxes where email ends with domain (using only columns that exist)
+    # Get inboxes where email ends with domain - join warmup snapshots for warmup data
     query = """
         SELECT
             sa.id,
             sa.workspace_id,
-            NULL as emailbison_account_id,
+            sa.emailbison_account_id,
             sa.email_address,
             NULL as first_name,
             NULL as last_name,
-            NULL as display_name,
-            'active' as status,
+            sa.display_name,
+            COALESCE(sa.status, 'active') as status,
             COALESCE(sa.inbox_state, 'live') as inbox_state,
             NULL as esp_type,
-            false as warmup_enabled,
-            NULL as warmup_score,
+            COALESCE(ws.warmup_enabled, false) as warmup_enabled,
+            ws.warmup_score,
             NULL as daily_send_limit,
             COALESCE(sa.hard_bounces_24h, 0) as hard_bounces_24h,
             COALESCE(sa.hard_bounces_7d, 0) as hard_bounces_7d,
@@ -257,8 +257,16 @@ async def get_domain_inboxes(domain_id: UUID, page: int = Query(1, ge=1), page_s
             NULL as removal_tagged_at,
             NULL as removed_at,
             sa.created_at,
-            sa.updated_at
+            sa.updated_at,
+            sa.health_score
         FROM sender_accounts sa
+        LEFT JOIN LATERAL (
+            SELECT warmup_enabled, warmup_score
+            FROM sender_warmup_snapshots
+            WHERE sender_account_id = sa.id
+            ORDER BY snapshot_timestamp DESC
+            LIMIT 1
+        ) ws ON true
         WHERE sa.workspace_id = $1
         AND SPLIT_PART(sa.email_address, '@', 2) = $2
         ORDER BY sa.email_address

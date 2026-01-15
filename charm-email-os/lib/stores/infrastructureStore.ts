@@ -36,7 +36,7 @@ interface InfrastructureStore {
   // Async API actions - Inboxes
   fetchInboxesByClient: (clientId: string) => Promise<void>;
   fetchInboxesByDomain: (domainId: string) => Promise<void>;
-  fetchInboxesForDomainLazy: (domainId: string) => Promise<void>;  // Lazy load on expand
+  fetchInboxesForDomainLazy: (domainId: string, clientId: string) => Promise<void>;  // Lazy load on expand
   addInbox: (data: {
     clientId: string;
     domainId: string;
@@ -231,7 +231,7 @@ export const useInfrastructureStore = create<InfrastructureStore>((set, get) => 
   },
 
   // Lazy load inboxes for a domain when expanded
-  fetchInboxesForDomainLazy: async (domainId) => {
+  fetchInboxesForDomainLazy: async (domainId, clientId) => {
     const state = get();
     // Skip if already fetched or currently loading
     if (state.fetchedDomainIds.has(domainId) || state.loadingDomainIds.has(domainId)) {
@@ -247,10 +247,11 @@ export const useInfrastructureStore = create<InfrastructureStore>((set, get) => 
       // Use the domain-specific inboxes endpoint
       const data = await api.domains.getInboxes(domainId, { pageSize: 100 });
 
-      // Add domainId to each inbox (the API might not include it)
-      const inboxesWithDomainId = data.items.map((inbox) => ({
+      // Add domainId and clientId to each inbox (the API might not include them)
+      const inboxesWithIds = data.items.map((inbox) => ({
         ...inbox,
         domainId,
+        clientId,
       })) as unknown as Inbox[];
 
       set((state) => {
@@ -261,7 +262,7 @@ export const useInfrastructureStore = create<InfrastructureStore>((set, get) => 
         const newFetchedIds = new Set([...state.fetchedDomainIds, domainId]);
 
         return {
-          inboxes: [...otherInboxes, ...inboxesWithDomainId],
+          inboxes: [...otherInboxes, ...inboxesWithIds],
           loadingDomainIds: newLoadingIds,
           fetchedDomainIds: newFetchedIds,
         };

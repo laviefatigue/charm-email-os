@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useMemo, useEffect } from 'react';
+import { useState, useMemo, useEffect, useCallback } from 'react';
 import { useParams } from 'next/navigation';
 import { Plus, Globe, Mail, Info, Sparkles, AlertTriangle, CheckCheck, Loader2, AlertCircle, ShoppingCart, Package } from 'lucide-react';
 import { toast } from 'sonner';
@@ -77,6 +77,11 @@ export default function InboxesPage() {
     if (!selectedDomainId) return allInboxes;
     return allInboxes.filter((i) => i.domainId === selectedDomainId);
   }, [selectedDomainId, allInboxes]);
+
+  // Wrapper to pass clientId to lazy load function
+  const handleExpandDomain = useCallback((domainId: string) => {
+    fetchInboxesForDomainLazy(domainId, clientId);
+  }, [fetchInboxesForDomainLazy, clientId]);
 
   // Count pending approvals
   const pendingDomains = domains.filter((d) => d.status === 'pending_approval').length;
@@ -282,7 +287,7 @@ export default function InboxesPage() {
               <DomainInboxTree
                 domains={domains}
                 inboxes={allInboxes}
-                onExpandDomain={fetchInboxesForDomainLazy}
+                onExpandDomain={handleExpandDomain}
                 loadingDomainIds={loadingDomainIds}
               />
             )}

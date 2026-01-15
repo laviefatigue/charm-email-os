@@ -98,7 +98,14 @@ function DomainRow({ domain, inboxes, isExpanded, isLoading, onToggle }: DomainR
 
       {isExpanded && !isLoading && inboxes.length > 0 && (
         <div className="border-t divide-y max-h-96 overflow-y-auto">
-          {inboxes.map((inbox) => (
+          {/* Sort inboxes: live first, then dead */}
+          {[...inboxes].sort((a, b) => {
+            const stateA = a.healthState || a.inboxState || 'unknown';
+            const stateB = b.healthState || b.inboxState || 'unknown';
+            // live = 0, unknown = 1, dead = 2
+            const order: Record<string, number> = { live: 0, healthy: 0, unknown: 1, warning: 1, critical: 2, dead: 3 };
+            return (order[stateA] ?? 1) - (order[stateB] ?? 1);
+          }).map((inbox) => (
             <InboxRow key={inbox.id} inbox={inbox} />
           ))}
         </div>
@@ -106,7 +113,7 @@ function DomainRow({ domain, inboxes, isExpanded, isLoading, onToggle }: DomainR
 
       {isExpanded && !isLoading && inboxes.length === 0 && inboxCount > 0 && (
         <div className="px-4 py-3 text-sm text-muted-foreground border-t">
-          Click to load {inboxCount} inboxes
+          Loading {inboxCount} inboxes...
         </div>
       )}
 

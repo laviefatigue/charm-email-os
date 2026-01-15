@@ -348,12 +348,19 @@ export const domainApi = {
     if (params?.pageSize) searchParams.set('page_size', params.pageSize.toString());
 
     const query = searchParams.toString();
-    return fetchApi<{
+    const response = await fetchApi<{
       items: Record<string, unknown>[];
       total: number;
       page: number;
       page_size: number;
     }>(`/api/domains/${id}/inboxes${query ? `?${query}` : ''}`);
+
+    return {
+      items: response.items.map((item) => toCamelCase<Inbox>(item)),
+      total: response.total,
+      page: response.page,
+      pageSize: response.page_size,
+    };
   },
 
   /**

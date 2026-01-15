@@ -81,6 +81,7 @@ class Inbox(BaseModel):
 
     # Computed health state
     health_state: InboxHealthState = "healthy"
+    health_score: Optional[float] = None  # EmailBison health score (0-100)
 
     # Timestamps
     created_at: Optional[datetime] = None
