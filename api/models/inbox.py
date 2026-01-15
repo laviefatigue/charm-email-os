@@ -46,6 +46,7 @@ class Inbox(BaseModel):
     """Full inbox model from OwnRBL sender_accounts"""
     id: UUID
     workspace_id: UUID
+    client_id: Optional[UUID] = None  # Reverse-lookup from clients table
     emailbison_account_id: Optional[int] = None  # External sync ID
 
     # Identity

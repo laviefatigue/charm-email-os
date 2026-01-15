@@ -27,6 +27,7 @@ class Domain(BaseModel):
     """Full domain model from OwnRBL"""
     id: UUID
     workspace_id: UUID
+    client_id: Optional[UUID] = None  # Reverse-lookup from clients table
     domain_name: str
     status: DomainStatus = "active"
 

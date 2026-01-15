@@ -105,11 +105,12 @@ async def list_inboxes(
     """
     health_counts = await fetch_one(health_counts_query, *condition_params)
 
-    # Get inboxes - using only columns that definitely exist in sender_accounts
+    # Get inboxes - join with clients to get client_id for frontend filtering
     query = f"""
         SELECT
             sa.id,
             sa.workspace_id,
+            c.id as client_id,
             NULL as emailbison_account_id,
             sa.email_address,
             NULL as first_name,
@@ -133,6 +134,7 @@ async def list_inboxes(
             sa.updated_at,
             SPLIT_PART(sa.email_address, '@', 2) as domain_name
         FROM sender_accounts sa
+        LEFT JOIN clients c ON c.workspace_id = sa.workspace_id
         {where_clause}
         ORDER BY sa.email_address
         LIMIT ${param_idx} OFFSET ${param_idx + 1}

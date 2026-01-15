@@ -63,10 +63,12 @@ async def list_domains(
     total = count_result["total"] if count_result else 0
 
     # Get domains with health metrics (using only columns that exist in DB)
+    # Join with clients to get client_id for frontend filtering
     query = f"""
         SELECT
             d.id,
             d.workspace_id,
+            c.id as client_id,
             d.domain_name,
             'active' as status,
             d.latest_health_score,
@@ -85,6 +87,7 @@ async def list_domains(
                 0
             ) as inbox_count
         FROM domains d
+        LEFT JOIN clients c ON c.workspace_id = d.workspace_id
         {where_clause}
         ORDER BY d.domain_name
         LIMIT ${param_idx} OFFSET ${param_idx + 1}
