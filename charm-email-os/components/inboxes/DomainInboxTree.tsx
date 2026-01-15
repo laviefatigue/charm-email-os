@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useMemo } from 'react';
-import { ChevronRight, ChevronDown, Globe, Mail, AlertCircle, CheckCircle, AlertTriangle, XCircle, Filter, SortAsc } from 'lucide-react';
+import { ChevronRight, ChevronDown, Globe, Mail, AlertCircle, CheckCircle, AlertTriangle, XCircle, Filter, SortAsc, Loader2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { Domain, Inbox } from '@/lib/types';
 
@@ -9,6 +9,8 @@ interface DomainInboxTreeProps {
   domains: Domain[];
   inboxes: Inbox[];
   className?: string;
+  onExpandDomain?: (domainId: string) => void;  // Callback for lazy loading
+  loadingDomainIds?: Set<string>;  // Domains currently loading
 }
 
 type FilterType = 'all' | 'healthy' | 'warning' | 'with-inboxes' | 'no-inboxes';
@@ -45,14 +47,16 @@ interface DomainRowProps {
   domain: Domain;
   inboxes: Inbox[];
   isExpanded: boolean;
+  isLoading: boolean;
   onToggle: () => void;
 }
 
-function DomainRow({ domain, inboxes, isExpanded, onToggle }: DomainRowProps) {
+function DomainRow({ domain, inboxes, isExpanded, isLoading, onToggle }: DomainRowProps) {
   const healthState = domain.healthState || 'unknown';
   // Use API's inboxCount if available, otherwise fall back to local count
   const inboxCount = domain.inboxCount ?? inboxes.length;
-  const loadedInboxes = inboxes.length;
+  const liveCount = domain.liveInboxCount ?? 0;
+  const deadCount = domain.deadInboxCount ?? 0;
 
   return (
     <div className="border rounded-lg overflow-hidden">
@@ -61,7 +65,9 @@ function DomainRow({ domain, inboxes, isExpanded, onToggle }: DomainRowProps) {
         onClick={onToggle}
         className="w-full flex items-center gap-3 px-4 py-3 bg-muted/50 hover:bg-muted transition-colors text-left"
       >
-        {isExpanded ? (
+        {isLoading ? (
+          <Loader2 className="h-4 w-4 text-muted-foreground flex-shrink-0 animate-spin" />
+        ) : isExpanded ? (
           <ChevronDown className="h-4 w-4 text-muted-foreground flex-shrink-0" />
         ) : (
           <ChevronRight className="h-4 w-4 text-muted-foreground flex-shrink-0" />
@@ -71,8 +77,11 @@ function DomainRow({ domain, inboxes, isExpanded, onToggle }: DomainRowProps) {
         <div className="flex items-center gap-3 flex-shrink-0">
           <span className="text-sm text-muted-foreground">
             {inboxCount} inbox{inboxCount !== 1 ? 'es' : ''}
-            {loadedInboxes > 0 && loadedInboxes < inboxCount && (
-              <span className="text-blue-600 ml-1">({loadedInboxes} loaded)</span>
+            {liveCount > 0 && (
+              <span className="text-green-600 ml-1">({liveCount} live)</span>
+            )}
+            {deadCount > 0 && (
+              <span className="text-red-600 ml-1">({deadCount} dead)</span>
             )}
           </span>
           <StatusBadge status={healthState} />
@@ -80,7 +89,14 @@ function DomainRow({ domain, inboxes, isExpanded, onToggle }: DomainRowProps) {
       </button>
 
       {/* Inboxes List */}
-      {isExpanded && inboxes.length > 0 && (
+      {isExpanded && isLoading && (
+        <div className="px-4 py-3 text-sm text-muted-foreground border-t flex items-center gap-2">
+          <Loader2 className="h-4 w-4 animate-spin" />
+          Loading inboxes...
+        </div>
+      )}
+
+      {isExpanded && !isLoading && inboxes.length > 0 && (
         <div className="border-t divide-y max-h-96 overflow-y-auto">
           {inboxes.map((inbox) => (
             <InboxRow key={inbox.id} inbox={inbox} />
@@ -88,13 +104,13 @@ function DomainRow({ domain, inboxes, isExpanded, onToggle }: DomainRowProps) {
         </div>
       )}
 
-      {isExpanded && inboxes.length === 0 && inboxCount > 0 && (
+      {isExpanded && !isLoading && inboxes.length === 0 && inboxCount > 0 && (
         <div className="px-4 py-3 text-sm text-muted-foreground border-t">
-          {inboxCount} inboxes (not loaded - expand to fetch)
+          Click to load {inboxCount} inboxes
         </div>
       )}
 
-      {isExpanded && inboxCount === 0 && (
+      {isExpanded && !isLoading && inboxCount === 0 && (
         <div className="px-4 py-3 text-sm text-muted-foreground border-t">
           No inboxes for this domain
         </div>
@@ -123,7 +139,7 @@ function InboxRow({ inbox }: { inbox: Inbox }) {
   );
 }
 
-export function DomainInboxTree({ domains, inboxes, className }: DomainInboxTreeProps) {
+export function DomainInboxTree({ domains, inboxes, className, onExpandDomain, loadingDomainIds = new Set() }: DomainInboxTreeProps) {
   const [expandedDomains, setExpandedDomains] = useState<Set<string>>(new Set());
   const [filter, setFilter] = useState<FilterType>('all');
   const [sortBy, setSortBy] = useState<SortType>('name');
@@ -201,21 +217,32 @@ export function DomainInboxTree({ domains, inboxes, className }: DomainInboxTree
         next.delete(domainId);
       } else {
         next.add(domainId);
+        // Trigger lazy loading when expanding
+        if (onExpandDomain) {
+          onExpandDomain(domainId);
+        }
       }
       return next;
     });
   };
 
   const expandAll = () => {
-    setExpandedDomains(new Set(filteredDomains.map(d => d.id)));
+    const domainIds = filteredDomains.map(d => d.id);
+    setExpandedDomains(new Set(domainIds));
+    // Trigger lazy loading for all domains
+    if (onExpandDomain) {
+      domainIds.forEach(id => onExpandDomain(id));
+    }
   };
 
   const collapseAll = () => {
     setExpandedDomains(new Set());
   };
 
-  // Summary stats using API's inboxCount
+  // Summary stats using API's inbox counts
   const totalInboxesFromApi = domains.reduce((sum, d) => sum + (d.inboxCount ?? 0), 0);
+  const totalLiveInboxes = domains.reduce((sum, d) => sum + (d.liveInboxCount ?? 0), 0);
+  const totalDeadInboxes = domains.reduce((sum, d) => sum + (d.deadInboxCount ?? 0), 0);
   const healthyDomains = domains.filter(d => d.healthState === 'healthy' || d.healthState === 'live').length;
   const warningDomains = domains.filter(d => d.healthState === 'warning' || d.healthState === 'critical').length;
   const deadDomains = domains.filter(d => d.healthState === 'dead').length;
@@ -228,7 +255,16 @@ export function DomainInboxTree({ domains, inboxes, className }: DomainInboxTree
         <div className="flex items-center gap-4 text-sm flex-wrap">
           <span className="font-medium">{domains.length} domains</span>
           <span className="text-muted-foreground">|</span>
-          <span>{totalInboxesFromApi.toLocaleString()} inboxes</span>
+          <span>
+            {totalInboxesFromApi.toLocaleString()} inboxes
+            {totalLiveInboxes > 0 && (
+              <span className="text-green-600 ml-1">({totalLiveInboxes.toLocaleString()} live)</span>
+            )}
+            {totalDeadInboxes > 0 && (
+              <span className="text-red-600 ml-1">({totalDeadInboxes.toLocaleString()} dead)</span>
+            )}
+          </span>
+          <span className="text-muted-foreground">|</span>
           {healthyDomains > 0 && (
             <span className="text-green-600">{healthyDomains} healthy</span>
           )}
@@ -310,6 +346,7 @@ export function DomainInboxTree({ domains, inboxes, className }: DomainInboxTree
               domain={domain}
               inboxes={inboxesByDomain.get(domain.id) || []}
               isExpanded={expandedDomains.has(domain.id)}
+              isLoading={loadingDomainIds.has(domain.id)}
               onToggle={() => toggleDomain(domain.id)}
             />
           ))

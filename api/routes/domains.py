@@ -64,6 +64,7 @@ async def list_domains(
 
     # Get domains with health metrics (using only columns that exist in DB)
     # Join with clients to get client_id for frontend filtering
+    # Include inbox health breakdown counts
     query = f"""
         SELECT
             d.id,
@@ -85,7 +86,21 @@ async def list_domains(
                  WHERE SPLIT_PART(sa.email_address, '@', 2) = d.domain_name
                  AND sa.workspace_id = d.workspace_id),
                 0
-            ) as inbox_count
+            ) as inbox_count,
+            COALESCE(
+                (SELECT COUNT(*) FROM sender_accounts sa
+                 WHERE SPLIT_PART(sa.email_address, '@', 2) = d.domain_name
+                 AND sa.workspace_id = d.workspace_id
+                 AND COALESCE(sa.inbox_state, 'live') = 'live'),
+                0
+            ) as live_inbox_count,
+            COALESCE(
+                (SELECT COUNT(*) FROM sender_accounts sa
+                 WHERE SPLIT_PART(sa.email_address, '@', 2) = d.domain_name
+                 AND sa.workspace_id = d.workspace_id
+                 AND sa.inbox_state = 'dead'),
+                0
+            ) as dead_inbox_count
         FROM domains d
         LEFT JOIN clients c ON c.workspace_id = d.workspace_id
         {where_clause}

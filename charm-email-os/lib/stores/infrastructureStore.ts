@@ -7,6 +7,8 @@ interface InfrastructureStore {
   inboxes: Inbox[];
   isLoading: boolean;
   error: string | null;
+  loadingDomainIds: Set<string>;  // Track which domains are loading inboxes
+  fetchedDomainIds: Set<string>;  // Track which domains have had inboxes fetched
 
   // Domain actions
   setDomains: (domains: Domain[]) => void;
@@ -19,6 +21,8 @@ interface InfrastructureStore {
   updateInboxLocal: (id: string, data: Partial<Inbox>) => void;
   getInboxesByClient: (clientId: string) => Inbox[];
   getInboxesByDomain: (domainId: string) => Inbox[];
+  isDomainLoading: (domainId: string) => boolean;
+  isDomainFetched: (domainId: string) => boolean;
 
   // Async API actions - Domains
   fetchDomainsByClient: (clientId: string) => Promise<void>;
@@ -32,6 +36,7 @@ interface InfrastructureStore {
   // Async API actions - Inboxes
   fetchInboxesByClient: (clientId: string) => Promise<void>;
   fetchInboxesByDomain: (domainId: string) => Promise<void>;
+  fetchInboxesForDomainLazy: (domainId: string) => Promise<void>;  // Lazy load on expand
   addInbox: (data: {
     clientId: string;
     domainId: string;
@@ -51,6 +56,8 @@ export const useInfrastructureStore = create<InfrastructureStore>((set, get) => 
   inboxes: [],
   isLoading: false,
   error: null,
+  loadingDomainIds: new Set<string>(),
+  fetchedDomainIds: new Set<string>(),
 
   // Local state setters
   setDomains: (domains) => set({ domains }),
@@ -89,6 +96,14 @@ export const useInfrastructureStore = create<InfrastructureStore>((set, get) => 
 
   getInboxesByDomain: (domainId) => {
     return get().inboxes.filter((i) => i.domainId === domainId);
+  },
+
+  isDomainLoading: (domainId) => {
+    return get().loadingDomainIds.has(domainId);
+  },
+
+  isDomainFetched: (domainId) => {
+    return get().fetchedDomainIds.has(domainId);
   },
 
   // Async API actions - Domains
@@ -212,6 +227,54 @@ export const useInfrastructureStore = create<InfrastructureStore>((set, get) => 
       });
     } catch (error) {
       set({ error: (error as Error).message, isLoading: false });
+    }
+  },
+
+  // Lazy load inboxes for a domain when expanded
+  fetchInboxesForDomainLazy: async (domainId) => {
+    const state = get();
+    // Skip if already fetched or currently loading
+    if (state.fetchedDomainIds.has(domainId) || state.loadingDomainIds.has(domainId)) {
+      return;
+    }
+
+    // Mark as loading
+    set((state) => ({
+      loadingDomainIds: new Set([...state.loadingDomainIds, domainId]),
+    }));
+
+    try {
+      // Use the domain-specific inboxes endpoint
+      const data = await api.domains.getInboxes(domainId, { pageSize: 100 });
+
+      // Add domainId to each inbox (the API might not include it)
+      const inboxesWithDomainId = data.items.map((inbox) => ({
+        ...inbox,
+        domainId,
+      })) as unknown as Inbox[];
+
+      set((state) => {
+        // Merge new inboxes with existing ones
+        const otherInboxes = state.inboxes.filter((i) => i.domainId !== domainId);
+        const newLoadingIds = new Set(state.loadingDomainIds);
+        newLoadingIds.delete(domainId);
+        const newFetchedIds = new Set([...state.fetchedDomainIds, domainId]);
+
+        return {
+          inboxes: [...otherInboxes, ...inboxesWithDomainId],
+          loadingDomainIds: newLoadingIds,
+          fetchedDomainIds: newFetchedIds,
+        };
+      });
+    } catch (error) {
+      set((state) => {
+        const newLoadingIds = new Set(state.loadingDomainIds);
+        newLoadingIds.delete(domainId);
+        return {
+          loadingDomainIds: newLoadingIds,
+          error: (error as Error).message,
+        };
+      });
     }
   },
 

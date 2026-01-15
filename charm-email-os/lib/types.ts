@@ -83,8 +83,10 @@ export interface Domain {
   lastCheckedAt?: Date;  // OwnRBL RBL check timestamp
   flaggedAt?: Date;
   deadAt?: Date;
-  // Computed
+  // Computed inbox counts
   inboxCount?: number;
+  liveInboxCount?: number;
+  deadInboxCount?: number;
 }
 
 // Inbox status enum (aligned with OwnRBL)

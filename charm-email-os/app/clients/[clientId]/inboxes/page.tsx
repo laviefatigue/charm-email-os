@@ -36,8 +36,10 @@ export default function InboxesPage() {
   const allStoreInboxes = useInfrastructureStore((state) => state.inboxes);
   const isLoading = useInfrastructureStore((state) => state.isLoading);
   const error = useInfrastructureStore((state) => state.error);
+  const loadingDomainIds = useInfrastructureStore((state) => state.loadingDomainIds);
   const fetchDomainsByClient = useInfrastructureStore((state) => state.fetchDomainsByClient);
   const fetchInboxesByClient = useInfrastructureStore((state) => state.fetchInboxesByClient);
+  const fetchInboxesForDomainLazy = useInfrastructureStore((state) => state.fetchInboxesForDomainLazy);
   const generateDomainsFromOnboarding = useInfrastructureStore((state) => state.generateDomainsFromOnboarding);
   const generateInboxesFromOnboarding = useInfrastructureStore((state) => state.generateInboxesFromOnboarding);
   const approveDomain = useInfrastructureStore((state) => state.approveDomain);
@@ -45,16 +47,15 @@ export default function InboxesPage() {
 
   const client = getClient(clientId);
 
-  // Fetch data on mount
+  // Fetch data on mount - domains only, inboxes are lazy loaded on expand
   useEffect(() => {
     selectClient(clientId);
     fetchDomainsByClient(clientId);
-    fetchInboxesByClient(clientId);
     // Also fetch clients if not loaded
     if (clients.length === 0) {
       fetchClients();
     }
-  }, [clientId, selectClient, fetchDomainsByClient, fetchInboxesByClient, fetchClients, clients.length]);
+  }, [clientId, selectClient, fetchDomainsByClient, fetchClients, clients.length]);
 
   // Filter domains/inboxes for this client - now reactive because we subscribe to the arrays
   const domains = useMemo(() => allDomains.filter((d) => d.clientId === clientId), [allDomains, clientId]);
@@ -281,6 +282,8 @@ export default function InboxesPage() {
               <DomainInboxTree
                 domains={domains}
                 inboxes={allInboxes}
+                onExpandDomain={fetchInboxesForDomainLazy}
+                loadingDomainIds={loadingDomainIds}
               />
             )}
           </CardContent>

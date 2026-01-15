@@ -47,8 +47,10 @@ class Domain(BaseModel):
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 
-    # Inbox count from this domain
+    # Inbox counts from this domain
     inbox_count: int = 0
+    live_inbox_count: int = 0
+    dead_inbox_count: int = 0
 
     class Config:
         from_attributes = True
