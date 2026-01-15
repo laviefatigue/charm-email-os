@@ -101,10 +101,12 @@ async def list_domains(
                  AND sa.inbox_state = 'dead'),
                 0
             ) as dead_inbox_count,
-            (SELECT ARRAY_AGG(rd.rbl_name ORDER BY rd.severity DESC, rd.rbl_name)
-             FROM domain_check_results dcr
-             JOIN rbl_definitions rd ON dcr.rbl_id = rd.id
-             WHERE dcr.domain_id = d.id AND dcr.is_listed = true
+            (SELECT ARRAY_AGG(DISTINCT rd.rbl_name ORDER BY rd.rbl_name)
+             FROM rbl_check_logs rcl
+             JOIN rbl_definitions rd ON rcl.rbl_definition_id = rd.id
+             WHERE rcl.domain_id = d.id
+             AND rcl.is_listed = true
+             AND rcl.check_timestamp >= NOW() - INTERVAL '24 hours'
             ) as blacklist_names
         FROM domains d
         LEFT JOIN clients c ON c.workspace_id = d.workspace_id
@@ -195,24 +197,25 @@ async def get_domain_health(domain_id: UUID):
     if not domain:
         raise HTTPException(status_code=404, detail="Domain not found")
 
-    # Get RBL check results
+    # Get RBL check results from rbl_check_logs (last 24 hours)
     rbl_results = await fetch_all("""
         SELECT
             rd.rbl_name,
-            rd.severity,
-            dcr.is_listed,
-            dcr.checked_at
-        FROM domain_check_results dcr
-        JOIN rbl_definitions rd ON dcr.rbl_id = rd.id
-        WHERE dcr.domain_id = $1
-        ORDER BY rd.severity DESC, rd.rbl_name
+            rd.rbl_type,
+            rcl.is_listed,
+            rcl.check_timestamp as checked_at
+        FROM rbl_check_logs rcl
+        JOIN rbl_definitions rd ON rcl.rbl_definition_id = rd.id
+        WHERE rcl.domain_id = $1
+        AND rcl.check_timestamp >= NOW() - INTERVAL '24 hours'
+        ORDER BY rcl.is_listed DESC, rd.rbl_name
         LIMIT 50
     """, domain_id)
 
-    # Get critical listings
+    # Get critical listings (all blacklists the domain is currently on)
     critical_listings = [
         r["rbl_name"] for r in rbl_results
-        if r["is_listed"] and r["severity"] in ("critical", "high")
+        if r["is_listed"] and r["rbl_type"] == 'b'  # 'b' = blacklist
     ]
 
     health_state = calculate_health_state(
