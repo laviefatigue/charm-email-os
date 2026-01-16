@@ -82,12 +82,11 @@ RUN chmod +x /app/docker-entrypoint.sh
 # Arguments: <client_id> <job_id> [submission_id]
 ENTRYPOINT ["/app/docker-entrypoint.sh"]
 
-# Health check - verify claude is accessible
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD claude --version || exit 1
+# NOTE: No HEALTHCHECK - this is a batch job container, not a web service
+# It runs once with arguments and exits. Coolify expects HTTP health checks.
 
 # Labels for documentation
 LABEL org.opencontainers.image.title="Charm Strategy AI"
 LABEL org.opencontainers.image.description="Purpose-built Claude Code container for email strategy generation"
 LABEL org.opencontainers.image.vendor="Charm Email OS"
-LABEL org.opencontainers.image.version="1.0.2"
+LABEL org.opencontainers.image.version="1.0.3"
