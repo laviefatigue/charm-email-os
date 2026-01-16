@@ -1,0 +1,11 @@
+# Charm Email OS Worker Dependencies
+# For strategy_worker_prefect.py and domain_worker.py
+
+# Workflow Orchestration
+prefect>=3.0.0
+
+# Database (sync driver for workers)
+psycopg2-binary>=2.9.9
+
+# Environment
+python-dotenv>=1.0.0

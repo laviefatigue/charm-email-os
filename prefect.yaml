@@ -1,0 +1,126 @@
+# Prefect Deployment Configuration for Charm Email OS
+# Deploy to Prefect server for centralized monitoring and triggering
+#
+# Usage:
+#   cd D:\Work\charm-email-os
+#   prefect deploy --all
+#
+# Prerequisites:
+#   1. Set PREFECT_API_URL (e.g., https://prefect.laviefatigue.com/api)
+#   2. Configure database credentials as environment variables or Prefect blocks
+#   3. Ensure Claude Code CLI is installed and authenticated on worker
+#   4. Create strategy_mcp_config.json for MCP server
+
+name: charm-email-os
+prefect-version: ">=3.0.0"
+
+# Build configuration
+build:
+  - prefect.deployments.steps.run_shell_script:
+      script: pip install psycopg2-binary
+      stream_output: true
+
+# Pull configuration - local filesystem on VPS
+pull:
+  - prefect.deployments.steps.set_working_directory:
+      directory: /opt/charm-email-os
+
+# Deployments
+deployments:
+  # ==========================================================================
+  # Strategy Generation - On-Demand (Single Job)
+  # ==========================================================================
+  - name: strategy-single-job
+    description: |
+      Process a specific strategy generation job by ID.
+      Use when triggering from API or webhook for a specific client.
+
+      Parameters:
+        - job_id: UUID of the strategy generation job
+        - client_id: UUID of the client
+        - submission_id: Optional UUID of the onboarding submission
+        - generation_round: Which round of generation this is (default: 1)
+    entrypoint: strategy_worker_prefect.py:process_single_job
+    work_pool:
+      name: default-agent-pool
+    parameters:
+      job_id: ""
+      client_id: ""
+      submission_id: null
+      generation_round: 1
+    tags:
+      - charm
+      - strategy
+      - single-job
+      - manual
+
+  # ==========================================================================
+  # Strategy Generation - Batch Processing
+  # ==========================================================================
+  - name: strategy-process-pending
+    description: |
+      Process all pending strategy generation jobs (up to max_jobs).
+      Finds pending jobs in database and processes them sequentially.
+
+      Use this for:
+        - Manual batch processing
+        - Scheduled runs to clear queue
+        - Recovery after downtime
+    entrypoint: strategy_worker_prefect.py:process_pending_jobs
+    work_pool:
+      name: default-agent-pool
+    parameters:
+      max_jobs: 10
+    tags:
+      - charm
+      - strategy
+      - batch
+      - manual
+
+  # ==========================================================================
+  # Strategy Generation - Scheduled Polling
+  # ==========================================================================
+  - name: strategy-poll-scheduled
+    description: |
+      Continuous polling for strategy generation jobs.
+      Polls database every 30 seconds for pending jobs.
+
+      Use this for always-on background processing.
+      Automatically picks up new jobs as they're created.
+    entrypoint: strategy_worker_prefect.py:poll_for_jobs
+    work_pool:
+      name: default-agent-pool
+    parameters:
+      poll_interval: 30
+      max_iterations: 200  # ~1.5 hours of polling
+    tags:
+      - charm
+      - strategy
+      - polling
+      - scheduled
+    schedules:
+      - cron: "0 * * * *"  # Every hour
+        timezone: America/New_York
+        active: false  # Enable when ready for production
+
+  # ==========================================================================
+  # Strategy Generation - Quick Check
+  # ==========================================================================
+  - name: strategy-quick-check
+    description: |
+      Quick check for pending jobs - process up to 3 jobs.
+      Lightweight deployment for frequent scheduled runs.
+    entrypoint: strategy_worker_prefect.py:process_pending_jobs
+    work_pool:
+      name: default-agent-pool
+    parameters:
+      max_jobs: 3
+    tags:
+      - charm
+      - strategy
+      - quick
+      - scheduled
+    schedules:
+      - cron: "*/5 * * * *"  # Every 5 minutes
+        timezone: America/New_York
+        active: false  # Enable for continuous background processing
