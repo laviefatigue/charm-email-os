@@ -36,9 +36,9 @@ RUN apt-get update && apt-get install -y \
 RUN curl -fsSL https://claude.ai/install.sh | bash
 
 # CRITICAL FIX: Copy claude binary to /usr/local/bin to avoid volume mount shadowing
-# The volume mount (-v /root/.claude:/root/.claude) would otherwise hide the bin/ directory
-# that was created during build, causing "claude: command not found" errors
-RUN cp /root/.claude/bin/claude /usr/local/bin/claude && \
+# The Claude CLI installs to ~/.local/bin/claude on Linux (not ~/.claude/bin)
+# The volume mount (-v /root/.claude:/root/.claude) is for credentials only
+RUN cp /root/.local/bin/claude /usr/local/bin/claude && \
     chmod +x /usr/local/bin/claude
 
 # Claude is now in /usr/local/bin which is already in PATH (no ENV modification needed)
@@ -90,4 +90,4 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
 LABEL org.opencontainers.image.title="Charm Strategy AI"
 LABEL org.opencontainers.image.description="Purpose-built Claude Code container for email strategy generation"
 LABEL org.opencontainers.image.vendor="Charm Email OS"
-LABEL org.opencontainers.image.version="1.0.1"
+LABEL org.opencontainers.image.version="1.0.2"
