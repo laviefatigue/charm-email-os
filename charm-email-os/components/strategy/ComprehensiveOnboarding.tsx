@@ -19,6 +19,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { onboardingApi, type OnboardingSubmission } from '@/lib/api';
+import { OnboardingEditModal } from './OnboardingEditModal';
 
 interface ComprehensiveOnboardingProps {
   clientId: string;
@@ -100,6 +101,7 @@ export function ComprehensiveOnboarding({ clientId }: ComprehensiveOnboardingPro
   const [submission, setSubmission] = useState<OnboardingSubmission | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [editModalOpen, setEditModalOpen] = useState(false);
 
   useEffect(() => {
     async function fetchSubmission() {
@@ -337,12 +339,25 @@ export function ComprehensiveOnboarding({ clientId }: ComprehensiveOnboardingPro
             <Calendar className="h-3 w-3" />
             <span>Last updated: {formatDate(submission.updatedAt)}</span>
           </div>
-          <Button variant="ghost" size="sm" className="h-7 text-xs">
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-7 text-xs"
+            onClick={() => setEditModalOpen(true)}
+          >
             <Pencil className="h-3 w-3 mr-1" />
             Edit
           </Button>
         </div>
       </CardContent>
+
+      {/* Edit Modal */}
+      <OnboardingEditModal
+        submission={submission}
+        open={editModalOpen}
+        onOpenChange={setEditModalOpen}
+        onSave={(updated) => setSubmission(updated)}
+      />
     </Card>
   );
 }

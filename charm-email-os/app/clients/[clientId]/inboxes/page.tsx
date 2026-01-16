@@ -22,6 +22,7 @@ import {
 } from '@/components/inboxes';
 import { DomainSourcingWizard, InboxPurchaseWizard } from '@/components/purchasing';
 import { useClientStore, useInfrastructureStore } from '@/lib/stores';
+import { domainSourcingApi, type CanGenerateResponse } from '@/lib/api';
 import type { Domain, Inbox } from '@/lib/types';
 
 export default function InboxesPage() {
@@ -72,6 +73,20 @@ export default function InboxesPage() {
   const [activeTab, setActiveTab] = useState<string>('inventory');
   const [showDomainSourcingWizard, setShowDomainSourcingWizard] = useState(false);
   const [showInboxPurchaseWizard, setShowInboxPurchaseWizard] = useState(false);
+  const [canGenerateInfo, setCanGenerateInfo] = useState<CanGenerateResponse | null>(null);
+
+  // Fetch can-generate info for the client
+  useEffect(() => {
+    const fetchCanGenerate = async () => {
+      try {
+        const info = await domainSourcingApi.canGenerate(clientId);
+        setCanGenerateInfo(info);
+      } catch (error) {
+        console.error('Failed to fetch can-generate info:', error);
+      }
+    };
+    fetchCanGenerate();
+  }, [clientId]);
 
   const filteredInboxes = useMemo(() => {
     if (!selectedDomainId) return allInboxes;
@@ -339,15 +354,20 @@ export default function InboxesPage() {
                       </div>
                       <Button
                         className="w-full"
-                        disabled={!client?.onboardingData}
+                        disabled={!canGenerateInfo?.canGenerate}
                         onClick={() => setShowDomainSourcingWizard(true)}
                       >
                         <Sparkles className="h-4 w-4 mr-2" />
                         Start Domain Sourcing
                       </Button>
-                      {!client?.onboardingData && (
+                      {canGenerateInfo && !canGenerateInfo.canGenerate && (
                         <p className="text-xs text-muted-foreground text-center">
-                          Complete onboarding first to enable AI domain generation
+                          Complete onboarding or add existing domains to enable generation
+                        </p>
+                      )}
+                      {canGenerateInfo?.canGenerate && canGenerateInfo.generationMode === 'pattern_fallback' && (
+                        <p className="text-xs text-muted-foreground text-center">
+                          Generate new domains matching: {canGenerateInfo.domainPattern}
                         </p>
                       )}
                     </div>
@@ -464,9 +484,6 @@ export default function InboxesPage() {
             onOpenChange={setShowDomainSourcingWizard}
             clientId={clientId}
             clientName={client.name}
-            industry={client.onboardingData?.industry || 'Technology'}
-            brandKeywords={client.onboardingData?.product ? [client.onboardingData.product, client.name] : [client.name]}
-            targetAudience={client.onboardingData?.industry}
             onComplete={(purchasedDomains) => {
               toast.success(`Purchased ${purchasedDomains.length} domains!`);
               // Refresh domains list

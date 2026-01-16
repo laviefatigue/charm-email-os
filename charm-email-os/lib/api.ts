@@ -423,6 +423,77 @@ export interface GenerateForClientResponse {
   generatedAt: string;
 }
 
+// Domain Approval Types
+export interface DomainCandidate {
+  id: string;
+  domainName: string;
+  baseName: string;
+  tld: string;
+  rationale: string;
+  legitimacyScore: number;
+  approvalStatus: 'pending' | 'approved' | 'denied';
+  createdAt?: string;
+  reviewedAt?: string;
+}
+
+export interface PendingCandidatesResponse {
+  clientId: string;
+  candidates: DomainCandidate[];
+  totalPending: number;
+}
+
+export interface DomainApprovalResult {
+  domainId: string;
+  domainName: string;
+  status: 'approved' | 'denied';
+  message: string;
+}
+
+export interface ApprovedDomainsResponse {
+  clientId: string;
+  approvedDomains: DomainCandidate[];
+  total: number;
+}
+
+export interface CanGenerateResponse {
+  clientId: string;
+  clientName: string;
+  canGenerate: boolean;
+  generationMode: 'onboarding' | 'pattern_fallback' | 'none';
+  hasOnboarding: boolean;
+  existingDomainCount: number;
+  domainPattern: string | null;
+  message: string;
+}
+
+export interface GenerationJobResponse {
+  jobId: string;
+  clientId: string;
+  clientName: string;
+  count: number;
+  status: string;
+  createdAt: string;
+  message: string;
+}
+
+export interface GenerationJobStatus {
+  jobId: string;
+  clientId: string;
+  clientName: string;
+  count: number;
+  status: 'pending' | 'processing' | 'completed' | 'failed';
+  errorMessage?: string;
+  createdAt?: string;
+  startedAt?: string;
+  completedAt?: string;
+}
+
+export interface ClientJobsResponse {
+  clientId: string;
+  jobs: GenerationJobStatus[];
+  total: number;
+}
+
 export const domainSourcingApi = {
   /**
    * Generate unique domain suggestions for a client using their onboarding data.
@@ -450,6 +521,93 @@ export const domainSourcingApi = {
    */
   async getRegistrars() {
     return fetchApi<{ registrars: string[]; message: string }>('/api/domain-sourcing/registrars');
+  },
+
+  /**
+   * Get pending domain candidates for approval.
+   * Returns up to `count` domains that haven't been approved or denied.
+   * Will generate more if not enough pending candidates exist.
+   */
+  async getPendingCandidates(clientId: string, count: number = 10): Promise<PendingCandidatesResponse> {
+    const response = await fetchApi<Record<string, unknown>>(
+      `/api/domain-sourcing/pending-candidates/${clientId}?count=${count}`
+    );
+    return toCamelCase<PendingCandidatesResponse>(response);
+  },
+
+  /**
+   * Approve a domain candidate for pricing search and potential purchase.
+   */
+  async approveDomain(domainId: string): Promise<DomainApprovalResult> {
+    const response = await fetchApi<Record<string, unknown>>(
+      `/api/domain-sourcing/approve/${domainId}`,
+      { method: 'POST' }
+    );
+    return toCamelCase<DomainApprovalResult>(response);
+  },
+
+  /**
+   * Deny a domain candidate - it won't appear in future pending lists.
+   */
+  async denyDomain(domainId: string): Promise<DomainApprovalResult> {
+    const response = await fetchApi<Record<string, unknown>>(
+      `/api/domain-sourcing/deny/${domainId}`,
+      { method: 'POST' }
+    );
+    return toCamelCase<DomainApprovalResult>(response);
+  },
+
+  /**
+   * Get all approved domains for a client that are ready for pricing search.
+   */
+  async getApprovedDomains(clientId: string): Promise<ApprovedDomainsResponse> {
+    const response = await fetchApi<Record<string, unknown>>(
+      `/api/domain-sourcing/approved/${clientId}`
+    );
+    return toCamelCase<ApprovedDomainsResponse>(response);
+  },
+
+  /**
+   * Check if domain generation is available for a client.
+   * Returns whether generation is possible and which mode would be used.
+   */
+  async canGenerate(clientId: string): Promise<CanGenerateResponse> {
+    const response = await fetchApi<Record<string, unknown>>(
+      `/api/domain-sourcing/can-generate/${clientId}`
+    );
+    return toCamelCase<CanGenerateResponse>(response);
+  },
+
+  /**
+   * Create a domain generation job for the Claude Code worker.
+   * The job will be picked up by the background worker and processed.
+   */
+  async createGenerationJob(clientId: string, count: number = 10): Promise<GenerationJobResponse> {
+    const response = await fetchApi<Record<string, unknown>>(
+      `/api/domain-sourcing/jobs/create/${clientId}?count=${count}`,
+      { method: 'POST' }
+    );
+    return toCamelCase<GenerationJobResponse>(response);
+  },
+
+  /**
+   * Get the status of a domain generation job.
+   */
+  async getJobStatus(jobId: string): Promise<GenerationJobStatus> {
+    const response = await fetchApi<Record<string, unknown>>(
+      `/api/domain-sourcing/jobs/status/${jobId}`
+    );
+    return toCamelCase<GenerationJobStatus>(response);
+  },
+
+  /**
+   * Get recent generation jobs for a client.
+   */
+  async getClientJobs(clientId: string, limit: number = 10): Promise<ClientJobsResponse> {
+    const response = await fetchApi<Record<string, unknown>>(
+      `/api/domain-sourcing/jobs/client/${clientId}?limit=${limit}`
+    );
+    return toCamelCase<ClientJobsResponse>(response);
   },
 };
 

@@ -196,3 +196,31 @@ class GenerateForClientResponse(BaseModel):
     provider_used: str
     model_used: str
     generated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class DomainCandidateModel(BaseModel):
+    """A domain candidate for approval workflow."""
+    id: UUID
+    domain_name: str
+    base_name: str
+    tld: str
+    rationale: str = ""
+    legitimacy_score: float = 0.75
+    approval_status: str = "pending"
+    created_at: Optional[str] = None
+    reviewed_at: Optional[str] = None
+
+
+class PendingCandidatesResponse(BaseModel):
+    """Response from pending candidates endpoint."""
+    client_id: UUID
+    candidates: list[DomainCandidateModel]
+    total_pending: int
+
+
+class ApprovalResponse(BaseModel):
+    """Response from approve/deny endpoints."""
+    domain_id: UUID
+    domain_name: str
+    status: str = Field(..., description="New status: 'approved' or 'denied'")
+    message: str
