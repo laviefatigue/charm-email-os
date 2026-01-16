@@ -1,0 +1,87 @@
+# Charm Email OS - Strategy AI Component
+# Purpose-built container for autonomous strategy generation
+#
+# This container includes:
+# - Claude Code CLI (pre-authenticated via volume mount)
+# - Strategy skill (Cold Email v2.0)
+# - MCP server for database interaction
+#
+# Usage:
+#   docker build -t charm-strategy-ai -f Dockerfile.strategy-ai .
+#   docker run --rm \
+#     -e POSTGRES_HOST=... -e POSTGRES_PORT=... \
+#     -e POSTGRES_DB=... -e POSTGRES_USER=... -e POSTGRES_PASSWORD=... \
+#     -v /root/.claude:/root/.claude \
+#     charm-strategy-ai <client_id> <job_id> [submission_id]
+
+FROM debian:bookworm-slim
+
+# Prevent interactive prompts during package installation
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    curl \
+    ca-certificates \
+    git \
+    python3 \
+    python3-pip \
+    python3-venv \
+    nodejs \
+    npm \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Claude Code CLI
+# Note: This downloads and installs the official Claude Code CLI
+RUN curl -fsSL https://claude.ai/install.sh | bash
+
+# Ensure claude is in PATH
+ENV PATH="/root/.claude/bin:${PATH}"
+
+# Set up working directory
+WORKDIR /app
+
+# Copy MCP server requirements first (for layer caching)
+COPY requirements-mcp.txt /app/
+
+# Install Python MCP dependencies
+RUN pip3 install --break-system-packages --no-cache-dir -r requirements-mcp.txt
+
+# Copy MCP server code
+COPY strategy_mcp/ /app/strategy_mcp/
+
+# Copy MCP configuration
+COPY strategy_mcp_config.json /app/
+
+# Copy Claude skill
+COPY .claude/ /app/.claude/
+
+# Create volume mount point for Claude credentials
+# Authentication is done once on the host, then persisted
+VOLUME /root/.claude
+
+# Environment variables for database connection
+# These are passed at runtime
+ENV POSTGRES_HOST=""
+ENV POSTGRES_PORT="5432"
+ENV POSTGRES_DB="postgres"
+ENV POSTGRES_USER=""
+ENV POSTGRES_PASSWORD=""
+
+# Copy and set up entrypoint
+COPY docker-entrypoint.sh /app/
+RUN chmod +x /app/docker-entrypoint.sh
+
+# Default entrypoint: run strategy generation
+# Arguments: <client_id> <job_id> [submission_id]
+ENTRYPOINT ["/app/docker-entrypoint.sh"]
+
+# Health check - verify claude is accessible
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD claude --version || exit 1
+
+# Labels for documentation
+LABEL org.opencontainers.image.title="Charm Strategy AI"
+LABEL org.opencontainers.image.description="Purpose-built Claude Code container for email strategy generation"
+LABEL org.opencontainers.image.vendor="Charm Email OS"
+LABEL org.opencontainers.image.version="1.0.0"

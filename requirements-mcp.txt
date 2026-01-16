@@ -1,0 +1,8 @@
+# Charm Email OS - MCP Server Dependencies
+# Used by strategy_mcp/server.py for database interaction
+
+# MCP Protocol library
+mcp>=1.0.0
+
+# PostgreSQL database driver (sync for MCP server)
+psycopg2-binary>=2.9.9

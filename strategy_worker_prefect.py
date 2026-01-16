@@ -253,52 +253,48 @@ def run_claude_code(job_id: str, client_id: str, submission_id: Optional[str], g
 
     Supports two execution modes:
     - Direct: Run claude CLI directly (local dev or when CLI installed on host)
-    - Docker: Run inside claudebox container (VPS deployment)
+    - Docker: Run the charm-strategy-ai container (VPS deployment)
 
     Set USE_DOCKER=true environment variable to use Docker mode.
     """
     logger = get_run_logger()
 
     logger.info(f"Processing strategy job {job_id} for client {client_id} (round {generation_round})")
-    logger.info(f"Execution mode: {'Docker (claudebox)' if USE_DOCKER else 'Direct'}")
-
-    # Build the Claude Code command
-    prompt = f"/generate-strategy client_id={client_id} job_id={job_id}"
-    if submission_id:
-        prompt += f" submission_id={submission_id}"
-
-    # Environment variables for database connection (passed to MCP server)
-    env_vars = {
-        **os.environ,
-        "POSTGRES_HOST": DB_CONFIG["host"],
-        "POSTGRES_PORT": str(DB_CONFIG["port"]),
-        "POSTGRES_DB": DB_CONFIG["database"],
-        "POSTGRES_USER": DB_CONFIG["user"],
-        "POSTGRES_PASSWORD": DB_CONFIG["password"],
-    }
+    logger.info(f"Execution mode: {'Docker (charm-strategy-ai)' if USE_DOCKER else 'Direct'}")
 
     if USE_DOCKER:
-        # Docker mode: run inside claudebox container
-        # The container mounts the project directory at /workspace
-        mcp_config_path = "/workspace/strategy_mcp_config.json"
-
-        # Build docker run command
-        # claudebox passes environment and mounts current directory
+        # Docker mode: run the purpose-built charm-strategy-ai container
+        # Container includes Claude Code CLI, strategy skill, and MCP server
         cmd = [
-            "claudebox", "run",
-            "--",  # Separator for claudebox args
-            "claude",
-            "-p", prompt,
-            "--dangerously-skip-permissions",
-            "--mcp-config", mcp_config_path,
+            "docker", "run", "--rm",
+            # Pass database credentials as environment variables
+            "-e", f"POSTGRES_HOST={DB_CONFIG['host']}",
+            "-e", f"POSTGRES_PORT={DB_CONFIG['port']}",
+            "-e", f"POSTGRES_DB={DB_CONFIG['database']}",
+            "-e", f"POSTGRES_USER={DB_CONFIG['user']}",
+            "-e", f"POSTGRES_PASSWORD={DB_CONFIG['password']}",
+            # Mount Claude credentials from host (persisted after initial auth)
+            "-v", "/root/.claude:/root/.claude",
+            # Container image
+            "charm-strategy-ai:latest",
+            # Arguments: client_id, job_id, [submission_id]
+            client_id,
+            job_id,
         ]
 
-        # Add profile if specified
-        if CLAUDE_ACCOUNT and CLAUDE_ACCOUNT != "default":
-            cmd.extend(["--profile", CLAUDE_ACCOUNT])
+        # Add optional submission_id
+        if submission_id:
+            cmd.append(submission_id)
+
+        # Environment for subprocess (inherit current env)
+        env_vars = os.environ.copy()
 
     else:
         # Direct mode: run claude CLI directly
+        prompt = f"/generate-strategy client_id={client_id} job_id={job_id}"
+        if submission_id:
+            prompt += f" submission_id={submission_id}"
+
         cmd = [
             "claude",
             "-p", prompt,
@@ -310,8 +306,18 @@ def run_claude_code(job_id: str, client_id: str, submission_id: Optional[str], g
         if CLAUDE_ACCOUNT and CLAUDE_ACCOUNT != "default":
             cmd.extend(["--profile", CLAUDE_ACCOUNT])
 
+        # Environment variables for database connection (passed to MCP server)
+        env_vars = {
+            **os.environ,
+            "POSTGRES_HOST": DB_CONFIG["host"],
+            "POSTGRES_PORT": str(DB_CONFIG["port"]),
+            "POSTGRES_DB": DB_CONFIG["database"],
+            "POSTGRES_USER": DB_CONFIG["user"],
+            "POSTGRES_PASSWORD": DB_CONFIG["password"],
+        }
+
     try:
-        logger.info(f"Running Claude Code: {' '.join(cmd)}")
+        logger.info(f"Running command: {' '.join(cmd)}")
 
         # Run Claude Code with full autonomy
         result = subprocess.run(
