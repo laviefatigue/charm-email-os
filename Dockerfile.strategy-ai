@@ -35,8 +35,13 @@ RUN apt-get update && apt-get install -y \
 # Note: This downloads and installs the official Claude Code CLI
 RUN curl -fsSL https://claude.ai/install.sh | bash
 
-# Ensure claude is in PATH
-ENV PATH="/root/.claude/bin:${PATH}"
+# CRITICAL FIX: Copy claude binary to /usr/local/bin to avoid volume mount shadowing
+# The volume mount (-v /root/.claude:/root/.claude) would otherwise hide the bin/ directory
+# that was created during build, causing "claude: command not found" errors
+RUN cp /root/.claude/bin/claude /usr/local/bin/claude && \
+    chmod +x /usr/local/bin/claude
+
+# Claude is now in /usr/local/bin which is already in PATH (no ENV modification needed)
 
 # Set up working directory
 WORKDIR /app
@@ -56,8 +61,9 @@ COPY strategy_mcp_config.json /app/
 # Copy Claude skill
 COPY .claude/ /app/.claude/
 
-# Create volume mount point for Claude credentials
-# Authentication is done once on the host, then persisted
+# Volume mount point for Claude credentials ONLY (not the binary)
+# The binary is at /usr/local/bin/claude to avoid shadowing
+# Authentication is done once on the host, then persisted at /root/.claude
 VOLUME /root/.claude
 
 # Environment variables for database connection
@@ -84,4 +90,4 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
 LABEL org.opencontainers.image.title="Charm Strategy AI"
 LABEL org.opencontainers.image.description="Purpose-built Claude Code container for email strategy generation"
 LABEL org.opencontainers.image.vendor="Charm Email OS"
-LABEL org.opencontainers.image.version="1.0.0"
+LABEL org.opencontainers.image.version="1.0.1"
