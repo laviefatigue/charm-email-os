@@ -148,6 +148,12 @@ async def init_schema() -> None:
             ("onboarding_data", "JSONB"),
             ("created_at", "TIMESTAMP WITH TIME ZONE DEFAULT NOW()"),
             ("updated_at", "TIMESTAMP WITH TIME ZONE DEFAULT NOW()"),
+            # Profile columns (Phase 1)
+            ("contact_name", "VARCHAR(255)"),
+            ("contact_email", "VARCHAR(255)"),
+            ("website", "VARCHAR(255)"),
+            ("industry", "VARCHAR(100)"),
+            ("domain_pattern", "VARCHAR(255)"),
         ]
 
         for col_name, col_def in columns_to_add:
@@ -172,3 +178,83 @@ async def init_schema() -> None:
             logger.warning(f"Index creation note: {e}")
 
     logger.info("Database schema initialized (clients table ready)")
+
+    # Initialize strategy generation tables (Phase 3)
+    await _init_strategy_tables()
+
+
+async def _init_strategy_tables() -> None:
+    """Initialize strategy generation tables if they don't exist"""
+
+    # Strategy generation jobs table
+    create_jobs_table = """
+        CREATE TABLE IF NOT EXISTS strategy_generation_jobs (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            client_id UUID NOT NULL REFERENCES clients(id),
+            submission_id UUID,
+            status VARCHAR(50) DEFAULT 'pending',
+            generation_round INTEGER DEFAULT 1,
+            error_message TEXT,
+            created_at TIMESTAMP DEFAULT NOW(),
+            started_at TIMESTAMP,
+            completed_at TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_strategy_jobs_status ON strategy_generation_jobs(status);
+        CREATE INDEX IF NOT EXISTS idx_strategy_jobs_client ON strategy_generation_jobs(client_id);
+    """
+    try:
+        await execute(create_jobs_table)
+        logger.info("Strategy generation jobs table ready")
+    except Exception as e:
+        logger.warning(f"Strategy jobs table note: {e}")
+
+    # Strategy suggestions table
+    create_suggestions_table = """
+        CREATE TABLE IF NOT EXISTS strategy_suggestions (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            job_id UUID NOT NULL REFERENCES strategy_generation_jobs(id),
+            client_id UUID NOT NULL REFERENCES clients(id),
+            variant_number INTEGER NOT NULL,
+            subject_line TEXT NOT NULL,
+            email_body TEXT NOT NULL,
+            score INTEGER,
+            rationale TEXT,
+            used_variables JSONB,
+            missing_variables JSONB,
+            campaign_type VARCHAR(50),
+            status VARCHAR(50) DEFAULT 'pending',
+            human_comment TEXT,
+            reviewed_by VARCHAR(255),
+            reviewed_at TIMESTAMP,
+            generation_round INTEGER DEFAULT 1,
+            created_at TIMESTAMP DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS idx_suggestions_job ON strategy_suggestions(job_id);
+        CREATE INDEX IF NOT EXISTS idx_suggestions_client ON strategy_suggestions(client_id);
+        CREATE INDEX IF NOT EXISTS idx_suggestions_status ON strategy_suggestions(status);
+    """
+    try:
+        await execute(create_suggestions_table)
+        logger.info("Strategy suggestions table ready")
+    except Exception as e:
+        logger.warning(f"Strategy suggestions table note: {e}")
+
+    # Strategy revision requests table
+    create_revisions_table = """
+        CREATE TABLE IF NOT EXISTS strategy_revision_requests (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            job_id UUID NOT NULL REFERENCES strategy_generation_jobs(id),
+            client_id UUID NOT NULL REFERENCES clients(id),
+            variant_id UUID REFERENCES strategy_suggestions(id),
+            instruction TEXT NOT NULL,
+            processed BOOLEAN DEFAULT FALSE,
+            created_at TIMESTAMP DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS idx_revision_requests_job ON strategy_revision_requests(job_id);
+        CREATE INDEX IF NOT EXISTS idx_revision_requests_client ON strategy_revision_requests(client_id);
+    """
+    try:
+        await execute(create_revisions_table)
+        logger.info("Strategy revision requests table ready")
+    except Exception as e:
+        logger.warning(f"Strategy revisions table note: {e}")
