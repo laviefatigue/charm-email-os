@@ -13,6 +13,7 @@ Charm Email OS is a Next.js 16 application designed to manage email outreach ope
 - [[state-management]] - Zustand stores overview
 - [[components]] - UI component structure
 - [[routing]] - Page routes and navigation
+- [[onboarding-form]] - External client onboarding form
 
 ## Core Concepts
 

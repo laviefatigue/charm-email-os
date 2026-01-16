@@ -8,6 +8,9 @@ Core TypeScript types and interfaces used throughout the application.
 Client
 ├── Domain (1:many)
 │   └── Inbox (1:many)
+├── OnboardingSubmission (1:1 active) → see [[onboarding-form]]
+│   ├── Segment (1:many)
+│   └── Persona (1:many)
 ├── CampaignIdea (1:many)
 │   └── Campaign (1:1 when approved)
 │       └── Lead (1:many)

@@ -25,6 +25,10 @@ interface Client {
 
 ## Onboarding Data
 
+There are two onboarding paths:
+
+### In-App Wizard (Quick Setup)
+
 Collected during client setup wizard:
 
 ```typescript
@@ -37,6 +41,21 @@ interface OnboardingData {
   notes?: string;
 }
 ```
+
+### External Onboarding Form (Comprehensive)
+
+See [[onboarding-form]] for the detailed external form at **https://onboard.laviefatigue.com**.
+
+Captures 8 sections of deep client context:
+- Company foundation & funding
+- Product/service offering
+- Market signals & buying triggers
+- Customer segments & personas
+- Current sales tools
+- Messaging voice & proof points
+- GTM goals & success metrics
+
+This data feeds into [[campaign-ideas|campaign generation]].
 
 ## Client Lifecycle
 
@@ -121,8 +140,10 @@ From names `["Alex", "Sam"]` generates:
 
 ## Related
 
+- [[onboarding-form]] - External comprehensive onboarding form
 - [[infrastructure]] - Domains and inboxes
 - [[campaigns]] - Client campaigns
+- [[campaign-ideas]] - AI-generated campaign ideas
 - [[health-monitoring]] - Client health
 
 ---
