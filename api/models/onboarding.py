@@ -53,7 +53,6 @@ class OnboardingSubmission(BaseModel):
 
     # Section 3: Market Signals
     signals: list[str] = Field(default_factory=list)
-    custom_signals: Optional[str] = None
 
     # Section 4: Audience
     job_titles: list[str] = Field(default_factory=list)
@@ -78,7 +77,7 @@ class OnboardingSubmission(BaseModel):
     submission_status: str = Field(default="submitted")
     submitted_at: Optional[datetime] = None
     created_at: datetime
-    updated_at: datetime
+    updated_at: Optional[datetime] = None  # May not exist in table
 
     class Config:
         from_attributes = True
@@ -103,7 +102,6 @@ class OnboardingSubmissionUpdate(BaseModel):
 
     # Section 3: Market Signals
     signals: Optional[list[str]] = None
-    custom_signals: Optional[str] = None
 
     # Section 4: Audience
     job_titles: Optional[list[str]] = None

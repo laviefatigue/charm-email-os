@@ -232,9 +232,6 @@ export function ComprehensiveOnboarding({ clientId }: ComprehensiveOnboardingPro
               </p>
               <TagList items={submission.signals} />
             </div>
-            {submission.customSignals && (
-              <Field label="Custom Signals" value={submission.customSignals} />
-            )}
           </div>
         </Section>
 

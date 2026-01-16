@@ -902,7 +902,6 @@ export interface OnboardingSubmission {
 
   // Section 3: Market Signals
   signals: string[];
-  customSignals?: string;
 
   // Section 4: Audience
   jobTitles: string[];
@@ -927,7 +926,7 @@ export interface OnboardingSubmission {
   submissionStatus: string;
   submittedAt?: string;
   createdAt: string;
-  updatedAt: string;
+  updatedAt?: string;
 }
 
 export interface OnboardingSubmissionList {

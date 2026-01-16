@@ -33,16 +33,17 @@ async def get_client_onboarding_submissions(client_id: UUID):
         raise HTTPException(status_code=404, detail="Client not found")
 
     # Get all submissions for this client
+    # Note: Table schema from hirecharm-onboarding project
     submissions_query = """
         SELECT
             id, client_id, company_name, website, contact_name, contact_email,
             employee_count, funding_stage, hq_location,
             core_product, target_customer, acv, sales_cycle_length,
-            signals, custom_signals, job_titles,
+            signals, job_titles,
             outbound_tools, crm,
             customer_voice, roi_results, tone_style,
             primary_gtm_objective, success_metrics, success_definition,
-            submission_status, submitted_at, created_at, updated_at
+            submission_status, submitted_at, created_at
         FROM client_onboarding_submissions
         WHERE client_id = $1
         ORDER BY created_at DESC
@@ -112,11 +113,11 @@ async def get_onboarding_submission(submission_id: UUID):
             id, client_id, company_name, website, contact_name, contact_email,
             employee_count, funding_stage, hq_location,
             core_product, target_customer, acv, sales_cycle_length,
-            signals, custom_signals, job_titles,
+            signals, job_titles,
             outbound_tools, crm,
             customer_voice, roi_results, tone_style,
             primary_gtm_objective, success_metrics, success_definition,
-            submission_status, submitted_at, created_at, updated_at
+            submission_status, submitted_at, created_at
         FROM client_onboarding_submissions
         WHERE id = $1
         """,
