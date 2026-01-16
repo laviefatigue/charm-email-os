@@ -641,9 +641,6 @@ async def get_pending_domain_candidates(
         FROM domains
         WHERE workspace_id = $1
           AND (approval_status = 'pending' OR approval_status IS NULL)
-          AND domain_name NOT IN (
-            SELECT domain_name FROM inboxes WHERE workspace_id = $1
-          )
         ORDER BY created_at DESC
         LIMIT $2
     """, workspace_id, count)
