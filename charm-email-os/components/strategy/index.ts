@@ -4,3 +4,4 @@ export { IdeaCard } from './IdeaCard';
 export { IdeaEditModal } from './IdeaEditModal';
 export { CreateCampaignModal } from './CreateCampaignModal';
 export { ApprovedCampaignRow } from './ApprovedCampaignRow';
+export { CampaignSuggestions } from './CampaignSuggestions';

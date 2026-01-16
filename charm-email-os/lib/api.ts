@@ -249,6 +249,12 @@ export const clientApi = {
       logoUrl: string;
       onboardingComplete: boolean;
       onboardingData: OnboardingData;
+      // Profile fields
+      contactName: string;
+      contactEmail: string;
+      website: string;
+      industry: string;
+      domainPattern: string;
     }>
   ) {
     const response = await fetchApi<Record<string, unknown>>(`/api/clients/${id}`, {
@@ -1148,6 +1154,205 @@ export const onboardingApi = {
   },
 };
 
+// ===== STRATEGY API =====
+
+export interface StrategyJob {
+  jobId: string;
+  clientId: string;
+  clientName?: string;
+  submissionId?: string;
+  status: 'pending' | 'processing' | 'review' | 'completed' | 'failed';
+  generationRound: number;
+  errorMessage?: string;
+  createdAt: string;
+  startedAt?: string;
+  completedAt?: string;
+}
+
+export interface StrategySuggestion {
+  id: string;
+  jobId: string;
+  clientId: string;
+  variantNumber: number;
+  subjectLine: string;
+  emailBody: string;
+  score?: number;
+  rationale?: string;
+  usedVariables?: string[];
+  missingVariables?: string[];
+  campaignType?: string;
+  status: 'pending' | 'approved' | 'denied' | 'revision_requested';
+  humanComment?: string;
+  reviewedBy?: string;
+  reviewedAt?: string;
+  generationRound: number;
+  createdAt: string;
+}
+
+export interface StrategyJobCreate {
+  submissionId?: string;
+}
+
+export interface StrategyJobResponse {
+  jobId: string;
+  clientId: string;
+  clientName: string;
+  submissionId?: string;
+  status: string;
+  generationRound: number;
+  createdAt: string;
+  message: string;
+}
+
+export interface ClientSuggestionsResponse {
+  clientId: string;
+  suggestions: StrategySuggestion[];
+  pendingCount: number;
+  approvedCount: number;
+  deniedCount: number;
+  revisionCount: number;
+  total: number;
+}
+
+export interface SuggestionReviewRequest {
+  action: 'approve' | 'deny' | 'revision_requested';
+  comment?: string;
+  reviewer?: string;
+}
+
+export interface RevisionRequest {
+  id: string;
+  jobId: string;
+  clientId: string;
+  variantId?: string;
+  subjectLine?: string;
+  instruction: string;
+  processed: boolean;
+  createdAt: string;
+}
+
+export interface ClientRevisionsResponse {
+  clientId: string;
+  revisions: RevisionRequest[];
+  total: number;
+}
+
+export const strategyApi = {
+  /**
+   * Create a new strategy generation job for Claude Code worker
+   */
+  async createJob(clientId: string, submissionId?: string): Promise<StrategyJobResponse> {
+    const body = submissionId ? { submission_id: submissionId } : {};
+    const response = await fetchApi<Record<string, unknown>>(
+      `/api/strategy/jobs/${clientId}`,
+      {
+        method: 'POST',
+        body: JSON.stringify(body),
+      }
+    );
+    return toCamelCase<StrategyJobResponse>(response);
+  },
+
+  /**
+   * Get the status of a strategy generation job
+   */
+  async getJobStatus(jobId: string): Promise<StrategyJob> {
+    const response = await fetchApi<Record<string, unknown>>(
+      `/api/strategy/jobs/${jobId}/status`
+    );
+    return toCamelCase<StrategyJob>(response);
+  },
+
+  /**
+   * Get recent strategy generation jobs for a client
+   */
+  async getClientJobs(clientId: string, limit: number = 10): Promise<{ clientId: string; jobs: StrategyJob[]; total: number }> {
+    const response = await fetchApi<Record<string, unknown>>(
+      `/api/strategy/jobs/client/${clientId}?limit=${limit}`
+    );
+    return toCamelCase<{ clientId: string; jobs: StrategyJob[]; total: number }>(response);
+  },
+
+  /**
+   * Get strategy suggestions for a client
+   */
+  async getSuggestions(
+    clientId: string,
+    params?: { status?: string; limit?: number }
+  ): Promise<ClientSuggestionsResponse> {
+    const searchParams = new URLSearchParams();
+    if (params?.status) searchParams.set('status', params.status);
+    if (params?.limit) searchParams.set('limit', params.limit.toString());
+
+    const query = searchParams.toString();
+    const response = await fetchApi<Record<string, unknown>>(
+      `/api/strategy/suggestions/${clientId}${query ? `?${query}` : ''}`
+    );
+    return toCamelCase<ClientSuggestionsResponse>(response);
+  },
+
+  /**
+   * Get suggestions for a specific job
+   */
+  async getJobSuggestions(jobId: string): Promise<{ jobId: string; suggestions: StrategySuggestion[]; total: number }> {
+    const response = await fetchApi<Record<string, unknown>>(
+      `/api/strategy/suggestions/job/${jobId}`
+    );
+    return toCamelCase<{ jobId: string; suggestions: StrategySuggestion[]; total: number }>(response);
+  },
+
+  /**
+   * Review a strategy suggestion - approve, deny, or request revision
+   */
+  async reviewSuggestion(
+    suggestionId: string,
+    request: SuggestionReviewRequest
+  ): Promise<{ suggestionId: string; subjectLine: string; status: string; message: string }> {
+    const response = await fetchApi<Record<string, unknown>>(
+      `/api/strategy/suggestions/${suggestionId}/review`,
+      {
+        method: 'POST',
+        body: JSON.stringify(toSnakeCase(request)),
+      }
+    );
+    return toCamelCase<{ suggestionId: string; subjectLine: string; status: string; message: string }>(response);
+  },
+
+  /**
+   * Request a revision for a suggestion with specific instructions
+   */
+  async requestRevision(
+    suggestionId: string,
+    instruction: string
+  ): Promise<RevisionRequest> {
+    const response = await fetchApi<Record<string, unknown>>(
+      `/api/strategy/suggestions/${suggestionId}/revision`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ instruction }),
+      }
+    );
+    return toCamelCase<RevisionRequest>(response);
+  },
+
+  /**
+   * Get revision requests for a client
+   */
+  async getClientRevisions(
+    clientId: string,
+    processed?: boolean
+  ): Promise<ClientRevisionsResponse> {
+    const searchParams = new URLSearchParams();
+    if (processed !== undefined) searchParams.set('processed', processed.toString());
+
+    const query = searchParams.toString();
+    const response = await fetchApi<Record<string, unknown>>(
+      `/api/strategy/revisions/${clientId}${query ? `?${query}` : ''}`
+    );
+    return toCamelCase<ClientRevisionsResponse>(response);
+  },
+};
+
 // ===== HEALTH API =====
 
 export const healthApi = {
@@ -1217,6 +1422,7 @@ export const api = {
   leads: leadApi,
   health: healthApi,
   onboarding: onboardingApi,
+  strategy: strategyApi,
 };
 
 export default api;

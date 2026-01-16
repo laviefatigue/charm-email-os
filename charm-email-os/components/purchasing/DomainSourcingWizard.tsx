@@ -99,6 +99,10 @@ export function DomainSourcingWizard({
   const [approvedCandidates, setApprovedCandidates] = useState<DomainCandidate[]>([]);
   const [totalPending, setTotalPending] = useState(0);
 
+  // Generation job state
+  const [isGenerating, setIsGenerating] = useState(false);
+  const [generationJobId, setGenerationJobId] = useState<string | null>(null);
+
   // Search results
   const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
   const [targetPrice, setTargetPrice] = useState(8);
@@ -135,6 +139,52 @@ export function DomainSourcingWizard({
       setApprovedCandidates(response.approvedDomains);
     } catch (error: any) {
       console.error('Failed to load approved domains:', error);
+    }
+  };
+
+  // Generate domains using Claude Code worker
+  const handleGenerateDomains = async () => {
+    setIsGenerating(true);
+    try {
+      // Create a generation job
+      const job = await domainSourcingApi.createGenerationJob(clientId, 10);
+      setGenerationJobId(job.jobId);
+      toast.success('Domain generation started');
+
+      // Poll for job completion
+      const pollInterval = setInterval(async () => {
+        try {
+          const status = await domainSourcingApi.getJobStatus(job.jobId);
+          if (status.status === 'completed') {
+            clearInterval(pollInterval);
+            setIsGenerating(false);
+            setGenerationJobId(null);
+            toast.success('Domains generated successfully');
+            loadPendingCandidates(); // Refresh the list
+          } else if (status.status === 'failed') {
+            clearInterval(pollInterval);
+            setIsGenerating(false);
+            setGenerationJobId(null);
+            toast.error(status.errorMessage || 'Generation failed');
+          }
+        } catch (err) {
+          console.error('Error polling job status:', err);
+        }
+      }, 3000); // Poll every 3 seconds
+
+      // Timeout after 2 minutes
+      setTimeout(() => {
+        clearInterval(pollInterval);
+        if (isGenerating) {
+          setIsGenerating(false);
+          setGenerationJobId(null);
+          toast.error('Generation timed out. The job may still complete in the background.');
+          loadPendingCandidates(); // Try to refresh anyway
+        }
+      }, 120000);
+    } catch (error: any) {
+      setIsGenerating(false);
+      toast.error(error.message || 'Failed to start domain generation');
     }
   };
 
@@ -396,23 +446,46 @@ export function DomainSourcingWizard({
                     <Badge variant="default" className="bg-green-600">
                       {approvedCandidates.length} approved
                     </Badge>
+                    {isGenerating && (
+                      <Badge variant="secondary" className="animate-pulse">
+                        <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+                        Generating...
+                      </Badge>
+                    )}
                   </div>
                 </div>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={loadPendingCandidates}
-                  disabled={isLoading}
-                >
-                  {isLoading ? (
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                  ) : (
-                    <>
-                      <RefreshCw className="h-4 w-4 mr-2" />
-                      Refresh
-                    </>
-                  )}
-                </Button>
+                <div className="flex items-center gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={handleGenerateDomains}
+                    disabled={isLoading || isGenerating}
+                  >
+                    {isGenerating ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <>
+                        <Sparkles className="h-4 w-4 mr-2" />
+                        Generate More
+                      </>
+                    )}
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={loadPendingCandidates}
+                    disabled={isLoading || isGenerating}
+                  >
+                    {isLoading ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <>
+                        <RefreshCw className="h-4 w-4 mr-2" />
+                        Refresh
+                      </>
+                    )}
+                  </Button>
+                </div>
               </div>
 
               {/* Loading state */}
@@ -432,11 +505,22 @@ export function DomainSourcingWizard({
                   <Sparkles className="h-12 w-12 text-muted-foreground mb-4" />
                   <p className="text-lg font-medium">No pending candidates</p>
                   <p className="text-sm text-muted-foreground mb-4">
-                    Click refresh to generate new domain suggestions
+                    {isGenerating
+                      ? 'Claude Code is generating domain suggestions...'
+                      : 'Click below to generate new domain suggestions using AI'}
                   </p>
-                  <Button onClick={loadPendingCandidates}>
-                    <Sparkles className="h-4 w-4 mr-2" />
-                    Generate Domains
+                  <Button onClick={handleGenerateDomains} disabled={isGenerating}>
+                    {isGenerating ? (
+                      <>
+                        <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                        Generating...
+                      </>
+                    ) : (
+                      <>
+                        <Sparkles className="h-4 w-4 mr-2" />
+                        Generate Domains
+                      </>
+                    )}
                   </Button>
                 </div>
               )}

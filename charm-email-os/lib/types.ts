@@ -33,6 +33,12 @@ export interface Client {
   logo?: string;
   onboardingComplete: boolean;
   onboardingData?: OnboardingData;
+  // Profile fields
+  contactName?: string;
+  contactEmail?: string;
+  website?: string;
+  industry?: string;
+  domainPattern?: string;
   createdAt: Date;
   updatedAt?: Date;
   // Computed from linked workspace

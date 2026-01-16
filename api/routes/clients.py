@@ -60,6 +60,11 @@ async def list_clients(
             c.logo_url,
             c.onboarding_complete,
             c.onboarding_data,
+            c.contact_name,
+            c.contact_email,
+            c.website,
+            c.industry,
+            c.domain_pattern,
             c.created_at,
             c.updated_at,
             COALESCE(w.sender_account_count, 0) as inbox_count,
@@ -106,16 +111,24 @@ async def create_client(client: ClientCreate):
         onboarding_json = json.dumps(client.onboarding_data.model_dump(by_alias=True))
 
     query = """
-        INSERT INTO clients (name, workspace_id, logo_url, onboarding_data)
-        VALUES ($1, $2, $3, $4)
-        RETURNING id, name, workspace_id, logo_url, onboarding_complete, onboarding_data, created_at, updated_at
+        INSERT INTO clients (name, workspace_id, logo_url, onboarding_data,
+                             contact_name, contact_email, website, industry, domain_pattern)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        RETURNING id, name, workspace_id, logo_url, onboarding_complete, onboarding_data,
+                  contact_name, contact_email, website, industry, domain_pattern,
+                  created_at, updated_at
     """
     row = await fetch_one(
         query,
         client.name,
         client.workspace_id,
         client.logo_url,
-        onboarding_json
+        onboarding_json,
+        client.contact_name,
+        client.contact_email,
+        client.website,
+        client.industry,
+        client.domain_pattern
     )
 
     if not row:
@@ -148,6 +161,11 @@ async def get_client(client_id: UUID):
             c.logo_url,
             c.onboarding_complete,
             c.onboarding_data,
+            c.contact_name,
+            c.contact_email,
+            c.website,
+            c.industry,
+            c.domain_pattern,
             c.created_at,
             c.updated_at,
             COALESCE(w.sender_account_count, 0) as inbox_count,
@@ -207,6 +225,32 @@ async def update_client(client_id: UUID, update: ClientUpdate):
     if update.onboarding_data is not None:
         set_parts.append(f"onboarding_data = ${param_idx}")
         params.append(json.dumps(update.onboarding_data.model_dump(by_alias=True)))
+        param_idx += 1
+
+    # Profile fields
+    if update.contact_name is not None:
+        set_parts.append(f"contact_name = ${param_idx}")
+        params.append(update.contact_name)
+        param_idx += 1
+
+    if update.contact_email is not None:
+        set_parts.append(f"contact_email = ${param_idx}")
+        params.append(update.contact_email)
+        param_idx += 1
+
+    if update.website is not None:
+        set_parts.append(f"website = ${param_idx}")
+        params.append(update.website)
+        param_idx += 1
+
+    if update.industry is not None:
+        set_parts.append(f"industry = ${param_idx}")
+        params.append(update.industry)
+        param_idx += 1
+
+    if update.domain_pattern is not None:
+        set_parts.append(f"domain_pattern = ${param_idx}")
+        params.append(update.domain_pattern)
         param_idx += 1
 
     if not set_parts:

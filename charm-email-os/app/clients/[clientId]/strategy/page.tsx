@@ -22,6 +22,7 @@ import {
   IdeaEditModal,
   CreateCampaignModal,
   ApprovedCampaignRow,
+  CampaignSuggestions,
 } from '@/components/strategy';
 import { useClientStore, useStrategyStore, useCampaignStore } from '@/lib/stores';
 import type { CampaignIdea } from '@/lib/types';
@@ -97,6 +98,11 @@ export default function StrategyPage() {
         {/* Comprehensive Onboarding - Full form submission */}
         <div className="mb-6">
           <ComprehensiveOnboarding clientId={clientId} />
+        </div>
+
+        {/* AI-Generated Campaign Suggestions */}
+        <div className="mb-6">
+          <CampaignSuggestions clientId={clientId} />
         </div>
 
         {/* Campaign Ideas */}

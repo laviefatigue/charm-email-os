@@ -25,6 +25,12 @@ class ClientBase(BaseModel):
     """Base client fields"""
     name: str
     logo_url: Optional[str] = None
+    # Profile fields
+    contact_name: Optional[str] = None
+    contact_email: Optional[str] = None
+    website: Optional[str] = None
+    industry: Optional[str] = None
+    domain_pattern: Optional[str] = None
 
 
 class ClientCreate(ClientBase):
@@ -40,6 +46,12 @@ class ClientUpdate(BaseModel):
     logo_url: Optional[str] = None
     onboarding_complete: Optional[bool] = None
     onboarding_data: Optional[OnboardingData] = None
+    # Profile fields
+    contact_name: Optional[str] = None
+    contact_email: Optional[str] = None
+    website: Optional[str] = None
+    industry: Optional[str] = None
+    domain_pattern: Optional[str] = None
 
 
 class ClientOnboard(BaseModel):

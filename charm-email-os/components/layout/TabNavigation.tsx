@@ -3,13 +3,14 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { cn } from '@/lib/utils';
-import { Inbox, Lightbulb, Users, HeartPulse } from 'lucide-react';
+import { Inbox, Lightbulb, Users, HeartPulse, Building2 } from 'lucide-react';
 
 interface TabNavigationProps {
   clientId: string;
 }
 
 const tabs = [
+  { name: 'Profile', href: 'profile', icon: Building2 },
   { name: 'Domains / Inboxes', href: 'inboxes', icon: Inbox },
   { name: 'Strategy', href: 'strategy', icon: Lightbulb },
   { name: 'Leads', href: 'leads', icon: Users },
