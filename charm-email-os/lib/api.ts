@@ -393,6 +393,66 @@ export const domainApi = {
   },
 };
 
+// ===== DOMAIN SOURCING API =====
+
+export interface GenerateForClientRequest {
+  count?: number;
+  ai_provider?: string;
+  ai_model?: string;
+  preferred_tlds?: { tld: string; priority: number; max_price: number }[];
+}
+
+export interface GeneratedDomainResult {
+  id: string;
+  domainName: string;
+  baseName: string;
+  tld: string;
+  rationale: string;
+  legitimacyScore: number;
+}
+
+export interface GenerateForClientResponse {
+  clientId: string;
+  clientName: string;
+  industry: string;
+  generatedDomains: GeneratedDomainResult[];
+  filteredCount: number;
+  totalCandidates: number;
+  providerUsed: string;
+  modelUsed: string;
+  generatedAt: string;
+}
+
+export const domainSourcingApi = {
+  /**
+   * Generate unique domain suggestions for a client using their onboarding data.
+   * Automatically filters out duplicates and saves unique domains to DB.
+   */
+  async generateForClient(clientId: string, options?: GenerateForClientRequest): Promise<GenerateForClientResponse> {
+    const response = await fetchApi<Record<string, unknown>>(`/api/domain-sourcing/generate-for-client/${clientId}`, {
+      method: 'POST',
+      body: JSON.stringify({
+        count: options?.count ?? 10,
+        ai_provider: options?.ai_provider ?? 'openai',
+        ai_model: options?.ai_model ?? 'gpt-4',
+        preferred_tlds: options?.preferred_tlds ?? [
+          { tld: 'com', priority: 1, max_price: 12.0 },
+          { tld: 'io', priority: 2, max_price: 35.0 },
+          { tld: 'co', priority: 3, max_price: 25.0 },
+        ],
+      }),
+    });
+    return toCamelCase<GenerateForClientResponse>(response);
+  },
+
+  /**
+   * Get list of configured registrars for domain search/purchase
+   */
+  async getRegistrars() {
+    return fetchApi<{ registrars: string[]; message: string }>('/api/domain-sourcing/registrars');
+  },
+};
+
 // ===== INBOX API =====
 
 export const inboxApi = {
@@ -863,6 +923,7 @@ export const api = {
   workspaces: workspaceApi,
   clients: clientApi,
   domains: domainApi,
+  domainSourcing: domainSourcingApi,
   inboxes: inboxApi,
   campaigns: campaignApi,
   leads: leadApi,

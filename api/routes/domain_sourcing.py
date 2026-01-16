@@ -33,6 +33,9 @@ from models.domain_sourcing import (
     DomainPurchaseResponse,
     DomainPurchaseResult,
     ConfiguredRegistrarsResponse,
+    GenerateForClientRequest,
+    GenerateForClientResponse,
+    GeneratedDomainResult,
 )
 
 router = APIRouter()
@@ -441,4 +444,156 @@ async def generate_domains_fallback(request: DomainGenerateRequest):
 
     except Exception as e:
         logger.error(f"Fallback generation failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/generate-for-client/{client_id}", response_model=GenerateForClientResponse)
+async def generate_domains_for_client(client_id: UUID, request: GenerateForClientRequest):
+    """
+    Generate unique domain suggestions for a client using their onboarding data.
+
+    This endpoint:
+    1. Fetches client profile and onboarding data (industry, product, notes)
+    2. Generates domain candidates using AI
+    3. Filters out any domains that already exist for this workspace
+    4. Saves unique candidates to the database
+    5. Returns the newly saved domains
+
+    Use this for the Purchase New workflow to generate client-specific domains.
+    """
+    import json
+
+    ht = _import_hypertide_modules()
+    if not ht:
+        raise HTTPException(
+            status_code=503,
+            detail="HyperTide automation module not available"
+        )
+
+    # 1. Get client + onboarding data
+    client = await fetch_one("""
+        SELECT c.id, c.name, c.workspace_id, c.onboarding_data
+        FROM clients c
+        WHERE c.id = $1
+    """, client_id)
+
+    if not client:
+        raise HTTPException(status_code=404, detail="Client not found")
+    if not client["workspace_id"]:
+        raise HTTPException(status_code=400, detail="Client not linked to a workspace")
+
+    workspace_id = client["workspace_id"]
+    client_name = client["name"]
+
+    # Parse onboarding data
+    onboarding = {}
+    if client["onboarding_data"]:
+        if isinstance(client["onboarding_data"], str):
+            onboarding = json.loads(client["onboarding_data"])
+        else:
+            onboarding = client["onboarding_data"]
+
+    industry = onboarding.get("industry", "Technology")
+    product = onboarding.get("product", "")
+    notes = onboarding.get("notes", "")
+    primary_domain = onboarding.get("primaryDomain", "")
+
+    # Extract keywords from product description
+    brand_keywords = []
+    if product:
+        # Simple keyword extraction - split by common delimiters
+        words = product.replace(",", " ").replace(".", " ").split()
+        brand_keywords = [w.lower() for w in words if len(w) > 3][:10]
+
+    # Avoid words from primary domain (to avoid similar domains)
+    avoid_words = []
+    if primary_domain:
+        avoid_words = [primary_domain.split(".")[0].lower()]
+
+    try:
+        # 2. Build domain request for HyperTide
+        tld_prefs = [
+            ht["TLDPreference"](tld=p.tld, priority=p.priority, max_price=Decimal(str(p.max_price)))
+            for p in request.preferred_tlds
+        ]
+
+        # Generate 2x the requested count to account for filtering
+        domain_request = ht["DomainRequest"](
+            client_name=client_name,
+            industry=industry,
+            brand_keywords=brand_keywords,
+            target_audience=notes,
+            avoid_words=avoid_words,
+            required_entra_domains=request.count * 2,
+            required_google_domains=0,
+            preferred_tlds=tld_prefs,
+        )
+
+        # Configure AI generator
+        config = ht["DomainGeneratorConfig"](
+            provider=request.ai_provider,
+            model=request.ai_model,
+        )
+
+        # 3. Generate candidates
+        try:
+            candidates = await ht["generate_domain_candidates"](domain_request, config)
+        except Exception as e:
+            logger.warning(f"AI generation failed, using fallback: {e}")
+            candidates = ht["generate_fallback_candidates"](domain_request)
+
+        total_candidates = len(candidates)
+
+        # 4. Check uniqueness - filter out existing domains
+        unique_candidates = []
+        for candidate in candidates:
+            existing = await fetch_one(
+                "SELECT id FROM domains WHERE workspace_id = $1 AND domain_name = $2",
+                workspace_id, candidate.domain_name
+            )
+            if not existing:
+                unique_candidates.append(candidate)
+
+        filtered_count = total_candidates - len(unique_candidates)
+
+        # 5. Save unique candidates to DB (up to requested count)
+        saved_domains = []
+        for candidate in unique_candidates[:request.count]:
+            try:
+                result = await fetch_one("""
+                    INSERT INTO domains (workspace_id, domain_name, notes)
+                    VALUES ($1, $2, $3)
+                    RETURNING id, domain_name
+                """, workspace_id, candidate.domain_name, f"AI generated: {candidate.generation_rationale}")
+
+                if result:
+                    saved_domains.append(GeneratedDomainResult(
+                        id=result["id"],
+                        domain_name=result["domain_name"],
+                        base_name=candidate.base_name,
+                        tld=candidate.tld,
+                        rationale=candidate.generation_rationale,
+                        legitimacy_score=candidate.legitimacy_score,
+                    ))
+            except Exception as db_error:
+                logger.warning(f"Failed to save domain {candidate.domain_name}: {db_error}")
+                continue
+
+        logger.info(f"Generated {len(saved_domains)} unique domains for client {client_name} (filtered {filtered_count} duplicates)")
+
+        return GenerateForClientResponse(
+            client_id=client_id,
+            client_name=client_name,
+            industry=industry,
+            generated_domains=saved_domains,
+            filtered_count=filtered_count,
+            total_candidates=total_candidates,
+            provider_used=request.ai_provider,
+            model_used=request.ai_model,
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Domain generation for client failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))

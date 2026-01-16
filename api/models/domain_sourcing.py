@@ -159,3 +159,40 @@ class ConfiguredRegistrarsResponse(BaseModel):
     """Response listing configured registrars."""
     registrars: list[str]
     message: str
+
+
+class GenerateForClientRequest(BaseModel):
+    """Request to generate domains for a client using their onboarding data."""
+    count: int = Field(default=10, ge=1, le=50, description="Number of domains to generate")
+    ai_provider: str = Field(default="openai", description="AI provider (openai, anthropic, ollama)")
+    ai_model: str = Field(default="gpt-4", description="AI model name")
+    preferred_tlds: list[TLDPreferenceRequest] = Field(
+        default_factory=lambda: [
+            TLDPreferenceRequest(tld="com", priority=1, max_price=12.0),
+            TLDPreferenceRequest(tld="io", priority=2, max_price=35.0),
+            TLDPreferenceRequest(tld="co", priority=3, max_price=25.0),
+        ]
+    )
+
+
+class GeneratedDomainResult(BaseModel):
+    """A domain that was generated and saved to DB."""
+    id: UUID
+    domain_name: str
+    base_name: str
+    tld: str
+    rationale: str = ""
+    legitimacy_score: float = 0.7
+
+
+class GenerateForClientResponse(BaseModel):
+    """Response from generating domains for a client."""
+    client_id: UUID
+    client_name: str
+    industry: str
+    generated_domains: list[GeneratedDomainResult]
+    filtered_count: int = Field(description="Number of candidates filtered as duplicates")
+    total_candidates: int = Field(description="Total candidates generated before filtering")
+    provider_used: str
+    model_used: str
+    generated_at: datetime = Field(default_factory=datetime.utcnow)

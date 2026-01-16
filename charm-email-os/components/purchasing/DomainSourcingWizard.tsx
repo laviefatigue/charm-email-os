@@ -108,7 +108,7 @@ const DEFAULT_TLDS: TLDPreference[] = [
   { tld: '.ai', priority: 4, maxPrice: 50 },
 ];
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000/api/v1';
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://ccssgc4gowsog04wck400o0w.31.97.142.123.sslip.io';
 
 export function DomainSourcingWizard({
   open,
@@ -134,6 +134,7 @@ export function DomainSourcingWizard({
 
   // Generation results
   const [candidates, setCandidates] = useState<DomainCandidate[]>([]);
+  const [filteredDuplicates, setFilteredDuplicates] = useState(0);
 
   // Search results
   const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
@@ -162,24 +163,22 @@ export function DomainSourcingWizard({
   const handleGenerate = useCallback(async () => {
     setIsLoading(true);
     try {
-      const response = await fetch(`${API_BASE}/domain-sourcing/generate`, {
+      // Use the new client-based endpoint that:
+      // 1. Pulls onboarding data automatically
+      // 2. Checks uniqueness against existing domains
+      // 3. Saves unique candidates to DB
+      const response = await fetch(`${API_BASE}/api/domain-sourcing/generate-for-client/${clientId}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          client_id: clientId,
-          client_name: clientName,
-          industry,
-          brand_keywords: brandKeywords,
-          target_audience: targetAudience,
-          avoid_words: avoidWords,
-          domains_needed: domainsNeeded,
+          count: domainsNeeded,
+          ai_provider: aiProvider,
+          ai_model: aiModel,
           preferred_tlds: tldPreferences.map((t) => ({
-            tld: t.tld,
+            tld: t.tld.replace('.', ''),  // Remove dot prefix
             priority: t.priority,
             max_price: t.maxPrice,
           })),
-          ai_provider: aiProvider,
-          ai_model: aiModel,
         }),
       });
 
@@ -189,8 +188,10 @@ export function DomainSourcingWizard({
       }
 
       const data = await response.json();
+
+      // Map response to candidates (these are already saved to DB)
       setCandidates(
-        data.candidates.map((c: any) => ({
+        data.generated_domains.map((c: any) => ({
           id: c.id,
           domainName: c.domain_name,
           baseName: c.base_name,
@@ -200,14 +201,21 @@ export function DomainSourcingWizard({
           selected: true,
         }))
       );
-      toast.success(`Generated ${data.candidates.length} domain suggestions`);
+
+      // Track how many duplicates were filtered
+      setFilteredDuplicates(data.filtered_count || 0);
+
+      const message = data.filtered_count > 0
+        ? `Generated ${data.generated_domains.length} unique domains (${data.filtered_count} duplicates filtered)`
+        : `Generated ${data.generated_domains.length} domain suggestions`;
+      toast.success(message);
       goNext();
     } catch (error: any) {
       toast.error(error.message || 'Failed to generate domains');
     } finally {
       setIsLoading(false);
     }
-  }, [clientId, clientName, industry, brandKeywords, targetAudience, avoidWords, domainsNeeded, tldPreferences, aiProvider, aiModel]);
+  }, [clientId, domainsNeeded, tldPreferences, aiProvider, aiModel]);
 
   const handleSearch = useCallback(async () => {
     const selectedCandidates = candidates.filter((c) => c.selected);
@@ -218,7 +226,7 @@ export function DomainSourcingWizard({
 
     setIsLoading(true);
     try {
-      const response = await fetch(`${API_BASE}/domain-sourcing/search`, {
+      const response = await fetch(`${API_BASE}/api/domain-sourcing/search`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -284,7 +292,7 @@ export function DomainSourcingWizard({
 
     setIsLoading(true);
     try {
-      const response = await fetch(`${API_BASE}/domain-sourcing/purchase`, {
+      const response = await fetch(`${API_BASE}/api/domain-sourcing/purchase`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -538,16 +546,19 @@ export function DomainSourcingWizard({
               <Card>
                 <CardHeader className="pb-2">
                   <CardTitle className="text-base">Client Context</CardTitle>
+                  <CardDescription>
+                    Pulled automatically from {clientName}&apos;s onboarding data
+                  </CardDescription>
                 </CardHeader>
                 <CardContent>
                   <div className="grid grid-cols-2 gap-4 text-sm">
                     <div>
                       <span className="text-muted-foreground">Industry:</span>
-                      <p className="font-medium">{industry}</p>
+                      <p className="font-medium">{industry || 'From onboarding'}</p>
                     </div>
                     <div>
                       <span className="text-muted-foreground">Brand Keywords:</span>
-                      <p className="font-medium">{brandKeywords.join(', ')}</p>
+                      <p className="font-medium">{brandKeywords.length > 0 ? brandKeywords.join(', ') : 'Extracted from product'}</p>
                     </div>
                     {targetAudience && (
                       <div className="col-span-2">
@@ -556,6 +567,11 @@ export function DomainSourcingWizard({
                       </div>
                     )}
                   </div>
+                  <Alert className="mt-3">
+                    <AlertDescription className="text-xs">
+                      Domains are automatically checked for uniqueness. Existing domains for this client will not be regenerated.
+                    </AlertDescription>
+                  </Alert>
                 </CardContent>
               </Card>
             </div>
@@ -587,9 +603,16 @@ export function DomainSourcingWizard({
               ) : (
                 <>
                   <div className="flex items-center justify-between">
-                    <p className="text-sm text-muted-foreground">
-                      {selectedCandidatesCount} of {candidates.length} selected
-                    </p>
+                    <div>
+                      <p className="text-sm text-muted-foreground">
+                        {selectedCandidatesCount} of {candidates.length} selected
+                      </p>
+                      {filteredDuplicates > 0 && (
+                        <p className="text-xs text-orange-600">
+                          {filteredDuplicates} duplicate(s) filtered (already exist for this client)
+                        </p>
+                      )}
+                    </div>
                     <Button variant="outline" size="sm" onClick={handleGenerate} disabled={isLoading}>
                       {isLoading ? (
                         <Loader2 className="h-4 w-4 animate-spin" />
@@ -601,6 +624,12 @@ export function DomainSourcingWizard({
                       )}
                     </Button>
                   </div>
+                  <Alert className="mb-3">
+                    <Check className="h-4 w-4" />
+                    <AlertDescription className="text-xs">
+                      These domains have been saved to your inventory. Select which ones to search for pricing.
+                    </AlertDescription>
+                  </Alert>
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                     {candidates.map((candidate) => (
                       <Card
