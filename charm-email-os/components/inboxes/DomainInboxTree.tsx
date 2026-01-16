@@ -57,8 +57,6 @@ function DomainRow({ domain, inboxes, isExpanded, isLoading, onToggle }: DomainR
   const inboxCount = domain.inboxCount ?? inboxes.length;
   const liveCount = domain.liveInboxCount ?? 0;
   const deadCount = domain.deadInboxCount ?? 0;
-  const blacklistNames = domain.blacklistNames ?? [];
-  const blacklistCount = blacklistNames.length || (domain.latestBlacklistCount ?? 0);
 
   return (
     <div className="border rounded-lg overflow-hidden">
@@ -86,11 +84,6 @@ function DomainRow({ domain, inboxes, isExpanded, isLoading, onToggle }: DomainR
               <span className="text-red-600 ml-1">({deadCount} dead)</span>
             )}
           </span>
-          {blacklistCount > 0 && (
-            <span className="text-xs text-orange-600" title={blacklistNames.length > 0 ? blacklistNames.join(', ') : undefined}>
-              {blacklistNames.length > 0 ? blacklistNames.join(', ') : `${blacklistCount} blacklist${blacklistCount !== 1 ? 's' : ''}`}
-            </span>
-          )}
           <StatusBadge status={healthState} />
         </div>
       </button>
@@ -134,20 +127,23 @@ function DomainRow({ domain, inboxes, isExpanded, isLoading, onToggle }: DomainR
 }
 
 function InboxRow({ inbox }: { inbox: Inbox }) {
-  const healthState = inbox.healthState || inbox.inboxState || 'unknown';
+  const baseHealthState = inbox.healthState || inbox.inboxState || 'unknown';
   const email = inbox.email || inbox.emailAddress || '';
+  const hasBounces = (inbox.hardBounces7d ?? 0) > 0;
+  // Show warning if inbox has bounces (inbox-level warning)
+  const displayStatus = hasBounces ? 'warning' : baseHealthState;
 
   return (
     <div className="flex items-center gap-3 px-4 py-2 pl-12 hover:bg-muted/30 transition-colors">
       <Mail className="h-4 w-4 text-muted-foreground flex-shrink-0" />
       <span className="text-sm truncate flex-1 font-mono">{email}</span>
       <div className="flex items-center gap-3 flex-shrink-0">
-        {inbox.hardBounces7d != null && inbox.hardBounces7d > 0 && (
+        {hasBounces && (
           <span className="text-xs text-orange-600">
             {inbox.hardBounces7d} bounce{inbox.hardBounces7d !== 1 ? 's' : ''} (7d)
           </span>
         )}
-        <StatusBadge status={healthState} />
+        <StatusBadge status={displayStatus} />
       </div>
     </div>
   );
