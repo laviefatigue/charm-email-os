@@ -17,6 +17,7 @@ import { ClientHeader, TabNavigation, PageContainer } from '@/components/layout'
 import { EmptyState } from '@/components/shared';
 import {
   OnboardingSummary,
+  ComprehensiveOnboarding,
   IdeaCard,
   IdeaEditModal,
   CreateCampaignModal,
@@ -88,9 +89,14 @@ export default function StrategyPage() {
       <TabNavigation clientId={clientId} />
 
       <PageContainer>
-        {/* Onboarding Summary */}
+        {/* Onboarding Summary - Quick view */}
         <div className="mb-6">
           <OnboardingSummary client={client} />
+        </div>
+
+        {/* Comprehensive Onboarding - Full form submission */}
+        <div className="mb-6">
+          <ComprehensiveOnboarding clientId={clientId} />
         </div>
 
         {/* Campaign Ideas */}

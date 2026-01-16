@@ -860,6 +860,137 @@ export const leadApi = {
   },
 };
 
+// ===== ONBOARDING API =====
+
+export interface ClientSegment {
+  id?: string;
+  segmentName: string;
+  revenuePercentage: number;
+  uniqueCharacteristics?: string;
+  painPoints?: string;
+  buyingTriggers?: string;
+}
+
+export interface ClientPersona {
+  id?: string;
+  jobTitle: string;
+  primarySegment?: string;
+  seniorityLevel?: string;
+  painBeforeBuying?: string;
+  ahaMoment?: string;
+  objections?: string;
+}
+
+export interface OnboardingSubmission {
+  id: string;
+  clientId?: string;
+
+  // Section 1: Foundation
+  companyName: string;
+  website?: string;
+  contactName?: string;
+  contactEmail?: string;
+  employeeCount?: string;
+  fundingStage?: string;
+  hqLocation?: string;
+
+  // Section 2: Offering
+  coreProduct?: string;
+  targetCustomer?: string;
+  acv?: string;
+  salesCycleLength?: string;
+
+  // Section 3: Market Signals
+  signals: string[];
+  customSignals?: string;
+
+  // Section 4: Audience
+  jobTitles: string[];
+  segments: ClientSegment[];
+  personas: ClientPersona[];
+
+  // Section 5: Process
+  outboundTools: string[];
+  crm?: string;
+
+  // Section 6: Messaging
+  customerVoice?: string;
+  roiResults?: string;
+  toneStyle?: string;
+
+  // Section 7: Goals
+  primaryGtmObjective?: string;
+  successMetrics: string[];
+  successDefinition?: string;
+
+  // Metadata
+  submissionStatus: string;
+  submittedAt?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface OnboardingSubmissionList {
+  clientId: string;
+  submissions: OnboardingSubmission[];
+  total: number;
+}
+
+export interface ContactNamesResponse {
+  clientId: string;
+  contactNames: string[];
+  jobTitles: string[];
+}
+
+export const onboardingApi = {
+  /**
+   * Get all onboarding submissions for a client
+   */
+  async getSubmissions(clientId: string): Promise<OnboardingSubmissionList> {
+    const response = await fetchApi<Record<string, unknown>>(
+      `/api/onboarding/clients/${clientId}/submissions`
+    );
+    return toCamelCase<OnboardingSubmissionList>(response);
+  },
+
+  /**
+   * Get a single onboarding submission by ID
+   */
+  async getSubmission(submissionId: string): Promise<OnboardingSubmission> {
+    const response = await fetchApi<Record<string, unknown>>(
+      `/api/onboarding/submissions/${submissionId}`
+    );
+    return toCamelCase<OnboardingSubmission>(response);
+  },
+
+  /**
+   * Update an onboarding submission
+   */
+  async updateSubmission(
+    submissionId: string,
+    data: Partial<Omit<OnboardingSubmission, 'id' | 'clientId' | 'createdAt' | 'updatedAt' | 'segments' | 'personas'>>
+  ): Promise<OnboardingSubmission> {
+    const response = await fetchApi<Record<string, unknown>>(
+      `/api/onboarding/submissions/${submissionId}`,
+      {
+        method: 'PUT',
+        body: JSON.stringify(toSnakeCase(data)),
+      }
+    );
+    return toCamelCase<OnboardingSubmission>(response);
+  },
+
+  /**
+   * Get contact names for a client (for inbox generation)
+   */
+  async getContactNames(clientId: string): Promise<ContactNamesResponse> {
+    const response = await fetchApi<Record<string, unknown>>(
+      `/api/onboarding/clients/${clientId}/contact-names`
+    );
+    return toCamelCase<ContactNamesResponse>(response);
+  },
+};
+
 // ===== HEALTH API =====
 
 export const healthApi = {
@@ -928,6 +1059,7 @@ export const api = {
   campaigns: campaignApi,
   leads: leadApi,
   health: healthApi,
+  onboarding: onboardingApi,
 };
 
 export default api;
