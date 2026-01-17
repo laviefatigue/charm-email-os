@@ -38,6 +38,11 @@ Charm Email OS manages the full lifecycle of email outreach campaigns:
 - [[schema]] - Full database schema
 - [[migrations]] - Migration history
 
+### Deployment
+- [[strategy-ai-deployment-status]] - Current deployment progress and blockers
+- [[ai-component]] - Strategy AI container architecture
+- [[strategy-worker-vps]] - VPS worker deployment
+
 ## Tech Stack
 
 | Layer | Technology |
