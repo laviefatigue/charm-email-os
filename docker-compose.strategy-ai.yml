@@ -1,0 +1,58 @@
+# Charm Email OS - Strategy AI Docker Compose
+#
+# This docker-compose file is specifically for the charm-strategy-ai container
+# which runs Claude Code for autonomous email strategy generation.
+#
+# Deployment Options:
+#
+# Option 1: Deploy via Coolify Docker Compose
+#   1. Create new application in Coolify
+#   2. Select "Docker Compose" as build pack
+#   3. Set docker_compose_location to /docker-compose.strategy-ai.yml
+#   4. Configure environment variables in Coolify
+#
+# Option 2: Run manually on VPS
+#   docker-compose -f docker-compose.strategy-ai.yml run --rm strategy-ai \
+#     <client_id> <job_id> [submission_id]
+#
+# Note: The volume mount for /root/.claude is required for Claude Code
+# credentials that were set up during one-time authentication.
+
+version: '3.8'
+
+services:
+  strategy-ai:
+    build:
+      context: .
+      dockerfile: Dockerfile.strategy-ai
+    image: charm-strategy-ai:latest
+    container_name: charm-strategy-ai
+    volumes:
+      # CRITICAL: Mount Claude credentials from VPS host
+      # These credentials are created by running `claude /login` once on the VPS
+      - /root/.claude:/root/.claude:ro
+    environment:
+      - POSTGRES_HOST=${POSTGRES_HOST:-31.97.142.123}
+      - POSTGRES_PORT=${POSTGRES_PORT:-5432}
+      - POSTGRES_DB=${POSTGRES_DB:-postgres}
+      - POSTGRES_USER=${POSTGRES_USER:-postgres}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      # Job parameters - set these when running, or via Coolify env vars
+      - STRATEGY_CLIENT_ID=${STRATEGY_CLIENT_ID:-}
+      - STRATEGY_JOB_ID=${STRATEGY_JOB_ID:-}
+      - STRATEGY_SUBMISSION_ID=${STRATEGY_SUBMISSION_ID:-}
+    # This container exits after completion - it's a batch job, not a service
+    restart: "no"
+    networks:
+      - coolify
+    # Health check disabled - container runs once and exits
+    # healthcheck:
+    #   test: ["CMD", "true"]
+    #   interval: 30s
+    #   timeout: 10s
+    #   retries: 1
+
+networks:
+  coolify:
+    external: true
+    name: coolify
