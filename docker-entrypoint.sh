@@ -12,9 +12,11 @@
 
 set -e
 
-CLIENT_ID=$1
-JOB_ID=$2
-SUBMISSION_ID=${3:-""}
+# Support both command-line arguments and environment variables
+# Command-line args take precedence over env vars
+CLIENT_ID=${1:-$STRATEGY_CLIENT_ID}
+JOB_ID=${2:-$STRATEGY_JOB_ID}
+SUBMISSION_ID=${3:-$STRATEGY_SUBMISSION_ID}
 
 # Validate required arguments
 if [ -z "$CLIENT_ID" ] || [ -z "$JOB_ID" ]; then
@@ -22,12 +24,12 @@ if [ -z "$CLIENT_ID" ] || [ -z "$JOB_ID" ]; then
     echo ""
     echo "Usage: docker run charm-strategy-ai <client_id> <job_id> [submission_id]"
     echo ""
-    echo "Arguments:"
-    echo "  client_id      UUID of the client"
-    echo "  job_id         UUID of the strategy generation job"
-    echo "  submission_id  (Optional) UUID of the onboarding submission"
+    echo "Or via environment variables:"
+    echo "  STRATEGY_CLIENT_ID      UUID of the client"
+    echo "  STRATEGY_JOB_ID         UUID of the strategy generation job"
+    echo "  STRATEGY_SUBMISSION_ID  (Optional) UUID of the onboarding submission"
     echo ""
-    echo "Environment variables (required):"
+    echo "Database environment variables (required):"
     echo "  POSTGRES_HOST      Database host"
     echo "  POSTGRES_PORT      Database port (default: 5432)"
     echo "  POSTGRES_DB        Database name"
