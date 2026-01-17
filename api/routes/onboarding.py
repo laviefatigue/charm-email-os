@@ -5,8 +5,11 @@ API endpoints for retrieving and editing comprehensive onboarding form data.
 """
 
 from fastapi import APIRouter, HTTPException
-from uuid import UUID
+from uuid import UUID, uuid4
+from datetime import datetime
 import logging
+from typing import Optional
+from pydantic import BaseModel
 
 from database import fetch_all, fetch_one, execute
 from models.onboarding import (
@@ -17,8 +20,129 @@ from models.onboarding import (
     ClientPersona,
 )
 
+
+class OnboardingSubmissionCreate(BaseModel):
+    """Create a new onboarding submission."""
+    company_name: str
+    website: Optional[str] = None
+    contact_name: Optional[str] = None
+    contact_email: Optional[str] = None
+    employee_count: Optional[str] = None
+    funding_stage: Optional[str] = None
+    hq_location: Optional[str] = None
+    core_product: Optional[str] = None
+    target_customer: Optional[str] = None
+    acv: Optional[str] = None
+    sales_cycle_length: Optional[str] = None
+    signals: list[str] = []
+    job_titles: list[str] = []
+    outbound_tools: list[str] = []
+    crm: Optional[str] = None
+    customer_voice: Optional[str] = None
+    roi_results: Optional[str] = None
+    tone_style: Optional[str] = None
+    primary_gtm_objective: Optional[str] = None
+    success_metrics: list[str] = []
+    success_definition: Optional[str] = None
+    # Nested data
+    segments: list[dict] = []
+    personas: list[dict] = []
+
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+
+@router.post("/clients/{client_id}/submissions")
+async def create_onboarding_submission(client_id: UUID, data: OnboardingSubmissionCreate):
+    """
+    Create a new onboarding submission for a client.
+    Used for testing and direct data entry.
+    """
+    # Verify client exists
+    client = await fetch_one("SELECT id, name FROM clients WHERE id = $1", client_id)
+    if not client:
+        raise HTTPException(status_code=404, detail="Client not found")
+
+    submission_id = uuid4()
+    now = datetime.utcnow()
+
+    # Insert main submission
+    await execute("""
+        INSERT INTO client_onboarding_submissions (
+            id, client_id, company_name, website, contact_name, contact_email,
+            employee_count, funding_stage, hq_location,
+            core_product, target_customer, acv, sales_cycle_length,
+            signals, job_titles,
+            outbound_tools, crm,
+            customer_voice, roi_results, tone_style,
+            primary_gtm_objective, success_metrics, success_definition,
+            submission_status, submitted_at, created_at
+        ) VALUES (
+            $1, $2, $3, $4, $5, $6,
+            $7, $8, $9,
+            $10, $11, $12, $13,
+            $14, $15,
+            $16, $17,
+            $18, $19, $20,
+            $21, $22, $23,
+            $24, $25, $26
+        )
+    """,
+        submission_id, client_id,
+        data.company_name, data.website, data.contact_name, data.contact_email,
+        data.employee_count, data.funding_stage, data.hq_location,
+        data.core_product, data.target_customer, data.acv, data.sales_cycle_length,
+        data.signals, data.job_titles,
+        data.outbound_tools, data.crm,
+        data.customer_voice, data.roi_results, data.tone_style,
+        data.primary_gtm_objective, data.success_metrics, data.success_definition,
+        "submitted", now, now
+    )
+    logger.info(f"Created onboarding submission {submission_id} for client {client['name']}")
+
+    # Insert segments
+    for seg in data.segments:
+        segment_id = uuid4()
+        await execute("""
+            INSERT INTO client_segments (
+                id, submission_id, segment_name, revenue_percentage,
+                unique_characteristics, pain_points, buying_triggers
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+        """,
+            segment_id, submission_id,
+            seg.get("segment_name", "Unknown"),
+            seg.get("revenue_percentage", 0),
+            seg.get("unique_characteristics"),
+            seg.get("pain_points"),
+            seg.get("buying_triggers")
+        )
+
+    # Insert personas
+    for persona in data.personas:
+        persona_id = uuid4()
+        await execute("""
+            INSERT INTO client_personas (
+                id, submission_id, job_title, primary_segment, seniority_level,
+                pain_before_buying, aha_moment, objections
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        """,
+            persona_id, submission_id,
+            persona.get("job_title", "Unknown"),
+            persona.get("primary_segment"),
+            persona.get("seniority_level"),
+            persona.get("pain_before_buying"),
+            persona.get("aha_moment"),
+            persona.get("objections")
+        )
+
+    return {
+        "submission_id": str(submission_id),
+        "client_id": str(client_id),
+        "client_name": client["name"],
+        "company_name": data.company_name,
+        "status": "submitted",
+        "message": "Onboarding submission created successfully"
+    }
 
 
 @router.get("/clients/{client_id}/submissions", response_model=OnboardingSubmissionList)
