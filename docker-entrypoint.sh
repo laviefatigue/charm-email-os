@@ -45,13 +45,26 @@ if [ -z "$POSTGRES_HOST" ] || [ -z "$POSTGRES_USER" ] || [ -z "$POSTGRES_PASSWOR
     exit 1
 fi
 
-# Build the prompt for Claude Code
-# Note: We use a direct prompt instead of /skill-name syntax because skills
-# in ~/.claude/skills/ are context files, not invocable slash commands.
-# The skill content is automatically loaded and Claude will follow the instructions.
-PROMPT="Follow the generate-strategy skill instructions to create cold email campaign variants.
 
-Parameters:
+# Build the prompt for Claude Code
+# Read the skill file content and embed it directly in the prompt
+# This is necessary because -p mode doesn't auto-load skills from ~/.claude/skills/
+SKILL_FILE="/app/.claude/skills/generate-strategy.md"
+if [ -f "$SKILL_FILE" ]; then
+    SKILL_CONTENT=$(cat "$SKILL_FILE")
+else
+    echo "Error: Skill file not found at $SKILL_FILE"
+    exit 1
+fi
+
+# Construct the full prompt with embedded skill instructions
+PROMPT="You are executing a cold email strategy generation task. Follow these instructions exactly:
+
+${SKILL_CONTENT}
+
+---
+
+NOW EXECUTE THE TASK WITH THESE PARAMETERS:
 - client_id: ${CLIENT_ID}
 - job_id: ${JOB_ID}"
 
@@ -62,7 +75,13 @@ fi
 
 PROMPT="${PROMPT}
 
-Execute all steps in the skill: get client context, get feedback, generate 3 variants, QA score each, save variants, and complete the job."
+Execute all steps:
+1. Call get_client_context with the client_id
+2. Call get_feedback_summary with the client_id
+3. Generate 3 email variants based on the context
+4. QA score each variant
+5. Call save_campaign_variant for each variant
+6. Call complete_job with the job_id"
 
 echo "=== Charm Strategy AI Component ==="
 echo "Client ID: ${CLIENT_ID}"
