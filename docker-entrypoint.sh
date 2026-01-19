@@ -58,6 +58,18 @@ echo "Submission ID: ${SUBMISSION_ID:-'(none)'}"
 echo "Database: ${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}"
 echo "=================================="
 echo ""
+
+# Copy skills from /app/.claude/ to user's home directory
+# This is needed because the credentials volume mount overwrites ~/.claude/
+# but we need skills to be available for Claude Code
+echo "Setting up Claude Code skills..."
+mkdir -p /home/claude/.claude/skills
+cp -r /app/.claude/skills/* /home/claude/.claude/skills/ 2>/dev/null || true
+cp /app/.claude/settings.local.json /home/claude/.claude/ 2>/dev/null || true
+echo "Skills copied to /home/claude/.claude/skills/"
+ls -la /home/claude/.claude/skills/
+echo ""
+
 echo "Starting Claude Code with strategy skill..."
 echo ""
 
