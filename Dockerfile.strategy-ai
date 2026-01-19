@@ -1,21 +1,30 @@
-# Charm Email OS - Strategy AI Component
-# Purpose-built container for autonomous strategy generation
+# Charm Email OS - Strategy Worker (Persistent Daemon)
 #
-# This container includes:
-# - Claude Code CLI (pre-authenticated via volume mount)
-# - Strategy skill (Cold Email v2.0)
-# - MCP server for database interaction
+# This is a PERSISTENT CONTAINER that runs continuously, polling the database
+# for pending strategy generation jobs and spawning Claude Code for each.
+#
+# Architecture:
+# - Worker polls DB every 5 seconds for pending jobs
+# - For each job, spawns Claude Code subprocess with embedded skill
+# - OAuth credentials persist via volume mount for auto-refresh
+# - Worker stays alive indefinitely (daemon process)
 #
 # IMPORTANT: Runs as non-root user 'claude' because Claude Code's
 # --dangerously-skip-permissions flag cannot be used with root privileges.
 #
+# One-time OAuth setup (after deployment):
+#   docker exec -it <container_id> bash
+#   claude /login
+#   # Follow browser OAuth flow, then exit
+#
 # Usage:
-#   docker build -t charm-strategy-ai -f Dockerfile.strategy-ai .
-#   docker run --rm \
+#   docker build -t charm-strategy-worker -f Dockerfile.strategy-ai .
+#   docker run -d \
 #     -e POSTGRES_HOST=... -e POSTGRES_PORT=... \
 #     -e POSTGRES_DB=... -e POSTGRES_USER=... -e POSTGRES_PASSWORD=... \
-#     -v /path/to/claude-credentials:/home/claude/.claude \
-#     charm-strategy-ai <client_id> <job_id> [submission_id]
+#     -v /var/claude-credentials:/home/claude/.claude \
+#     --restart unless-stopped \
+#     charm-strategy-worker
 
 FROM debian:bookworm-slim
 
@@ -33,6 +42,7 @@ RUN apt-get update && apt-get install -y \
     nodejs \
     npm \
     sudo \
+    procps \
     && rm -rf /var/lib/apt/lists/*
 
 # Create non-root user 'claude' for running Claude Code
@@ -69,40 +79,45 @@ COPY strategy_mcp/ /app/strategy_mcp/
 # Copy MCP configuration
 COPY strategy_mcp_config.json /app/
 
-# Copy Claude skill
+# Copy Claude skill (embedded in prompt by worker)
 COPY .claude/ /app/.claude/
+
+# Copy the persistent worker script
+COPY strategy_worker.py /app/
 
 # Make app directory accessible to claude user
 RUN chown -R claude:claude /app
 
 # Volume mount point for Claude credentials
 # Mount host credentials to /home/claude/.claude (not /root/.claude)
+# OAuth tokens persist here and can auto-refresh
 VOLUME /home/claude/.claude
 
 # Environment variables for database connection
-# These are passed at runtime
 ENV POSTGRES_HOST=""
 ENV POSTGRES_PORT="5432"
 ENV POSTGRES_DB="postgres"
 ENV POSTGRES_USER=""
 ENV POSTGRES_PASSWORD=""
 
-# Copy and set up entrypoint
-COPY docker-entrypoint.sh /app/
-RUN chmod +x /app/docker-entrypoint.sh
+# Worker configuration
+ENV POLL_INTERVAL="5"
+ENV CLAUDE_ACCOUNT=""
 
 # Switch to non-root user for execution
 USER claude
 
-# Default entrypoint: run strategy generation
-# Arguments: <client_id> <job_id> [submission_id]
-ENTRYPOINT ["/app/docker-entrypoint.sh"]
+# Health check: verify the worker process is running
+# The worker should stay alive indefinitely, polling for jobs
+HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
+    CMD pgrep -f "python3.*strategy_worker.py" || exit 1
 
-# NOTE: No HEALTHCHECK - this is a batch job container, not a web service
-# It runs once with arguments and exits. Coolify expects HTTP health checks.
+# Run the persistent worker (daemon process)
+# Unlike batch container, this stays running and polls for jobs
+CMD ["python3", "/app/strategy_worker.py"]
 
 # Labels for documentation
-LABEL org.opencontainers.image.title="Charm Strategy AI"
-LABEL org.opencontainers.image.description="Purpose-built Claude Code container for email strategy generation"
+LABEL org.opencontainers.image.title="Charm Strategy Worker"
+LABEL org.opencontainers.image.description="Persistent daemon container for strategy generation with Claude Code"
 LABEL org.opencontainers.image.vendor="Charm Email OS"
-LABEL org.opencontainers.image.version="1.1.0"
+LABEL org.opencontainers.image.version="2.0.0"
