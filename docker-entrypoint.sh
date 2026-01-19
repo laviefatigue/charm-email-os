@@ -46,10 +46,23 @@ if [ -z "$POSTGRES_HOST" ] || [ -z "$POSTGRES_USER" ] || [ -z "$POSTGRES_PASSWOR
 fi
 
 # Build the prompt for Claude Code
-PROMPT="/generate-strategy client_id=${CLIENT_ID} job_id=${JOB_ID}"
+# Note: We use a direct prompt instead of /skill-name syntax because skills
+# in ~/.claude/skills/ are context files, not invocable slash commands.
+# The skill content is automatically loaded and Claude will follow the instructions.
+PROMPT="Follow the generate-strategy skill instructions to create cold email campaign variants.
+
+Parameters:
+- client_id: ${CLIENT_ID}
+- job_id: ${JOB_ID}"
+
 if [ -n "$SUBMISSION_ID" ]; then
-    PROMPT="${PROMPT} submission_id=${SUBMISSION_ID}"
+    PROMPT="${PROMPT}
+- submission_id: ${SUBMISSION_ID}"
 fi
+
+PROMPT="${PROMPT}
+
+Execute all steps in the skill: get client context, get feedback, generate 3 variants, QA score each, save variants, and complete the job."
 
 echo "=== Charm Strategy AI Component ==="
 echo "Client ID: ${CLIENT_ID}"

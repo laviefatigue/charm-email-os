@@ -8,7 +8,7 @@ tags: [deployment, strategy-ai, claude-code, coolify, status]
 # Strategy AI Deployment Status
 
 **Last Updated:** 2026-01-19
-**Status:** ACTION REQUIRED - Manual SSH build needed
+**Status:** BLOCKED - Claude Code OAuth token expired
 
 ## Deployment Progress
 
@@ -28,11 +28,42 @@ tags: [deployment, strategy-ai, claude-code, coolify, status]
 
 ### Current Blocker
 
-**Issue:** Coolify build failed. Docker image `n008gg4c88kgw4g48wcckk0k:latest` does not exist.
+**Issue:** Claude Code OAuth token has expired.
 
-**Root Cause:** The Coolify deployment (UUID: `ekwcwk0kk44owk04swwkgc8o`) failed during the Docker build process.
+**Error Message:**
+```
+API Error: 401 {"type":"error","error":{"type":"authentication_error",
+"message":"OAuth token has expired. Please obtain a new token or refresh your existing token."}}
+```
 
-**Solution:** Build the image manually on the VPS via SSH.
+**Root Cause:** The Claude Code authentication performed earlier has expired. OAuth tokens have a limited lifespan.
+
+**Solution:** Re-authenticate Claude Code via SSH with an interactive session.
+
+### Re-Authentication Instructions
+
+SSH into the VPS and run:
+
+```bash
+# 1. Start an interactive container shell
+docker run -it --rm \
+    -v /var/claude-credentials:/home/claude/.claude \
+    n008gg4c88kgw4g48wcckk0k:latest \
+    bash
+
+# 2. Inside the container, run login
+claude /login
+
+# 3. Follow the OAuth flow in browser (copy the URL shown)
+# 4. After authentication completes, exit the container
+exit
+```
+
+### Previous Blocker (RESOLVED)
+
+**Issue:** Coolify build failed. Docker image did not exist.
+
+**Solution:** Built the image manually. Image now exists at `n008gg4c88kgw4g48wcckk0k:latest`.
 
 ### Manual Build Instructions
 
@@ -66,10 +97,19 @@ docker run --rm \
 
 | Step | Status | Notes |
 |------|--------|-------|
-| Build Docker image manually | Action Required | Via SSH on VPS |
-| Run charm-strategy-ai container | Pending | After image built |
+| Re-authenticate Claude Code | **ACTION REQUIRED** | Via SSH - OAuth token expired |
+| Run charm-strategy-ai container | Pending | After re-authentication |
 | Verify strategy suggestions in DB | Pending | After container runs |
 | Verify results in frontend | Pending | After suggestions saved |
+
+### Issues Fixed in This Session
+
+| Issue | Solution | Status |
+|-------|----------|--------|
+| Docker image missing | Built manually via Coolify terminal | Fixed |
+| Skills directory empty after copy | Copied skill file to host volume | Fixed |
+| `/generate-strategy` unknown skill | Changed to direct prompt (not /skill-name) | Fixed |
+| OAuth token expired | Requires interactive SSH re-auth | **BLOCKER** |
 
 ## Key Identifiers
 

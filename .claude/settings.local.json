@@ -5,10 +5,16 @@
       "Bash(tree:*)",
       "Bash(dir:*)",
       "Bash(ls:*)",
+      "Bash(*)",
       "Skill(foam-docs)",
       "Skill(foam-docs:*)",
+      "Skill(generate-strategy)",
+      "Skill(generate-strategy:*)",
+      "Skill(generate-domain-suggestions)",
+      "Skill(generate-domain-suggestions:*)",
       "mcp__coolify__get_infrastructure_overview",
-      "mcp__coolify__list_servers"
+      "mcp__coolify__list_servers",
+      "mcp__strategy__*"
     ]
   }
 }
