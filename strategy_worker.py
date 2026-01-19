@@ -46,6 +46,26 @@ CLAUDE_ACCOUNT = os.getenv("CLAUDE_ACCOUNT", "ClaudeCodeMax")
 # Path to this project (for MCP config)
 PROJECT_PATH = os.path.dirname(os.path.abspath(__file__))
 
+# Skill file path - skill content is embedded in prompt because -p mode doesn't auto-load skills
+SKILL_FILE = os.path.join(PROJECT_PATH, ".claude", "skills", "generate-strategy.md")
+
+
+def load_skill_content() -> str:
+    """Load skill instructions to embed in prompt.
+
+    Claude Code's -p (prompt) mode doesn't auto-load skills from ~/.claude/skills/,
+    so we must embed the skill content directly in the prompt.
+    """
+    try:
+        with open(SKILL_FILE, 'r', encoding='utf-8') as f:
+            return f.read()
+    except FileNotFoundError:
+        logger.error(f"Skill file not found: {SKILL_FILE}")
+        raise
+    except Exception as e:
+        logger.error(f"Failed to load skill file: {e}")
+        raise
+
 
 def get_db():
     """Get database connection."""
@@ -177,8 +197,13 @@ def mark_job_failed(job_id: str, error: str):
         conn.close()
 
 
-def process_job(job: dict):
-    """Process a strategy generation job by spawning Claude Code."""
+def process_job(job: dict, skill_content: str):
+    """Process a strategy generation job by spawning Claude Code.
+
+    Args:
+        job: Job dict with id, client_id, submission_id, generation_round
+        skill_content: Pre-loaded skill instructions to embed in prompt
+    """
     job_id = str(job["id"])
     client_id = str(job["client_id"])
     submission_id = str(job["submission_id"]) if job.get("submission_id") else None
@@ -186,11 +211,30 @@ def process_job(job: dict):
 
     logger.info(f"Processing strategy job {job_id} for client {client_id} (round {generation_round})")
 
-    # Build the Claude Code command
-    # The skill will load the Cold Email Skill v2.0 and generate variants
-    prompt = f"/generate-strategy client_id={client_id} job_id={job_id}"
+    # Build prompt with embedded skill content
+    # Claude Code -p mode doesn't auto-load skills, so we embed them directly
+    prompt = f"""You are executing a cold email strategy generation task. Follow these instructions exactly:
+
+{skill_content}
+
+---
+
+NOW EXECUTE THE TASK WITH THESE PARAMETERS:
+- client_id: {client_id}
+- job_id: {job_id}"""
+
     if submission_id:
-        prompt += f" submission_id={submission_id}"
+        prompt += f"\n- submission_id: {submission_id}"
+
+    prompt += """
+
+Execute all steps:
+1. Call get_client_context with the client_id
+2. Call get_feedback_summary with the client_id
+3. Generate 3 email variants based on the context
+4. QA score each variant
+5. Call save_campaign_variant for each variant
+6. Call complete_job with the job_id"""
 
     cmd = [
         "claude",
@@ -227,9 +271,19 @@ def process_job(job: dict):
         if result.returncode != 0:
             error_msg = result.stderr or result.stdout or "Unknown error"
             logger.error(f"Claude Code failed: {error_msg}")
+
+            # Check for authentication errors - may need manual re-auth
+            if "401" in error_msg or "authentication" in error_msg.lower() or "OAuth" in error_msg:
+                logger.warning("=" * 60)
+                logger.warning("AUTHENTICATION ERROR DETECTED")
+                logger.warning("OAuth token may have expired. Re-authenticate with:")
+                logger.warning("  docker exec -it <container_id> claude /login")
+                logger.warning("=" * 60)
+
             mark_job_failed(job_id, error_msg[:500])
         else:
             logger.info(f"Strategy job {job_id} completed successfully")
+            logger.info(f"Claude Code output: {result.stdout[:500] if result.stdout else '(empty)'}")
             # Job status should be updated by complete_job tool in MCP
 
     except subprocess.TimeoutExpired:
@@ -242,14 +296,34 @@ def process_job(job: dict):
 
 
 def run_worker():
-    """Main worker loop."""
+    """Main worker loop.
+
+    This is a persistent daemon that runs forever, polling the database for
+    pending strategy generation jobs. For each job, it spawns a Claude Code
+    subprocess to generate email variants.
+
+    OAuth credentials persist via volume mount, and Claude Code can auto-refresh
+    access tokens using the refresh token (valid ~30 days).
+    """
     logger.info("Strategy Generation Worker starting...")
     logger.info(f"Database: {DB_CONFIG['host']}:{DB_CONFIG['port']}/{DB_CONFIG['database']}")
     logger.info(f"Poll interval: {POLL_INTERVAL} seconds")
     logger.info(f"Claude account: {CLAUDE_ACCOUNT}")
+    logger.info(f"Skill file: {SKILL_FILE}")
+
+    # Load skill content once at startup
+    logger.info("Loading skill content...")
+    try:
+        skill_content = load_skill_content()
+        logger.info(f"Skill loaded successfully ({len(skill_content)} chars)")
+    except Exception as e:
+        logger.error(f"Failed to load skill - cannot start worker: {e}")
+        sys.exit(1)
 
     # Ensure tables exist
     ensure_tables()
+
+    logger.info("Worker ready - polling for jobs...")
 
     while True:
         try:
@@ -257,7 +331,7 @@ def run_worker():
             job = get_pending_job()
 
             if job:
-                process_job(job)
+                process_job(job, skill_content)
             else:
                 # No pending jobs, wait before polling again
                 time.sleep(POLL_INTERVAL)

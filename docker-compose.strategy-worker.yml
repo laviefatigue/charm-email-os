@@ -1,0 +1,52 @@
+# Charm Email OS - Strategy Worker (Persistent Daemon)
+#
+# This compose file deploys the strategy worker as a persistent daemon
+# that polls for pending strategy generation jobs.
+#
+# For Coolify deployment:
+# - Create new application with docker-compose
+# - Set environment variables in Coolify UI
+# - Deploy - container will keep running
+#
+# One-time OAuth setup (after deployment):
+#   docker exec -it <container_id> bash
+#   claude /login
+#   # Follow browser OAuth flow, then exit
+#
+# For local testing:
+#   docker compose -f docker-compose.strategy-worker.yml up -d
+
+services:
+  strategy-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.strategy-worker
+    container_name: charm-strategy-worker
+    restart: unless-stopped
+    environment:
+      # Database connection (set these in Coolify)
+      - POSTGRES_HOST=${POSTGRES_HOST}
+      - POSTGRES_PORT=${POSTGRES_PORT:-5432}
+      - POSTGRES_DB=${POSTGRES_DB:-postgres}
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      # Worker configuration
+      - POLL_INTERVAL=${POLL_INTERVAL:-5}
+      - CLAUDE_ACCOUNT=${CLAUDE_ACCOUNT:-}
+    volumes:
+      # Persist OAuth credentials between container restarts
+      # Create this directory on host: mkdir -p /var/claude-credentials
+      - /var/claude-credentials:/home/claude/.claude
+    healthcheck:
+      test: ["CMD", "pgrep", "-f", "python3.*strategy_worker.py"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+# Note: No ports exposed - this is a background worker, not a web service
