@@ -7,8 +7,8 @@ tags: [deployment, strategy-ai, claude-code, coolify, status]
 
 # Strategy AI Deployment Status
 
-**Last Updated:** 2026-01-16
-**Status:** BLOCKED - Awaiting POSTGRES_PASSWORD
+**Last Updated:** 2026-01-19
+**Status:** ACTION REQUIRED - Manual SSH build needed
 
 ## Deployment Progress
 
@@ -18,34 +18,56 @@ tags: [deployment, strategy-ai, claude-code, coolify, status]
 |------|--------|-------|
 | Push deployment files to GitHub | Done | Dockerfile, entrypoint, compose |
 | Create charm-strategy-ai app in Coolify | Done | UUID: `n008gg4c88kgw4g48wcckk0k` |
-| Configure environment variables | Done | All vars set except password retrieved |
-| Build Docker image | Done | Built successfully in Coolify |
+| Configure environment variables | Done | Password: `ZEN3hMv6UpA0hfd8OcAUSiJWgpY33q5V` |
 | Fix volume mount shadowing | Done | Moved claude binary to /usr/local/bin |
 | Authenticate Claude Code on VPS | Done | SSH interactive session |
 | Find Charm client in database | Done | ID: `4bd07dc0-059a-448b-b6f4-3275d0c104a9` |
 | Create test onboarding submission | Done | ID: `9c1d635a-f69b-42f5-ba82-72fed49f4476` |
 | Create strategy generation job | Done | ID: `1307a217-f1b0-434c-9eaa-c53f02511569` |
+| Create Foam documentation | Done | This file |
 
 ### Current Blocker
 
-**Issue:** Cannot retrieve `POSTGRES_PASSWORD` from Coolify to run container manually.
+**Issue:** Coolify build failed. Docker image `n008gg4c88kgw4g48wcckk0k:latest` does not exist.
 
-**Attempted Solutions:**
-1. `list_env_vars` MCP tool - Returns `***REDACTED***`
-2. Coolify UI via Chrome DevTools - Values masked with bullets
-3. Coolify Terminal - Input corruption issues
-4. `get_application_raw` MCP tool - Doesn't include env vars
+**Root Cause:** The Coolify deployment (UUID: `ekwcwk0kk44owk04swwkgc8o`) failed during the Docker build process.
 
-**Resolution Options:**
-1. User provides password manually
-2. SSH into VPS and retrieve from running container
-3. Use Docker Compose deployment instead of manual run
+**Solution:** Build the image manually on the VPS via SSH.
+
+### Manual Build Instructions
+
+SSH into the VPS and run:
+
+```bash
+# 1. Clone the repo (use GitHub token for private repo)
+cd /tmp
+rm -rf charm-strategy-build
+git clone --depth 1 https://<GITHUB_TOKEN>@github.com/laviefatigue/charm-email-os.git charm-strategy-build
+
+# 2. Build the Docker image
+cd charm-strategy-build
+docker build -f Dockerfile.strategy-ai -t charm-strategy-ai:latest .
+
+# 3. Run the strategy generation
+docker run --rm \
+    -e POSTGRES_HOST=31.97.142.123 \
+    -e POSTGRES_PORT=5432 \
+    -e POSTGRES_DB=postgres \
+    -e POSTGRES_USER=postgres \
+    -e POSTGRES_PASSWORD='ZEN3hMv6UpA0hfd8OcAUSiJWgpY33q5V' \
+    -v /root/.claude:/root/.claude \
+    charm-strategy-ai:latest \
+    4bd07dc0-059a-448b-b6f4-3275d0c104a9 \
+    1307a217-f1b0-434c-9eaa-c53f02511569 \
+    9c1d635a-f69b-42f5-ba82-72fed49f4476
+```
 
 ### Pending Steps
 
 | Step | Status | Notes |
 |------|--------|-------|
-| Run charm-strategy-ai container | Blocked | Needs password |
+| Build Docker image manually | Action Required | Via SSH on VPS |
+| Run charm-strategy-ai container | Pending | After image built |
 | Verify strategy suggestions in DB | Pending | After container runs |
 | Verify results in frontend | Pending | After suggestions saved |
 
@@ -75,7 +97,7 @@ tags: [deployment, strategy-ai, claude-code, coolify, status]
 | Port | `5432` |
 | Database | `postgres` |
 | User | `postgres` |
-| Password | `(retrieve from Coolify)` |
+| Password | `ZEN3hMv6UpA0hfd8OcAUSiJWgpY33q5V` |
 
 ## Container Image
 
