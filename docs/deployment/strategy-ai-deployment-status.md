@@ -26,7 +26,23 @@ tags: [deployment, strategy-ai, claude-code, coolify, status]
 | Create strategy generation job | Done | ID: `1307a217-f1b0-434c-9eaa-c53f02511569` |
 | Create Foam documentation | Done | This file |
 
-### Current Blocker
+### Current Blockers
+
+#### 1. Coolify Deployment Architecture Mismatch (RESOLVED)
+
+**Issue:** Coolify deployments always fail with health check error.
+
+**Error Message:**
+```
+template parsing error: template: :1:13: executing "" at <.State.Health.Status>:
+map has no entry for key "Health"
+```
+
+**Root Cause:** charm-strategy-ai is a **batch job container** that exits after execution, but Coolify expects a long-running web service with health checks.
+
+**Solution:** This is expected behavior. Use Coolify only for building the Docker image. Run the container manually with `docker run` when a strategy job needs execution.
+
+#### 2. Claude Code OAuth Token Expired (ACTION REQUIRED)
 
 **Issue:** Claude Code OAuth token has expired.
 
@@ -145,6 +161,15 @@ docker run --rm \
 Image: n008gg4c88kgw4g48wcckk0k:latest
 Built by: Coolify (from Dockerfile.strategy-ai)
 ```
+
+### Important Architecture Note
+
+**This is a BATCH JOB container, NOT a web service.**
+
+- The container is designed to run once with arguments, execute Claude Code, and exit
+- Coolify deployments will always show "Failed" because the container exits immediately
+- This is expected behavior - use Coolify only for building the image
+- To execute a strategy job, run the container manually via `docker run`
 
 ## Command to Execute
 
