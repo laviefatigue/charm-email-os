@@ -6,12 +6,15 @@
 # - Strategy skill (Cold Email v2.0)
 # - MCP server for database interaction
 #
+# IMPORTANT: Runs as non-root user 'claude' because Claude Code's
+# --dangerously-skip-permissions flag cannot be used with root privileges.
+#
 # Usage:
 #   docker build -t charm-strategy-ai -f Dockerfile.strategy-ai .
 #   docker run --rm \
 #     -e POSTGRES_HOST=... -e POSTGRES_PORT=... \
 #     -e POSTGRES_DB=... -e POSTGRES_USER=... -e POSTGRES_PASSWORD=... \
-#     -v /root/.claude:/root/.claude \
+#     -v /path/to/claude-credentials:/home/claude/.claude \
 #     charm-strategy-ai <client_id> <job_id> [submission_id]
 
 FROM debian:bookworm-slim
@@ -29,19 +32,27 @@ RUN apt-get update && apt-get install -y \
     python3-venv \
     nodejs \
     npm \
+    sudo \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Claude Code CLI
-# Note: This downloads and installs the official Claude Code CLI
+# Create non-root user 'claude' for running Claude Code
+# --dangerously-skip-permissions cannot be used with root privileges
+RUN useradd -m -s /bin/bash claude && \
+    mkdir -p /home/claude/.claude && \
+    chown -R claude:claude /home/claude
+
+# Switch to claude user for Claude Code installation
+USER claude
+WORKDIR /home/claude
+
+# Install Claude Code CLI as non-root user
 RUN curl -fsSL https://claude.ai/install.sh | bash
 
-# CRITICAL FIX: Copy claude binary to /usr/local/bin to avoid volume mount shadowing
-# The Claude CLI installs to ~/.local/bin/claude on Linux (not ~/.claude/bin)
-# The volume mount (-v /root/.claude:/root/.claude) is for credentials only
-RUN cp /root/.local/bin/claude /usr/local/bin/claude && \
-    chmod +x /usr/local/bin/claude
+# Add Claude to PATH for the claude user
+ENV PATH="/home/claude/.local/bin:${PATH}"
 
-# Claude is now in /usr/local/bin which is already in PATH (no ENV modification needed)
+# Switch back to root for system-level operations
+USER root
 
 # Set up working directory
 WORKDIR /app
@@ -61,10 +72,12 @@ COPY strategy_mcp_config.json /app/
 # Copy Claude skill
 COPY .claude/ /app/.claude/
 
-# Volume mount point for Claude credentials ONLY (not the binary)
-# The binary is at /usr/local/bin/claude to avoid shadowing
-# Authentication is done once on the host, then persisted at /root/.claude
-VOLUME /root/.claude
+# Make app directory accessible to claude user
+RUN chown -R claude:claude /app
+
+# Volume mount point for Claude credentials
+# Mount host credentials to /home/claude/.claude (not /root/.claude)
+VOLUME /home/claude/.claude
 
 # Environment variables for database connection
 # These are passed at runtime
@@ -78,6 +91,9 @@ ENV POSTGRES_PASSWORD=""
 COPY docker-entrypoint.sh /app/
 RUN chmod +x /app/docker-entrypoint.sh
 
+# Switch to non-root user for execution
+USER claude
+
 # Default entrypoint: run strategy generation
 # Arguments: <client_id> <job_id> [submission_id]
 ENTRYPOINT ["/app/docker-entrypoint.sh"]
@@ -89,4 +105,4 @@ ENTRYPOINT ["/app/docker-entrypoint.sh"]
 LABEL org.opencontainers.image.title="Charm Strategy AI"
 LABEL org.opencontainers.image.description="Purpose-built Claude Code container for email strategy generation"
 LABEL org.opencontainers.image.vendor="Charm Email OS"
-LABEL org.opencontainers.image.version="1.0.3"
+LABEL org.opencontainers.image.version="1.1.0"
