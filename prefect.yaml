@@ -24,6 +24,9 @@ build:
 pull:
   - prefect.deployments.steps.set_working_directory:
       directory: /opt/charm-email-os
+  - prefect.deployments.steps.run_shell_script:
+      script: git pull origin master
+      stream_output: true
 
 # Deployments
 deployments:
