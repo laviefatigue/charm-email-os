@@ -1,7 +1,7 @@
 ---
 title: Claude Code Worker Architecture
 created: 2026-01-16
-updated: 2026-01-16
+updated: 2026-01-20
 tags: [architecture, claude-code, worker, mcp]
 ---
 
@@ -257,32 +257,46 @@ export POSTGRES_PASSWORD=your_password
 python domain_worker.py
 ```
 
-## Strategy Generation Worker (Phase 3)
+## Strategy Generation Worker (Implemented)
 
-The strategy generation worker follows the same pattern for AI-powered email campaign generation.
+**Status:** Working (2026-01-20)
 
-### Planned Files
+The strategy generation worker follows the same pattern for AI-powered email campaign generation. It runs locally via Docker Desktop, connecting to the VPS PostgreSQL database.
 
-| File | Purpose |
-|------|---------|
-| `strategy_worker.py` | Main worker daemon |
-| `strategy_mcp/server.py` | MCP tools server |
-| `strategy_mcp_config.json` | MCP server configuration |
-| `.claude/skills/generate-strategy.md` | Claude skill instructions |
+### Current Deployment
 
-### Planned MCP Tools
+| Aspect | Configuration |
+|--------|---------------|
+| Container | `charm-strategy-test` |
+| Image | `charm-strategy-worker:local` |
+| Database | VPS PostgreSQL (31.97.142.123:5432) |
+| Authentication | Claude Max subscription via OAuth |
+| Credential Volume | `charm-claude-credentials` |
 
-| Tool | Purpose |
-|------|---------|
-| `get_client_context` | Get onboarding data, personas, segments |
-| `get_feedback_summary` | Get approved/denied suggestions |
-| `save_campaign_variant` | Save email variant for review |
-| `complete_job` | Mark generation job complete |
+### Files
 
-### Integration with Cold Email Skill v2.0
+| File | Purpose | Status |
+|------|---------|--------|
+| `strategy_worker.py` | Main worker daemon | Working |
+| `strategy_mcp/server.py` | MCP tools server | Working |
+| `strategy_mcp_config.json` | MCP server configuration | Working |
+| `.claude/skills/generate-strategy.md` | Claude skill instructions | Working |
+| `Dockerfile.strategy-worker` | Docker image definition | Working |
 
-The strategy generation will integrate the Cold Email Personalization Skill v2.0 from:
+### MCP Tools
 
+| Tool | Purpose | Status |
+|------|---------|--------|
+| `get_client_context` | Get onboarding data, personas, segments | Implemented |
+| `get_feedback_summary` | Get approved/denied suggestions | Implemented |
+| `save_campaign_variant` | Save email variant for review | Implemented |
+| `complete_job` | Mark generation job complete | Implemented |
+
+### Skill Integration
+
+**Important:** The Cold Email Skill v2.0 is **embedded directly in the prompt** (not loaded via `/skill-name` syntax) because the worker runs non-interactively. The full skill content is included in `strategy_worker.py`.
+
+Reference location:
 ```
 D:\Work\Claude Campaign Copywriting Skill-20251120T015618Z-1-001\
   └── Claude Campaign Copywriting Skill\
@@ -305,8 +319,40 @@ D:\Work\Claude Campaign Copywriting Skill-20251120T015618Z-1-001\
 - Punchiness: 10 pts
 - Subject Line: 5 pts
 
+### Running the Strategy Worker
+
+See [[../deployment/local-docker]] for complete setup instructions.
+
+**Quick commands:**
+```bash
+# Check if running
+docker ps --filter "name=charm-strategy"
+
+# View logs
+docker logs -f charm-strategy-test
+
+# Re-authenticate (when OAuth expires)
+docker exec -it charm-strategy-test claude /login
+```
+
+### Authentication Persistence
+
+OAuth credentials persist in the Docker named volume `charm-claude-credentials`:
+
+| Token Type | Lifespan | Behavior |
+|------------|----------|----------|
+| Access Token | ~1 hour | Auto-refreshes while worker runs |
+| Refresh Token | ~30 days | Requires re-auth when expired |
+
+**When "Invalid API key" error appears:**
+1. Run `docker exec -it charm-strategy-test claude /login`
+2. Complete OAuth in browser
+3. Reset failed jobs to pending
+
 ## Related
 
+- [[../deployment/local-docker]] - Local Docker setup and authentication
+- [[../features/strategy-generation]] - Strategy generation feature details
 - [[data-flow]] - How data moves through system
 - [[api-endpoints]] - API routes for job management
 - [[../database/schema]] - Database tables for jobs

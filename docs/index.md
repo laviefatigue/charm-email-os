@@ -1,13 +1,22 @@
 ---
 title: Charm Email OS Documentation
 created: 2026-01-16
-updated: 2026-01-16
+updated: 2026-01-20
 tags: [hub, index]
 ---
 
 # Charm Email OS
 
 Client management platform for email outreach campaigns with AI-powered strategy generation.
+
+## Current Status (2026-01-20)
+
+| Component | Status | Location |
+|-----------|--------|----------|
+| Frontend | Running | Coolify (charm-frontend) |
+| API | Running | Coolify (charm-api) |
+| Strategy Worker | Running | Local Docker (`charm-strategy-test`) |
+| Database | VPS PostgreSQL | 31.97.142.123:5432 |
 
 ## Overview
 
@@ -32,16 +41,17 @@ Charm Email OS manages the full lifecycle of email outreach campaigns:
 ### Features
 - [[client-profile]] - Client information management
 - [[domain-generation]] - Domain sourcing and approval
-- [[strategy-generation]] - AI-powered campaign generation
+- [[strategy-generation]] - AI-powered campaign generation (Working)
 
 ### Database
 - [[schema]] - Full database schema
 - [[migrations]] - Migration history
 
 ### Deployment
-- [[strategy-ai-deployment-status]] - Current deployment progress and blockers
+- [[local-docker]] - **Local Docker development** (current setup)
+- [[strategy-ai-deployment-status]] - Deployment progress and blockers
 - [[ai-component]] - Strategy AI container architecture
-- [[strategy-worker-vps]] - VPS worker deployment
+- [[strategy-worker-vps]] - VPS worker deployment (not active)
 
 ## Tech Stack
 

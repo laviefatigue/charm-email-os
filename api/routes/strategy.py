@@ -13,6 +13,36 @@ import logging
 import os
 
 # Prefect integration for EmailBison push
+# Configure CF Access headers for Prefect API calls through Cloudflare Access
+def _configure_prefect_cf_access():
+    """Configure httpx to include Cloudflare Access headers for Prefect API calls."""
+    cf_client_id = os.getenv("CF_ACCESS_CLIENT_ID", "")
+    cf_client_secret = os.getenv("CF_ACCESS_CLIENT_SECRET", "")
+
+    if cf_client_id and cf_client_secret:
+        import httpx
+        _original_async_init = httpx.AsyncClient.__init__
+        _original_sync_init = httpx.Client.__init__
+
+        def _patched_async_init(self, *args, **kwargs):
+            headers = dict(kwargs.get('headers', {}) or {})
+            headers['CF-Access-Client-Id'] = cf_client_id
+            headers['CF-Access-Client-Secret'] = cf_client_secret
+            kwargs['headers'] = headers
+            _original_async_init(self, *args, **kwargs)
+
+        def _patched_sync_init(self, *args, **kwargs):
+            headers = dict(kwargs.get('headers', {}) or {})
+            headers['CF-Access-Client-Id'] = cf_client_id
+            headers['CF-Access-Client-Secret'] = cf_client_secret
+            kwargs['headers'] = headers
+            _original_sync_init(self, *args, **kwargs)
+
+        httpx.AsyncClient.__init__ = _patched_async_init
+        httpx.Client.__init__ = _patched_sync_init
+
+_configure_prefect_cf_access()
+
 try:
     from prefect.deployments import run_deployment
     PREFECT_AVAILABLE = True
@@ -729,7 +759,7 @@ async def push_to_emailbison(suggestion_id: UUID):
         # Trigger Prefect flow for EmailBison push
         try:
             flow_run = await run_deployment(
-                name="charm-email-os/push-to-emailbison",
+                name="push-to-emailbison/push-to-emailbison",
                 parameters={
                     "suggestion_id": str(suggestion_id),
                 },

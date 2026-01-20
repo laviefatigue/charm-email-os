@@ -1,7 +1,7 @@
 ---
 title: Deployment Documentation
 created: 2026-01-16
-updated: 2026-01-16
+updated: 2026-01-20
 tags: [deployment, index]
 ---
 
@@ -11,6 +11,7 @@ Documentation for deploying Charm Email OS components.
 
 ## Deployment Guides
 
+- [[local-docker]] - **Local Docker development** (recommended for testing)
 - [[ai-component]] - Charm Strategy AI container architecture and usage
 - [[strategy-worker-vps]] - Strategy worker deployment on VPS
 
@@ -18,11 +19,39 @@ Documentation for deploying Charm Email OS components.
 
 - [[strategy-ai-deployment-status]] - Current deployment progress and blockers
 
+## Current Working Setup (as of 2026-01-20)
+
+### Local Docker Worker (Active)
+
+The strategy worker runs locally via Docker Desktop, connecting to the VPS database:
+
+```bash
+# Container name: charm-strategy-test
+# Image: charm-strategy-worker:local
+# Status: Running, Healthy
+# Credential volume: charm-claude-credentials
+```
+
+| Aspect | Configuration |
+|--------|---------------|
+| Database | VPS PostgreSQL (31.97.142.123:5432) |
+| Authentication | Claude Max subscription via OAuth |
+| Credential Persistence | Docker named volume |
+| Polling Interval | 5 seconds |
+
+### Authentication Notes
+
+- **OAuth tokens expire** - Refresh tokens last ~30 days
+- **Re-auth required** when: `Invalid API key - Please run /login` error appears
+- **Re-auth command**: `docker exec -it charm-strategy-test claude /login`
+
+See [[local-docker]] for complete setup and troubleshooting guide.
+
 ## Infrastructure
 
 See [[../infrastructure/index]] for infrastructure details:
 - [[../infrastructure/coolify]] - Coolify self-hosted PaaS
-- [[../infrastructure/supabase]] - Database hosting
+- [[../infrastructure/supabase]] - Database hosting (currently using VPS PostgreSQL)
 - [[../infrastructure/vps]] - VPS configuration
 
 ## Quick Reference
@@ -33,20 +62,21 @@ See [[../infrastructure/index]] for infrastructure details:
 |-------------|---------|--------|
 | charm-api | FastAPI backend | Running |
 | charm-frontend | Next.js frontend | Running |
-| charm-strategy-ai | AI strategy container | Built (batch job) |
+| charm-strategy-ai | AI strategy container | Built (not active - using local Docker) |
 
-### VPS Components
+### Local Docker Components
 
-| Component | Location | Purpose |
-|-----------|----------|---------|
-| Claude credentials | `/root/.claude/` | Persisted auth for containers |
-| Prefect worker | Systemd service | Orchestrates strategy jobs |
+| Component | Container | Purpose |
+|-----------|-----------|---------|
+| Strategy Worker | `charm-strategy-test` | Polls DB, spawns Claude Code |
+| Claude Credentials | `charm-claude-credentials` volume | Persisted OAuth tokens |
 
 ## Deployment Workflow
 
 1. **Code changes** → Push to GitHub
 2. **Coolify** → Auto-deploys charm-api and charm-frontend
-3. **Strategy AI** → Manual rebuild or Prefect-triggered runs
+3. **Strategy Worker** → Runs locally via Docker Desktop
+4. **Re-auth** → When OAuth expires, run `docker exec -it charm-strategy-test claude /login`
 
 ## Related
 
