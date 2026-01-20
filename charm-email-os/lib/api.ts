@@ -1312,7 +1312,7 @@ export const strategyApi = {
       `/api/strategy/suggestions/${suggestionId}/review`,
       {
         method: 'POST',
-        body: JSON.stringify(toSnakeCase(request)),
+        body: JSON.stringify(toSnakeCase(request as unknown as Record<string, unknown>)),
       }
     );
     return toCamelCase<{ suggestionId: string; subjectLine: string; status: string; message: string }>(response);
