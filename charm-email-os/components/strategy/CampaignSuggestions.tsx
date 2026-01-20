@@ -74,6 +74,8 @@ export function CampaignSuggestions({ clientId }: CampaignSuggestionsProps) {
   }>({ open: false, suggestionId: null, subjectLine: '' });
   const [revisionInstruction, setRevisionInstruction] = useState('');
   const [submittingRevision, setSubmittingRevision] = useState(false);
+  const [revisionGenerating, setRevisionGenerating] = useState(false);
+  const [revisionJob, setRevisionJob] = useState<StrategyJob | null>(null);
 
   // Push to EmailBison state
   const [pushingId, setPushingId] = useState<string | null>(null);
@@ -157,19 +159,53 @@ export function CampaignSuggestions({ clientId }: CampaignSuggestionsProps) {
     }
   };
 
+  const pollForRevisionCompletion = async (jobId: string) => {
+    const poll = async () => {
+      try {
+        const status = await strategyApi.getJobStatus(jobId);
+        setRevisionJob(status);
+
+        if (status.status === 'review' || status.status === 'completed') {
+          setRevisionGenerating(false);
+          setRevisionJob(null);
+          await fetchSuggestions();
+          toast.success('Revision generated successfully');
+        } else if (status.status === 'failed') {
+          setRevisionGenerating(false);
+          setRevisionJob(null);
+          setError(status.errorMessage || 'Revision generation failed');
+        } else {
+          setTimeout(poll, 3000);
+        }
+      } catch (err) {
+        setRevisionGenerating(false);
+        setRevisionJob(null);
+        setError(err instanceof Error ? err.message : 'Failed to check revision status');
+      }
+    };
+
+    poll();
+  };
+
   const handleRevisionSubmit = async () => {
     if (!revisionModal.suggestionId || !revisionInstruction.trim()) return;
 
     try {
       setSubmittingRevision(true);
-      await strategyApi.requestRevision(revisionModal.suggestionId, revisionInstruction);
+      const response = await strategyApi.requestRevision(revisionModal.suggestionId, revisionInstruction);
       setRevisionModal({ open: false, suggestionId: null, subjectLine: '' });
       setRevisionInstruction('');
+      setSubmittingRevision(false);
+
+      // Start polling for revision completion
+      setRevisionGenerating(true);
+      pollForRevisionCompletion(response.jobId);
+      toast.info('Revision submitted - generating new variant...');
+
+      // Refresh to show the revision_requested status
       await fetchSuggestions();
-      toast.success('Revision requested - a new variant will be generated');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to request revision');
-    } finally {
       setSubmittingRevision(false);
     }
   };
@@ -529,6 +565,18 @@ export function CampaignSuggestions({ clientId }: CampaignSuggestionsProps) {
                 <span>
                   Generation round {currentJob.generationRound} in progress...
                   Status: {currentJob.status}
+                </span>
+              </div>
+            </div>
+          )}
+
+          {revisionGenerating && (
+            <div className="p-3 bg-yellow-50 rounded-lg border border-yellow-200">
+              <div className="flex items-center gap-2 text-yellow-700">
+                <Loader2 className="h-4 w-4 animate-spin" />
+                <span>
+                  Generating revision{revisionJob ? ` (round ${revisionJob.generationRound})` : ''}...
+                  {revisionJob?.status && ` Status: ${revisionJob.status}`}
                 </span>
               </div>
             </div>

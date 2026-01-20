@@ -36,8 +36,10 @@ export function StrategySelector({
       const response = await strategyApi.getStrategies(clientId);
       setStrategies(response.strategies);
     } catch (err) {
-      console.error('Failed to fetch strategies:', err);
-      toast.error('Failed to load strategies');
+      // Silently fail - strategies may not exist yet for new clients
+      // This is expected behavior, not an error worth showing to users
+      console.warn('Could not load strategies:', err);
+      setStrategies([]);
     } finally {
       setLoading(false);
     }

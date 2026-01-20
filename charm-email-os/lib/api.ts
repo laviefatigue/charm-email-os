@@ -1241,14 +1241,17 @@ export interface SuggestionReviewRequest {
 }
 
 export interface RevisionRequest {
-  id: string;
+  revisionId: string;
   jobId: string;
   clientId: string;
-  variantId?: string;
-  subjectLine?: string;
+  variantId: string;
   instruction: string;
-  processed: boolean;
-  createdAt: string;
+  status: string;
+  message?: string;
+  // Fields from GET endpoint
+  subjectLine?: string;
+  processed?: boolean;
+  createdAt?: string;
 }
 
 export interface ClientRevisionsResponse {
