@@ -17,7 +17,7 @@ prefect-version: ">=3.0.0"
 # Build configuration
 build:
   - prefect.deployments.steps.run_shell_script:
-      script: pip install psycopg2-binary
+      script: pip install psycopg2-binary asyncpg httpx
       stream_output: true
 
 # Pull configuration - local filesystem on VPS
