@@ -1,15 +1,8 @@
 {
   "mcpServers": {
     "strategy-generator": {
-      "command": "python",
-      "args": ["strategy_mcp/server.py"],
-      "env": {
-        "POSTGRES_HOST": "${POSTGRES_HOST}",
-        "POSTGRES_PORT": "${POSTGRES_PORT}",
-        "POSTGRES_DB": "${POSTGRES_DB}",
-        "POSTGRES_USER": "${POSTGRES_USER}",
-        "POSTGRES_PASSWORD": "${POSTGRES_PASSWORD}"
-      }
+      "command": "python3",
+      "args": ["/app/strategy_mcp/server.py"]
     }
   }
 }

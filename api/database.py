@@ -5,6 +5,7 @@ Uses asyncpg for async PostgreSQL queries
 
 import asyncio
 import asyncpg
+import json
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator, Optional
 import logging
@@ -18,6 +19,22 @@ _pool: Optional[asyncpg.Pool] = None
 
 # Connection timeout in seconds
 CONNECTION_TIMEOUT = 10.0
+
+
+async def _init_connection(conn: asyncpg.Connection):
+    """Initialize connection with JSONB codec for proper JSON handling"""
+    await conn.set_type_codec(
+        'jsonb',
+        encoder=json.dumps,
+        decoder=json.loads,
+        schema='pg_catalog'
+    )
+    await conn.set_type_codec(
+        'json',
+        encoder=json.dumps,
+        decoder=json.loads,
+        schema='pg_catalog'
+    )
 
 
 async def create_pool() -> asyncpg.Pool:
@@ -36,6 +53,7 @@ async def create_pool() -> asyncpg.Pool:
                     min_size=1,
                     max_size=10,
                     command_timeout=60,
+                    init=_init_connection,  # Set up JSONB codec for each connection
                 ),
                 timeout=CONNECTION_TIMEOUT
             )

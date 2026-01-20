@@ -13,7 +13,7 @@ import uuid
 from datetime import datetime
 from typing import Optional
 import psycopg2
-from psycopg2.extras import RealDictCursor
+from psycopg2.extras import RealDictCursor, Json
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import Tool, TextContent
@@ -390,7 +390,7 @@ async def call_tool(name: str, arguments: dict):
                  score, rationale, used_variables, campaign_type, generation_round, status)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'pending')
             """, (suggestion_id, job_id, client_id, variant_number, subject_line,
-                  email_body, score, rationale, json.dumps(used_variables),
+                  email_body, score, rationale, Json(used_variables),
                   campaign_type, generation_round))
 
             conn.commit()
