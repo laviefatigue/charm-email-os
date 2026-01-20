@@ -39,6 +39,7 @@ async def create_strategy(client_id: UUID, request: StrategyCreate):
     Create a new strategy for a client.
 
     Strategies group related campaign suggestions together.
+    Optionally linked to a client onboarding submission.
     """
     # Verify client exists
     client = await fetch_one(
@@ -48,12 +49,23 @@ async def create_strategy(client_id: UUID, request: StrategyCreate):
     if not client:
         raise HTTPException(status_code=404, detail="Client not found")
 
-    # Create strategy
+    # If submission_id provided, verify it exists
+    submission_created_at = None
+    if request.submission_id:
+        submission = await fetch_one(
+            "SELECT id, created_at FROM client_onboarding_submissions WHERE id = $1 AND client_id = $2",
+            request.submission_id, client_id
+        )
+        if not submission:
+            raise HTTPException(status_code=404, detail="Submission not found for this client")
+        submission_created_at = submission.get("created_at")
+
+    # Create strategy with optional submission_id
     strategy = await fetch_one("""
-        INSERT INTO strategies (client_id, name, description, status)
-        VALUES ($1, $2, $3, 'draft')
-        RETURNING id, client_id, name, description, status, emailbison_campaign_id, created_at, updated_at
-    """, client_id, request.name, request.description)
+        INSERT INTO strategies (client_id, name, description, status, submission_id)
+        VALUES ($1, $2, $3, 'draft', $4)
+        RETURNING id, client_id, name, description, status, submission_id, emailbison_campaign_id, created_at, updated_at
+    """, client_id, request.name, request.description, request.submission_id)
 
     logger.info(f"Created strategy '{request.name}' for client {client['name']}")
 
@@ -63,6 +75,8 @@ async def create_strategy(client_id: UUID, request: StrategyCreate):
         name=strategy["name"],
         description=strategy.get("description"),
         status=strategy["status"],
+        submission_id=strategy.get("submission_id"),
+        submission_created_at=submission_created_at,
         emailbison_campaign_id=strategy.get("emailbison_campaign_id"),
         created_at=strategy["created_at"],
         updated_at=strategy["updated_at"],
@@ -72,12 +86,14 @@ async def create_strategy(client_id: UUID, request: StrategyCreate):
 @router.get("/strategies/{client_id}")
 async def get_client_strategies(client_id: UUID):
     """
-    Get all strategies for a client.
+    Get all strategies for a client with linked submission info.
     """
     strategies = await fetch_all("""
         SELECT s.*,
-               (SELECT COUNT(*) FROM strategy_suggestions ss WHERE ss.strategy_id = s.id) as suggestion_count
+               (SELECT COUNT(*) FROM strategy_suggestions ss WHERE ss.strategy_id = s.id) as suggestion_count,
+               sub.created_at as submission_created_at
         FROM strategies s
+        LEFT JOIN client_onboarding_submissions sub ON sub.id = s.submission_id
         WHERE s.client_id = $1
         ORDER BY s.created_at DESC
     """, client_id)
@@ -90,6 +106,8 @@ async def get_client_strategies(client_id: UUID):
                 "name": s["name"],
                 "description": s.get("description"),
                 "status": s["status"],
+                "submission_id": str(s["submission_id"]) if s.get("submission_id") else None,
+                "submission_created_at": s["submission_created_at"].isoformat() if s.get("submission_created_at") else None,
                 "emailbison_campaign_id": s.get("emailbison_campaign_id"),
                 "suggestion_count": s.get("suggestion_count", 0),
                 "created_at": s["created_at"].isoformat() if s.get("created_at") else None,

@@ -233,18 +233,21 @@ PARAMETERS:
         if strategy_id:
             prompt += f"\n- strategy_id: {strategy_id}"
 
-        prompt += """
+        prompt += f"""
 
 Execute these steps:
 1. Call get_client_context with the client_id
-2. Call get_revision_context with the original_suggestion_id to get:
+2. Call get_revision_context with the original_suggestion_id ({revision_of}) to get:
    - The original email content
    - The user's revision instruction
    - Previous feedback patterns
 3. Generate 1 revised email variant that incorporates the user's feedback
 4. QA score the revised variant
-5. Call save_campaign_variant for the revised variant (set original_suggestion_id parameter)
-6. Call mark_revision_processed with the original_suggestion_id
+5. Call save_campaign_variant for the revised variant with:
+   - original_suggestion_id="{revision_of}"
+   - variant_number=1
+   - All other required fields (subject_line, email_body, score, rationale, etc.)
+6. Call mark_revision_processed with original_suggestion_id="{revision_of}"
 7. Call complete_job with the job_id"""
 
     else:

@@ -3,7 +3,6 @@
 import { useState, useEffect } from 'react';
 import { Plus, Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import {
   Select,
@@ -12,16 +11,9 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '@/components/ui/dialog';
 import { strategyApi, type Strategy } from '@/lib/api';
 import { toast } from 'sonner';
+import { NewStrategyModal } from './NewStrategyModal';
 
 interface StrategySelectorProps {
   clientId: string;
@@ -37,9 +29,6 @@ export function StrategySelector({
   const [strategies, setStrategies] = useState<Strategy[]>([]);
   const [loading, setLoading] = useState(true);
   const [createModalOpen, setCreateModalOpen] = useState(false);
-  const [newStrategyName, setNewStrategyName] = useState('');
-  const [newStrategyDescription, setNewStrategyDescription] = useState('');
-  const [creating, setCreating] = useState(false);
 
   const fetchStrategies = async () => {
     try {
@@ -58,28 +47,9 @@ export function StrategySelector({
     fetchStrategies();
   }, [clientId]);
 
-  const handleCreate = async () => {
-    if (!newStrategyName.trim()) return;
-
-    setCreating(true);
-    try {
-      const strategy = await strategyApi.createStrategy(
-        clientId,
-        newStrategyName.trim(),
-        newStrategyDescription.trim() || undefined
-      );
-      setStrategies([...strategies, strategy]);
-      onStrategyChange(strategy.id);
-      setCreateModalOpen(false);
-      setNewStrategyName('');
-      setNewStrategyDescription('');
-      toast.success('Strategy created');
-    } catch (err) {
-      console.error('Failed to create strategy:', err);
-      toast.error('Failed to create strategy');
-    } finally {
-      setCreating(false);
-    }
+  const handleStrategyCreated = (strategy: Strategy) => {
+    setStrategies(prev => [...prev, strategy]);
+    onStrategyChange(strategy.id);
   };
 
   return (
@@ -104,7 +74,14 @@ export function StrategySelector({
           <SelectItem value="all">All Strategies</SelectItem>
           {strategies.map((strategy) => (
             <SelectItem key={strategy.id} value={strategy.id}>
-              {strategy.name}
+              <div className="flex flex-col">
+                <span>{strategy.name}</span>
+                {strategy.submissionCreatedAt && (
+                  <span className="text-xs text-muted-foreground">
+                    Based on {new Date(strategy.submissionCreatedAt).toLocaleDateString()}
+                  </span>
+                )}
+              </div>
             </SelectItem>
           ))}
         </SelectContent>
@@ -120,63 +97,13 @@ export function StrategySelector({
         New
       </Button>
 
-      {/* Create Strategy Modal */}
-      <Dialog open={createModalOpen} onOpenChange={setCreateModalOpen}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Create New Strategy</DialogTitle>
-            <DialogDescription>
-              Create a new strategy to organize campaign variants
-            </DialogDescription>
-          </DialogHeader>
-
-          <div className="space-y-4 py-4">
-            <div className="grid gap-2">
-              <Label htmlFor="strategy-name">Strategy Name</Label>
-              <Input
-                id="strategy-name"
-                placeholder="e.g., Q1 Outreach Campaign"
-                value={newStrategyName}
-                onChange={(e) => setNewStrategyName(e.target.value)}
-                disabled={creating}
-              />
-            </div>
-            <div className="grid gap-2">
-              <Label htmlFor="strategy-description">Description (optional)</Label>
-              <Input
-                id="strategy-description"
-                placeholder="Brief description of this strategy"
-                value={newStrategyDescription}
-                onChange={(e) => setNewStrategyDescription(e.target.value)}
-                disabled={creating}
-              />
-            </div>
-          </div>
-
-          <DialogFooter>
-            <Button
-              variant="outline"
-              onClick={() => setCreateModalOpen(false)}
-              disabled={creating}
-            >
-              Cancel
-            </Button>
-            <Button
-              onClick={handleCreate}
-              disabled={creating || !newStrategyName.trim()}
-            >
-              {creating ? (
-                <>
-                  <Loader2 className="h-4 w-4 animate-spin mr-2" />
-                  Creating...
-                </>
-              ) : (
-                'Create Strategy'
-              )}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      {/* New Strategy Modal with two options */}
+      <NewStrategyModal
+        clientId={clientId}
+        open={createModalOpen}
+        onOpenChange={setCreateModalOpen}
+        onStrategyCreated={handleStrategyCreated}
+      />
     </div>
   );
 }

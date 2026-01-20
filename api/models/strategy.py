@@ -15,6 +15,7 @@ class StrategyCreate(BaseModel):
     """Request to create a new strategy."""
     name: str
     description: Optional[str] = None
+    submission_id: Optional[UUID] = None  # Link to onboarding submission
 
 
 class StrategyUpdate(BaseModel):
@@ -31,6 +32,8 @@ class StrategyResponse(BaseModel):
     name: str
     description: Optional[str] = None
     status: str
+    submission_id: Optional[UUID] = None
+    submission_created_at: Optional[datetime] = None  # When the linked submission was created
     emailbison_campaign_id: Optional[str] = None
     created_at: datetime
     updated_at: datetime

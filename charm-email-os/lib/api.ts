@@ -1201,7 +1201,10 @@ export interface Strategy {
   name: string;
   description?: string;
   status: 'draft' | 'active' | 'paused' | 'completed';
+  submissionId?: string;
+  submissionCreatedAt?: string;
   emailbisonCampaignId?: string;
+  suggestionCount?: number;
   createdAt: string;
   updatedAt: string;
 }
@@ -1262,7 +1265,7 @@ export const strategyApi = {
    */
   async createStrategy(clientId: string, name: string, description?: string): Promise<Strategy> {
     const response = await fetchApi<Record<string, unknown>>(
-      `/api/strategies/${clientId}`,
+      `/api/strategy/strategies/${clientId}`,
       {
         method: 'POST',
         body: JSON.stringify({ name, description }),
@@ -1276,7 +1279,7 @@ export const strategyApi = {
    */
   async getStrategies(clientId: string): Promise<{ clientId: string; strategies: Strategy[]; total: number }> {
     const response = await fetchApi<Record<string, unknown>>(
-      `/api/strategies/${clientId}`
+      `/api/strategy/strategies/${clientId}`
     );
     return toCamelCase<{ clientId: string; strategies: Strategy[]; total: number }>(response);
   },
@@ -1289,7 +1292,7 @@ export const strategyApi = {
     data: { name?: string; description?: string; status?: string }
   ): Promise<Strategy> {
     const response = await fetchApi<Record<string, unknown>>(
-      `/api/strategies/${strategyId}`,
+      `/api/strategy/strategies/${strategyId}`,
       {
         method: 'PUT',
         body: JSON.stringify(toSnakeCase(data)),
@@ -1303,7 +1306,7 @@ export const strategyApi = {
    */
   async deleteStrategy(strategyId: string): Promise<{ message: string }> {
     return fetchApi<{ message: string }>(
-      `/api/strategies/${strategyId}`,
+      `/api/strategy/strategies/${strategyId}`,
       { method: 'DELETE' }
     );
   },

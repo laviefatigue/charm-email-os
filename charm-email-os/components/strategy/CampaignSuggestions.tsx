@@ -32,6 +32,7 @@ import {
 import { toast } from 'sonner';
 import { SuggestionEditModal } from './SuggestionEditModal';
 import { StrategySelector } from './StrategySelector';
+import { RevisionTree, groupByRevisionChain } from './RevisionTree';
 
 interface CampaignSuggestionsProps {
   clientId: string;
@@ -211,11 +212,24 @@ export function CampaignSuggestions({ clientId }: CampaignSuggestionsProps) {
     fetchSuggestions();
   }, [clientId, selectedStrategyId, sortBy, sortOrder]);
 
-  // Split suggestions into denied and non-denied
-  const { deniedSuggestions, otherSuggestions } = useMemo(() => {
-    const denied = suggestions.filter(s => s.status === 'denied');
-    const other = suggestions.filter(s => s.status !== 'denied');
-    return { deniedSuggestions: denied, otherSuggestions: other };
+  // Group suggestions by revision chains and split into denied/other
+  const { deniedChains, otherChains } = useMemo(() => {
+    // First, group by revision chains
+    const chains = groupByRevisionChain(suggestions);
+
+    // Convert to array of [latestSuggestion, historyArray]
+    const chainArray: Array<{ latest: StrategySuggestion; history: StrategySuggestion[] }> = [];
+    chains.forEach((versions) => {
+      const latest = versions[0];
+      const history = versions.slice(1);
+      chainArray.push({ latest, history });
+    });
+
+    // Split into denied (based on latest version status) and other
+    const denied = chainArray.filter(c => c.latest.status === 'denied');
+    const other = chainArray.filter(c => c.latest.status !== 'denied');
+
+    return { deniedChains: denied, otherChains: other };
   }, [suggestions]);
 
   const getStatusBadge = (status: string) => {
@@ -558,11 +572,29 @@ export function CampaignSuggestions({ clientId }: CampaignSuggestionsProps) {
         </Card>
       ) : (
         <div className="space-y-4">
-          {/* Non-denied suggestions */}
-          {otherSuggestions.map(renderSuggestionCard)}
+          {/* Non-denied suggestions using RevisionTree */}
+          {otherChains.map(({ latest, history }) => (
+            <RevisionTree
+              key={latest.id}
+              latestSuggestion={latest}
+              revisions={history}
+              onEdit={setEditingSuggestion}
+              onApprove={(id) => handleReview(id, 'approve')}
+              onDeny={(id) => handleReview(id, 'deny')}
+              onRequestRevision={(s) => setRevisionModal({
+                open: true,
+                suggestionId: s.id,
+                subjectLine: s.editedSubjectLine || s.subjectLine,
+              })}
+              onPushToEmailBison={handlePushToEmailBison}
+              onCopy={handleCopy}
+              pushingId={pushingId}
+              copiedId={copiedId}
+            />
+          ))}
 
           {/* Collapsible denied section */}
-          {deniedSuggestions.length > 0 && (
+          {deniedChains.length > 0 && (
             <div className="border rounded-lg">
               <button
                 onClick={() => setDeniedExpanded(!deniedExpanded)}
@@ -575,7 +607,7 @@ export function CampaignSuggestions({ clientId }: CampaignSuggestionsProps) {
                     <ChevronRight className="h-4 w-4" />
                   )}
                   <span className="font-medium">Denied Suggestions</span>
-                  <Badge variant="destructive">{deniedSuggestions.length}</Badge>
+                  <Badge variant="destructive">{deniedChains.length}</Badge>
                 </div>
                 <span className="text-sm text-muted-foreground">
                   {deniedExpanded ? 'Click to collapse' : 'Click to expand'}
@@ -583,7 +615,25 @@ export function CampaignSuggestions({ clientId }: CampaignSuggestionsProps) {
               </button>
               {deniedExpanded && (
                 <div className="p-4 pt-0 space-y-4">
-                  {deniedSuggestions.map(renderSuggestionCard)}
+                  {deniedChains.map(({ latest, history }) => (
+                    <RevisionTree
+                      key={latest.id}
+                      latestSuggestion={latest}
+                      revisions={history}
+                      onEdit={setEditingSuggestion}
+                      onApprove={(id) => handleReview(id, 'approve')}
+                      onDeny={(id) => handleReview(id, 'deny')}
+                      onRequestRevision={(s) => setRevisionModal({
+                        open: true,
+                        suggestionId: s.id,
+                        subjectLine: s.editedSubjectLine || s.subjectLine,
+                      })}
+                      onPushToEmailBison={handlePushToEmailBison}
+                      onCopy={handleCopy}
+                      pushingId={pushingId}
+                      copiedId={copiedId}
+                    />
+                  ))}
                 </div>
               )}
             </div>
