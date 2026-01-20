@@ -7,5 +7,8 @@ prefect>=3.0.0
 # Database (sync driver for workers)
 psycopg2-binary>=2.9.9
 
+# Database (async driver for Prefect flows)
+asyncpg>=0.28.0
+
 # Environment
 python-dotenv>=1.0.0

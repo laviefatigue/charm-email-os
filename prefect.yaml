@@ -124,3 +124,33 @@ deployments:
       - cron: "*/5 * * * *"  # Every 5 minutes
         timezone: America/New_York
         active: false  # Enable for continuous background processing
+
+  # ==========================================================================
+  # EmailBison Push - On-Demand
+  # ==========================================================================
+  - name: push-to-emailbison
+    description: |
+      Push approved suggestion to EmailBison as a draft campaign.
+      Called from API when user clicks "Push to EmailBison" button.
+
+      Parameters:
+        - suggestion_id: UUID of the approved strategy suggestion
+
+      Workflow:
+        1. Fetch suggestion content from database
+        2. Create draft campaign in EmailBison via REST API
+        3. Mark suggestion as pushed in Charm database
+
+      Requirements:
+        - EMAILBISON_API_KEY environment variable
+        - Suggestion must be in 'approved' status
+    entrypoint: prefect_flows/push_to_emailbison.py:push_suggestion_to_emailbison
+    work_pool:
+      name: default-agent-pool
+    parameters:
+      suggestion_id: ""
+    tags:
+      - charm
+      - emailbison
+      - push
+      - manual

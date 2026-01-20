@@ -10,6 +10,14 @@ from uuid import UUID
 from datetime import datetime
 from database import fetch_one, fetch_all, execute
 import logging
+import os
+
+# Prefect integration for EmailBison push
+try:
+    from prefect.deployments import run_deployment
+    PREFECT_AVAILABLE = True
+except ImportError:
+    PREFECT_AVAILABLE = False
 
 from models.strategy import (
     StrategyJobCreate,
@@ -714,27 +722,57 @@ async def push_to_emailbison(suggestion_id: UUID):
             detail="Suggestion has already been pushed to EmailBison"
         )
 
-    # For now, mark as queued for push (Prefect integration will be added separately)
-    # In production, this would trigger a Prefect flow
-    await execute("""
-        UPDATE strategy_suggestions
-        SET pushed_to_emailbison = TRUE, pushed_at = NOW()
-        WHERE id = $1
-    """, suggestion_id)
+    # Check if Prefect is available and configured
+    prefect_api_url = os.getenv("PREFECT_API_URL", "")
 
-    logger.info(f"Suggestion {suggestion_id} queued for EmailBison push")
+    if PREFECT_AVAILABLE and prefect_api_url:
+        # Trigger Prefect flow for EmailBison push
+        try:
+            flow_run = await run_deployment(
+                name="charm-email-os/push-to-emailbison",
+                parameters={
+                    "suggestion_id": str(suggestion_id),
+                },
+                timeout=0,  # Don't wait for completion
+            )
 
-    # Get the content to push (use edited version if available)
-    subject_line = suggestion.get("edited_subject_line") or suggestion["subject_line"]
-    email_body = suggestion.get("edited_email_body") or suggestion["email_body"]
+            logger.info(f"Triggered Prefect flow for suggestion {suggestion_id}, flow_run_id={flow_run.id}")
 
-    return {
-        "suggestion_id": str(suggestion_id),
-        "client_id": str(suggestion["client_id"]),
-        "client_name": suggestion["client_name"],
-        "workspace_id": str(suggestion["workspace_id"]) if suggestion.get("workspace_id") else None,
-        "subject_line": subject_line,
-        "campaign_type": suggestion.get("campaign_type"),
-        "status": "queued",
-        "message": "Suggestion queued for EmailBison push (Prefect flow pending)"
-    }
+            return {
+                "suggestion_id": str(suggestion_id),
+                "client_id": str(suggestion["client_id"]),
+                "client_name": suggestion["client_name"],
+                "workspace_id": str(suggestion["workspace_id"]) if suggestion.get("workspace_id") else None,
+                "flow_run_id": str(flow_run.id),
+                "status": "queued",
+                "message": "Push to EmailBison queued via Prefect"
+            }
+        except Exception as e:
+            logger.error(f"Failed to trigger Prefect flow for suggestion {suggestion_id}: {e}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to queue EmailBison push: {str(e)}"
+            )
+    else:
+        # Fallback: Mark as pushed locally (for testing without Prefect)
+        logger.warning(f"Prefect not available/configured - marking suggestion {suggestion_id} as pushed locally")
+
+        await execute("""
+            UPDATE strategy_suggestions
+            SET pushed_to_emailbison = TRUE, pushed_at = NOW()
+            WHERE id = $1
+        """, suggestion_id)
+
+        # Get the content to push (use edited version if available)
+        subject_line = suggestion.get("edited_subject_line") or suggestion["subject_line"]
+
+        return {
+            "suggestion_id": str(suggestion_id),
+            "client_id": str(suggestion["client_id"]),
+            "client_name": suggestion["client_name"],
+            "workspace_id": str(suggestion["workspace_id"]) if suggestion.get("workspace_id") else None,
+            "subject_line": subject_line,
+            "campaign_type": suggestion.get("campaign_type"),
+            "status": "marked_locally",
+            "message": "Prefect not configured - marked as pushed locally (no campaign created in EmailBison)"
+        }
