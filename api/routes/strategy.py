@@ -19,10 +19,166 @@ from models.strategy import (
     RevisionRequestCreate,
     RevisionRequestResponse,
     ClientSuggestionsResponse,
+    StrategyCreate,
+    StrategyUpdate,
+    StrategyResponse,
+    SuggestionEditRequest,
 )
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+
+# ============================================================================
+# Strategy Management (NEW)
+# ============================================================================
+
+@router.post("/strategies/{client_id}")
+async def create_strategy(client_id: UUID, request: StrategyCreate):
+    """
+    Create a new strategy for a client.
+
+    Strategies group related campaign suggestions together.
+    """
+    # Verify client exists
+    client = await fetch_one(
+        "SELECT id, name FROM clients WHERE id = $1",
+        client_id
+    )
+    if not client:
+        raise HTTPException(status_code=404, detail="Client not found")
+
+    # Create strategy
+    strategy = await fetch_one("""
+        INSERT INTO strategies (client_id, name, description, status)
+        VALUES ($1, $2, $3, 'draft')
+        RETURNING id, client_id, name, description, status, emailbison_campaign_id, created_at, updated_at
+    """, client_id, request.name, request.description)
+
+    logger.info(f"Created strategy '{request.name}' for client {client['name']}")
+
+    return StrategyResponse(
+        id=strategy["id"],
+        client_id=strategy["client_id"],
+        name=strategy["name"],
+        description=strategy.get("description"),
+        status=strategy["status"],
+        emailbison_campaign_id=strategy.get("emailbison_campaign_id"),
+        created_at=strategy["created_at"],
+        updated_at=strategy["updated_at"],
+    )
+
+
+@router.get("/strategies/{client_id}")
+async def get_client_strategies(client_id: UUID):
+    """
+    Get all strategies for a client.
+    """
+    strategies = await fetch_all("""
+        SELECT s.*,
+               (SELECT COUNT(*) FROM strategy_suggestions ss WHERE ss.strategy_id = s.id) as suggestion_count
+        FROM strategies s
+        WHERE s.client_id = $1
+        ORDER BY s.created_at DESC
+    """, client_id)
+
+    return {
+        "client_id": str(client_id),
+        "strategies": [
+            {
+                "id": str(s["id"]),
+                "name": s["name"],
+                "description": s.get("description"),
+                "status": s["status"],
+                "emailbison_campaign_id": s.get("emailbison_campaign_id"),
+                "suggestion_count": s.get("suggestion_count", 0),
+                "created_at": s["created_at"].isoformat() if s.get("created_at") else None,
+                "updated_at": s["updated_at"].isoformat() if s.get("updated_at") else None,
+            }
+            for s in (strategies or [])
+        ],
+        "total": len(strategies or [])
+    }
+
+
+@router.put("/strategies/{strategy_id}")
+async def update_strategy(strategy_id: UUID, request: StrategyUpdate):
+    """
+    Update a strategy.
+    """
+    # Get current strategy
+    strategy = await fetch_one(
+        "SELECT * FROM strategies WHERE id = $1",
+        strategy_id
+    )
+    if not strategy:
+        raise HTTPException(status_code=404, detail="Strategy not found")
+
+    # Build update query
+    updates = []
+    params = []
+    param_num = 1
+
+    if request.name is not None:
+        updates.append(f"name = ${param_num}")
+        params.append(request.name)
+        param_num += 1
+
+    if request.description is not None:
+        updates.append(f"description = ${param_num}")
+        params.append(request.description)
+        param_num += 1
+
+    if request.status is not None:
+        updates.append(f"status = ${param_num}")
+        params.append(request.status)
+        param_num += 1
+
+    if not updates:
+        raise HTTPException(status_code=400, detail="No fields to update")
+
+    updates.append(f"updated_at = NOW()")
+    params.append(strategy_id)
+
+    query = f"UPDATE strategies SET {', '.join(updates)} WHERE id = ${param_num} RETURNING *"
+    updated = await fetch_one(query, *params)
+
+    return StrategyResponse(
+        id=updated["id"],
+        client_id=updated["client_id"],
+        name=updated["name"],
+        description=updated.get("description"),
+        status=updated["status"],
+        emailbison_campaign_id=updated.get("emailbison_campaign_id"),
+        created_at=updated["created_at"],
+        updated_at=updated["updated_at"],
+    )
+
+
+@router.delete("/strategies/{strategy_id}")
+async def delete_strategy(strategy_id: UUID):
+    """
+    Delete a strategy and unlink its suggestions.
+    """
+    strategy = await fetch_one(
+        "SELECT id, name FROM strategies WHERE id = $1",
+        strategy_id
+    )
+    if not strategy:
+        raise HTTPException(status_code=404, detail="Strategy not found")
+
+    # Unlink suggestions (don't delete them)
+    await execute(
+        "UPDATE strategy_suggestions SET strategy_id = NULL WHERE strategy_id = $1",
+        strategy_id
+    )
+
+    # Delete strategy
+    await execute("DELETE FROM strategies WHERE id = $1", strategy_id)
+
+    logger.info(f"Deleted strategy '{strategy['name']}'")
+
+    return {"message": f"Strategy '{strategy['name']}' deleted", "id": str(strategy_id)}
 
 
 # ============================================================================
@@ -39,7 +195,7 @@ async def create_strategy_job(client_id: UUID, request: Optional[StrategyJobCrea
 
     Args:
         client_id: The client UUID to generate strategy for
-        request: Optional request with submission_id
+        request: Optional request with submission_id and strategy_id
 
     Returns:
         Job ID and status information
@@ -53,6 +209,27 @@ async def create_strategy_job(client_id: UUID, request: Optional[StrategyJobCrea
         raise HTTPException(status_code=404, detail="Client not found")
 
     submission_id = request.submission_id if request else None
+    strategy_id = request.strategy_id if request else None
+
+    # If no strategy specified, use or create default
+    if not strategy_id:
+        default_strategy = await fetch_one("""
+            SELECT id FROM strategies
+            WHERE client_id = $1
+            ORDER BY created_at ASC
+            LIMIT 1
+        """, client_id)
+
+        if default_strategy:
+            strategy_id = default_strategy["id"]
+        else:
+            # Create default strategy
+            new_strategy = await fetch_one("""
+                INSERT INTO strategies (client_id, name, status)
+                VALUES ($1, 'Default Strategy', 'active')
+                RETURNING id
+            """, client_id)
+            strategy_id = new_strategy["id"]
 
     # Get current generation round (increment from last job)
     last_job = await fetch_one("""
@@ -65,10 +242,10 @@ async def create_strategy_job(client_id: UUID, request: Optional[StrategyJobCrea
 
     # Create job
     job = await fetch_one("""
-        INSERT INTO strategy_generation_jobs (client_id, submission_id, status, generation_round)
-        VALUES ($1, $2, 'pending', $3)
+        INSERT INTO strategy_generation_jobs (client_id, submission_id, strategy_id, status, generation_round, job_type)
+        VALUES ($1, $2, $3, 'pending', $4, 'initial')
         RETURNING id, status, generation_round, created_at
-    """, client_id, submission_id, generation_round)
+    """, client_id, submission_id, strategy_id, generation_round)
 
     logger.info(f"Created strategy generation job {job['id']} for client {client['name']} (round {generation_round})")
 
@@ -77,6 +254,7 @@ async def create_strategy_job(client_id: UUID, request: Optional[StrategyJobCrea
         "client_id": str(client_id),
         "client_name": client["name"],
         "submission_id": str(submission_id) if submission_id else None,
+        "strategy_id": str(strategy_id) if strategy_id else None,
         "status": job["status"],
         "generation_round": job["generation_round"],
         "created_at": job["created_at"].isoformat(),
@@ -154,14 +332,20 @@ async def get_client_jobs(client_id: UUID, limit: int = 10):
 async def get_client_suggestions(
     client_id: UUID,
     status: Optional[str] = None,
+    strategy_id: Optional[UUID] = None,
+    sort: Optional[str] = None,  # score, created_at, status
+    order: Optional[str] = "desc",  # asc, desc
     limit: int = 50
 ):
     """
-    Get strategy suggestions for a client, optionally filtered by status.
+    Get strategy suggestions for a client, optionally filtered and sorted.
 
     Args:
         client_id: The client UUID
         status: Filter by status (pending, approved, denied, revision_requested)
+        strategy_id: Filter by strategy
+        sort: Sort field (score, created_at, status)
+        order: Sort order (asc, desc)
         limit: Maximum number to return
     """
     query = """
@@ -171,18 +355,37 @@ async def get_client_suggestions(
         WHERE s.client_id = $1
     """
     params = [client_id]
+    param_num = 2
 
     if status:
-        query += " AND s.status = $2"
+        query += f" AND s.status = ${param_num}"
         params.append(status)
+        param_num += 1
 
-    query += " ORDER BY s.created_at DESC LIMIT $" + str(len(params) + 1)
+    if strategy_id:
+        query += f" AND s.strategy_id = ${param_num}"
+        params.append(strategy_id)
+        param_num += 1
+
+    # Handle sorting
+    sort_field = "s.created_at"
+    if sort == "score":
+        sort_field = "s.score"
+    elif sort == "status":
+        sort_field = "s.status"
+    elif sort == "created_at":
+        sort_field = "s.created_at"
+
+    sort_order = "DESC" if order != "asc" else "ASC"
+    query += f" ORDER BY {sort_field} {sort_order} NULLS LAST"
+
+    query += f" LIMIT ${param_num}"
     params.append(limit)
 
     suggestions = await fetch_all(query, *params)
 
-    # Get counts
-    counts = await fetch_one("""
+    # Get counts (filtered by strategy_id if provided)
+    count_query = """
         SELECT
             COUNT(*) FILTER (WHERE status = 'pending') as pending_count,
             COUNT(*) FILTER (WHERE status = 'approved') as approved_count,
@@ -191,7 +394,14 @@ async def get_client_suggestions(
             COUNT(*) as total
         FROM strategy_suggestions
         WHERE client_id = $1
-    """, client_id)
+    """
+    count_params = [client_id]
+
+    if strategy_id:
+        count_query += " AND strategy_id = $2"
+        count_params.append(strategy_id)
+
+    counts = await fetch_one(count_query, *count_params)
 
     return ClientSuggestionsResponse(
         client_id=client_id,
@@ -200,9 +410,12 @@ async def get_client_suggestions(
                 id=s["id"],
                 job_id=s["job_id"],
                 client_id=s["client_id"],
+                strategy_id=s.get("strategy_id"),
                 variant_number=s["variant_number"],
                 subject_line=s["subject_line"],
                 email_body=s["email_body"],
+                edited_subject_line=s.get("edited_subject_line"),
+                edited_email_body=s.get("edited_email_body"),
                 score=s.get("score"),
                 rationale=s.get("rationale"),
                 used_variables=s.get("used_variables"),
@@ -212,6 +425,9 @@ async def get_client_suggestions(
                 human_comment=s.get("human_comment"),
                 reviewed_by=s.get("reviewed_by"),
                 reviewed_at=s.get("reviewed_at"),
+                pushed_to_emailbison=s.get("pushed_to_emailbison", False),
+                pushed_at=s.get("pushed_at"),
+                original_suggestion_id=s.get("original_suggestion_id"),
                 generation_round=s.get("generation_round", 1),
                 created_at=s["created_at"],
             )
@@ -256,6 +472,39 @@ async def get_job_suggestions(job_id: UUID):
             for s in (suggestions or [])
         ],
         "total": len(suggestions or [])
+    }
+
+
+@router.put("/suggestions/{suggestion_id}/edit")
+async def edit_suggestion(suggestion_id: UUID, request: SuggestionEditRequest):
+    """
+    Edit a suggestion's content (subject line and email body).
+
+    Edits are stored separately from the original AI-generated content,
+    allowing users to customize while preserving the original.
+    """
+    # Verify suggestion exists
+    suggestion = await fetch_one(
+        "SELECT id, subject_line FROM strategy_suggestions WHERE id = $1",
+        suggestion_id
+    )
+    if not suggestion:
+        raise HTTPException(status_code=404, detail="Suggestion not found")
+
+    # Update edited fields
+    await execute("""
+        UPDATE strategy_suggestions
+        SET edited_subject_line = $1, edited_email_body = $2
+        WHERE id = $3
+    """, request.subject_line, request.email_body, suggestion_id)
+
+    logger.info(f"Suggestion {suggestion_id} edited")
+
+    return {
+        "suggestion_id": str(suggestion_id),
+        "edited_subject_line": request.subject_line,
+        "edited_email_body": request.email_body,
+        "message": "Suggestion edited successfully"
     }
 
 
@@ -311,13 +560,15 @@ async def review_suggestion(suggestion_id: UUID, request: SuggestionReviewReques
 @router.post("/suggestions/{suggestion_id}/revision")
 async def request_revision(suggestion_id: UUID, request: RevisionRequestCreate):
     """
-    Create a revision request for a suggestion.
+    Create a revision request for a suggestion AND auto-trigger a new generation job.
 
-    This adds specific guidance for the next generation round.
+    This creates a revision request with the user's instruction and immediately
+    queues a new job for the worker to process. The worker will generate a
+    revised variant based on the original and the user's feedback.
     """
-    # Get suggestion info
+    # Get suggestion info including strategy_id
     suggestion = await fetch_one("""
-        SELECT s.id, s.job_id, s.client_id
+        SELECT s.id, s.job_id, s.client_id, s.strategy_id
         FROM strategy_suggestions s
         WHERE s.id = $1
     """, suggestion_id)
@@ -339,15 +590,34 @@ async def request_revision(suggestion_id: UUID, request: RevisionRequestCreate):
         WHERE id = $1
     """, suggestion_id)
 
-    return RevisionRequestResponse(
-        id=revision["id"],
-        job_id=suggestion["job_id"],
-        client_id=suggestion["client_id"],
-        variant_id=suggestion_id,
-        instruction=request.instruction,
-        processed=False,
-        created_at=revision["created_at"],
-    )
+    # Get current generation round
+    last_job = await fetch_one("""
+        SELECT generation_round FROM strategy_generation_jobs
+        WHERE client_id = $1
+        ORDER BY created_at DESC
+        LIMIT 1
+    """, suggestion["client_id"])
+    generation_round = (last_job["generation_round"] + 1) if last_job else 1
+
+    # AUTO-TRIGGER: Create new generation job for revision
+    new_job = await fetch_one("""
+        INSERT INTO strategy_generation_jobs
+        (client_id, strategy_id, status, generation_round, revision_of, job_type)
+        VALUES ($1, $2, 'pending', $3, $4, 'revision')
+        RETURNING id, created_at
+    """, suggestion["client_id"], suggestion.get("strategy_id"), generation_round, suggestion_id)
+
+    logger.info(f"Auto-triggered revision job {new_job['id']} for suggestion {suggestion_id}")
+
+    return {
+        "revision_id": str(revision["id"]),
+        "job_id": str(new_job["id"]),
+        "client_id": str(suggestion["client_id"]),
+        "variant_id": str(suggestion_id),
+        "instruction": request.instruction,
+        "status": "revision_queued",
+        "message": "Revision request created and generation job queued"
+    }
 
 
 @router.get("/revisions/{client_id}")
@@ -386,4 +656,67 @@ async def get_client_revisions(client_id: UUID, processed: Optional[bool] = None
             for r in (revisions or [])
         ],
         "total": len(revisions or [])
+    }
+
+
+# ============================================================================
+# EmailBison Integration
+# ============================================================================
+
+@router.post("/suggestions/{suggestion_id}/push-to-emailbison")
+async def push_to_emailbison(suggestion_id: UUID):
+    """
+    Queue an approved suggestion to be pushed to EmailBison via Prefect.
+
+    This endpoint marks the suggestion for export and triggers a Prefect flow
+    that will create the campaign in the client's EmailBison workspace.
+
+    Only approved suggestions can be pushed.
+    """
+    # Get suggestion with client info
+    suggestion = await fetch_one("""
+        SELECT s.*, c.workspace_id, c.name as client_name
+        FROM strategy_suggestions s
+        JOIN clients c ON c.id = s.client_id
+        WHERE s.id = $1
+    """, suggestion_id)
+
+    if not suggestion:
+        raise HTTPException(status_code=404, detail="Suggestion not found")
+
+    if suggestion["status"] != "approved":
+        raise HTTPException(
+            status_code=400,
+            detail="Only approved suggestions can be pushed to EmailBison"
+        )
+
+    if suggestion.get("pushed_to_emailbison"):
+        raise HTTPException(
+            status_code=400,
+            detail="Suggestion has already been pushed to EmailBison"
+        )
+
+    # For now, mark as queued for push (Prefect integration will be added separately)
+    # In production, this would trigger a Prefect flow
+    await execute("""
+        UPDATE strategy_suggestions
+        SET pushed_to_emailbison = TRUE, pushed_at = NOW()
+        WHERE id = $1
+    """, suggestion_id)
+
+    logger.info(f"Suggestion {suggestion_id} queued for EmailBison push")
+
+    # Get the content to push (use edited version if available)
+    subject_line = suggestion.get("edited_subject_line") or suggestion["subject_line"]
+    email_body = suggestion.get("edited_email_body") or suggestion["email_body"]
+
+    return {
+        "suggestion_id": str(suggestion_id),
+        "client_id": str(suggestion["client_id"]),
+        "client_name": suggestion["client_name"],
+        "workspace_id": str(suggestion["workspace_id"]) if suggestion.get("workspace_id") else None,
+        "subject_line": subject_line,
+        "campaign_type": suggestion.get("campaign_type"),
+        "status": "queued",
+        "message": "Suggestion queued for EmailBison push (Prefect flow pending)"
     }

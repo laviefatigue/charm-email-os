@@ -163,7 +163,7 @@ def get_pending_job():
                 LIMIT 1
                 FOR UPDATE SKIP LOCKED
             )
-            RETURNING id, client_id, submission_id, generation_round
+            RETURNING id, client_id, submission_id, generation_round, strategy_id, revision_of, job_type
         """)
         job = cur.fetchone()
         conn.commit()
@@ -201,19 +201,55 @@ def process_job(job: dict, skill_content: str):
     """Process a strategy generation job by spawning Claude Code.
 
     Args:
-        job: Job dict with id, client_id, submission_id, generation_round
+        job: Job dict with id, client_id, submission_id, generation_round, job_type, revision_of, strategy_id
         skill_content: Pre-loaded skill instructions to embed in prompt
     """
     job_id = str(job["id"])
     client_id = str(job["client_id"])
     submission_id = str(job["submission_id"]) if job.get("submission_id") else None
     generation_round = job.get("generation_round", 1)
+    job_type = job.get("job_type", "initial")
+    revision_of = str(job["revision_of"]) if job.get("revision_of") else None
+    strategy_id = str(job["strategy_id"]) if job.get("strategy_id") else None
 
-    logger.info(f"Processing strategy job {job_id} for client {client_id} (round {generation_round})")
+    logger.info(f"Processing strategy job {job_id} for client {client_id} (round {generation_round}, type={job_type})")
 
-    # Build prompt with embedded skill content
-    # Claude Code -p mode doesn't auto-load skills, so we embed them directly
-    prompt = f"""You are executing a cold email strategy generation task. Follow these instructions exactly:
+    # Build prompt based on job type
+    if job_type == "revision" and revision_of:
+        # Revision job - generate 1 revised variant based on user feedback
+        prompt = f"""You are revising an email variant based on user feedback. Follow these instructions:
+
+{skill_content}
+
+---
+
+REVISION MODE - Generate 1 revised variant (not 3)
+
+PARAMETERS:
+- client_id: {client_id}
+- job_id: {job_id}
+- original_suggestion_id: {revision_of}"""
+
+        if strategy_id:
+            prompt += f"\n- strategy_id: {strategy_id}"
+
+        prompt += """
+
+Execute these steps:
+1. Call get_client_context with the client_id
+2. Call get_revision_context with the original_suggestion_id to get:
+   - The original email content
+   - The user's revision instruction
+   - Previous feedback patterns
+3. Generate 1 revised email variant that incorporates the user's feedback
+4. QA score the revised variant
+5. Call save_campaign_variant for the revised variant (set original_suggestion_id parameter)
+6. Call mark_revision_processed with the original_suggestion_id
+7. Call complete_job with the job_id"""
+
+    else:
+        # Initial job - generate 3 variants
+        prompt = f"""You are executing a cold email strategy generation task. Follow these instructions exactly:
 
 {skill_content}
 
@@ -223,10 +259,13 @@ NOW EXECUTE THE TASK WITH THESE PARAMETERS:
 - client_id: {client_id}
 - job_id: {job_id}"""
 
-    if submission_id:
-        prompt += f"\n- submission_id: {submission_id}"
+        if submission_id:
+            prompt += f"\n- submission_id: {submission_id}"
 
-    prompt += """
+        if strategy_id:
+            prompt += f"\n- strategy_id: {strategy_id}"
+
+        prompt += """
 
 Execute all steps:
 1. Call get_client_context with the client_id

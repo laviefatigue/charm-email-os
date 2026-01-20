@@ -83,10 +83,12 @@ async def list_tools():
             description="""Save a single email campaign variant for human review.
             Each variant is independently reviewable - approved, denied, or revision requested.
 
-            Generate 3 variants with different angles:
+            For initial generation, create 3 variants with different angles:
             - V1: Opens with custom signal/insight
             - V2: Opens with case study proof
             - V3: Opens with risk/efficiency angle
+
+            For revision, create 1 revised variant with original_suggestion_id set.
 
             Include QA score from the 0-100 rubric.""",
             inputSchema={
@@ -98,7 +100,7 @@ async def list_tools():
                     },
                     "variant_number": {
                         "type": "integer",
-                        "description": "Variant number (1, 2, or 3)"
+                        "description": "Variant number (1, 2, or 3, or 1 for revisions)"
                     },
                     "subject_line": {
                         "type": "string",
@@ -124,6 +126,14 @@ async def list_tools():
                     "campaign_type": {
                         "type": "string",
                         "description": "Type: custom_signal, creative_ideas, whole_offer, or fallback"
+                    },
+                    "original_suggestion_id": {
+                        "type": "string",
+                        "description": "For revisions: the original suggestion UUID this revises"
+                    },
+                    "strategy_id": {
+                        "type": "string",
+                        "description": "Optional: the strategy UUID to associate with"
                     }
                 },
                 "required": ["job_id", "variant_number", "subject_line", "email_body"]
@@ -142,6 +152,37 @@ async def list_tools():
                     }
                 },
                 "required": ["job_id"]
+            }
+        ),
+        Tool(
+            name="get_revision_context",
+            description="""Get context for revising a specific suggestion.
+            Returns the original suggestion content and the user's revision instruction.
+            Use this when processing a revision job.""",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "suggestion_id": {
+                        "type": "string",
+                        "description": "The original suggestion UUID to revise"
+                    }
+                },
+                "required": ["suggestion_id"]
+            }
+        ),
+        Tool(
+            name="mark_revision_processed",
+            description="""Mark a revision request as processed after generating the revised variant.
+            Call this after saving the revised variant.""",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "suggestion_id": {
+                        "type": "string",
+                        "description": "The original suggestion UUID that was revised"
+                    }
+                },
+                "required": ["suggestion_id"]
             }
         )
     ]
@@ -363,14 +404,16 @@ async def call_tool(name: str, arguments: dict):
         rationale = arguments.get("rationale")
         used_variables = arguments.get("used_variables", [])
         campaign_type = arguments.get("campaign_type")
+        original_suggestion_id = arguments.get("original_suggestion_id")
+        strategy_id = arguments.get("strategy_id")
 
         conn = get_db()
         cur = conn.cursor(cursor_factory=RealDictCursor)
 
         try:
-            # Get job info
+            # Get job info including strategy_id
             cur.execute("""
-                SELECT client_id, generation_round
+                SELECT client_id, generation_round, strategy_id
                 FROM strategy_generation_jobs
                 WHERE id = %s
             """, (job_id,))
@@ -381,21 +424,25 @@ async def call_tool(name: str, arguments: dict):
 
             client_id = job["client_id"]
             generation_round = job["generation_round"]
+            # Use strategy_id from argument or job
+            final_strategy_id = strategy_id or job.get("strategy_id")
 
-            # Insert suggestion
+            # Insert suggestion with new columns
             suggestion_id = str(uuid.uuid4())
             cur.execute("""
                 INSERT INTO strategy_suggestions
                 (id, job_id, client_id, variant_number, subject_line, email_body,
-                 score, rationale, used_variables, campaign_type, generation_round, status)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'pending')
+                 score, rationale, used_variables, campaign_type, generation_round,
+                 strategy_id, original_suggestion_id, status)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'pending')
             """, (suggestion_id, job_id, client_id, variant_number, subject_line,
                   email_body, score, rationale, Json(used_variables),
-                  campaign_type, generation_round))
+                  campaign_type, generation_round, final_strategy_id, original_suggestion_id))
 
             conn.commit()
 
-            return [TextContent(type="text", text=f"Saved variant {variant_number}: {subject_line[:50]}... (score: {score or 'N/A'})")]
+            revision_note = " (revision)" if original_suggestion_id else ""
+            return [TextContent(type="text", text=f"Saved variant {variant_number}{revision_note}: {subject_line[:50]}... (score: {score or 'N/A'})")]
 
         finally:
             cur.close()
@@ -415,6 +462,96 @@ async def call_tool(name: str, arguments: dict):
             conn.commit()
 
             return [TextContent(type="text", text=f"Job {job_id} marked as ready for review")]
+
+        finally:
+            cur.close()
+            conn.close()
+
+    elif name == "get_revision_context":
+        suggestion_id = arguments["suggestion_id"]
+        conn = get_db()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+
+        try:
+            # Get original suggestion content
+            cur.execute("""
+                SELECT id, subject_line, email_body, score, rationale,
+                       used_variables, campaign_type, strategy_id, client_id
+                FROM strategy_suggestions
+                WHERE id = %s
+            """, (suggestion_id,))
+            suggestion = cur.fetchone()
+
+            if not suggestion:
+                return [TextContent(type="text", text=f"Error: Suggestion {suggestion_id} not found")]
+
+            # Get revision instruction from revision request
+            cur.execute("""
+                SELECT instruction, created_at
+                FROM strategy_revision_requests
+                WHERE variant_id = %s AND processed = FALSE
+                ORDER BY created_at DESC
+                LIMIT 1
+            """, (suggestion_id,))
+            revision_request = cur.fetchone()
+
+            # Get feedback patterns for context
+            cur.execute("""
+                SELECT subject_line, human_comment, status
+                FROM strategy_suggestions
+                WHERE client_id = %s AND status IN ('approved', 'denied')
+                ORDER BY reviewed_at DESC
+                LIMIT 5
+            """, (suggestion["client_id"],))
+            feedback_history = cur.fetchall() or []
+
+            context = {
+                "original_suggestion": {
+                    "id": str(suggestion["id"]),
+                    "subject_line": suggestion["subject_line"],
+                    "email_body": suggestion["email_body"],
+                    "score": suggestion["score"],
+                    "rationale": suggestion["rationale"],
+                    "used_variables": suggestion["used_variables"],
+                    "campaign_type": suggestion["campaign_type"],
+                    "strategy_id": str(suggestion["strategy_id"]) if suggestion["strategy_id"] else None,
+                },
+                "revision_instruction": revision_request["instruction"] if revision_request else "No specific instruction provided",
+                "feedback_patterns": [
+                    {
+                        "subject": f["subject_line"][:50],
+                        "status": f["status"],
+                        "comment": f.get("human_comment")
+                    }
+                    for f in feedback_history
+                ]
+            }
+
+            return [TextContent(type="text", text=json.dumps(context, indent=2, default=str))]
+
+        finally:
+            cur.close()
+            conn.close()
+
+    elif name == "mark_revision_processed":
+        suggestion_id = arguments["suggestion_id"]
+        conn = get_db()
+        cur = conn.cursor()
+
+        try:
+            # Mark all revision requests for this suggestion as processed
+            cur.execute("""
+                UPDATE strategy_revision_requests
+                SET processed = TRUE
+                WHERE variant_id = %s AND processed = FALSE
+            """, (suggestion_id,))
+            rows_updated = cur.rowcount
+            conn.commit()
+
+            if rows_updated > 0:
+                return [TextContent(type="text", text=f"Marked {rows_updated} revision request(s) as processed for suggestion {suggestion_id}")]
+            else:
+                return [TextContent(type="text", text=f"No pending revision requests found for suggestion {suggestion_id}")]
 
         finally:
             cur.close()

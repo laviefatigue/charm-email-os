@@ -1173,9 +1173,12 @@ export interface StrategySuggestion {
   id: string;
   jobId: string;
   clientId: string;
+  strategyId?: string;
   variantNumber: number;
   subjectLine: string;
   emailBody: string;
+  editedSubjectLine?: string;
+  editedEmailBody?: string;
   score?: number;
   rationale?: string;
   usedVariables?: string[];
@@ -1185,8 +1188,22 @@ export interface StrategySuggestion {
   humanComment?: string;
   reviewedBy?: string;
   reviewedAt?: string;
+  pushedToEmailbison?: boolean;
+  pushedAt?: string;
+  originalSuggestionId?: string;
   generationRound: number;
   createdAt: string;
+}
+
+export interface Strategy {
+  id: string;
+  clientId: string;
+  name: string;
+  description?: string;
+  status: 'draft' | 'active' | 'paused' | 'completed';
+  emailbisonCampaignId?: string;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface StrategyJobCreate {
@@ -1238,11 +1255,68 @@ export interface ClientRevisionsResponse {
 }
 
 export const strategyApi = {
+  // ===== STRATEGY MANAGEMENT =====
+
+  /**
+   * Create a new strategy for a client
+   */
+  async createStrategy(clientId: string, name: string, description?: string): Promise<Strategy> {
+    const response = await fetchApi<Record<string, unknown>>(
+      `/api/strategies/${clientId}`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ name, description }),
+      }
+    );
+    return toCamelCase<Strategy>(response);
+  },
+
+  /**
+   * Get all strategies for a client
+   */
+  async getStrategies(clientId: string): Promise<{ clientId: string; strategies: Strategy[]; total: number }> {
+    const response = await fetchApi<Record<string, unknown>>(
+      `/api/strategies/${clientId}`
+    );
+    return toCamelCase<{ clientId: string; strategies: Strategy[]; total: number }>(response);
+  },
+
+  /**
+   * Update a strategy
+   */
+  async updateStrategy(
+    strategyId: string,
+    data: { name?: string; description?: string; status?: string }
+  ): Promise<Strategy> {
+    const response = await fetchApi<Record<string, unknown>>(
+      `/api/strategies/${strategyId}`,
+      {
+        method: 'PUT',
+        body: JSON.stringify(toSnakeCase(data)),
+      }
+    );
+    return toCamelCase<Strategy>(response);
+  },
+
+  /**
+   * Delete a strategy
+   */
+  async deleteStrategy(strategyId: string): Promise<{ message: string }> {
+    return fetchApi<{ message: string }>(
+      `/api/strategies/${strategyId}`,
+      { method: 'DELETE' }
+    );
+  },
+
+  // ===== GENERATION JOBS =====
+
   /**
    * Create a new strategy generation job for Claude Code worker
    */
-  async createJob(clientId: string, submissionId?: string): Promise<StrategyJobResponse> {
-    const body = submissionId ? { submission_id: submissionId } : {};
+  async createJob(clientId: string, submissionId?: string, strategyId?: string): Promise<StrategyJobResponse> {
+    const body: Record<string, string> = {};
+    if (submissionId) body.submission_id = submissionId;
+    if (strategyId) body.strategy_id = strategyId;
     const response = await fetchApi<Record<string, unknown>>(
       `/api/strategy/jobs/${clientId}`,
       {
@@ -1278,17 +1352,54 @@ export const strategyApi = {
    */
   async getSuggestions(
     clientId: string,
-    params?: { status?: string; limit?: number }
+    params?: {
+      status?: string;
+      limit?: number;
+      strategyId?: string;
+      sortBy?: 'score' | 'created_at' | 'status';
+      sortOrder?: 'asc' | 'desc';
+    }
   ): Promise<ClientSuggestionsResponse> {
     const searchParams = new URLSearchParams();
     if (params?.status) searchParams.set('status', params.status);
     if (params?.limit) searchParams.set('limit', params.limit.toString());
+    if (params?.strategyId) searchParams.set('strategy_id', params.strategyId);
+    if (params?.sortBy) searchParams.set('sort_by', params.sortBy);
+    if (params?.sortOrder) searchParams.set('sort_order', params.sortOrder);
 
     const query = searchParams.toString();
     const response = await fetchApi<Record<string, unknown>>(
       `/api/strategy/suggestions/${clientId}${query ? `?${query}` : ''}`
     );
     return toCamelCase<ClientSuggestionsResponse>(response);
+  },
+
+  /**
+   * Edit a suggestion's content (subject line and/or email body)
+   */
+  async editSuggestion(
+    suggestionId: string,
+    data: { subjectLine: string; emailBody: string }
+  ): Promise<StrategySuggestion> {
+    const response = await fetchApi<Record<string, unknown>>(
+      `/api/strategy/suggestions/${suggestionId}/edit`,
+      {
+        method: 'PUT',
+        body: JSON.stringify(toSnakeCase(data)),
+      }
+    );
+    return toCamelCase<StrategySuggestion>(response);
+  },
+
+  /**
+   * Push an approved suggestion to EmailBison via Prefect flow
+   */
+  async pushToEmailBison(suggestionId: string): Promise<{ flowRunId: string; status: string }> {
+    const response = await fetchApi<Record<string, unknown>>(
+      `/api/strategy/suggestions/${suggestionId}/push-to-emailbison`,
+      { method: 'POST' }
+    );
+    return toCamelCase<{ flowRunId: string; status: string }>(response);
   },
 
   /**
