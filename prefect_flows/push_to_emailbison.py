@@ -36,15 +36,43 @@ from typing import Optional
 # Ensure required packages are installed
 def _ensure_dependencies():
     """Install missing dependencies at runtime."""
+    print(f"Python executable: {sys.executable}")
+    print(f"Python version: {sys.version}")
     required = [("httpx", "httpx"), ("asyncpg", "asyncpg")]
     for module_name, package_name in required:
         try:
             __import__(module_name)
+            print(f"OK: {module_name} already installed")
         except ImportError:
             print(f"Installing missing dependency: {package_name}")
-            subprocess.check_call([sys.executable, "-m", "pip", "install", package_name])
+            try:
+                # Try user install first (no sudo needed)
+                result = subprocess.run(
+                    [sys.executable, "-m", "pip", "install", "--user", package_name],
+                    capture_output=True,
+                    text=True,
+                )
+                if result.returncode != 0:
+                    print(f"User install stderr: {result.stderr}")
+                    # Try regular install
+                    result = subprocess.run(
+                        [sys.executable, "-m", "pip", "install", package_name],
+                        capture_output=True,
+                        text=True,
+                    )
+                    if result.returncode != 0:
+                        print(f"Regular install stderr: {result.stderr}")
+                        raise RuntimeError(f"Failed to install {package_name}")
+                print(f"Successfully installed {package_name}")
+            except Exception as e:
+                print(f"Error installing {package_name}: {e}")
+                raise
 
-_ensure_dependencies()
+try:
+    _ensure_dependencies()
+except Exception as e:
+    print(f"Dependency check failed: {e}")
+    raise
 
 import httpx
 import asyncpg

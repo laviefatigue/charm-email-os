@@ -45,7 +45,7 @@ deployments:
         - generation_round: Which round of generation this is (default: 1)
     entrypoint: strategy_worker_prefect.py:process_single_job
     work_pool:
-      name: default-agent-pool
+      name: default
     parameters:
       job_id: ""
       client_id: ""
@@ -71,7 +71,7 @@ deployments:
         - Recovery after downtime
     entrypoint: strategy_worker_prefect.py:process_pending_jobs
     work_pool:
-      name: default-agent-pool
+      name: default
     parameters:
       max_jobs: 10
     tags:
@@ -92,7 +92,7 @@ deployments:
       Automatically picks up new jobs as they're created.
     entrypoint: strategy_worker_prefect.py:poll_for_jobs
     work_pool:
-      name: default-agent-pool
+      name: default
     parameters:
       poll_interval: 30
       max_iterations: 200  # ~1.5 hours of polling
@@ -115,7 +115,7 @@ deployments:
       Lightweight deployment for frequent scheduled runs.
     entrypoint: strategy_worker_prefect.py:process_pending_jobs
     work_pool:
-      name: default-agent-pool
+      name: default
     parameters:
       max_jobs: 3
     tags:
@@ -149,7 +149,7 @@ deployments:
         - Suggestion must be in 'approved' status
     entrypoint: prefect_flows/push_to_emailbison.py:push_suggestion_to_emailbison
     work_pool:
-      name: default-agent-pool
+      name: default
     parameters:
       suggestion_id: ""
     tags:
