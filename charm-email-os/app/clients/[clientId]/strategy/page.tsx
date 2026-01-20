@@ -31,7 +31,7 @@ export default function StrategyPage() {
   const params = useParams();
   const clientId = params.clientId as string;
 
-  const { getClient, selectClient } = useClientStore();
+  const { getClient, selectClient, fetchClients, clients } = useClientStore();
   const { getIdeasByClient, getPendingIdeas, generateIdeas } = useStrategyStore();
   const { getCampaignsByClient } = useCampaignStore();
 
@@ -47,7 +47,11 @@ export default function StrategyPage() {
 
   useEffect(() => {
     selectClient(clientId);
-  }, [clientId, selectClient]);
+    // Fetch clients if not loaded
+    if (clients.length === 0) {
+      fetchClients();
+    }
+  }, [clientId, selectClient, fetchClients, clients.length]);
 
   if (!client) {
     return (
