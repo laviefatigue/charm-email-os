@@ -26,10 +26,26 @@ Environment Variables:
     EMAILBISON_API_URL - Base URL for EmailBison API (default: https://spellcast.hirecharm.com/api)
 """
 import os
+import sys
+import subprocess
 import asyncio
 import argparse
 from datetime import datetime
 from typing import Optional
+
+# Ensure required packages are installed
+def _ensure_dependencies():
+    """Install missing dependencies at runtime."""
+    required = [("httpx", "httpx"), ("asyncpg", "asyncpg")]
+    for module_name, package_name in required:
+        try:
+            __import__(module_name)
+        except ImportError:
+            print(f"Installing missing dependency: {package_name}")
+            subprocess.check_call([sys.executable, "-m", "pip", "install", package_name])
+
+_ensure_dependencies()
+
 import httpx
 import asyncpg
 from prefect import flow, task, get_run_logger
