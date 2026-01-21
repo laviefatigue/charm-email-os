@@ -1269,35 +1269,42 @@ async def push_sequence_to_emailbison(sequence_id: UUID):
             steps_completed.append("campaign_create")
             logger.info(f"Created EmailBison campaign {created_campaign_id}")
 
-            # Step 3: Add sequence steps (all 4 emails)
+            # Step 3: Add sequence steps (all 4 emails in one request)
+            sequence_steps_payload = []
             for email in sorted(sequence_data, key=lambda x: x.get("position", 1)):
                 position = email.get("position", 1)
                 # Use edited versions if available
                 subject = email.get("edited_subject_line") or email.get("subject_line") or ""
                 body = email.get("edited_email_body") or email.get("email_body", "")
 
-                step_response = await client.post(
-                    f"{EMAILBISON_API_URL}/api/campaigns/{created_campaign_id}/sequence-steps",
-                    headers={
-                        "Authorization": f"Bearer {EMAILBISON_API_KEY}",
-                        "Content-Type": "application/json",
-                    },
-                    json={
-                        "email_subject": transform_variables(subject),
-                        "email_body": transform_variables(body),
-                        "order": position,
-                        "wait_in_days": email.get("wait_days", 0),
-                        "thread_reply": email.get("thread_reply", False),
-                    }
-                )
+                sequence_steps_payload.append({
+                    "email_subject": transform_variables(subject),
+                    "email_body": transform_variables(body),
+                    "order": position,
+                    "wait_in_days": email.get("wait_days", 0),
+                    "thread_reply": email.get("thread_reply", False),
+                    "variant": False,
+                })
 
-                if step_response.status_code not in (200, 201):
-                    logger.error(f"Failed to create sequence step {position}: {step_response.text}")
-                    raise HTTPException(
-                        status_code=502,
-                        detail=f"Failed to create sequence step {position}"
-                    )
-                logger.info(f"Created sequence step {position} for campaign {created_campaign_id}")
+            step_response = await client.post(
+                f"{EMAILBISON_API_URL}/api/campaigns/{created_campaign_id}/sequence-steps",
+                headers={
+                    "Authorization": f"Bearer {EMAILBISON_API_KEY}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "title": campaign_name,
+                    "sequence_steps": sequence_steps_payload,
+                }
+            )
+
+            if step_response.status_code not in (200, 201):
+                logger.error(f"Failed to create sequence steps: {step_response.text}")
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"Failed to create sequence steps"
+                )
+            logger.info(f"Created {len(sequence_steps_payload)} sequence steps for campaign {created_campaign_id}")
 
             steps_completed.append("sequence_steps")
 
