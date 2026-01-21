@@ -77,9 +77,11 @@ async def create_local_workspace(workspace_name: str, emailbison_workspace_id: i
         Local workspace UUID if successful, None otherwise
     """
     try:
+        # Note: instance_id is required. We copy it from an existing workspace
+        # since all workspaces belong to the same OwnRBL instance.
         result = await fetch_one("""
-            INSERT INTO workspaces (workspace_name, emailbison_workspace_id, automation_enabled)
-            VALUES ($1, $2, true)
+            INSERT INTO workspaces (instance_id, workspace_name, emailbison_workspace_id, automation_enabled)
+            SELECT instance_id, $1, $2, true FROM workspaces LIMIT 1
             RETURNING id
         """, workspace_name, emailbison_workspace_id)
 
@@ -496,10 +498,11 @@ async def import_emailbison_workspace(client_id: UUID, request: ImportWorkspaceR
         logger.info(f"Using existing local workspace for EmailBison ID {request.emailbison_workspace_id}")
     else:
         # Create local workspace record
+        # Note: instance_id is required. We copy it from an existing workspace.
         workspace_name = request.workspace_name or client["name"]
         result = await fetch_one("""
-            INSERT INTO workspaces (workspace_name, emailbison_workspace_id, automation_enabled)
-            VALUES ($1, $2, true)
+            INSERT INTO workspaces (instance_id, workspace_name, emailbison_workspace_id, automation_enabled)
+            SELECT instance_id, $1, $2, true FROM workspaces LIMIT 1
             RETURNING id
         """, workspace_name, eb_workspace_id_str)
 
