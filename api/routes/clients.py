@@ -3,6 +3,7 @@ Client routes - CRUD for the new clients table
 """
 
 from fastapi import APIRouter, HTTPException, Query
+from pydantic import BaseModel
 from typing import Optional
 from uuid import UUID
 import json
@@ -456,6 +457,64 @@ async def link_workspace(client_id: UUID, request: LinkWorkspaceRequest):
 
     if not result:
         raise HTTPException(status_code=404, detail="Client not found")
+
+    return await get_client(client_id)
+
+
+class ImportWorkspaceRequest(BaseModel):
+    """Request to import an existing EmailBison workspace"""
+    emailbison_workspace_id: int
+    workspace_name: Optional[str] = None
+
+
+@router.post("/{client_id}/import-workspace", response_model=Client)
+async def import_emailbison_workspace(client_id: UUID, request: ImportWorkspaceRequest):
+    """
+    Import an existing EmailBison workspace and link it to the client.
+
+    Use this when an EmailBison workspace was created externally or when
+    recovering from a partial workspace creation.
+    """
+    # Verify client exists and has no workspace
+    client = await fetch_one("SELECT id, name, workspace_id FROM clients WHERE id = $1", client_id)
+    if not client:
+        raise HTTPException(status_code=404, detail="Client not found")
+
+    if client["workspace_id"]:
+        raise HTTPException(status_code=400, detail="Client already has a workspace")
+
+    # Check if this EmailBison workspace is already imported
+    existing = await fetch_one(
+        "SELECT id, workspace_name FROM workspaces WHERE emailbison_workspace_id = $1",
+        request.emailbison_workspace_id
+    )
+
+    if existing:
+        workspace_id = existing["id"]
+        logger.info(f"Using existing local workspace for EmailBison ID {request.emailbison_workspace_id}")
+    else:
+        # Create local workspace record
+        workspace_name = request.workspace_name or client["name"]
+        result = await fetch_one("""
+            INSERT INTO workspaces (workspace_name, emailbison_workspace_id, automation_enabled)
+            VALUES ($1, $2, true)
+            RETURNING id
+        """, workspace_name, request.emailbison_workspace_id)
+
+        if not result:
+            raise HTTPException(status_code=500, detail="Failed to create local workspace record")
+
+        workspace_id = result["id"]
+        logger.info(f"Created local workspace '{workspace_name}' for EmailBison ID {request.emailbison_workspace_id}")
+
+    # Link client to workspace
+    await execute(
+        "UPDATE clients SET workspace_id = $1, updated_at = NOW() WHERE id = $2",
+        workspace_id,
+        client_id
+    )
+
+    logger.info(f"Linked client {client_id} to workspace {workspace_id}")
 
     return await get_client(client_id)
 
