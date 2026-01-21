@@ -1378,7 +1378,8 @@ async def push_sequence_to_emailbison(sequence_id: UUID):
                         "sunday": False,
                         "start_time": "08:00",
                         "end_time": "17:00",
-                        "timezone": "America/New_York"
+                        "timezone": "America/New_York",
+                        "save_as_template": False
                     }
                 )
                 if schedule_response.status_code in (200, 201):
