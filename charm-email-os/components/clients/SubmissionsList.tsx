@@ -239,7 +239,7 @@ export function SubmissionsList({ clientId }: SubmissionsListProps) {
     try {
       const response = await strategyApi.createJob(clientId, submissionId);
       toast.success(`Strategy generation started (Round ${response.generationRound})`);
-      // Note: The CampaignSuggestions component on the Strategy tab will poll for results
+      // Note: The CampaignSequences component on the Strategy tab will poll for results
     } catch (err) {
       console.error('Failed to trigger generation:', err);
       toast.error(err instanceof Error ? err.message : 'Failed to start generation');

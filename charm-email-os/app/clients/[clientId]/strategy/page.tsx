@@ -6,7 +6,6 @@ import { ClientHeader, TabNavigation, PageContainer } from '@/components/layout'
 import {
   OnboardingSummary,
   ComprehensiveOnboarding,
-  CampaignSuggestions,
   CampaignSequences,
 } from '@/components/strategy';
 import { useClientStore } from '@/lib/stores';
@@ -54,11 +53,6 @@ export default function StrategyPage() {
         {/* AI-Generated 4-Email Campaign Sequences */}
         <div className="mb-6">
           <CampaignSequences clientId={clientId} />
-        </div>
-
-        {/* Legacy: Single-variant Campaign Suggestions from API */}
-        <div className="mb-6">
-          <CampaignSuggestions clientId={clientId} />
         </div>
       </PageContainer>
     </>
