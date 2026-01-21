@@ -1517,7 +1517,7 @@ async def migration_005_execute(confirm: bool = False):
     }
 
     try:
-        # Step 1: Delete revision requests pointing to legacy suggestions FIRST (FK constraint)
+        # Step 1: Delete revision requests pointing to legacy suggestions (FK constraint)
         revisions_deleted = await execute("""
             DELETE FROM strategy_revision_requests
             WHERE variant_id IN (
@@ -1531,30 +1531,45 @@ async def migration_005_execute(confirm: bool = False):
             "result": revisions_deleted
         })
 
-        # Step 2: Delete legacy suggestions (now safe - no FK references)
+        # Step 2: Nullify revision_of references in jobs pointing to legacy suggestions (FK constraint)
+        jobs_updated = await execute("""
+            UPDATE strategy_generation_jobs
+            SET revision_of = NULL
+            WHERE revision_of IN (
+                SELECT id FROM strategy_suggestions
+                WHERE is_sequence = FALSE OR is_sequence IS NULL
+            )
+        """)
+        results["steps"].append({
+            "step": 2,
+            "action": "nullify_revision_of_references",
+            "result": jobs_updated
+        })
+
+        # Step 3: Delete legacy suggestions (now safe - no FK references)
         legacy_deleted = await execute("""
             DELETE FROM strategy_suggestions
             WHERE is_sequence = FALSE OR is_sequence IS NULL
         """)
         results["steps"].append({
-            "step": 2,
+            "step": 3,
             "action": "delete_legacy_suggestions",
             "result": legacy_deleted
         })
 
-        # Step 3: Delete any remaining orphaned revision requests
+        # Step 4: Delete any remaining orphaned revision requests
         orphan_revisions_deleted = await execute("""
             DELETE FROM strategy_revision_requests
             WHERE variant_id IS NOT NULL
             AND variant_id NOT IN (SELECT id FROM strategy_suggestions)
         """)
         results["steps"].append({
-            "step": 3,
+            "step": 4,
             "action": "delete_orphaned_revisions",
             "result": orphan_revisions_deleted
         })
 
-        # Step 4: Delete orphaned jobs
+        # Step 5: Delete orphaned jobs
         jobs_deleted = await execute("""
             DELETE FROM strategy_generation_jobs
             WHERE id NOT IN (
@@ -1563,30 +1578,30 @@ async def migration_005_execute(confirm: bool = False):
             )
         """)
         results["steps"].append({
-            "step": 4,
+            "step": 5,
             "action": "delete_orphaned_jobs",
             "result": jobs_deleted
         })
 
-        # Step 5: Set default value
+        # Step 6: Set default value
         try:
             await execute("""
                 ALTER TABLE strategy_suggestions
                 ALTER COLUMN is_sequence SET DEFAULT TRUE
             """)
             results["steps"].append({
-                "step": 5,
+                "step": 6,
                 "action": "set_default_true",
                 "result": "success"
             })
         except Exception as e:
             results["steps"].append({
-                "step": 5,
+                "step": 6,
                 "action": "set_default_true",
                 "result": f"skipped: {str(e)}"
             })
 
-        # Step 6: Update any remaining NULL values and add NOT NULL
+        # Step 7: Update any remaining NULL values and add NOT NULL
         try:
             await execute("""
                 UPDATE strategy_suggestions SET is_sequence = TRUE WHERE is_sequence IS NULL
@@ -1596,31 +1611,31 @@ async def migration_005_execute(confirm: bool = False):
                 ALTER COLUMN is_sequence SET NOT NULL
             """)
             results["steps"].append({
-                "step": 6,
+                "step": 7,
                 "action": "add_not_null_constraint",
                 "result": "success"
             })
         except Exception as e:
             results["steps"].append({
-                "step": 6,
+                "step": 7,
                 "action": "add_not_null_constraint",
                 "result": f"skipped: {str(e)}"
             })
 
-        # Step 7: Add CHECK constraint
+        # Step 8: Add CHECK constraint
         try:
             await execute("""
                 ALTER TABLE strategy_suggestions
                 ADD CONSTRAINT chk_is_sequence_true CHECK (is_sequence = TRUE)
             """)
             results["steps"].append({
-                "step": 7,
+                "step": 8,
                 "action": "add_check_constraint",
                 "result": "success"
             })
         except Exception as e:
             results["steps"].append({
-                "step": 7,
+                "step": 8,
                 "action": "add_check_constraint",
                 "result": f"skipped (may already exist): {str(e)}"
             })
