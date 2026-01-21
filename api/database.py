@@ -296,8 +296,13 @@ async def _init_domain_columns() -> None:
         logger.info("Domains table does not exist, skipping column initialization")
         return
 
-    # Add dual provider pricing columns
+    # Add dual provider pricing columns and other required columns
     columns_to_add = [
+        # Original pricing columns (from migration 006)
+        ("cached_price", "DECIMAL(10,2)"),
+        ("price_checked_at", "TIMESTAMP"),
+        ("purchased_at", "TIMESTAMP"),
+        # Dual provider pricing columns (from migration 007)
         ("porkbun_price", "DECIMAL(10,2)"),
         ("porkbun_available", "BOOLEAN"),
         ("dynadot_price", "DECIMAL(10,2)"),
