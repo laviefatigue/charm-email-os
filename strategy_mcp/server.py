@@ -184,6 +184,83 @@ async def list_tools():
                 },
                 "required": ["suggestion_id"]
             }
+        ),
+        Tool(
+            name="save_campaign_sequence",
+            description="""Save a complete 4-email campaign sequence for human review.
+            This is the preferred method for generating campaigns as it creates a full
+            sequence matching EmailBison's structure.
+
+            The sequence should include:
+            - Email 1 (Day 0): New thread, custom signal or whole offer opener
+            - Email 2 (Day 3-4): Threads to Email 1, rotated value prop
+            - Email 3 (Day 7-8): New thread, different approach
+            - Email 4 (Day 11-12): Final email, redirect or value bomb
+
+            Value props should rotate through: save_time, make_money, save_money""",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "job_id": {
+                        "type": "string",
+                        "description": "The strategy generation job ID"
+                    },
+                    "campaign_name": {
+                        "type": "string",
+                        "description": "Campaign name (typically Email 1 subject line)"
+                    },
+                    "campaign_type": {
+                        "type": "string",
+                        "description": "Type: custom_signal, creative_ideas, whole_offer, or fallback"
+                    },
+                    "sequence": {
+                        "type": "array",
+                        "description": "Array of 4 email objects",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "position": {"type": "integer", "description": "1, 2, 3, or 4"},
+                                "wait_days": {"type": "integer", "description": "Days after previous email"},
+                                "subject_line": {"type": ["string", "null"], "description": "Subject (null for threaded replies)"},
+                                "email_body": {"type": "string", "description": "Email body text"},
+                                "thread_reply": {"type": "boolean", "description": "True if threads to previous email"},
+                                "strategy": {"type": "string", "description": "Strategy for this email"},
+                                "value_prop": {"type": ["string", "null"], "description": "save_time, make_money, save_money, or null"},
+                                "word_count": {"type": "integer", "description": "Word count of email body"}
+                            },
+                            "required": ["position", "wait_days", "email_body", "thread_reply"]
+                        }
+                    },
+                    "value_prop_rotation": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Value props in order: ['save_time', 'make_money', 'save_money']"
+                    },
+                    "used_variables": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Variables used across the sequence"
+                    },
+                    "missing_variables": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Variables referenced but not available"
+                    },
+                    "score": {
+                        "type": "integer",
+                        "description": "Overall QA score 0-100"
+                    },
+                    "rationale": {
+                        "type": "string",
+                        "description": "Explanation of sequence strategy and quality"
+                    },
+                    "strategy_id": {
+                        "type": "string",
+                        "description": "Optional: the strategy UUID to associate with"
+                    }
+                },
+                "required": ["job_id", "campaign_name", "campaign_type", "sequence"]
+            }
         )
     ]
 
@@ -552,6 +629,68 @@ async def call_tool(name: str, arguments: dict):
                 return [TextContent(type="text", text=f"Marked {rows_updated} revision request(s) as processed for suggestion {suggestion_id}")]
             else:
                 return [TextContent(type="text", text=f"No pending revision requests found for suggestion {suggestion_id}")]
+
+        finally:
+            cur.close()
+            conn.close()
+
+    elif name == "save_campaign_sequence":
+        job_id = arguments["job_id"]
+        campaign_name = arguments["campaign_name"]
+        campaign_type = arguments["campaign_type"]
+        sequence = arguments["sequence"]
+        value_prop_rotation = arguments.get("value_prop_rotation", [])
+        used_variables = arguments.get("used_variables", [])
+        missing_variables = arguments.get("missing_variables", [])
+        score = arguments.get("score")
+        rationale = arguments.get("rationale")
+        strategy_id = arguments.get("strategy_id")
+
+        conn = get_db()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+
+        try:
+            # Get job info
+            cur.execute("""
+                SELECT client_id, generation_round, strategy_id
+                FROM strategy_generation_jobs
+                WHERE id = %s
+            """, (job_id,))
+            job = cur.fetchone()
+
+            if not job:
+                return [TextContent(type="text", text=f"Error: Job {job_id} not found")]
+
+            client_id = job["client_id"]
+            generation_round = job["generation_round"]
+            final_strategy_id = strategy_id or job.get("strategy_id")
+
+            # Calculate total word count
+            total_word_count = sum(email.get("word_count", 0) for email in sequence)
+
+            # Get subject line from Email 1 for the suggestion record
+            email_1 = next((e for e in sequence if e.get("position") == 1), sequence[0])
+            subject_line = email_1.get("subject_line") or campaign_name
+            email_body = email_1.get("email_body", "")
+
+            # Insert as a sequence suggestion
+            suggestion_id = str(uuid.uuid4())
+            cur.execute("""
+                INSERT INTO strategy_suggestions
+                (id, job_id, client_id, variant_number, subject_line, email_body,
+                 score, rationale, used_variables, missing_variables, campaign_type,
+                 generation_round, strategy_id, status,
+                 sequence_data, value_prop_rotation, is_sequence, total_word_count)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'pending',
+                        %s, %s, TRUE, %s)
+            """, (suggestion_id, job_id, client_id, 1, subject_line, email_body,
+                  score, rationale, Json(used_variables), Json(missing_variables),
+                  campaign_type, generation_round, final_strategy_id,
+                  Json(sequence), Json(value_prop_rotation), total_word_count))
+
+            conn.commit()
+
+            return [TextContent(type="text", text=f"Saved 4-email sequence '{campaign_name}' with {total_word_count} total words (score: {score or 'N/A'})")]
 
         finally:
             cur.close()

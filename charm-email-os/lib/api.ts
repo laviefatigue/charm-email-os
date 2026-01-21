@@ -1260,6 +1260,72 @@ export interface ClientRevisionsResponse {
   total: number;
 }
 
+// ===== SEQUENCE TYPES (4-Email Campaigns) =====
+
+export interface SequenceEmail {
+  position: 1 | 2 | 3 | 4;
+  waitDays: number;
+  subjectLine: string | null;  // null for threaded emails
+  emailBody: string;
+  editedSubjectLine?: string;
+  editedEmailBody?: string;
+  threadReply: boolean;
+  strategy?: string;  // custom_signal, creative_ideas, etc.
+  valueProp?: 'save_time' | 'save_money' | 'make_money' | null;
+  wordCount?: number;
+}
+
+export interface CampaignSequence {
+  id: string;
+  jobId: string;
+  clientId: string;
+  strategyId?: string;
+  campaignName: string;  // Email 1 subject
+  campaignType?: 'custom_signal' | 'creative_ideas' | 'whole_offer' | 'fallback';
+  status: 'pending' | 'approved' | 'denied' | 'revision_requested' | 'sent';
+  score?: number;
+  valuePropRotation?: ('save_time' | 'save_money' | 'make_money')[];
+  emails: SequenceEmail[];
+  usedVariables?: string[];
+  missingVariables?: string[];
+  rationale?: string;
+  totalWordCount?: number;
+  humanComment?: string;
+  reviewedBy?: string;
+  reviewedAt?: string;
+  pushedToEmailbison?: boolean;
+  pushedAt?: string;
+  generationRound: number;
+  createdAt: string;
+}
+
+export interface ClientSequencesResponse {
+  clientId: string;
+  sequences: CampaignSequence[];
+  pendingCount: number;
+  approvedCount: number;
+  deniedCount: number;
+  revisionCount: number;
+  total: number;
+}
+
+export interface SequenceReviewRequest {
+  action: 'approve' | 'deny';
+  comment?: string;
+  reviewer?: string;
+}
+
+export interface SequenceEmailEditRequest {
+  subjectLine?: string;  // Only for position 1 and 3
+  emailBody: string;
+}
+
+export interface SequenceRevisionRequest {
+  emailPosition: number;  // 1-4 for specific email, 0 for whole sequence
+  instruction: string;
+  scope: 'single' | 'subsequent' | 'all';
+}
+
 export const strategyApi = {
   // ===== STRATEGY MANAGEMENT =====
 
@@ -1467,6 +1533,142 @@ export const strategyApi = {
       `/api/strategy/revisions/${clientId}${query ? `?${query}` : ''}`
     );
     return toCamelCase<ClientRevisionsResponse>(response);
+  },
+
+  // ===== SEQUENCE ENDPOINTS (4-Email Campaigns) =====
+
+  /**
+   * Get all 4-email campaign sequences for a client
+   */
+  async getSequences(
+    clientId: string,
+    params?: {
+      status?: string;
+      strategyId?: string;
+      sort?: 'score' | 'created_at' | 'status';
+      order?: 'asc' | 'desc';
+      limit?: number;
+    }
+  ): Promise<ClientSequencesResponse> {
+    const searchParams = new URLSearchParams();
+    if (params?.status) searchParams.set('status', params.status);
+    if (params?.strategyId) searchParams.set('strategy_id', params.strategyId);
+    if (params?.sort) searchParams.set('sort', params.sort);
+    if (params?.order) searchParams.set('order', params.order);
+    if (params?.limit) searchParams.set('limit', params.limit.toString());
+
+    const query = searchParams.toString();
+    const response = await fetchApi<Record<string, unknown>>(
+      `/api/strategy/sequences/${clientId}${query ? `?${query}` : ''}`
+    );
+    return toCamelCase<ClientSequencesResponse>(response);
+  },
+
+  /**
+   * Get a single sequence by ID
+   */
+  async getSequence(clientId: string, sequenceId: string): Promise<CampaignSequence> {
+    const response = await fetchApi<Record<string, unknown>>(
+      `/api/strategy/sequences/${clientId}/${sequenceId}`
+    );
+    return toCamelCase<CampaignSequence>(response);
+  },
+
+  /**
+   * Review a sequence - approve or deny
+   */
+  async reviewSequence(
+    sequenceId: string,
+    request: SequenceReviewRequest
+  ): Promise<{ sequenceId: string; campaignName: string; status: string; message: string }> {
+    const response = await fetchApi<Record<string, unknown>>(
+      `/api/strategy/sequences/${sequenceId}`,
+      {
+        method: 'PATCH',
+        body: JSON.stringify(toSnakeCase(request as unknown as Record<string, unknown>)),
+      }
+    );
+    return toCamelCase<{ sequenceId: string; campaignName: string; status: string; message: string }>(response);
+  },
+
+  /**
+   * Edit a specific email within a sequence
+   */
+  async editSequenceEmail(
+    sequenceId: string,
+    position: number,
+    data: SequenceEmailEditRequest
+  ): Promise<{ sequenceId: string; position: number; message: string }> {
+    const response = await fetchApi<Record<string, unknown>>(
+      `/api/strategy/sequences/${sequenceId}/emails/${position}`,
+      {
+        method: 'PATCH',
+        body: JSON.stringify(toSnakeCase(data as unknown as Record<string, unknown>)),
+      }
+    );
+    return toCamelCase<{ sequenceId: string; position: number; message: string }>(response);
+  },
+
+  /**
+   * Request revision for a specific email or entire sequence
+   */
+  async requestSequenceRevision(
+    sequenceId: string,
+    request: SequenceRevisionRequest
+  ): Promise<{
+    revisionId: string;
+    jobId: string;
+    sequenceId: string;
+    emailPosition: number;
+    scope: string;
+    status: string;
+    message: string;
+  }> {
+    const response = await fetchApi<Record<string, unknown>>(
+      `/api/strategy/sequences/${sequenceId}/revision`,
+      {
+        method: 'POST',
+        body: JSON.stringify(toSnakeCase(request as unknown as Record<string, unknown>)),
+      }
+    );
+    return toCamelCase<{
+      revisionId: string;
+      jobId: string;
+      sequenceId: string;
+      emailPosition: number;
+      scope: string;
+      status: string;
+      message: string;
+    }>(response);
+  },
+
+  /**
+   * Push an approved sequence to EmailBison
+   */
+  async pushSequenceToEmailBison(sequenceId: string): Promise<{
+    sequenceId: string;
+    clientId: string;
+    emailbisonCampaignId: string;
+    campaignName: string;
+    emailsPushed: number;
+    stepsCompleted: string[];
+    status: string;
+    message: string;
+  }> {
+    const response = await fetchApi<Record<string, unknown>>(
+      `/api/strategy/sequences/${sequenceId}/push-to-emailbison`,
+      { method: 'POST' }
+    );
+    return toCamelCase<{
+      sequenceId: string;
+      clientId: string;
+      emailbisonCampaignId: string;
+      campaignName: string;
+      emailsPushed: number;
+      stepsCompleted: string[];
+      status: string;
+      message: string;
+    }>(response);
   },
 };
 

@@ -30,6 +30,13 @@ from models.strategy import (
     StrategyUpdate,
     StrategyResponse,
     SuggestionEditRequest,
+    # Sequence models
+    SequenceEmail,
+    CampaignSequenceResponse,
+    ClientSequencesResponse,
+    SequenceReviewRequest,
+    SequenceEmailEditRequest,
+    SequenceRevisionRequest,
 )
 
 router = APIRouter()
@@ -813,4 +820,511 @@ async def push_to_emailbison(suggestion_id: UUID):
         "campaign_name": campaign_name,
         "status": "sent",
         "message": f"Campaign created in EmailBison workspace {emailbison_workspace_id}"
+    }
+
+
+# ============================================================================
+# Campaign Sequences (4-Email Campaigns)
+# ============================================================================
+
+def _build_sequence_response(s: dict, job_round: int = 1) -> CampaignSequenceResponse:
+    """Build a CampaignSequenceResponse from a database row."""
+    # Parse sequence_data JSONB into email list
+    sequence_data = s.get("sequence_data") or []
+    emails = []
+    for email in sequence_data:
+        emails.append(SequenceEmail(
+            position=email.get("position", 1),
+            wait_days=email.get("wait_days", 0),
+            subject_line=email.get("subject_line"),
+            email_body=email.get("email_body", ""),
+            edited_subject_line=email.get("edited_subject_line"),
+            edited_email_body=email.get("edited_email_body"),
+            thread_reply=email.get("thread_reply", False),
+            strategy=email.get("strategy"),
+            value_prop=email.get("value_prop"),
+            word_count=email.get("word_count"),
+        ))
+
+    return CampaignSequenceResponse(
+        id=s["id"],
+        job_id=s["job_id"],
+        client_id=s["client_id"],
+        strategy_id=s.get("strategy_id"),
+        campaign_name=s.get("subject_line") or "Untitled Campaign",
+        campaign_type=s.get("campaign_type"),
+        status=s["status"],
+        score=s.get("score"),
+        value_prop_rotation=s.get("value_prop_rotation"),
+        emails=emails,
+        used_variables=s.get("used_variables"),
+        missing_variables=s.get("missing_variables"),
+        rationale=s.get("rationale"),
+        total_word_count=s.get("total_word_count"),
+        human_comment=s.get("human_comment"),
+        reviewed_by=s.get("reviewed_by"),
+        reviewed_at=s.get("reviewed_at"),
+        pushed_to_emailbison=s.get("pushed_to_emailbison", False),
+        pushed_at=s.get("pushed_at"),
+        generation_round=job_round,
+        created_at=s["created_at"],
+    )
+
+
+@router.get("/sequences/{client_id}")
+async def get_client_sequences(
+    client_id: UUID,
+    status: Optional[str] = None,
+    strategy_id: Optional[UUID] = None,
+    sort: Optional[str] = None,  # score, created_at, status
+    order: Optional[str] = "desc",  # asc, desc
+    limit: int = 50
+):
+    """
+    Get all 4-email campaign sequences for a client.
+
+    Only returns suggestions that are full sequences (is_sequence = TRUE).
+    Each sequence includes all 4 emails with timing and threading info.
+    """
+    query = """
+        SELECT s.*, j.generation_round as job_round
+        FROM strategy_suggestions s
+        JOIN strategy_generation_jobs j ON j.id = s.job_id
+        WHERE s.client_id = $1 AND s.is_sequence = TRUE
+    """
+    params = [client_id]
+    param_num = 2
+
+    if status:
+        query += f" AND s.status = ${param_num}"
+        params.append(status)
+        param_num += 1
+
+    if strategy_id:
+        query += f" AND s.strategy_id = ${param_num}"
+        params.append(strategy_id)
+        param_num += 1
+
+    # Handle sorting
+    sort_field = "s.created_at"
+    if sort == "score":
+        sort_field = "s.score"
+    elif sort == "status":
+        sort_field = "s.status"
+    elif sort == "created_at":
+        sort_field = "s.created_at"
+
+    sort_order = "DESC" if order != "asc" else "ASC"
+    query += f" ORDER BY {sort_field} {sort_order} NULLS LAST"
+
+    query += f" LIMIT ${param_num}"
+    params.append(limit)
+
+    sequences = await fetch_all(query, *params)
+
+    # Get counts (filtered by strategy_id if provided)
+    count_query = """
+        SELECT
+            COUNT(*) FILTER (WHERE status = 'pending') as pending_count,
+            COUNT(*) FILTER (WHERE status = 'approved') as approved_count,
+            COUNT(*) FILTER (WHERE status = 'denied') as denied_count,
+            COUNT(*) FILTER (WHERE status = 'revision_requested') as revision_count,
+            COUNT(*) as total
+        FROM strategy_suggestions
+        WHERE client_id = $1 AND is_sequence = TRUE
+    """
+    count_params = [client_id]
+
+    if strategy_id:
+        count_query += " AND strategy_id = $2"
+        count_params.append(strategy_id)
+
+    counts = await fetch_one(count_query, *count_params)
+
+    return ClientSequencesResponse(
+        client_id=client_id,
+        sequences=[
+            _build_sequence_response(s, s.get("job_round", 1))
+            for s in (sequences or [])
+        ],
+        pending_count=counts["pending_count"] if counts else 0,
+        approved_count=counts["approved_count"] if counts else 0,
+        denied_count=counts["denied_count"] if counts else 0,
+        revision_count=counts["revision_count"] if counts else 0,
+        total=counts["total"] if counts else 0,
+    )
+
+
+@router.get("/sequences/{client_id}/{sequence_id}")
+async def get_sequence_detail(client_id: UUID, sequence_id: UUID):
+    """
+    Get a single sequence by ID with full details.
+    """
+    sequence = await fetch_one("""
+        SELECT s.*, j.generation_round as job_round
+        FROM strategy_suggestions s
+        JOIN strategy_generation_jobs j ON j.id = s.job_id
+        WHERE s.id = $1 AND s.client_id = $2 AND s.is_sequence = TRUE
+    """, sequence_id, client_id)
+
+    if not sequence:
+        raise HTTPException(status_code=404, detail="Sequence not found")
+
+    return _build_sequence_response(sequence, sequence.get("job_round", 1))
+
+
+@router.patch("/sequences/{sequence_id}")
+async def update_sequence_status(sequence_id: UUID, request: SequenceReviewRequest):
+    """
+    Update a sequence's status - approve or deny the entire sequence.
+    """
+    sequence = await fetch_one(
+        "SELECT id, subject_line FROM strategy_suggestions WHERE id = $1 AND is_sequence = TRUE",
+        sequence_id
+    )
+    if not sequence:
+        raise HTTPException(status_code=404, detail="Sequence not found")
+
+    valid_actions = ['approve', 'deny']
+    if request.action not in valid_actions:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid action. Must be one of: {valid_actions}"
+        )
+
+    status_map = {'approve': 'approved', 'deny': 'denied'}
+    new_status = status_map[request.action]
+
+    await execute("""
+        UPDATE strategy_suggestions
+        SET status = $1, human_comment = $2, reviewed_by = $3, reviewed_at = NOW()
+        WHERE id = $4
+    """, new_status, request.comment, request.reviewer, sequence_id)
+
+    logger.info(f"Sequence {sequence_id} reviewed: {new_status}")
+
+    return {
+        "sequence_id": str(sequence_id),
+        "campaign_name": sequence["subject_line"],
+        "status": new_status,
+        "message": f"Sequence {request.action}d successfully"
+    }
+
+
+@router.patch("/sequences/{sequence_id}/emails/{position}")
+async def edit_sequence_email(
+    sequence_id: UUID,
+    position: int,
+    request: SequenceEmailEditRequest
+):
+    """
+    Edit a specific email within a sequence.
+
+    Position must be 1-4. Subject line can only be edited for positions 1 and 3
+    (new thread emails). Edits are stored separately from original content.
+    """
+    if position < 1 or position > 4:
+        raise HTTPException(status_code=400, detail="Position must be 1-4")
+
+    # Get sequence
+    sequence = await fetch_one(
+        "SELECT id, sequence_data FROM strategy_suggestions WHERE id = $1 AND is_sequence = TRUE",
+        sequence_id
+    )
+    if not sequence:
+        raise HTTPException(status_code=404, detail="Sequence not found")
+
+    sequence_data = sequence.get("sequence_data") or []
+
+    # Find the email at the specified position
+    email_found = False
+    for email in sequence_data:
+        if email.get("position") == position:
+            email_found = True
+            # Store edits
+            email["edited_email_body"] = request.email_body
+            if request.subject_line is not None:
+                if position not in [1, 3]:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Subject line can only be edited for Email 1 and 3 (new thread emails)"
+                    )
+                email["edited_subject_line"] = request.subject_line
+            break
+
+    if not email_found:
+        raise HTTPException(status_code=404, detail=f"Email at position {position} not found")
+
+    # Update sequence_data
+    import json
+    await execute("""
+        UPDATE strategy_suggestions
+        SET sequence_data = $1::jsonb
+        WHERE id = $2
+    """, json.dumps(sequence_data), sequence_id)
+
+    logger.info(f"Sequence {sequence_id} email {position} edited")
+
+    return {
+        "sequence_id": str(sequence_id),
+        "position": position,
+        "edited_email_body": request.email_body,
+        "edited_subject_line": request.subject_line,
+        "message": f"Email {position} edited successfully"
+    }
+
+
+@router.post("/sequences/{sequence_id}/revision")
+async def request_sequence_revision(sequence_id: UUID, request: SequenceRevisionRequest):
+    """
+    Request revision for a specific email or entire sequence.
+
+    - email_position: 1-4 for specific email, 0 for whole sequence
+    - scope: 'single' (just that email), 'subsequent' (that email and following),
+             'all' (regenerate entire sequence)
+    """
+    # Get sequence info
+    sequence = await fetch_one("""
+        SELECT s.id, s.job_id, s.client_id, s.strategy_id
+        FROM strategy_suggestions s
+        WHERE s.id = $1 AND s.is_sequence = TRUE
+    """, sequence_id)
+
+    if not sequence:
+        raise HTTPException(status_code=404, detail="Sequence not found")
+
+    if request.email_position < 0 or request.email_position > 4:
+        raise HTTPException(status_code=400, detail="email_position must be 0-4")
+
+    # Create revision request with scope info
+    revision_instruction = request.instruction
+    if request.email_position > 0:
+        revision_instruction = f"[Email {request.email_position}, scope: {request.scope}] {request.instruction}"
+
+    revision = await fetch_one("""
+        INSERT INTO strategy_revision_requests (job_id, client_id, variant_id, instruction)
+        VALUES ($1, $2, $3, $4)
+        RETURNING id, created_at
+    """, sequence["job_id"], sequence["client_id"], sequence_id, revision_instruction)
+
+    # Update sequence status
+    await execute("""
+        UPDATE strategy_suggestions
+        SET status = 'revision_requested'
+        WHERE id = $1
+    """, sequence_id)
+
+    # Get current generation round and create new job
+    last_job = await fetch_one("""
+        SELECT generation_round FROM strategy_generation_jobs
+        WHERE client_id = $1
+        ORDER BY created_at DESC
+        LIMIT 1
+    """, sequence["client_id"])
+    generation_round = (last_job["generation_round"] + 1) if last_job else 1
+
+    new_job = await fetch_one("""
+        INSERT INTO strategy_generation_jobs
+        (client_id, strategy_id, status, generation_round, revision_of, job_type)
+        VALUES ($1, $2, 'pending', $3, $4, 'revision')
+        RETURNING id, created_at
+    """, sequence["client_id"], sequence.get("strategy_id"), generation_round, sequence_id)
+
+    logger.info(f"Revision job {new_job['id']} created for sequence {sequence_id} (email {request.email_position}, scope {request.scope})")
+
+    return {
+        "revision_id": str(revision["id"]),
+        "job_id": str(new_job["id"]),
+        "sequence_id": str(sequence_id),
+        "email_position": request.email_position,
+        "scope": request.scope,
+        "instruction": request.instruction,
+        "status": "revision_queued",
+        "message": "Revision request created and generation job queued"
+    }
+
+
+@router.post("/sequences/{sequence_id}/push-to-emailbison")
+async def push_sequence_to_emailbison(sequence_id: UUID):
+    """
+    Push an approved 4-email sequence to EmailBison to create a complete campaign.
+
+    This endpoint:
+    1. Validates the sequence is approved and not already pushed
+    2. Switches to the correct EmailBison workspace
+    3. Creates a campaign with Email 1 subject as name
+    4. Adds all 4 sequence steps with correct timing and threading
+    5. Updates the sequence status to 'sent'
+    """
+    # Get sequence with client and workspace info
+    sequence = await fetch_one("""
+        SELECT s.*, c.name as client_name, w.emailbison_workspace_id
+        FROM strategy_suggestions s
+        JOIN clients c ON c.id = s.client_id
+        LEFT JOIN workspaces w ON w.id = c.workspace_id
+        WHERE s.id = $1 AND s.is_sequence = TRUE
+    """, sequence_id)
+
+    if not sequence:
+        raise HTTPException(status_code=404, detail="Sequence not found")
+
+    if sequence["status"] != "approved":
+        raise HTTPException(
+            status_code=400,
+            detail="Only approved sequences can be pushed to EmailBison"
+        )
+
+    if sequence.get("pushed_to_emailbison"):
+        raise HTTPException(
+            status_code=400,
+            detail="Sequence has already been pushed to EmailBison"
+        )
+
+    emailbison_workspace_id = sequence.get("emailbison_workspace_id")
+    if not emailbison_workspace_id:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Client '{sequence['client_name']}' has no EmailBison workspace configured"
+        )
+
+    if not EMAILBISON_API_KEY:
+        raise HTTPException(
+            status_code=500,
+            detail="EmailBison API key not configured"
+        )
+
+    sequence_data = sequence.get("sequence_data") or []
+    if len(sequence_data) != 4:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Sequence has {len(sequence_data)} emails, expected 4"
+        )
+
+    # Variable transformation: {{double_braces}} -> {SINGLE_BRACES}
+    import re
+    def transform_variables(text: str) -> str:
+        if not text:
+            return text
+        # Map of variable names
+        var_map = {
+            "first_name": "FIRST_NAME",
+            "company_name": "COMPANY_NAME",
+            "role_title": "JOB_TITLE",
+            "industry": "INDUSTRY",
+        }
+        result = text
+        for old_var, new_var in var_map.items():
+            result = re.sub(r"\{\{" + old_var + r"\}\}", "{" + new_var + "}", result, flags=re.IGNORECASE)
+        # Handle any remaining {{var}} patterns
+        result = re.sub(r"\{\{(\w+)\}\}", lambda m: "{" + m.group(1).upper() + "}", result)
+        return result
+
+    # Use edited version if available, otherwise original
+    campaign_name = sequence.get("subject_line") or "Campaign"
+
+    created_campaign_id = None
+    steps_completed = []
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            # Step 1: Switch workspace
+            switch_response = await client.post(
+                f"{EMAILBISON_API_URL}/api/workspaces/v1.1/switch-workspace",
+                headers={
+                    "Authorization": f"Bearer {EMAILBISON_API_KEY}",
+                    "Content-Type": "application/json",
+                },
+                json={"team_id": emailbison_workspace_id}
+            )
+
+            if switch_response.status_code != 200:
+                logger.error(f"Failed to switch workspace: {switch_response.text}")
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"Failed to switch to EmailBison workspace"
+                )
+            steps_completed.append("workspace_switch")
+            logger.info(f"Switched to EmailBison workspace {emailbison_workspace_id}")
+
+            # Step 2: Create campaign
+            campaign_response = await client.post(
+                f"{EMAILBISON_API_URL}/api/campaigns",
+                headers={
+                    "Authorization": f"Bearer {EMAILBISON_API_KEY}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "name": campaign_name,
+                    "type": "outbound",
+                }
+            )
+
+            if campaign_response.status_code not in (200, 201):
+                logger.error(f"Failed to create campaign: {campaign_response.text}")
+                raise HTTPException(status_code=502, detail="Failed to create EmailBison campaign")
+
+            campaign_data = campaign_response.json()
+            created_campaign_id = campaign_data.get("data", {}).get("id") or campaign_data.get("id")
+            steps_completed.append("campaign_create")
+            logger.info(f"Created EmailBison campaign {created_campaign_id}")
+
+            # Step 3: Add sequence steps (all 4 emails)
+            for email in sorted(sequence_data, key=lambda x: x.get("position", 1)):
+                position = email.get("position", 1)
+                # Use edited versions if available
+                subject = email.get("edited_subject_line") or email.get("subject_line") or ""
+                body = email.get("edited_email_body") or email.get("email_body", "")
+
+                step_response = await client.post(
+                    f"{EMAILBISON_API_URL}/api/campaigns/{created_campaign_id}/sequence-steps",
+                    headers={
+                        "Authorization": f"Bearer {EMAILBISON_API_KEY}",
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "email_subject": transform_variables(subject),
+                        "email_body": transform_variables(body),
+                        "order": position,
+                        "wait_in_days": email.get("wait_days", 0),
+                        "thread_reply": email.get("thread_reply", False),
+                    }
+                )
+
+                if step_response.status_code not in (200, 201):
+                    logger.error(f"Failed to create sequence step {position}: {step_response.text}")
+                    raise HTTPException(
+                        status_code=502,
+                        detail=f"Failed to create sequence step {position}"
+                    )
+                logger.info(f"Created sequence step {position} for campaign {created_campaign_id}")
+
+            steps_completed.append("sequence_steps")
+
+    except httpx.RequestError as e:
+        logger.error(f"Failed to connect to EmailBison: {e}")
+        raise HTTPException(
+            status_code=502,
+            detail=f"Failed to connect to EmailBison: {str(e)}"
+        )
+
+    # Update sequence status to 'sent'
+    await execute("""
+        UPDATE strategy_suggestions
+        SET status = 'sent', pushed_to_emailbison = TRUE, pushed_at = NOW()
+        WHERE id = $1
+    """, sequence_id)
+
+    logger.info(f"Pushed sequence {sequence_id} to EmailBison as campaign {created_campaign_id}")
+
+    return {
+        "sequence_id": str(sequence_id),
+        "client_id": str(sequence["client_id"]),
+        "client_name": sequence["client_name"],
+        "emailbison_workspace_id": emailbison_workspace_id,
+        "emailbison_campaign_id": created_campaign_id,
+        "campaign_name": campaign_name,
+        "emails_pushed": len(sequence_data),
+        "steps_completed": steps_completed,
+        "status": "sent",
+        "message": f"4-email campaign created in EmailBison"
     }
