@@ -890,10 +890,12 @@ async def clear_domain_candidates(client_id: UUID):
         raise HTTPException(status_code=404, detail="Client not found")
 
     # Delete domain candidates (not purchased/active)
+    # Note: domains table uses approval_status column
     result = await execute("""
         DELETE FROM domains
         WHERE client_id = $1
-          AND status IN ('pending', 'pending_approval', 'approved', 'rejected')
+          AND (approval_status IN ('pending', 'approved', 'denied')
+               OR approval_status IS NULL)
     """, client_id)
 
     # Extract count from result like "DELETE 10"
