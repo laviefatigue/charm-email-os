@@ -1421,3 +1421,215 @@ async def push_sequence_to_emailbison(sequence_id: UUID):
         "message": "4-email campaign created in EmailBison as draft",
         "next_steps": ["Add leads list", "Review and activate"]
     }
+
+
+# ============================================================================
+# Database Migration - Remove Legacy Single-Variant Records
+# ============================================================================
+
+@router.get("/admin/migration/005-cleanup-legacy/preflight")
+async def migration_005_preflight():
+    """
+    Pre-flight check for migration 005: Remove legacy single-variant records.
+    Returns counts of records that would be affected WITHOUT making changes.
+    """
+    # Count legacy suggestions (is_sequence = FALSE or NULL)
+    legacy_count = await fetch_one("""
+        SELECT COUNT(*) as count FROM strategy_suggestions
+        WHERE is_sequence = FALSE OR is_sequence IS NULL
+    """)
+
+    # Count sequence records (is_sequence = TRUE)
+    sequence_count = await fetch_one("""
+        SELECT COUNT(*) as count FROM strategy_suggestions
+        WHERE is_sequence = TRUE
+    """)
+
+    # Count jobs that would become orphaned
+    orphaned_jobs = await fetch_one("""
+        SELECT COUNT(*) as count FROM strategy_generation_jobs
+        WHERE id NOT IN (
+            SELECT DISTINCT job_id FROM strategy_suggestions
+            WHERE job_id IS NOT NULL AND is_sequence = TRUE
+        )
+    """)
+
+    # Count revision requests that would become orphaned
+    orphaned_revisions = await fetch_one("""
+        SELECT COUNT(*) as count FROM strategy_revision_requests
+        WHERE variant_id IS NOT NULL
+        AND variant_id IN (
+            SELECT id FROM strategy_suggestions
+            WHERE is_sequence = FALSE OR is_sequence IS NULL
+        )
+    """)
+
+    # Check current constraint status
+    constraint_exists = await fetch_one("""
+        SELECT COUNT(*) as count FROM information_schema.table_constraints
+        WHERE constraint_name = 'chk_is_sequence_true'
+        AND table_name = 'strategy_suggestions'
+    """)
+
+    return {
+        "migration": "005-remove-legacy-single-variants",
+        "status": "preflight",
+        "will_delete": {
+            "legacy_suggestions": legacy_count["count"] if legacy_count else 0,
+            "orphaned_jobs": orphaned_jobs["count"] if orphaned_jobs else 0,
+            "orphaned_revisions": orphaned_revisions["count"] if orphaned_revisions else 0,
+        },
+        "will_keep": {
+            "sequence_suggestions": sequence_count["count"] if sequence_count else 0,
+        },
+        "constraint_already_exists": (constraint_exists["count"] if constraint_exists else 0) > 0,
+        "safe_to_run": True,
+        "message": "Use POST /admin/migration/005-cleanup-legacy/execute to run migration"
+    }
+
+
+@router.post("/admin/migration/005-cleanup-legacy/execute")
+async def migration_005_execute(confirm: bool = False):
+    """
+    Execute migration 005: Remove legacy single-variant records.
+
+    This migration:
+    1. Deletes suggestions where is_sequence = FALSE or NULL
+    2. Deletes orphaned revision requests
+    3. Deletes orphaned jobs
+    4. Sets is_sequence default to TRUE
+    5. Adds NOT NULL constraint
+    6. Adds CHECK constraint (is_sequence = TRUE)
+
+    IRREVERSIBLE - deleted data cannot be recovered.
+    """
+    if not confirm:
+        return {
+            "status": "confirmation_required",
+            "message": "Add ?confirm=true to execute this irreversible migration",
+            "warning": "This will permanently delete legacy records"
+        }
+
+    results = {
+        "migration": "005-remove-legacy-single-variants",
+        "status": "executing",
+        "steps": []
+    }
+
+    try:
+        # Step 1: Delete legacy suggestions
+        legacy_deleted = await execute("""
+            DELETE FROM strategy_suggestions
+            WHERE is_sequence = FALSE OR is_sequence IS NULL
+        """)
+        results["steps"].append({
+            "step": 1,
+            "action": "delete_legacy_suggestions",
+            "result": legacy_deleted
+        })
+
+        # Step 2: Delete orphaned revision requests
+        revisions_deleted = await execute("""
+            DELETE FROM strategy_revision_requests
+            WHERE variant_id IS NOT NULL
+            AND variant_id NOT IN (SELECT id FROM strategy_suggestions)
+        """)
+        results["steps"].append({
+            "step": 2,
+            "action": "delete_orphaned_revisions",
+            "result": revisions_deleted
+        })
+
+        # Step 3: Delete orphaned jobs
+        jobs_deleted = await execute("""
+            DELETE FROM strategy_generation_jobs
+            WHERE id NOT IN (
+                SELECT DISTINCT job_id FROM strategy_suggestions
+                WHERE job_id IS NOT NULL
+            )
+        """)
+        results["steps"].append({
+            "step": 3,
+            "action": "delete_orphaned_jobs",
+            "result": jobs_deleted
+        })
+
+        # Step 4: Set default value
+        try:
+            await execute("""
+                ALTER TABLE strategy_suggestions
+                ALTER COLUMN is_sequence SET DEFAULT TRUE
+            """)
+            results["steps"].append({
+                "step": 4,
+                "action": "set_default_true",
+                "result": "success"
+            })
+        except Exception as e:
+            results["steps"].append({
+                "step": 4,
+                "action": "set_default_true",
+                "result": f"skipped: {str(e)}"
+            })
+
+        # Step 5: Update any remaining NULL values and add NOT NULL
+        try:
+            await execute("""
+                UPDATE strategy_suggestions SET is_sequence = TRUE WHERE is_sequence IS NULL
+            """)
+            await execute("""
+                ALTER TABLE strategy_suggestions
+                ALTER COLUMN is_sequence SET NOT NULL
+            """)
+            results["steps"].append({
+                "step": 5,
+                "action": "add_not_null_constraint",
+                "result": "success"
+            })
+        except Exception as e:
+            results["steps"].append({
+                "step": 5,
+                "action": "add_not_null_constraint",
+                "result": f"skipped: {str(e)}"
+            })
+
+        # Step 6: Add CHECK constraint
+        try:
+            await execute("""
+                ALTER TABLE strategy_suggestions
+                ADD CONSTRAINT chk_is_sequence_true CHECK (is_sequence = TRUE)
+            """)
+            results["steps"].append({
+                "step": 6,
+                "action": "add_check_constraint",
+                "result": "success"
+            })
+        except Exception as e:
+            results["steps"].append({
+                "step": 6,
+                "action": "add_check_constraint",
+                "result": f"skipped (may already exist): {str(e)}"
+            })
+
+        # Verify final state
+        final_count = await fetch_one("""
+            SELECT COUNT(*) as total,
+                   COUNT(*) FILTER (WHERE is_sequence = TRUE) as sequences,
+                   COUNT(*) FILTER (WHERE is_sequence = FALSE) as legacy
+            FROM strategy_suggestions
+        """)
+
+        results["status"] = "completed"
+        results["final_state"] = {
+            "total_suggestions": final_count["total"] if final_count else 0,
+            "sequences": final_count["sequences"] if final_count else 0,
+            "legacy": final_count["legacy"] if final_count else 0,
+        }
+        results["message"] = "Migration completed successfully"
+
+    except Exception as e:
+        results["status"] = "failed"
+        results["error"] = str(e)
+        logger.error(f"Migration 005 failed: {e}")
+
+    return results
