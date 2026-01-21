@@ -58,16 +58,18 @@ export interface OnboardingData {
 }
 
 // Domain status enum (aligned with OwnRBL)
+// Flow: pending → approved → purchased → active (with inboxes)
 export type DomainStatus =
-  | 'pending'      // OwnRBL: pending
-  | 'pending_approval'  // Legacy
-  | 'approved'    // Legacy
-  | 'rejected'    // Legacy
-  | 'purchasing'  // Legacy
-  | 'active'      // OwnRBL: active
+  | 'pending'      // Generated, waiting for approval
+  | 'pending_approval'  // Legacy alias for pending
+  | 'approved'    // Approved, ready to purchase
+  | 'rejected'    // Denied, won't purchase
+  | 'purchasing'  // Legacy: purchase in progress
+  | 'purchased'   // Domain bought, no inboxes yet
+  | 'active'      // Domain with active inboxes
   | 'warming'     // Legacy
-  | 'flagged'     // OwnRBL: flagged
-  | 'dead';       // OwnRBL: dead
+  | 'flagged'     // OwnRBL: flagged for issues
+  | 'dead';       // OwnRBL: dead/retired
 
 // Domain entity (from OwnRBL domains table)
 export interface Domain {

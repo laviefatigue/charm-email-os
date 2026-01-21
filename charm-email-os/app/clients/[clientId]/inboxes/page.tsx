@@ -60,9 +60,22 @@ export default function InboxesPage() {
 
   // Filter domains/inboxes for this client - now reactive because we subscribe to the arrays
   const domains = useMemo(() => allDomains.filter((d) => d.clientId === clientId), [allDomains, clientId]);
-  const approvedDomains = useMemo(() => allDomains.filter(
-    (d) => d.clientId === clientId && (d.status === 'approved' || d.status === 'active' || d.status === 'warming')
+
+  // Inventory domains: purchased or active (domains we own)
+  const inventoryDomains = useMemo(() => allDomains.filter(
+    (d) => d.clientId === clientId && (d.status === 'purchased' || d.status === 'active' || d.status === 'warming' || d.status === 'flagged' || d.status === 'dead')
   ), [allDomains, clientId]);
+
+  // Purchase domains: pending approval or approved (domains to review/buy)
+  const purchaseDomains = useMemo(() => allDomains.filter(
+    (d) => d.clientId === clientId && (d.status === 'pending' || d.status === 'pending_approval' || d.status === 'approved')
+  ), [allDomains, clientId]);
+
+  // Approved domains ready for inbox creation (purchased or active)
+  const approvedDomains = useMemo(() => allDomains.filter(
+    (d) => d.clientId === clientId && (d.status === 'purchased' || d.status === 'active' || d.status === 'warming')
+  ), [allDomains, clientId]);
+
   const allInboxes = useMemo(() => allStoreInboxes.filter((i) => i.clientId === clientId), [allStoreInboxes, clientId]);
 
   const [selectedDomainId, setSelectedDomainId] = useState<string | null>(null);
@@ -98,8 +111,9 @@ export default function InboxesPage() {
     fetchInboxesForDomainLazy(domainId, clientId);
   }, [fetchInboxesForDomainLazy, clientId]);
 
-  // Count pending approvals
-  const pendingDomains = domains.filter((d) => d.status === 'pending_approval').length;
+  // Count pending approvals (use both 'pending' and legacy 'pending_approval')
+  const pendingDomainsCount = domains.filter((d) => d.status === 'pending' || d.status === 'pending_approval').length;
+  const approvedDomainsCount = domains.filter((d) => d.status === 'approved').length;
   const pendingInboxes = allInboxes.filter((i) => i.status === 'pending_approval').length;
 
   // Loading state
@@ -205,12 +219,6 @@ export default function InboxesPage() {
             <div className="h-2 w-2 rounded-full bg-green-500" />
             <span>Infrastructure Active</span>
           </div>
-          {pendingDomains > 0 && (
-            <div className="flex items-center gap-2 px-3 py-1.5 bg-yellow-50 text-yellow-700 rounded-full text-sm">
-              <AlertTriangle className="h-3 w-3" />
-              <span>{pendingDomains} domains pending approval</span>
-            </div>
-          )}
           {pendingInboxes > 0 && (
             <div className="flex items-center gap-2 px-3 py-1.5 bg-yellow-50 text-yellow-700 rounded-full text-sm">
               <AlertTriangle className="h-3 w-3" />
@@ -225,20 +233,20 @@ export default function InboxesPage() {
             </TooltipTrigger>
             <TooltipContent>
               <p className="max-w-xs">
-                Approve domains first, then create inboxes for approved domains.
-                Rejected items can be edited and resubmitted.
+                This shows your purchased domains and their inboxes.
+                Go to &quot;Purchase New&quot; to add more domains.
               </p>
             </TooltipContent>
           </Tooltip>
         </div>
 
-        {/* Workflow Guide */}
-        {domains.length === 0 && (
+        {/* Empty State for Inventory */}
+        {inventoryDomains.length === 0 && (
           <Alert className="mb-6">
             <Sparkles className="h-4 w-4" />
             <AlertDescription>
-              <strong>Getting Started:</strong> Generate domain suggestions from your onboarding data,
-              approve the ones you want, then generate inboxes for each approved domain.
+              <strong>No purchased domains yet.</strong> Go to the &quot;Purchase New&quot; tab to generate
+              domain suggestions, check pricing, and purchase domains.
             </AlertDescription>
           </Alert>
         )}
@@ -257,24 +265,6 @@ export default function InboxesPage() {
                 </CardDescription>
               </div>
               <div className="flex gap-2">
-                {hasOnboardingData && (
-                  <Button
-                    size="sm"
-                    variant="default"
-                    onClick={handleGenerateDomains}
-                  >
-                    <Sparkles className="h-4 w-4 mr-1" />
-                    Generate Domains
-                  </Button>
-                )}
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={() => setShowDomainForm(true)}
-                >
-                  <Plus className="h-4 w-4 mr-1" />
-                  Add Domain
-                </Button>
                 <Button
                   size="sm"
                   variant="outline"
@@ -288,19 +278,15 @@ export default function InboxesPage() {
             </div>
           </CardHeader>
           <CardContent>
-            {domains.length === 0 ? (
+            {inventoryDomains.length === 0 ? (
               <EmptyState
                 icon={Globe}
-                title="No domains"
-                description={
-                  hasOnboardingData
-                    ? 'Click Generate Domains to create domain suggestions from onboarding.'
-                    : 'Complete onboarding or add domains manually.'
-                }
+                title="No purchased domains"
+                description="Go to the 'Purchase New' tab to generate and purchase domains."
               />
             ) : (
               <DomainInboxTree
-                domains={domains}
+                domains={inventoryDomains}
                 inboxes={allInboxes}
                 onExpandDomain={handleExpandDomain}
                 loadingDomainIds={loadingDomainIds}
@@ -313,68 +299,120 @@ export default function InboxesPage() {
           {/* Purchase New Tab */}
           <TabsContent value="purchase">
             <div className="space-y-6">
-              {/* Purchase Overview */}
-              <Alert>
-                <Sparkles className="h-4 w-4" />
-                <AlertDescription>
-                  <strong>Purchase Workflow:</strong> First, generate and purchase domains from registrars (Porkbun, Dynadot).
-                  Then, configure and purchase inboxes from HyperTide for your approved domains.
-                </AlertDescription>
-              </Alert>
+              {/* Status Summary */}
+              <div className="flex items-center gap-4 flex-wrap">
+                {pendingDomainsCount > 0 && (
+                  <div className="flex items-center gap-2 px-3 py-1.5 bg-yellow-50 text-yellow-700 rounded-full text-sm">
+                    <AlertTriangle className="h-3 w-3" />
+                    <span>{pendingDomainsCount} domains pending approval</span>
+                  </div>
+                )}
+                {approvedDomainsCount > 0 && (
+                  <div className="flex items-center gap-2 px-3 py-1.5 bg-blue-50 text-blue-700 rounded-full text-sm">
+                    <CheckCheck className="h-3 w-3" />
+                    <span>{approvedDomainsCount} domains ready to purchase</span>
+                  </div>
+                )}
+              </div>
 
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                {/* Domain Sourcing Card */}
+              {/* Domain Candidates List */}
+              {purchaseDomains.length > 0 && (
                 <Card>
                   <CardHeader>
-                    <CardTitle className="flex items-center gap-2">
-                      <Globe className="h-5 w-5" />
-                      Step 1: Purchase Domains
-                    </CardTitle>
-                    <CardDescription>
-                      Generate AI-powered domain suggestions, search registrar pricing, and purchase domains
-                    </CardDescription>
-                  </CardHeader>
-                  <CardContent>
-                    <div className="space-y-4">
-                      <div className="text-sm text-muted-foreground">
-                        <ul className="space-y-2">
-                          <li className="flex items-center gap-2">
-                            <div className="h-1.5 w-1.5 rounded-full bg-primary" />
-                            AI domain generation based on client profile
-                          </li>
-                          <li className="flex items-center gap-2">
-                            <div className="h-1.5 w-1.5 rounded-full bg-primary" />
-                            Multi-registrar price comparison (Porkbun, Dynadot)
-                          </li>
-                          <li className="flex items-center gap-2">
-                            <div className="h-1.5 w-1.5 rounded-full bg-primary" />
-                            Value scoring and deal detection
-                          </li>
-                        </ul>
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <CardTitle className="text-base font-semibold flex items-center gap-2">
+                          <Globe className="h-4 w-4" />
+                          Domain Candidates
+                        </CardTitle>
+                        <CardDescription className="mt-1">
+                          Review and approve domains, then check pricing and purchase
+                        </CardDescription>
                       </div>
                       <Button
-                        className="w-full"
+                        size="sm"
+                        variant="default"
+                        disabled={!canGenerateInfo?.canGenerate}
+                        onClick={() => setShowDomainSourcingWizard(true)}
+                      >
+                        <Sparkles className="h-4 w-4 mr-1" />
+                        Generate More
+                      </Button>
+                    </div>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="space-y-2">
+                      {purchaseDomains.map((domain) => (
+                        <div
+                          key={domain.id}
+                          className="flex items-center justify-between p-3 border rounded-lg hover:bg-muted/50"
+                        >
+                          <div className="flex items-center gap-3">
+                            <Globe className="h-4 w-4 text-muted-foreground" />
+                            <span className="font-medium">{domain.domain || domain.domainName}</span>
+                            <span className={`text-xs px-2 py-0.5 rounded-full ${
+                              domain.status === 'approved'
+                                ? 'bg-blue-100 text-blue-700'
+                                : 'bg-yellow-100 text-yellow-700'
+                            }`}>
+                              {domain.status === 'approved' ? 'Approved' : 'Pending'}
+                            </span>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            {(domain.status === 'pending' || domain.status === 'pending_approval') && (
+                              <>
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  onClick={() => approveDomain(domain.id)}
+                                >
+                                  <CheckCheck className="h-3 w-3 mr-1" />
+                                  Approve
+                                </Button>
+                              </>
+                            )}
+                            {domain.status === 'approved' && (
+                              <Button
+                                size="sm"
+                                variant="default"
+                                onClick={() => setShowDomainSourcingWizard(true)}
+                              >
+                                <ShoppingCart className="h-3 w-3 mr-1" />
+                                Check Price
+                              </Button>
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </CardContent>
+                </Card>
+              )}
+
+              {/* Empty State */}
+              {purchaseDomains.length === 0 && (
+                <Card>
+                  <CardContent className="py-8">
+                    <EmptyState
+                      icon={Globe}
+                      title="No domain candidates"
+                      description="Generate domain suggestions to get started with purchasing."
+                    />
+                    <div className="flex justify-center mt-4">
+                      <Button
                         disabled={!canGenerateInfo?.canGenerate}
                         onClick={() => setShowDomainSourcingWizard(true)}
                       >
                         <Sparkles className="h-4 w-4 mr-2" />
                         Start Domain Sourcing
                       </Button>
-                      {canGenerateInfo && !canGenerateInfo.canGenerate && (
-                        <p className="text-xs text-muted-foreground text-center">
-                          Complete onboarding or add existing domains to enable generation
-                        </p>
-                      )}
-                      {canGenerateInfo?.canGenerate && canGenerateInfo.generationMode === 'pattern_fallback' && (
-                        <p className="text-xs text-muted-foreground text-center">
-                          Generate new domains matching: {canGenerateInfo.domainPattern}
-                        </p>
-                      )}
                     </div>
                   </CardContent>
                 </Card>
+              )}
 
-                {/* Inbox Purchasing Card */}
+              {/* Inbox Purchasing Card - Only show when we have purchased domains */}
+              {approvedDomains.length > 0 && (
                 <Card>
                   <CardHeader>
                     <CardTitle className="flex items-center gap-2">
@@ -404,46 +442,39 @@ export default function InboxesPage() {
                         </ul>
                       </div>
                       <Button
-                        variant="outline"
                         className="w-full"
-                        disabled={approvedDomains.length === 0}
                         onClick={() => setShowInboxPurchaseWizard(true)}
                       >
                         <ShoppingCart className="h-4 w-4 mr-2" />
                         Purchase Inboxes
                       </Button>
-                      {approvedDomains.length === 0 && (
-                        <p className="text-xs text-muted-foreground text-center">
-                          Purchase and approve domains first before buying inboxes
-                        </p>
-                      )}
                     </div>
                   </CardContent>
                 </Card>
-              </div>
+              )}
 
               {/* Summary Stats */}
               <Card>
                 <CardHeader className="pb-3">
-                  <CardTitle className="text-base">Current Inventory Summary</CardTitle>
+                  <CardTitle className="text-base">Domain Pipeline Summary</CardTitle>
                 </CardHeader>
                 <CardContent>
                   <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                    <div className="text-center p-3 bg-muted rounded-lg">
-                      <div className="text-2xl font-bold">{domains.length}</div>
-                      <div className="text-xs text-muted-foreground">Total Domains</div>
+                    <div className="text-center p-3 bg-yellow-50 rounded-lg">
+                      <div className="text-2xl font-bold text-yellow-700">{pendingDomainsCount}</div>
+                      <div className="text-xs text-yellow-600">Pending Approval</div>
                     </div>
-                    <div className="text-center p-3 bg-muted rounded-lg">
-                      <div className="text-2xl font-bold">{approvedDomains.length}</div>
-                      <div className="text-xs text-muted-foreground">Approved Domains</div>
+                    <div className="text-center p-3 bg-blue-50 rounded-lg">
+                      <div className="text-2xl font-bold text-blue-700">{approvedDomainsCount}</div>
+                      <div className="text-xs text-blue-600">Ready to Purchase</div>
+                    </div>
+                    <div className="text-center p-3 bg-green-50 rounded-lg">
+                      <div className="text-2xl font-bold text-green-700">{inventoryDomains.length}</div>
+                      <div className="text-xs text-green-600">Purchased</div>
                     </div>
                     <div className="text-center p-3 bg-muted rounded-lg">
                       <div className="text-2xl font-bold">{allInboxes.length}</div>
                       <div className="text-xs text-muted-foreground">Total Inboxes</div>
-                    </div>
-                    <div className="text-center p-3 bg-muted rounded-lg">
-                      <div className="text-2xl font-bold">{allInboxes.filter(i => i.inboxState === 'live').length}</div>
-                      <div className="text-xs text-muted-foreground">Active Inboxes</div>
                     </div>
                   </div>
                 </CardContent>

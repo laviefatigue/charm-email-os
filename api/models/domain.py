@@ -8,7 +8,7 @@ from datetime import datetime
 from uuid import UUID
 
 
-DomainStatus = Literal["pending", "active", "flagged", "dead"]
+DomainStatus = Literal["pending", "approved", "purchased", "active", "flagged", "dead"]
 DomainHealthState = Literal["healthy", "warning", "critical", "unknown"]
 
 

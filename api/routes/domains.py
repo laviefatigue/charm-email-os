@@ -65,13 +65,14 @@ async def list_domains(
     # Get domains with health metrics (using only columns that exist in DB)
     # Join with clients to get client_id for frontend filtering
     # Include inbox health breakdown counts and blacklist names
+    # Return actual approval_status: pending, approved, purchased, or active (for legacy domains)
     query = f"""
         SELECT
             d.id,
             d.workspace_id,
             c.id as client_id,
             d.domain_name,
-            'active' as status,
+            COALESCE(d.approval_status, 'active') as status,
             d.latest_health_score,
             d.latest_blacklist_count,
             d.latest_whitelist_count,
@@ -144,7 +145,7 @@ async def get_domain(domain_id: UUID):
             d.id,
             d.workspace_id,
             d.domain_name,
-            'active' as status,
+            COALESCE(d.approval_status, 'active') as status,
             d.latest_health_score,
             d.latest_blacklist_count,
             d.latest_whitelist_count,
