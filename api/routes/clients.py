@@ -484,9 +484,11 @@ async def import_emailbison_workspace(client_id: UUID, request: ImportWorkspaceR
         raise HTTPException(status_code=400, detail="Client already has a workspace")
 
     # Check if this EmailBison workspace is already imported
+    # Note: emailbison_workspace_id is stored as VARCHAR in the database
+    eb_workspace_id_str = str(request.emailbison_workspace_id)
     existing = await fetch_one(
         "SELECT id, workspace_name FROM workspaces WHERE emailbison_workspace_id = $1",
-        request.emailbison_workspace_id
+        eb_workspace_id_str
     )
 
     if existing:
@@ -499,7 +501,7 @@ async def import_emailbison_workspace(client_id: UUID, request: ImportWorkspaceR
             INSERT INTO workspaces (workspace_name, emailbison_workspace_id, automation_enabled)
             VALUES ($1, $2, true)
             RETURNING id
-        """, workspace_name, request.emailbison_workspace_id)
+        """, workspace_name, eb_workspace_id_str)
 
         if not result:
             raise HTTPException(status_code=500, detail="Failed to create local workspace record")
