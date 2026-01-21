@@ -722,6 +722,15 @@ async def push_to_emailbison(suggestion_id: UUID):
             detail="Suggestion has already been pushed to EmailBison"
         )
 
+    # CRITICAL: Validate workspace has EmailBison mapping
+    emailbison_workspace_id = suggestion.get("emailbison_workspace_id")
+    if not emailbison_workspace_id:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Client '{suggestion['client_name']}' has no EmailBison workspace configured. "
+                   "Please link this client's workspace to an EmailBison workspace first."
+        )
+
     # Check EmailBison API configuration
     if not EMAILBISON_API_KEY:
         raise HTTPException(
@@ -732,9 +741,30 @@ async def push_to_emailbison(suggestion_id: UUID):
     # Use edited version if available, otherwise original
     campaign_name = suggestion.get("edited_subject_line") or suggestion["subject_line"]
 
-    # Create campaign in EmailBison
+    # Create campaign in EmailBison with correct workspace context
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
+            # CRITICAL: Switch to correct workspace first
+            switch_response = await client.post(
+                f"{EMAILBISON_API_URL}/api/workspaces/v1.1/switch-workspace",
+                headers={
+                    "Authorization": f"Bearer {EMAILBISON_API_KEY}",
+                    "Content-Type": "application/json",
+                    "Accept": "application/json",
+                },
+                json={"team_id": emailbison_workspace_id}
+            )
+
+            if switch_response.status_code != 200:
+                logger.error(f"Failed to switch workspace {emailbison_workspace_id}: {switch_response.text}")
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"Failed to switch to EmailBison workspace {emailbison_workspace_id}"
+                )
+
+            logger.info(f"Switched to EmailBison workspace {emailbison_workspace_id}")
+
+            # Now create campaign in correct workspace context
             response = await client.post(
                 f"{EMAILBISON_API_URL}/api/campaigns",
                 headers={
@@ -772,14 +802,15 @@ async def push_to_emailbison(suggestion_id: UUID):
         WHERE id = $1
     """, suggestion_id)
 
-    logger.info(f"Pushed suggestion {suggestion_id} to EmailBison as campaign {campaign_id}")
+    logger.info(f"Pushed suggestion {suggestion_id} to EmailBison workspace {emailbison_workspace_id} as campaign {campaign_id}")
 
     return {
         "suggestion_id": str(suggestion_id),
         "client_id": str(suggestion["client_id"]),
         "client_name": suggestion["client_name"],
+        "emailbison_workspace_id": emailbison_workspace_id,
         "emailbison_campaign_id": campaign_id,
         "campaign_name": campaign_name,
         "status": "sent",
-        "message": "Campaign created in EmailBison"
+        "message": f"Campaign created in EmailBison workspace {emailbison_workspace_id}"
     }
