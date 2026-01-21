@@ -500,6 +500,14 @@ export interface ClientJobsResponse {
   total: number;
 }
 
+// Provider Price Info
+export interface ProviderPriceInfo {
+  available: boolean;
+  price: string | null;
+  renewalPrice: string | null;
+  error: string | null;
+}
+
 // Inline Action Types
 export interface CheckPriceResponse {
   domainId: string;
@@ -509,6 +517,10 @@ export interface CheckPriceResponse {
   renewalPrice: string | null;
   isPromotional: boolean;
   error: string | null;
+  // Dual provider pricing
+  porkbun: ProviderPriceInfo | null;
+  dynadot: ProviderPriceInfo | null;
+  bestProvider: string | null; // "porkbun" or "dynadot"
 }
 
 export interface PurchaseSingleResponse {

@@ -37,8 +37,14 @@ export function DomainCandidatesTable({
 }: DomainCandidatesTableProps) {
   // Track action states per domain
   const [actionStates, setActionStates] = useState<Record<string, ActionState>>({});
-  // Track prices after check
-  const [prices, setPrices] = useState<Record<string, { price: string; available: boolean }>>({});
+  // Track prices after check (dual provider)
+  const [prices, setPrices] = useState<Record<string, {
+    price: string;
+    available: boolean;
+    porkbun?: { price: string | null; available: boolean };
+    dynadot?: { price: string | null; available: boolean };
+    bestProvider?: string;
+  }>>({});
   // Track selected domains for bulk purchase
   const [selectedDomains, setSelectedDomains] = useState<Set<string>>(new Set());
   // Track bulk purchase loading
@@ -115,6 +121,15 @@ export function DomainCandidatesTable({
         [domainId]: {
           price: result.price || 'N/A',
           available: result.available,
+          porkbun: result.porkbun ? {
+            price: result.porkbun.price,
+            available: result.porkbun.available,
+          } : undefined,
+          dynadot: result.dynadot ? {
+            price: result.dynadot.price,
+            available: result.dynadot.available,
+          } : undefined,
+          bestProvider: result.bestProvider || undefined,
         },
       }));
       setDomainState(domainId, { loading: false, error: null });
@@ -200,13 +215,47 @@ export function DomainCandidatesTable({
       if (!priceInfo.available) {
         return <span className="text-red-500 text-sm">Unavailable</span>;
       }
-      const priceNum = parseFloat(priceInfo.price);
-      const isUnderThreshold = !isNaN(priceNum) && priceNum <= PRICE_THRESHOLD;
+
+      // Render dual pricing
+      const porkbunPrice = priceInfo.porkbun?.price ? parseFloat(priceInfo.porkbun.price) : null;
+      const dynadotPrice = priceInfo.dynadot?.price ? parseFloat(priceInfo.dynadot.price) : null;
+      const isBestPorkbun = priceInfo.bestProvider === 'porkbun';
+      const isBestDynadot = priceInfo.bestProvider === 'dynadot';
+
       return (
-        <span className={`font-medium ${isUnderThreshold ? 'text-green-600' : 'text-orange-500'}`}>
-          ${priceInfo.price}
-          {!isUnderThreshold && <span className="text-xs ml-1">(over ${PRICE_THRESHOLD})</span>}
-        </span>
+        <div className="flex flex-col gap-0.5 text-xs">
+          {priceInfo.porkbun && (
+            <div className={`flex items-center gap-1 ${isBestPorkbun ? 'font-semibold' : 'text-muted-foreground'}`}>
+              <span className="w-12">PB:</span>
+              {priceInfo.porkbun.available && porkbunPrice ? (
+                <span className={porkbunPrice <= PRICE_THRESHOLD ? 'text-green-600' : 'text-orange-500'}>
+                  ${priceInfo.porkbun.price}
+                  {isBestPorkbun && <span className="ml-1 text-green-600">✓</span>}
+                </span>
+              ) : (
+                <span className="text-red-400">N/A</span>
+              )}
+            </div>
+          )}
+          {priceInfo.dynadot && (
+            <div className={`flex items-center gap-1 ${isBestDynadot ? 'font-semibold' : 'text-muted-foreground'}`}>
+              <span className="w-12">DD:</span>
+              {priceInfo.dynadot.available && dynadotPrice ? (
+                <span className={dynadotPrice <= PRICE_THRESHOLD ? 'text-green-600' : 'text-orange-500'}>
+                  ${priceInfo.dynadot.price}
+                  {isBestDynadot && <span className="ml-1 text-green-600">✓</span>}
+                </span>
+              ) : (
+                <span className="text-red-400">N/A</span>
+              )}
+            </div>
+          )}
+          {!priceInfo.porkbun && !priceInfo.dynadot && (
+            <span className={`font-medium ${parseFloat(priceInfo.price) <= PRICE_THRESHOLD ? 'text-green-600' : 'text-orange-500'}`}>
+              ${priceInfo.price}
+            </span>
+          )}
+        </div>
       );
     }
 
@@ -371,12 +420,12 @@ export function DomainCandidatesTable({
       <Table>
         <TableHeader>
           <TableRow>
-            <TableHead className="w-10"></TableHead>
-            <TableHead>Domain</TableHead>
-            <TableHead className="w-20">TLD</TableHead>
-            <TableHead className="w-24">Status</TableHead>
-            <TableHead className="w-28">Price</TableHead>
-            <TableHead className="text-right">Actions</TableHead>
+            <TableHead className="w-[40px]"></TableHead>
+            <TableHead className="w-[200px]">Domain</TableHead>
+            <TableHead className="w-[60px] text-center">TLD</TableHead>
+            <TableHead className="w-[90px] text-center">Status</TableHead>
+            <TableHead className="w-[150px]">Price</TableHead>
+            <TableHead className="w-[180px] text-right">Actions</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -388,7 +437,7 @@ export function DomainCandidatesTable({
 
             return (
               <TableRow key={domain.id} className={qualified && selectedDomains.has(domain.id) ? 'bg-green-50/50' : ''}>
-                <TableCell>
+                <TableCell className="w-[40px]">
                   {qualified && (
                     <Checkbox
                       checked={selectedDomains.has(domain.id)}
@@ -396,13 +445,13 @@ export function DomainCandidatesTable({
                     />
                   )}
                 </TableCell>
-                <TableCell className="font-medium">{domainName}</TableCell>
-                <TableCell>
+                <TableCell className="w-[200px] font-medium">{domainName}</TableCell>
+                <TableCell className="w-[60px] text-center">
                   <Badge variant="secondary">{tld}</Badge>
                 </TableCell>
-                <TableCell>{getStatusBadge(domain.status)}</TableCell>
-                <TableCell>{renderPriceCell(domain)}</TableCell>
-                <TableCell className="text-right">{renderActions(domain)}</TableCell>
+                <TableCell className="w-[90px] text-center">{getStatusBadge(domain.status)}</TableCell>
+                <TableCell className="w-[150px]">{renderPriceCell(domain)}</TableCell>
+                <TableCell className="w-[180px] text-right">{renderActions(domain)}</TableCell>
               </TableRow>
             );
           })}

@@ -1151,7 +1151,8 @@ async def can_generate_domains(client_id: UUID):
 # STANDALONE ENDPOINTS (No Hypertide Required)
 # =============================================================================
 
-from services.porkbun import PorkbunService, DomainCheckResult
+from services.porkbun import PorkbunService, DomainCheckResult as PorkbunCheckResult
+from services.dynadot import DynadotService, DomainCheckResult as DynadotCheckResult
 from services.domain_generator import generate_domain_suggestions, DomainSuggestion
 from pydantic import BaseModel
 import json
@@ -1347,15 +1348,27 @@ async def get_porkbun_balance():
 # SINGLE DOMAIN ACTIONS (Inline Table Operations)
 # =============================================================================
 
-class CheckPriceResponse(BaseModel):
-    """Response from single domain price check."""
-    domain_id: str
-    domain_name: str
+class ProviderPriceInfo(BaseModel):
+    """Price information from a single provider."""
     available: bool
     price: Optional[str] = None
     renewal_price: Optional[str] = None
+    error: Optional[str] = None
+
+
+class CheckPriceResponse(BaseModel):
+    """Response from single domain price check with dual provider pricing."""
+    domain_id: str
+    domain_name: str
+    available: bool  # True if available from at least one provider
+    price: Optional[str] = None  # Best (lowest) price
+    renewal_price: Optional[str] = None
     is_promotional: bool = False
     error: Optional[str] = None
+    # Dual provider pricing
+    porkbun: Optional[ProviderPriceInfo] = None
+    dynadot: Optional[ProviderPriceInfo] = None
+    best_provider: Optional[str] = None  # "porkbun" or "dynadot"
 
 
 class PurchaseSingleResponse(BaseModel):
@@ -1371,16 +1384,16 @@ class PurchaseSingleResponse(BaseModel):
 @router.post("/check-price/{domain_id}", response_model=CheckPriceResponse)
 async def check_domain_price(domain_id: UUID):
     """
-    Check price for a single domain and cache the result.
+    Check price for a single domain from both Porkbun and Dynadot.
 
-    Used for inline table actions - checks availability and pricing,
-    then stores the price in the database for display.
+    Used for inline table actions - checks availability and pricing from
+    both registrars, then stores the prices in the database for display.
 
     Args:
         domain_id: UUID of the domain to check
 
     Returns:
-        Availability and pricing information
+        Availability and pricing information from both providers
     """
     # Get domain from database
     domain = await fetch_one("""
@@ -1393,49 +1406,124 @@ async def check_domain_price(domain_id: UUID):
         raise HTTPException(status_code=404, detail="Domain not found")
 
     porkbun = PorkbunService()
+    dynadot = DynadotService()
 
     try:
-        result = await porkbun.check_availability(domain["domain_name"])
+        # Check both providers concurrently
+        import asyncio
+        porkbun_result, dynadot_result = await asyncio.gather(
+            porkbun.check_availability(domain["domain_name"]),
+            dynadot.check_availability(domain["domain_name"]),
+            return_exceptions=True
+        )
 
-        # Cache the price in database
-        if result.available and result.price:
-            await execute("""
-                UPDATE domains
-                SET cached_price = $1, price_checked_at = NOW()
-                WHERE id = $2
-            """, float(result.price), domain_id)
+        # Process Porkbun result
+        porkbun_info = None
+        porkbun_price = None
+        if not isinstance(porkbun_result, Exception):
+            porkbun_info = ProviderPriceInfo(
+                available=porkbun_result.available,
+                price=str(porkbun_result.price) if porkbun_result.price else None,
+                renewal_price=str(porkbun_result.renewal_price) if porkbun_result.renewal_price else None,
+                error=porkbun_result.error,
+            )
+            if porkbun_result.available and porkbun_result.price:
+                porkbun_price = float(porkbun_result.price)
+        else:
+            porkbun_info = ProviderPriceInfo(
+                available=False,
+                error=str(porkbun_result),
+            )
+
+        # Process Dynadot result
+        dynadot_info = None
+        dynadot_price = None
+        if not isinstance(dynadot_result, Exception):
+            dynadot_info = ProviderPriceInfo(
+                available=dynadot_result.available,
+                price=str(dynadot_result.price) if dynadot_result.price else None,
+                renewal_price=str(dynadot_result.renewal_price) if dynadot_result.renewal_price else None,
+                error=dynadot_result.error,
+            )
+            if dynadot_result.available and dynadot_result.price:
+                dynadot_price = float(dynadot_result.price)
+        else:
+            dynadot_info = ProviderPriceInfo(
+                available=False,
+                error=str(dynadot_result),
+            )
+
+        # Determine best price and provider
+        available = (porkbun_info and porkbun_info.available) or (dynadot_info and dynadot_info.available)
+        best_price = None
+        best_provider = None
+
+        if porkbun_price and dynadot_price:
+            if porkbun_price <= dynadot_price:
+                best_price = porkbun_price
+                best_provider = "porkbun"
+            else:
+                best_price = dynadot_price
+                best_provider = "dynadot"
+        elif porkbun_price:
+            best_price = porkbun_price
+            best_provider = "porkbun"
+        elif dynadot_price:
+            best_price = dynadot_price
+            best_provider = "dynadot"
+
+        # Cache the prices in database
+        await execute("""
+            UPDATE domains
+            SET porkbun_price = $1,
+                porkbun_available = $2,
+                dynadot_price = $3,
+                dynadot_available = $4,
+                cached_price = $5,
+                selected_provider = $6,
+                price_checked_at = NOW()
+            WHERE id = $7
+        """, porkbun_price, porkbun_info.available if porkbun_info else False,
+            dynadot_price, dynadot_info.available if dynadot_info else False,
+            best_price, best_provider, domain_id)
 
         return CheckPriceResponse(
             domain_id=str(domain_id),
             domain_name=domain["domain_name"],
-            available=result.available,
-            price=str(result.price) if result.price else None,
-            renewal_price=str(result.renewal_price) if result.renewal_price else None,
-            is_promotional=result.is_promotional,
-            error=result.error,
+            available=available,
+            price=str(best_price) if best_price else None,
+            porkbun=porkbun_info,
+            dynadot=dynadot_info,
+            best_provider=best_provider,
         )
 
     finally:
         await porkbun.close()
+        await dynadot.close()
 
 
 @router.post("/purchase/{domain_id}", response_model=PurchaseSingleResponse)
-async def purchase_single_domain(domain_id: UUID):
+async def purchase_single_domain(domain_id: UUID, provider: Optional[str] = None):
     """
-    Purchase a single approved domain.
+    Purchase a single approved domain from selected provider.
 
     Used for inline table actions - purchases the domain and updates status.
     Requires the domain to be approved first.
 
     Args:
         domain_id: UUID of the domain to purchase
+        provider: Optional provider override ("porkbun" or "dynadot")
 
     Returns:
         Purchase result with success status
     """
+    PRICE_THRESHOLD = Decimal("15.00")
+
     # Get domain from database
     domain = await fetch_one("""
-        SELECT id, domain_name, workspace_id, approval_status, cached_price
+        SELECT id, domain_name, workspace_id, approval_status, cached_price,
+               porkbun_price, porkbun_available, dynadot_price, dynadot_available,
+               selected_provider
         FROM domains
         WHERE id = $1
     """, domain_id)
@@ -1449,32 +1537,49 @@ async def purchase_single_domain(domain_id: UUID):
             detail=f"Domain must be approved before purchase (current status: {domain['approval_status']})"
         )
 
-    porkbun = PorkbunService()
+    # Determine which provider to use
+    use_provider = provider or domain.get("selected_provider") or "porkbun"
+
+    if use_provider == "dynadot":
+        registrar = DynadotService()
+        registrar_name = "dynadot"
+    else:
+        registrar = PorkbunService()
+        registrar_name = "porkbun"
 
     try:
-        # Check availability first
-        check_result = await porkbun.check_availability(domain["domain_name"])
+        # Check availability first (re-verify price hasn't changed)
+        check_result = await registrar.check_availability(domain["domain_name"])
 
         if not check_result.available:
             return PurchaseSingleResponse(
                 domain_id=str(domain_id),
                 domain_name=domain["domain_name"],
                 success=False,
-                error="Domain is no longer available",
+                error=f"Domain is no longer available on {registrar_name}",
+            )
+
+        # Verify price is under threshold
+        price = check_result.price or Decimal("15")
+        if price > PRICE_THRESHOLD:
+            return PurchaseSingleResponse(
+                domain_id=str(domain_id),
+                domain_name=domain["domain_name"],
+                success=False,
+                error=f"Price ${price} exceeds threshold of ${PRICE_THRESHOLD}",
             )
 
         # Check balance
-        price = check_result.price or Decimal("15")  # Default estimate
-        balance = await porkbun.get_balance()
+        balance = await registrar.get_balance()
 
         if balance < price:
             raise HTTPException(
                 status_code=402,
-                detail=f"Insufficient balance. Need ${price}, have ${balance}. Add funds at porkbun.com"
+                detail=f"Insufficient {registrar_name} balance. Need ${price}, have ${balance}."
             )
 
         # Purchase the domain
-        result = await porkbun.purchase(domain["domain_name"])
+        result = await registrar.purchase(domain["domain_name"])
 
         if result.success:
             # Update domain status to purchased
@@ -1482,10 +1587,11 @@ async def purchase_single_domain(domain_id: UUID):
                 UPDATE domains
                 SET approval_status = 'purchased',
                     cached_price = $1,
+                    selected_provider = $2,
                     purchased_at = NOW(),
                     updated_at = NOW()
-                WHERE id = $2
-            """, float(price), domain_id)
+                WHERE id = $3
+            """, float(price), registrar_name, domain_id)
 
             return PurchaseSingleResponse(
                 domain_id=str(domain_id),
@@ -1503,7 +1609,7 @@ async def purchase_single_domain(domain_id: UUID):
             )
 
     finally:
-        await porkbun.close()
+        await registrar.close()
 
 
 @router.post("/purchase-domains", response_model=PurchaseDomainsResponse)
