@@ -50,7 +50,7 @@ async def create_emailbison_workspace(workspace_name: str) -> Optional[int]:
                 timeout=30.0
             )
 
-            if response.status_code == 200:
+            if response.status_code in (200, 201):
                 data = response.json()
                 eb_workspace_id = data.get("data", {}).get("id")
                 logger.info(f"Created EmailBison workspace '{workspace_name}' with ID {eb_workspace_id}")
