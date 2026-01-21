@@ -92,6 +92,14 @@ class DynadotService:
         """
         Parse Dynadot XML response into a dict.
 
+        Dynadot API returns XML with structure like:
+        <SearchResponse>
+          <SearchHeader><SuccessCode>0</SuccessCode></SearchHeader>
+          <SearchResults>
+            <SearchResult><DomainName>test.com</DomainName>...</SearchResult>
+          </SearchResults>
+        </SearchResponse>
+
         Args:
             xml_text: Raw XML response
 
@@ -99,21 +107,37 @@ class DynadotService:
             Parsed response as dict
         """
         try:
+            # Log raw response for debugging (truncated)
+            logger.debug(f"Dynadot raw XML (first 500 chars): {xml_text[:500]}")
+
             root = ET.fromstring(xml_text)
             result = {}
 
-            # Get response header
-            header = root.find('.//ResponseHeader')
-            if header is not None:
-                result['status'] = header.findtext('Status', '')
-                result['error'] = header.findtext('Error', '')
-                result['success_code'] = header.findtext('SuccessCode', '')
+            # Get response header - try multiple paths
+            # Dynadot uses SearchHeader, RegisterHeader, etc. based on command
+            header = root.find('.//SearchHeader')
+            if header is None:
+                header = root.find('.//ResponseHeader')
+            if header is None:
+                header = root.find('.//RegisterHeader')
 
-            # Get search results
-            search_response = root.find('.//SearchResponse')
-            if search_response is not None:
+            if header is not None:
+                # SuccessCode: 0 = success, -1 = error
+                success_code = header.findtext('SuccessCode', '-1')
+                result['status'] = 'success' if success_code == '0' else 'error'
+                result['error'] = header.findtext('Error', '')
+                result['success_code'] = success_code
+            else:
+                # Check if root element indicates success
+                if root.tag in ('SearchResponse', 'RegisterResponse', 'AccountResponse'):
+                    result['status'] = 'success'
+
+            # Get search results - try multiple paths
+            # SearchResults container holds individual SearchResult items
+            search_results_container = root.find('.//SearchResults')
+            if search_results_container is not None:
                 results = []
-                for item in search_response.findall('.//SearchResult'):
+                for item in search_results_container.findall('SearchResult'):
                     domain_result = {
                         'domain': item.findtext('DomainName', ''),
                         'available': item.findtext('Available', 'no').lower() == 'yes',
@@ -121,7 +145,21 @@ class DynadotService:
                         'currency': item.findtext('Currency', 'USD'),
                     }
                     results.append(domain_result)
+                    logger.debug(f"Dynadot parsed result: {domain_result}")
                 result['search_results'] = results
+            else:
+                # Fallback: try direct SearchResult under root
+                results = []
+                for item in root.findall('.//SearchResult'):
+                    domain_result = {
+                        'domain': item.findtext('DomainName', ''),
+                        'available': item.findtext('Available', 'no').lower() == 'yes',
+                        'price': item.findtext('Price', ''),
+                        'currency': item.findtext('Currency', 'USD'),
+                    }
+                    results.append(domain_result)
+                if results:
+                    result['search_results'] = results
 
             # Get registration result
             reg_response = root.find('.//RegisterResponse')
@@ -132,10 +170,12 @@ class DynadotService:
                     'expiration': reg_response.findtext('Expiration', ''),
                 }
 
+            logger.debug(f"Dynadot parsed result: {result}")
             return result
 
         except ET.ParseError as e:
             logger.error(f"Failed to parse Dynadot XML: {e}")
+            logger.error(f"Raw XML was: {xml_text[:500]}")
             return {'status': 'error', 'error': str(e)}
 
     async def ping(self) -> bool:
@@ -197,7 +237,17 @@ class DynadotService:
         Returns:
             DomainCheckResult with availability and pricing
         """
+        # Check if API key is configured
+        if not self.api_key:
+            logger.warning("Dynadot API key not configured")
+            return DomainCheckResult(
+                domain=domain,
+                available=False,
+                error="Dynadot API key not configured",
+            )
+
         try:
+            logger.info(f"Dynadot checking availability for: {domain}")
             response = await self.client.get(
                 self.base_url,
                 params={
@@ -208,16 +258,20 @@ class DynadotService:
             )
             response.raise_for_status()
 
+            logger.debug(f"Dynadot response status: {response.status_code}")
             data = self._parse_xml_response(response.text)
 
             if data.get("status", "").lower() == "success":
                 results = data.get("search_results", [])
+                logger.info(f"Dynadot found {len(results)} results for {domain}")
+
                 if results:
                     result = results[0]
                     is_available = result.get("available", False)
 
                     if is_available:
                         price_str = result.get("price", "0")
+                        logger.info(f"Dynadot: {domain} is available at ${price_str}")
                         try:
                             price = Decimal(price_str.replace(",", ""))
                         except:
@@ -230,15 +284,20 @@ class DynadotService:
                             renewal_price=price,  # Dynadot doesn't distinguish
                         )
                     else:
+                        logger.info(f"Dynadot: {domain} is NOT available")
                         return DomainCheckResult(
                             domain=domain,
                             available=False,
                         )
+                else:
+                    logger.warning(f"Dynadot: No search results returned for {domain}")
 
+            error_msg = data.get("error", "No results returned")
+            logger.warning(f"Dynadot error for {domain}: {error_msg}")
             return DomainCheckResult(
                 domain=domain,
                 available=False,
-                error=data.get("error", "Unknown error"),
+                error=error_msg,
             )
 
         except httpx.HTTPStatusError as e:

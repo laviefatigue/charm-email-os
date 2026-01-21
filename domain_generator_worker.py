@@ -49,6 +49,11 @@ PROJECT_PATH = os.path.dirname(os.path.abspath(__file__))
 # Skill file path - skill content is embedded in prompt because -p mode doesn't auto-load skills
 SKILL_FILE = os.path.join(PROJECT_PATH, ".claude", "skills", "generate-domain-suggestions.md")
 
+# MCP config selection: use local config for development, Docker config for container
+# Set DOMAIN_WORKER_ENV=local for local development
+IS_LOCAL = os.getenv("DOMAIN_WORKER_ENV", "docker") == "local"
+MCP_CONFIG_FILE = "domain_mcp_config_local.json" if IS_LOCAL else "domain_mcp_config.json"
+
 
 def load_skill_content() -> str:
     """Load skill instructions to embed in prompt.
@@ -209,7 +214,7 @@ Execute these steps:
         "claude",
         "-p", prompt,
         "--dangerously-skip-permissions",  # Allow MCP tool calls without confirmation
-        "--mcp-config", os.path.join(PROJECT_PATH, "domain_mcp_config.json"),
+        "--mcp-config", os.path.join(PROJECT_PATH, MCP_CONFIG_FILE),
     ]
 
     # Add profile selection if not using default
@@ -275,6 +280,8 @@ def run_worker():
     access tokens using the refresh token (valid ~30 days).
     """
     logger.info("Domain Generation Worker starting...")
+    logger.info(f"Environment: {'local' if IS_LOCAL else 'docker'}")
+    logger.info(f"MCP config: {MCP_CONFIG_FILE}")
     logger.info(f"Database: {DB_CONFIG['host']}:{DB_CONFIG['port']}/{DB_CONFIG['database']}")
     logger.info(f"Poll interval: {POLL_INTERVAL} seconds")
     logger.info(f"Claude account: {CLAUDE_ACCOUNT}")
