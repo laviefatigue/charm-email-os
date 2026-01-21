@@ -876,6 +876,44 @@ async def deny_domain_candidate(domain_id: UUID):
     )
 
 
+@router.delete("/clear-candidates/{client_id}")
+async def clear_domain_candidates(client_id: UUID):
+    """
+    Clear all domain candidates for a client (pending, approved, rejected).
+
+    Used for starting fresh with domain generation.
+    Does NOT delete purchased/active domains.
+    """
+    # Verify client exists
+    client = await fetch_one("SELECT id, name FROM clients WHERE id = $1", client_id)
+    if not client:
+        raise HTTPException(status_code=404, detail="Client not found")
+
+    # Delete domain candidates (not purchased/active)
+    result = await execute("""
+        DELETE FROM domains
+        WHERE client_id = $1
+          AND status IN ('pending', 'pending_approval', 'approved', 'rejected')
+    """, client_id)
+
+    # Extract count from result like "DELETE 10"
+    deleted_count = 0
+    if result and result.startswith("DELETE"):
+        try:
+            deleted_count = int(result.split()[1])
+        except (IndexError, ValueError):
+            pass
+
+    logger.info(f"Cleared {deleted_count} domain candidates for client {client['name']} ({client_id})")
+
+    return {
+        "client_id": str(client_id),
+        "client_name": client["name"],
+        "deleted_count": deleted_count,
+        "message": f"Cleared {deleted_count} domain candidates for {client['name']}"
+    }
+
+
 @router.get("/approved/{client_id}")
 async def get_approved_domains(client_id: UUID):
     """
