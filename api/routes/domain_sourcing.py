@@ -884,19 +884,23 @@ async def clear_domain_candidates(client_id: UUID):
     Used for starting fresh with domain generation.
     Does NOT delete purchased/active domains.
     """
-    # Verify client exists
-    client = await fetch_one("SELECT id, name FROM clients WHERE id = $1", client_id)
+    # Verify client exists and get workspace_id
+    client = await fetch_one("SELECT id, name, workspace_id FROM clients WHERE id = $1", client_id)
     if not client:
         raise HTTPException(status_code=404, detail="Client not found")
+    if not client["workspace_id"]:
+        raise HTTPException(status_code=400, detail="Client not linked to a workspace")
+
+    workspace_id = client["workspace_id"]
 
     # Delete domain candidates (not purchased/active)
-    # Note: domains table uses approval_status column
+    # Note: domains table uses workspace_id and approval_status column
     result = await execute("""
         DELETE FROM domains
-        WHERE client_id = $1
+        WHERE workspace_id = $1
           AND (approval_status IN ('pending', 'approved', 'denied')
                OR approval_status IS NULL)
-    """, client_id)
+    """, workspace_id)
 
     # Extract count from result like "DELETE 10"
     deleted_count = 0
