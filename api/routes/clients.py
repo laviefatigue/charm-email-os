@@ -7,6 +7,8 @@ from typing import Optional
 from uuid import UUID
 import json
 import logging
+import httpx
+import os
 
 from database import fetch_all, fetch_one, execute
 from models.client import (
@@ -16,6 +18,78 @@ from models.client import (
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+# EmailBison API configuration
+EMAILBISON_API_URL = os.getenv("EMAILBISON_API_URL", "https://spellcast.hirecharm.com")
+EMAILBISON_API_KEY = os.getenv("EMAILBISON_API_KEY", "")
+
+
+async def create_emailbison_workspace(workspace_name: str) -> Optional[int]:
+    """
+    Create a new workspace in EmailBison and return its ID.
+
+    Args:
+        workspace_name: Name for the new workspace
+
+    Returns:
+        EmailBison workspace ID if successful, None otherwise
+    """
+    if not EMAILBISON_API_KEY:
+        logger.warning("EMAILBISON_API_KEY not configured, skipping workspace creation")
+        return None
+
+    try:
+        async with httpx.AsyncClient() as http_client:
+            response = await http_client.post(
+                f"{EMAILBISON_API_URL}/api/workspaces",
+                headers={
+                    "Authorization": f"Bearer {EMAILBISON_API_KEY}",
+                    "Content-Type": "application/json",
+                },
+                json={"name": workspace_name},
+                timeout=30.0
+            )
+
+            if response.status_code == 200:
+                data = response.json()
+                eb_workspace_id = data.get("data", {}).get("id")
+                logger.info(f"Created EmailBison workspace '{workspace_name}' with ID {eb_workspace_id}")
+                return eb_workspace_id
+            else:
+                logger.error(f"Failed to create EmailBison workspace: {response.status_code} - {response.text}")
+                return None
+
+    except Exception as e:
+        logger.error(f"Error creating EmailBison workspace: {e}")
+        return None
+
+
+async def create_local_workspace(workspace_name: str, emailbison_workspace_id: int) -> Optional[UUID]:
+    """
+    Create a workspace record in the local database.
+
+    Args:
+        workspace_name: Name for the workspace
+        emailbison_workspace_id: EmailBison workspace ID
+
+    Returns:
+        Local workspace UUID if successful, None otherwise
+    """
+    try:
+        result = await fetch_one("""
+            INSERT INTO workspaces (workspace_name, emailbison_workspace_id, automation_enabled)
+            VALUES ($1, $2, true)
+            RETURNING id
+        """, workspace_name, emailbison_workspace_id)
+
+        if result:
+            logger.info(f"Created local workspace '{workspace_name}' with ID {result['id']}")
+            return result["id"]
+        return None
+
+    except Exception as e:
+        logger.error(f"Error creating local workspace: {e}")
+        return None
 
 
 @router.get("", response_model=ClientList)
@@ -104,11 +178,40 @@ async def list_clients(
 
 @router.post("", response_model=Client)
 async def create_client(client: ClientCreate):
-    """Create a new client"""
+    """
+    Create a new client.
+
+    If workspace_id is not provided, automatically creates:
+    1. A new workspace in EmailBison with the client's name
+    2. A corresponding workspace record in the local database
+    3. Links the client to this workspace
+    """
     # Convert onboarding_data to JSON if provided
     onboarding_json = None
     if client.onboarding_data:
         onboarding_json = json.dumps(client.onboarding_data.model_dump(by_alias=True))
+
+    # Auto-create workspace if not provided
+    workspace_id = client.workspace_id
+    workspace_name = None
+
+    if not workspace_id:
+        logger.info(f"Auto-creating workspace for client '{client.name}'")
+
+        # 1. Create workspace in EmailBison
+        eb_workspace_id = await create_emailbison_workspace(client.name)
+
+        if eb_workspace_id:
+            # 2. Create local workspace record
+            workspace_id = await create_local_workspace(client.name, eb_workspace_id)
+
+            if workspace_id:
+                workspace_name = client.name
+                logger.info(f"Auto-created workspace '{client.name}' (local: {workspace_id}, EmailBison: {eb_workspace_id})")
+            else:
+                logger.warning(f"Failed to create local workspace for '{client.name}', client will be created without workspace")
+        else:
+            logger.warning(f"Failed to create EmailBison workspace for '{client.name}', client will be created without workspace")
 
     query = """
         INSERT INTO clients (name, workspace_id, logo_url, onboarding_data,
@@ -121,7 +224,7 @@ async def create_client(client: ClientCreate):
     row = await fetch_one(
         query,
         client.name,
-        client.workspace_id,
+        workspace_id,
         client.logo_url,
         onboarding_json,
         client.contact_name,
@@ -134,9 +237,8 @@ async def create_client(client: ClientCreate):
     if not row:
         raise HTTPException(status_code=500, detail="Failed to create client")
 
-    # Get workspace name if linked
-    workspace_name = None
-    if row["workspace_id"]:
+    # Get workspace name if linked (in case workspace_id was provided)
+    if row["workspace_id"] and not workspace_name:
         ws = await fetch_one("SELECT workspace_name FROM workspaces WHERE id = $1", row["workspace_id"])
         workspace_name = ws["workspace_name"] if ws else None
 
@@ -287,9 +389,59 @@ async def delete_client(client_id: UUID):
     return {"message": "Client deleted successfully"}
 
 
+@router.post("/{client_id}/create-workspace", response_model=Client)
+async def create_workspace_for_client(client_id: UUID):
+    """
+    Create a new workspace for an existing client.
+
+    This endpoint:
+    1. Creates a workspace in EmailBison with the client's name
+    2. Creates a corresponding local workspace record
+    3. Links the client to the new workspace
+
+    Use this for clients that were created without a workspace.
+    """
+    # Get client
+    client = await fetch_one("SELECT id, name, workspace_id FROM clients WHERE id = $1", client_id)
+    if not client:
+        raise HTTPException(status_code=404, detail="Client not found")
+
+    if client["workspace_id"]:
+        raise HTTPException(status_code=400, detail="Client already has a workspace")
+
+    client_name = client["name"]
+
+    # 1. Create workspace in EmailBison
+    eb_workspace_id = await create_emailbison_workspace(client_name)
+    if not eb_workspace_id:
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to create workspace in EmailBison. Check API key configuration."
+        )
+
+    # 2. Create local workspace record
+    workspace_id = await create_local_workspace(client_name, eb_workspace_id)
+    if not workspace_id:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Created EmailBison workspace (ID: {eb_workspace_id}) but failed to create local record"
+        )
+
+    # 3. Link client to workspace
+    await execute(
+        "UPDATE clients SET workspace_id = $1, updated_at = NOW() WHERE id = $2",
+        workspace_id,
+        client_id
+    )
+
+    logger.info(f"Created and linked workspace '{client_name}' for client {client_id} (local: {workspace_id}, EmailBison: {eb_workspace_id})")
+
+    return await get_client(client_id)
+
+
 @router.post("/{client_id}/link-workspace", response_model=Client)
 async def link_workspace(client_id: UUID, request: LinkWorkspaceRequest):
-    """Link a client to an OwnRBL workspace"""
+    """Link a client to an existing OwnRBL workspace"""
     # Verify workspace exists
     workspace = await fetch_one("SELECT id FROM workspaces WHERE id = $1", request.workspace_id)
     if not workspace:
