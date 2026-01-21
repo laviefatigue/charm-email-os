@@ -12,42 +12,11 @@ from database import fetch_one, fetch_all, execute
 import logging
 import os
 
-# Prefect integration for EmailBison push
-# Configure CF Access headers for Prefect API calls through Cloudflare Access
-def _configure_prefect_cf_access():
-    """Configure httpx to include Cloudflare Access headers for Prefect API calls."""
-    cf_client_id = os.getenv("CF_ACCESS_CLIENT_ID", "")
-    cf_client_secret = os.getenv("CF_ACCESS_CLIENT_SECRET", "")
+# EmailBison API configuration
+import httpx
 
-    if cf_client_id and cf_client_secret:
-        import httpx
-        _original_async_init = httpx.AsyncClient.__init__
-        _original_sync_init = httpx.Client.__init__
-
-        def _patched_async_init(self, *args, **kwargs):
-            headers = dict(kwargs.get('headers', {}) or {})
-            headers['CF-Access-Client-Id'] = cf_client_id
-            headers['CF-Access-Client-Secret'] = cf_client_secret
-            kwargs['headers'] = headers
-            _original_async_init(self, *args, **kwargs)
-
-        def _patched_sync_init(self, *args, **kwargs):
-            headers = dict(kwargs.get('headers', {}) or {})
-            headers['CF-Access-Client-Id'] = cf_client_id
-            headers['CF-Access-Client-Secret'] = cf_client_secret
-            kwargs['headers'] = headers
-            _original_sync_init(self, *args, **kwargs)
-
-        httpx.AsyncClient.__init__ = _patched_async_init
-        httpx.Client.__init__ = _patched_sync_init
-
-_configure_prefect_cf_access()
-
-try:
-    from prefect.deployments import run_deployment
-    PREFECT_AVAILABLE = True
-except ImportError:
-    PREFECT_AVAILABLE = False
+EMAILBISON_API_URL = os.getenv("EMAILBISON_API_URL", "https://spellcast.hirecharm.com")
+EMAILBISON_API_KEY = os.getenv("EMAILBISON_API_KEY", "")
 
 from models.strategy import (
     StrategyJobCreate,
@@ -722,18 +691,19 @@ async def get_client_revisions(client_id: UUID, processed: Optional[bool] = None
 @router.post("/suggestions/{suggestion_id}/push-to-emailbison")
 async def push_to_emailbison(suggestion_id: UUID):
     """
-    Queue an approved suggestion to be pushed to EmailBison via Prefect.
+    Push an approved suggestion to EmailBison to create a campaign draft.
 
-    This endpoint marks the suggestion for export and triggers a Prefect flow
-    that will create the campaign in the client's EmailBison workspace.
-
-    Only approved suggestions can be pushed.
+    This endpoint:
+    1. Validates the suggestion is approved and not already pushed
+    2. Creates a campaign in EmailBison with the suggestion content
+    3. Updates the suggestion status to 'sent'
     """
-    # Get suggestion with client info
+    # Get suggestion with client and workspace info
     suggestion = await fetch_one("""
-        SELECT s.*, c.workspace_id, c.name as client_name
+        SELECT s.*, c.name as client_name, w.emailbison_workspace_id
         FROM strategy_suggestions s
         JOIN clients c ON c.id = s.client_id
+        LEFT JOIN workspaces w ON w.id = c.workspace_id
         WHERE s.id = $1
     """, suggestion_id)
 
@@ -752,57 +722,64 @@ async def push_to_emailbison(suggestion_id: UUID):
             detail="Suggestion has already been pushed to EmailBison"
         )
 
-    # Check if Prefect is available and configured
-    prefect_api_url = os.getenv("PREFECT_API_URL", "")
+    # Check EmailBison API configuration
+    if not EMAILBISON_API_KEY:
+        raise HTTPException(
+            status_code=500,
+            detail="EmailBison API key not configured"
+        )
 
-    if PREFECT_AVAILABLE and prefect_api_url:
-        # Trigger Prefect flow for EmailBison push
-        try:
-            flow_run = await run_deployment(
-                name="push-to-emailbison/push-to-emailbison",
-                parameters={
-                    "suggestion_id": str(suggestion_id),
+    # Use edited version if available, otherwise original
+    campaign_name = suggestion.get("edited_subject_line") or suggestion["subject_line"]
+
+    # Create campaign in EmailBison
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(
+                f"{EMAILBISON_API_URL}/api/campaigns",
+                headers={
+                    "Authorization": f"Bearer {EMAILBISON_API_KEY}",
+                    "Content-Type": "application/json",
+                    "Accept": "application/json",
                 },
-                timeout=0,  # Don't wait for completion
+                json={
+                    "name": campaign_name,
+                    "type": "outbound",
+                },
             )
 
-            logger.info(f"Triggered Prefect flow for suggestion {suggestion_id}, flow_run_id={flow_run.id}")
+            if response.status_code not in (200, 201):
+                logger.error(f"EmailBison API error: {response.status_code} - {response.text}")
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"EmailBison API error: {response.status_code}"
+                )
 
-            return {
-                "suggestion_id": str(suggestion_id),
-                "client_id": str(suggestion["client_id"]),
-                "client_name": suggestion["client_name"],
-                "workspace_id": str(suggestion["workspace_id"]) if suggestion.get("workspace_id") else None,
-                "flow_run_id": str(flow_run.id),
-                "status": "queued",
-                "message": "Push to EmailBison queued via Prefect"
-            }
-        except Exception as e:
-            logger.error(f"Failed to trigger Prefect flow for suggestion {suggestion_id}: {e}")
-            raise HTTPException(
-                status_code=500,
-                detail=f"Failed to queue EmailBison push: {str(e)}"
-            )
-    else:
-        # Fallback: Mark as pushed locally (for testing without Prefect)
-        logger.warning(f"Prefect not available/configured - marking suggestion {suggestion_id} as pushed locally")
+            campaign_data = response.json()
+            campaign_id = campaign_data.get("data", {}).get("id") or campaign_data.get("id")
 
-        await execute("""
-            UPDATE strategy_suggestions
-            SET pushed_to_emailbison = TRUE, pushed_at = NOW()
-            WHERE id = $1
-        """, suggestion_id)
+    except httpx.RequestError as e:
+        logger.error(f"Failed to connect to EmailBison: {e}")
+        raise HTTPException(
+            status_code=502,
+            detail=f"Failed to connect to EmailBison: {str(e)}"
+        )
 
-        # Get the content to push (use edited version if available)
-        subject_line = suggestion.get("edited_subject_line") or suggestion["subject_line"]
+    # Update suggestion status to 'sent'
+    await execute("""
+        UPDATE strategy_suggestions
+        SET status = 'sent', pushed_to_emailbison = TRUE, pushed_at = NOW()
+        WHERE id = $1
+    """, suggestion_id)
 
-        return {
-            "suggestion_id": str(suggestion_id),
-            "client_id": str(suggestion["client_id"]),
-            "client_name": suggestion["client_name"],
-            "workspace_id": str(suggestion["workspace_id"]) if suggestion.get("workspace_id") else None,
-            "subject_line": subject_line,
-            "campaign_type": suggestion.get("campaign_type"),
-            "status": "marked_locally",
-            "message": "Prefect not configured - marked as pushed locally (no campaign created in EmailBison)"
-        }
+    logger.info(f"Pushed suggestion {suggestion_id} to EmailBison as campaign {campaign_id}")
+
+    return {
+        "suggestion_id": str(suggestion_id),
+        "client_id": str(suggestion["client_id"]),
+        "client_name": suggestion["client_name"],
+        "emailbison_campaign_id": campaign_id,
+        "campaign_name": campaign_name,
+        "status": "sent",
+        "message": "Campaign created in EmailBison"
+    }
