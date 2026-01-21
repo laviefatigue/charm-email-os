@@ -179,7 +179,6 @@ export function DomainCandidatesTable({
         return <Badge variant="outline" className="text-yellow-600 border-yellow-600">Pending</Badge>;
       case 'approved':
         return <Badge variant="outline" className="text-blue-600 border-blue-600">Approved</Badge>;
-      case 'denied':
       case 'rejected':
         return <Badge variant="outline" className="text-red-600 border-red-600">Rejected</Badge>;
       case 'purchased':
@@ -310,7 +309,7 @@ export function DomainCandidatesTable({
     }
 
     // Rejected: Just show dash
-    if (status === 'denied' || status === 'rejected') {
+    if (status === 'rejected') {
       return <span className="text-sm text-muted-foreground">-</span>;
     }
 
