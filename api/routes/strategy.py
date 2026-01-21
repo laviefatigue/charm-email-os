@@ -1224,6 +1224,7 @@ async def push_sequence_to_emailbison(sequence_id: UUID):
 
     created_campaign_id = None
     steps_completed = []
+    sender_ids = []
 
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
@@ -1300,6 +1301,73 @@ async def push_sequence_to_emailbison(sequence_id: UUID):
 
             steps_completed.append("sequence_steps")
 
+            # Step 4: Fetch available senders from workspace
+            try:
+                senders_response = await client.get(
+                    f"{EMAILBISON_API_URL}/api/sender-emails",
+                    headers={
+                        "Authorization": f"Bearer {EMAILBISON_API_KEY}",
+                    },
+                    params={"status": "Connected"}
+                )
+                if senders_response.status_code == 200:
+                    available_senders = senders_response.json().get("data", [])
+                    # Select up to 10 connected senders
+                    sender_ids = [s["id"] for s in available_senders[:10] if s.get("status") == "Connected"]
+                    logger.info(f"Found {len(sender_ids)} connected senders in workspace")
+            except Exception as e:
+                logger.warning(f"Failed to fetch senders: {e}")
+
+            # Step 5: Attach senders to campaign
+            if sender_ids:
+                try:
+                    attach_response = await client.post(
+                        f"{EMAILBISON_API_URL}/api/campaigns/{created_campaign_id}/attach-sender-emails",
+                        headers={
+                            "Authorization": f"Bearer {EMAILBISON_API_KEY}",
+                            "Content-Type": "application/json",
+                        },
+                        json={"sender_email_ids": sender_ids}
+                    )
+                    if attach_response.status_code in (200, 201):
+                        steps_completed.append("senders_attached")
+                        logger.info(f"Attached {len(sender_ids)} senders to campaign {created_campaign_id}")
+                    else:
+                        logger.warning(f"Failed to attach senders: {attach_response.text}")
+                except Exception as e:
+                    logger.warning(f"Failed to attach senders: {e}")
+            else:
+                logger.warning(f"No senders available to attach to campaign {created_campaign_id}")
+
+            # Step 6: Configure sending schedule (M-F 8am-5pm)
+            try:
+                schedule_response = await client.post(
+                    f"{EMAILBISON_API_URL}/api/campaigns/{created_campaign_id}/schedule",
+                    headers={
+                        "Authorization": f"Bearer {EMAILBISON_API_KEY}",
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "monday": True,
+                        "tuesday": True,
+                        "wednesday": True,
+                        "thursday": True,
+                        "friday": True,
+                        "saturday": False,
+                        "sunday": False,
+                        "start_time": "08:00",
+                        "end_time": "17:00",
+                        "timezone": "America/New_York"
+                    }
+                )
+                if schedule_response.status_code in (200, 201):
+                    steps_completed.append("schedule_configured")
+                    logger.info(f"Configured M-F 8am-5pm schedule for campaign {created_campaign_id}")
+                else:
+                    logger.warning(f"Failed to configure schedule: {schedule_response.text}")
+            except Exception as e:
+                logger.warning(f"Failed to configure schedule: {e}")
+
     except httpx.RequestError as e:
         logger.error(f"Failed to connect to EmailBison: {e}")
         raise HTTPException(
@@ -1324,7 +1392,10 @@ async def push_sequence_to_emailbison(sequence_id: UUID):
         "emailbison_campaign_id": created_campaign_id,
         "campaign_name": campaign_name,
         "emails_pushed": len(sequence_data),
+        "senders_attached": len(sender_ids) if sender_ids else 0,
+        "schedule_configured": "schedule_configured" in steps_completed,
         "steps_completed": steps_completed,
-        "status": "sent",
-        "message": f"4-email campaign created in EmailBison"
+        "status": "draft",
+        "message": "4-email campaign created in EmailBison as draft",
+        "next_steps": ["Add leads list", "Review and activate"]
     }
