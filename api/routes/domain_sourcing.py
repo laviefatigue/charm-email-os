@@ -488,7 +488,7 @@ async def generate_domains_for_client(client_id: UUID, request: GenerateForClien
     workspace_id = client["workspace_id"]
     client_name = client["name"]
 
-    # Parse onboarding data
+    # Parse onboarding data - check both simplified and comprehensive sources
     onboarding = {}
     if client["onboarding_data"]:
         if isinstance(client["onboarding_data"], str):
@@ -496,17 +496,39 @@ async def generate_domains_for_client(client_id: UUID, request: GenerateForClien
         else:
             onboarding = client["onboarding_data"]
 
+    # If no simplified onboarding, check for comprehensive submission
+    if not onboarding:
+        comprehensive = await fetch_one("""
+            SELECT company_name, website, core_product, target_customer,
+                   customer_voice, tone_style
+            FROM client_onboarding_submissions
+            WHERE client_id = $1 AND submission_status = 'submitted'
+            ORDER BY created_at DESC LIMIT 1
+        """, client_id)
+        if comprehensive:
+            onboarding = {
+                "industry": "Technology",  # Default, could be enhanced
+                "product": comprehensive.get("core_product") or "",
+                "notes": comprehensive.get("target_customer") or "",
+                "primaryDomain": comprehensive.get("website") or "",
+            }
+
     industry = onboarding.get("industry", "Technology")
     product = onboarding.get("product", "")
     notes = onboarding.get("notes", "")
     primary_domain = onboarding.get("primaryDomain", "")
 
-    # Extract keywords from product description
-    brand_keywords = []
+    # Extract client brand keyword from name (e.g., "Selery" -> "selery")
+    # This ensures generated domains include the client's brand identity
+    brand_keyword = client_name.lower().replace(" ", "").replace("-", "")
+
+    # Extract additional keywords from product description
+    brand_keywords = [brand_keyword]  # Always include client name as primary keyword
     if product:
         # Simple keyword extraction - split by common delimiters
         words = product.replace(",", " ").replace(".", " ").split()
-        brand_keywords = [w.lower() for w in words if len(w) > 3][:10]
+        additional_keywords = [w.lower() for w in words if len(w) > 3 and w.lower() != brand_keyword][:5]
+        brand_keywords.extend(additional_keywords)
 
     # Avoid words from primary domain (to avoid similar domains)
     avoid_words = []
@@ -679,15 +701,34 @@ async def get_pending_domain_candidates(
                     else:
                         onboarding = client["onboarding_data"]
 
+                # If no simplified onboarding, check for comprehensive submission
+                if not onboarding:
+                    comprehensive = await fetch_one("""
+                        SELECT core_product, target_customer
+                        FROM client_onboarding_submissions
+                        WHERE client_id = $1 AND submission_status = 'submitted'
+                        ORDER BY created_at DESC LIMIT 1
+                    """, client_id)
+                    if comprehensive:
+                        onboarding = {
+                            "industry": "Technology",
+                            "product": comprehensive.get("core_product") or "",
+                            "notes": comprehensive.get("target_customer") or "",
+                        }
+
                 industry = onboarding.get("industry", "Technology")
                 product = onboarding.get("product", "")
                 notes = onboarding.get("notes", "")
 
-                # Extract keywords
-                brand_keywords = []
+                # Extract client brand keyword from name (e.g., "Selery" -> "selery")
+                brand_keyword = client["name"].lower().replace(" ", "").replace("-", "")
+
+                # Extract additional keywords from product description
+                brand_keywords = [brand_keyword]  # Always include client name
                 if product:
                     words = product.replace(",", " ").replace(".", " ").split()
-                    brand_keywords = [w.lower() for w in words if len(w) > 3][:10]
+                    additional_keywords = [w.lower() for w in words if len(w) > 3 and w.lower() != brand_keyword][:5]
+                    brand_keywords.extend(additional_keywords)
 
                 # Default TLD preferences
                 tld_prefs = [
@@ -1043,7 +1084,19 @@ async def can_generate_domains(client_id: UUID):
         raise HTTPException(status_code=404, detail="Client not found")
 
     workspace_id = client["workspace_id"]
-    has_onboarding = client["onboarding_complete"] or bool(client.get("onboarding_data"))
+
+    # Check for comprehensive onboarding submission (external form)
+    comprehensive_submission = await fetch_one("""
+        SELECT id FROM client_onboarding_submissions
+        WHERE client_id = $1 AND submission_status = 'submitted'
+        ORDER BY created_at DESC LIMIT 1
+    """, client_id)
+
+    has_onboarding = (
+        client["onboarding_complete"] or
+        bool(client.get("onboarding_data")) or
+        bool(comprehensive_submission)
+    )
 
     # Check for existing domains
     domain_count = 0
