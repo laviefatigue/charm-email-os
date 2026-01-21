@@ -1145,3 +1145,312 @@ async def can_generate_domains(client_id: UUID):
             else "No generation source available - complete onboarding or add existing domains"
         )
     }
+
+
+# =============================================================================
+# STANDALONE ENDPOINTS (No Hypertide Required)
+# =============================================================================
+
+from services.porkbun import PorkbunService, DomainCheckResult
+from services.domain_generator import generate_domain_suggestions, DomainSuggestion
+from pydantic import BaseModel
+import json
+
+
+class SimpleGenerateResponse(BaseModel):
+    """Response from simple domain generation."""
+    client_id: str
+    client_name: str
+    suggestions: list[dict]
+    count: int
+    saved_count: int
+
+
+class AvailabilityCheckRequest(BaseModel):
+    """Request to check domain availability."""
+    domains: list[str]
+
+
+class AvailabilityCheckResponse(BaseModel):
+    """Response from availability check."""
+    results: list[dict]
+    available_count: int
+    total_checked: int
+
+
+class PurchaseDomainsRequest(BaseModel):
+    """Request to purchase domains."""
+    domain_ids: list[UUID]
+
+
+class PurchaseDomainsResponse(BaseModel):
+    """Response from domain purchase."""
+    purchases: list[dict]
+    successful_count: int
+    failed_count: int
+    total_cost: str
+
+
+class BalanceResponse(BaseModel):
+    """Porkbun account balance response."""
+    balance: str
+    currency: str = "USD"
+
+
+@router.post("/generate-simple/{client_id}", response_model=SimpleGenerateResponse)
+async def generate_domains_simple(
+    client_id: UUID,
+    count: int = 10,
+    tlds: Optional[str] = None,
+):
+    """
+    Generate domain suggestions using pattern-based generation.
+
+    No AI, no Hypertide - just deterministic patterns based on client name.
+
+    Args:
+        client_id: Client UUID
+        count: Number of suggestions to generate (default 10)
+        tlds: Comma-separated TLDs (default ".com,.io,.co")
+
+    Returns:
+        List of domain suggestions saved to database
+    """
+    # Get client with workspace
+    client = await fetch_one("""
+        SELECT c.id, c.name, c.workspace_id
+        FROM clients c
+        WHERE c.id = $1
+    """, client_id)
+
+    if not client:
+        raise HTTPException(status_code=404, detail="Client not found")
+
+    if not client["workspace_id"]:
+        raise HTTPException(status_code=400, detail="Client not linked to a workspace")
+
+    workspace_id = client["workspace_id"]
+    client_name = client["name"]
+
+    # Extract brand keyword from client name
+    brand = client_name.lower().replace(" ", "").replace("-", "")
+
+    # Parse TLDs if provided
+    tld_list = None
+    if tlds:
+        tld_list = [t.strip() for t in tlds.split(",") if t.strip()]
+        # Ensure TLDs start with dot
+        tld_list = [t if t.startswith(".") else f".{t}" for t in tld_list]
+
+    # Generate suggestions
+    suggestions = generate_domain_suggestions(
+        brand_keyword=brand,
+        count=count,
+        tlds=tld_list,
+    )
+
+    # Save to database as pending
+    saved_count = 0
+    for s in suggestions:
+        try:
+            # Check if domain already exists for this workspace
+            existing = await fetch_one("""
+                SELECT id FROM domains WHERE workspace_id = $1 AND domain_name = $2
+            """, workspace_id, s.domain)
+
+            if not existing:
+                await execute("""
+                    INSERT INTO domains (workspace_id, domain_name, rationale, legitimacy_score, approval_status)
+                    VALUES ($1, $2, $3, $4, 'pending')
+                """, workspace_id, s.domain, s.rationale, s.legitimacy_score)
+                saved_count += 1
+        except Exception as e:
+            logger.warning(f"Failed to save domain {s.domain}: {e}")
+
+    return SimpleGenerateResponse(
+        client_id=str(client_id),
+        client_name=client_name,
+        suggestions=[s.model_dump() for s in suggestions],
+        count=len(suggestions),
+        saved_count=saved_count,
+    )
+
+
+@router.post("/check-availability", response_model=AvailabilityCheckResponse)
+async def check_domain_availability(request: AvailabilityCheckRequest):
+    """
+    Check availability and pricing for domains via Porkbun API.
+
+    No Hypertide required - direct API calls to Porkbun.
+
+    Args:
+        domains: List of domain names to check
+
+    Returns:
+        Availability and pricing for each domain
+    """
+    if not request.domains:
+        raise HTTPException(status_code=400, detail="No domains provided")
+
+    if len(request.domains) > 50:
+        raise HTTPException(status_code=400, detail="Maximum 50 domains per request")
+
+    porkbun = PorkbunService()
+
+    try:
+        results = await porkbun.check_bulk(request.domains)
+
+        # Convert to response format
+        response_results = []
+        available_count = 0
+        for r in results:
+            result_dict = {
+                "domain": r.domain,
+                "available": r.available,
+                "price": str(r.price) if r.price else None,
+                "renewal_price": str(r.renewal_price) if r.renewal_price else None,
+                "is_promotional": r.is_promotional,
+                "regular_price": str(r.regular_price) if r.regular_price else None,
+                "error": r.error,
+            }
+            response_results.append(result_dict)
+            if r.available:
+                available_count += 1
+
+        return AvailabilityCheckResponse(
+            results=response_results,
+            available_count=available_count,
+            total_checked=len(results),
+        )
+
+    finally:
+        await porkbun.close()
+
+
+@router.get("/porkbun/balance", response_model=BalanceResponse)
+async def get_porkbun_balance():
+    """
+    Get current Porkbun account balance.
+
+    Useful for checking if there are sufficient funds before purchasing.
+    """
+    porkbun = PorkbunService()
+
+    try:
+        balance = await porkbun.get_balance()
+        return BalanceResponse(balance=str(balance))
+    finally:
+        await porkbun.close()
+
+
+@router.post("/purchase-domains", response_model=PurchaseDomainsResponse)
+async def purchase_approved_domains(request: PurchaseDomainsRequest):
+    """
+    Purchase approved domains via Porkbun API.
+
+    Only purchases domains that have been approved (approval_status='approved').
+    Returns 402 Payment Required if insufficient balance.
+
+    Args:
+        domain_ids: List of domain UUIDs to purchase
+
+    Returns:
+        Purchase results for each domain
+    """
+    if not request.domain_ids:
+        raise HTTPException(status_code=400, detail="No domain IDs provided")
+
+    porkbun = PorkbunService()
+
+    try:
+        # Get approved domains from database
+        domains_to_purchase = []
+        for domain_id in request.domain_ids:
+            domain = await fetch_one("""
+                SELECT id, domain_name, workspace_id, approval_status
+                FROM domains
+                WHERE id = $1
+            """, domain_id)
+
+            if not domain:
+                raise HTTPException(status_code=404, detail=f"Domain {domain_id} not found")
+
+            if domain["approval_status"] != "approved":
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Domain {domain['domain_name']} is not approved (status: {domain['approval_status']})"
+                )
+
+            domains_to_purchase.append(domain)
+
+        if not domains_to_purchase:
+            raise HTTPException(status_code=400, detail="No valid domains to purchase")
+
+        # Check availability and get total cost
+        domain_names = [d["domain_name"] for d in domains_to_purchase]
+        availability_results = await porkbun.check_bulk(domain_names)
+
+        total_cost = Decimal("0")
+        available_domains = []
+        for result in availability_results:
+            if result.available and result.price:
+                total_cost += result.price
+                available_domains.append(result)
+            elif not result.available:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Domain {result.domain} is no longer available"
+                )
+
+        # Check balance
+        balance = await porkbun.get_balance()
+        if balance < total_cost:
+            raise HTTPException(
+                status_code=402,
+                detail=f"Insufficient balance. Need ${total_cost}, have ${balance}. Add funds at porkbun.com"
+            )
+
+        # Purchase each domain
+        purchases = []
+        successful_count = 0
+        failed_count = 0
+        actual_cost = Decimal("0")
+
+        for domain in domains_to_purchase:
+            result = await porkbun.purchase(domain["domain_name"])
+
+            purchase_dict = {
+                "domain_id": str(domain["id"]),
+                "domain": domain["domain_name"],
+                "success": result.success,
+                "order_id": result.order_id,
+                "error": result.error,
+            }
+            purchases.append(purchase_dict)
+
+            if result.success:
+                successful_count += 1
+                # Find the price from availability check
+                for avail in availability_results:
+                    if avail.domain == domain["domain_name"] and avail.price:
+                        actual_cost += avail.price
+                        break
+
+                # Update domain status in database
+                await execute("""
+                    UPDATE domains
+                    SET approval_status = 'purchased', updated_at = NOW()
+                    WHERE id = $1
+                """, domain["id"])
+            else:
+                failed_count += 1
+
+        return PurchaseDomainsResponse(
+            purchases=purchases,
+            successful_count=successful_count,
+            failed_count=failed_count,
+            total_cost=str(actual_cost),
+        )
+
+    finally:
+        await porkbun.close()
