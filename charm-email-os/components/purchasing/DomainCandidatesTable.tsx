@@ -301,10 +301,10 @@ export function DomainCandidatesTable({
       );
     }
 
-    // Pending: Show Approve/Deny
+    // Pending: Show Approve/Deny (centered)
     if (status === 'pending' || status === 'pending_approval') {
       return (
-        <div className="flex gap-2">
+        <div className="flex gap-2 justify-center">
           <Button
             size="sm"
             variant="outline"
@@ -327,44 +327,19 @@ export function DomainCandidatesTable({
       );
     }
 
-    // Approved with price under threshold: Show individual purchase OR checkbox selection
-    if (status === 'approved' && priceInfo?.available) {
-      const priceNum = parseFloat(priceInfo.price);
-      if (!isNaN(priceNum) && priceNum <= PRICE_THRESHOLD) {
-        return (
-          <Button
-            size="sm"
-            variant="default"
-            className="h-7 bg-green-600 hover:bg-green-700"
-            onClick={() => handlePurchase(domain.id)}
-          >
-            <ShoppingCart className="h-3 w-3 mr-1" />
-            Buy
-          </Button>
-        );
-      }
-      // Over threshold - can still purchase but highlight
-      return (
-        <Button
-          size="sm"
-          variant="outline"
-          className="h-7 text-orange-600 hover:bg-orange-50"
-          onClick={() => handlePurchase(domain.id)}
-        >
-          <ShoppingCart className="h-3 w-3 mr-1" />
-          Buy
-        </Button>
-      );
+    // Approved: Use bulk purchase via checkbox selection (no individual buy button)
+    if (status === 'approved') {
+      return <span className="text-sm text-muted-foreground text-center block">-</span>;
     }
 
-    // Rejected: Just show dash
+    // Rejected: Just show dash (centered)
     if (status === 'rejected') {
-      return <span className="text-sm text-muted-foreground">-</span>;
+      return <span className="text-sm text-muted-foreground block text-center">-</span>;
     }
 
-    // Purchased: Show completed
+    // Purchased: Show completed (centered)
     if (status === 'purchased') {
-      return <span className="text-sm text-green-600">Owned</span>;
+      return <span className="text-sm text-green-600 block text-center">Owned</span>;
     }
 
     return null;
@@ -425,7 +400,7 @@ export function DomainCandidatesTable({
             <TableHead className="w-[60px] text-center">TLD</TableHead>
             <TableHead className="w-[90px] text-center">Status</TableHead>
             <TableHead className="w-[150px]">Price</TableHead>
-            <TableHead className="w-[180px] text-right">Actions</TableHead>
+            <TableHead className="w-[180px] text-center">Actions</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -451,7 +426,7 @@ export function DomainCandidatesTable({
                 </TableCell>
                 <TableCell className="w-[90px] text-center">{getStatusBadge(domain.status)}</TableCell>
                 <TableCell className="w-[150px]">{renderPriceCell(domain)}</TableCell>
-                <TableCell className="w-[180px] text-right">{renderActions(domain)}</TableCell>
+                <TableCell className="w-[180px] text-center">{renderActions(domain)}</TableCell>
               </TableRow>
             );
           })}
