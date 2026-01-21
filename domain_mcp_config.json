@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "domain-generator": {
+      "command": "python3",
+      "args": ["/app/domain_mcp/server.py"]
+    }
+  }
+}

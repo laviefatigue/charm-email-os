@@ -500,6 +500,26 @@ export interface ClientJobsResponse {
   total: number;
 }
 
+// Inline Action Types
+export interface CheckPriceResponse {
+  domainId: string;
+  domainName: string;
+  available: boolean;
+  price: string | null;
+  renewalPrice: string | null;
+  isPromotional: boolean;
+  error: string | null;
+}
+
+export interface PurchaseSingleResponse {
+  domainId: string;
+  domainName: string;
+  success: boolean;
+  orderId: string | null;
+  price: string | null;
+  error: string | null;
+}
+
 export const domainSourcingApi = {
   /**
    * Generate unique domain suggestions for a client using their onboarding data.
@@ -614,6 +634,30 @@ export const domainSourcingApi = {
       `/api/domain-sourcing/jobs/client/${clientId}?limit=${limit}`
     );
     return toCamelCase<ClientJobsResponse>(response);
+  },
+
+  /**
+   * Check price for a single domain (inline action).
+   * Caches the price in the database for display in the table.
+   */
+  async checkPrice(domainId: string): Promise<CheckPriceResponse> {
+    const response = await fetchApi<Record<string, unknown>>(
+      `/api/domain-sourcing/check-price/${domainId}`,
+      { method: 'POST' }
+    );
+    return toCamelCase<CheckPriceResponse>(response);
+  },
+
+  /**
+   * Purchase a single approved domain (inline action).
+   * Returns 402 if insufficient balance.
+   */
+  async purchaseSingle(domainId: string): Promise<PurchaseSingleResponse> {
+    const response = await fetchApi<Record<string, unknown>>(
+      `/api/domain-sourcing/purchase/${domainId}`,
+      { method: 'POST' }
+    );
+    return toCamelCase<PurchaseSingleResponse>(response);
   },
 };
 

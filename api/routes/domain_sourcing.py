@@ -1343,6 +1343,169 @@ async def get_porkbun_balance():
         await porkbun.close()
 
 
+# =============================================================================
+# SINGLE DOMAIN ACTIONS (Inline Table Operations)
+# =============================================================================
+
+class CheckPriceResponse(BaseModel):
+    """Response from single domain price check."""
+    domain_id: str
+    domain_name: str
+    available: bool
+    price: Optional[str] = None
+    renewal_price: Optional[str] = None
+    is_promotional: bool = False
+    error: Optional[str] = None
+
+
+class PurchaseSingleResponse(BaseModel):
+    """Response from single domain purchase."""
+    domain_id: str
+    domain_name: str
+    success: bool
+    order_id: Optional[str] = None
+    price: Optional[str] = None
+    error: Optional[str] = None
+
+
+@router.post("/check-price/{domain_id}", response_model=CheckPriceResponse)
+async def check_domain_price(domain_id: UUID):
+    """
+    Check price for a single domain and cache the result.
+
+    Used for inline table actions - checks availability and pricing,
+    then stores the price in the database for display.
+
+    Args:
+        domain_id: UUID of the domain to check
+
+    Returns:
+        Availability and pricing information
+    """
+    # Get domain from database
+    domain = await fetch_one("""
+        SELECT id, domain_name, workspace_id, approval_status
+        FROM domains
+        WHERE id = $1
+    """, domain_id)
+
+    if not domain:
+        raise HTTPException(status_code=404, detail="Domain not found")
+
+    porkbun = PorkbunService()
+
+    try:
+        result = await porkbun.check_availability(domain["domain_name"])
+
+        # Cache the price in database
+        if result.available and result.price:
+            await execute("""
+                UPDATE domains
+                SET cached_price = $1, price_checked_at = NOW()
+                WHERE id = $2
+            """, float(result.price), domain_id)
+
+        return CheckPriceResponse(
+            domain_id=str(domain_id),
+            domain_name=domain["domain_name"],
+            available=result.available,
+            price=str(result.price) if result.price else None,
+            renewal_price=str(result.renewal_price) if result.renewal_price else None,
+            is_promotional=result.is_promotional,
+            error=result.error,
+        )
+
+    finally:
+        await porkbun.close()
+
+
+@router.post("/purchase/{domain_id}", response_model=PurchaseSingleResponse)
+async def purchase_single_domain(domain_id: UUID):
+    """
+    Purchase a single approved domain.
+
+    Used for inline table actions - purchases the domain and updates status.
+    Requires the domain to be approved first.
+
+    Args:
+        domain_id: UUID of the domain to purchase
+
+    Returns:
+        Purchase result with success status
+    """
+    # Get domain from database
+    domain = await fetch_one("""
+        SELECT id, domain_name, workspace_id, approval_status, cached_price
+        FROM domains
+        WHERE id = $1
+    """, domain_id)
+
+    if not domain:
+        raise HTTPException(status_code=404, detail="Domain not found")
+
+    if domain["approval_status"] != "approved":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Domain must be approved before purchase (current status: {domain['approval_status']})"
+        )
+
+    porkbun = PorkbunService()
+
+    try:
+        # Check availability first
+        check_result = await porkbun.check_availability(domain["domain_name"])
+
+        if not check_result.available:
+            return PurchaseSingleResponse(
+                domain_id=str(domain_id),
+                domain_name=domain["domain_name"],
+                success=False,
+                error="Domain is no longer available",
+            )
+
+        # Check balance
+        price = check_result.price or Decimal("15")  # Default estimate
+        balance = await porkbun.get_balance()
+
+        if balance < price:
+            raise HTTPException(
+                status_code=402,
+                detail=f"Insufficient balance. Need ${price}, have ${balance}. Add funds at porkbun.com"
+            )
+
+        # Purchase the domain
+        result = await porkbun.purchase(domain["domain_name"])
+
+        if result.success:
+            # Update domain status to purchased
+            await execute("""
+                UPDATE domains
+                SET approval_status = 'purchased',
+                    cached_price = $1,
+                    purchased_at = NOW(),
+                    updated_at = NOW()
+                WHERE id = $2
+            """, float(price), domain_id)
+
+            return PurchaseSingleResponse(
+                domain_id=str(domain_id),
+                domain_name=domain["domain_name"],
+                success=True,
+                order_id=result.order_id,
+                price=str(price),
+            )
+        else:
+            return PurchaseSingleResponse(
+                domain_id=str(domain_id),
+                domain_name=domain["domain_name"],
+                success=False,
+                error=result.error,
+            )
+
+    finally:
+        await porkbun.close()
+
+
 @router.post("/purchase-domains", response_model=PurchaseDomainsResponse)
 async def purchase_approved_domains(request: PurchaseDomainsRequest):
     """

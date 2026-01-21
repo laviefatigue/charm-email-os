@@ -26,6 +26,9 @@ DB_CONFIG = {
     "password": os.getenv("POSTGRES_PASSWORD", ""),
 }
 
+# STRICT TLD POLICY: Only these TLDs are allowed
+ALLOWED_TLDS = [".com", ".co", ".info"]
+
 server = Server("domain-generator")
 
 
@@ -101,7 +104,10 @@ async def list_tools():
             name="save_domain_suggestion",
             description="""Save a single domain suggestion for human review.
             Each domain can be independently approved or denied by the user.
-            Call this once per domain - don't batch them.""",
+            Call this once per domain - don't batch them.
+
+            STRICT TLD POLICY: Only .com, .co, and .info domains are allowed.
+            Domains with other TLDs (.io, .ai, .xyz, etc.) will be REJECTED.""",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -245,6 +251,18 @@ async def call_tool(name: str, arguments: dict):
         rationale = arguments["rationale"]
         legitimacy_score = float(arguments["legitimacy_score"])
 
+        # STRICT TLD VALIDATION
+        # Extract TLD and validate against allowed list
+        parts = domain_name.rsplit(".", 1)
+        base_name = parts[0] if len(parts) > 1 else domain_name
+        tld = "." + parts[1] if len(parts) > 1 else ".com"
+
+        if tld not in ALLOWED_TLDS:
+            return [TextContent(
+                type="text",
+                text=f"❌ REJECTED: TLD '{tld}' not allowed. Only use: {', '.join(ALLOWED_TLDS)}"
+            )]
+
         conn = get_db()
         cur = conn.cursor(cursor_factory=RealDictCursor)
 
@@ -273,10 +291,7 @@ async def call_tool(name: str, arguments: dict):
             if existing:
                 return [TextContent(type="text", text=f"⚠️ Domain {domain_name} already exists, skipping")]
 
-            # Extract base_name and TLD
-            parts = domain_name.rsplit(".", 1)
-            base_name = parts[0] if len(parts) > 1 else domain_name
-            tld = parts[1] if len(parts) > 1 else "com"
+            # TLD already extracted above for validation
 
             # Insert new domain
             domain_id = str(uuid.uuid4())

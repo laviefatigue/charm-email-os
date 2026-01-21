@@ -20,7 +20,7 @@ import {
   InboxEditModal,
   DomainInboxTree,
 } from '@/components/inboxes';
-import { DomainSourcingWizard, InboxPurchaseWizard } from '@/components/purchasing';
+import { DomainSourcingWizard, InboxPurchaseWizard, DomainCandidatesTable } from '@/components/purchasing';
 import { useClientStore, useInfrastructureStore } from '@/lib/stores';
 import { domainSourcingApi, type CanGenerateResponse } from '@/lib/api';
 import type { Domain, Inbox } from '@/lib/types';
@@ -66,9 +66,9 @@ export default function InboxesPage() {
     (d) => d.clientId === clientId && (d.status === 'purchased' || d.status === 'active' || d.status === 'warming' || d.status === 'flagged' || d.status === 'dead')
   ), [allDomains, clientId]);
 
-  // Purchase domains: pending approval or approved (domains to review/buy)
+  // Purchase domains: pending, approved, or denied (domains to review/buy - denied stays visible)
   const purchaseDomains = useMemo(() => allDomains.filter(
-    (d) => d.clientId === clientId && (d.status === 'pending' || d.status === 'pending_approval' || d.status === 'approved')
+    (d) => d.clientId === clientId && (d.status === 'pending' || d.status === 'pending_approval' || d.status === 'approved' || d.status === 'denied' || d.status === 'rejected')
   ), [allDomains, clientId]);
 
   // Approved domains ready for inbox creation (purchased or active)
@@ -315,7 +315,7 @@ export default function InboxesPage() {
                 )}
               </div>
 
-              {/* Domain Candidates List */}
+              {/* Domain Candidates Table with Inline Actions */}
               {purchaseDomains.length > 0 && (
                 <Card>
                   <CardHeader>
@@ -326,7 +326,7 @@ export default function InboxesPage() {
                           Domain Candidates
                         </CardTitle>
                         <CardDescription className="mt-1">
-                          Review and approve domains, then check pricing and purchase
+                          Approve or deny domains, check pricing, and purchase directly from this table
                         </CardDescription>
                       </div>
                       <Button
@@ -341,50 +341,11 @@ export default function InboxesPage() {
                     </div>
                   </CardHeader>
                   <CardContent>
-                    <div className="space-y-2">
-                      {purchaseDomains.map((domain) => (
-                        <div
-                          key={domain.id}
-                          className="flex items-center justify-between p-3 border rounded-lg hover:bg-muted/50"
-                        >
-                          <div className="flex items-center gap-3">
-                            <Globe className="h-4 w-4 text-muted-foreground" />
-                            <span className="font-medium">{domain.domain || domain.domainName}</span>
-                            <span className={`text-xs px-2 py-0.5 rounded-full ${
-                              domain.status === 'approved'
-                                ? 'bg-blue-100 text-blue-700'
-                                : 'bg-yellow-100 text-yellow-700'
-                            }`}>
-                              {domain.status === 'approved' ? 'Approved' : 'Pending'}
-                            </span>
-                          </div>
-                          <div className="flex items-center gap-2">
-                            {(domain.status === 'pending' || domain.status === 'pending_approval') && (
-                              <>
-                                <Button
-                                  size="sm"
-                                  variant="outline"
-                                  onClick={() => approveDomain(domain.id)}
-                                >
-                                  <CheckCheck className="h-3 w-3 mr-1" />
-                                  Approve
-                                </Button>
-                              </>
-                            )}
-                            {domain.status === 'approved' && (
-                              <Button
-                                size="sm"
-                                variant="default"
-                                onClick={() => setShowDomainSourcingWizard(true)}
-                              >
-                                <ShoppingCart className="h-3 w-3 mr-1" />
-                                Check Price
-                              </Button>
-                            )}
-                          </div>
-                        </div>
-                      ))}
-                    </div>
+                    <DomainCandidatesTable
+                      domains={purchaseDomains}
+                      clientId={clientId}
+                      onDomainUpdate={() => fetchDomainsByClient(clientId)}
+                    />
                   </CardContent>
                 </Card>
               )}
