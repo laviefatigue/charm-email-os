@@ -1,7 +1,7 @@
 ---
 title: Charm Email OS Documentation
 created: 2026-01-16
-updated: 2026-01-20
+updated: 2026-01-21
 tags: [hub, index]
 ---
 
@@ -40,7 +40,8 @@ Charm Email OS manages the full lifecycle of email outreach campaigns:
 
 ### Features
 - [[client-profile]] - Client information management
-- [[domain-generation]] - Domain sourcing and approval
+- [[domain-generation]] - AI-powered domain name generation
+- [[domain-purchasing]] - Registrar integration (Porkbun working, Dynadot planned)
 - [[strategy-generation]] - AI-powered campaign generation (Working)
 
 ### Database

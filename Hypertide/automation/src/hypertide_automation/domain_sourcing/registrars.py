@@ -202,17 +202,18 @@ class PorkbunRegistrar(Registrar):
     """
 
     registrar_type = RegistrarType.PORKBUN
-    api_base_url = "https://porkbun.com/api/json/v3"
+    api_base_url = "https://api.porkbun.com/api/json/v3"
 
     async def check_availability(self, domain: str) -> RegistrarResult:
         """
         Check domain availability via Porkbun API.
 
-        Endpoint: POST /domain/checkAvailability
+        Endpoint: POST /domain/checkDomain/{domain}
+        Rate limit: 1 check per 10 seconds
         """
         try:
             response = await self.client.post(
-                f"{self.api_base_url}/domain/checkAvailability/{domain}",
+                f"{self.api_base_url}/domain/checkDomain/{domain}",
                 json={
                     "apikey": self.api_key,
                     "secretapikey": self.api_secret,
@@ -222,29 +223,38 @@ class PorkbunRegistrar(Registrar):
             data = response.json()
 
             if data.get("status") == "SUCCESS":
-                # Domain is available
-                # Price is in format "9.73" (string)
-                price_str = data.get("pricing", {}).get("registration", "0")
-                renewal_str = data.get("pricing", {}).get("renewal", "0")
+                # Response data is nested under 'response' key
+                resp = data.get("response", {})
 
-                # Check if it's a promotional price
-                regular_str = data.get("pricing", {}).get("regular", None)
-                is_promo = regular_str is not None and regular_str != price_str
+                # Check availability
+                is_available = resp.get("avail") == "yes"
+
+                # Pricing
+                price_str = resp.get("price", "0")
+                regular_str = resp.get("regularPrice", price_str)
+                is_promo = resp.get("firstYearPromo") == "yes"
+
+                # Renewal from nested additional
+                renewal_str = price_str
+                additional = resp.get("additional", {})
+                if "renewal" in additional:
+                    renewal_str = additional["renewal"].get("price", price_str)
 
                 return RegistrarResult(
                     registrar=self.registrar_type,
-                    is_available=True,
+                    is_available=is_available,
                     registration_price=Decimal(price_str),
                     renewal_price=Decimal(renewal_str),
                     is_promotional=is_promo,
-                    regular_price=Decimal(regular_str) if regular_str else None,
+                    regular_price=Decimal(regular_str) if is_promo else None,
                     whois_privacy_included=True,  # Porkbun includes free WHOIS privacy
                 )
             else:
-                # Domain is not available
+                # API error
                 return RegistrarResult(
                     registrar=self.registrar_type,
                     is_available=False,
+                    error=data.get("message"),
                 )
 
         except httpx.HTTPStatusError as e:

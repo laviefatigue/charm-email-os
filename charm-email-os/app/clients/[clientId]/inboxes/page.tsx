@@ -20,9 +20,9 @@ import {
   InboxEditModal,
   DomainInboxTree,
 } from '@/components/inboxes';
-import { DomainSourcingWizard, InboxPurchaseWizard, DomainCandidatesTable } from '@/components/purchasing';
+import { InboxPurchaseWizard, DomainCandidatesTable } from '@/components/purchasing';
 import { useClientStore, useInfrastructureStore } from '@/lib/stores';
-import { domainSourcingApi, type CanGenerateResponse } from '@/lib/api';
+import { domainSourcingApi, type CanGenerateResponse, type GenerateForClientResponse } from '@/lib/api';
 import type { Domain, Inbox } from '@/lib/types';
 
 export default function InboxesPage() {
@@ -66,9 +66,9 @@ export default function InboxesPage() {
     (d) => d.clientId === clientId && (d.status === 'purchased' || d.status === 'active' || d.status === 'warming' || d.status === 'flagged' || d.status === 'dead')
   ), [allDomains, clientId]);
 
-  // Purchase domains: pending, approved, or denied (domains to review/buy - denied stays visible)
+  // Purchase domains: pending, approved, or rejected (domains to review/buy - rejected stays visible)
   const purchaseDomains = useMemo(() => allDomains.filter(
-    (d) => d.clientId === clientId && (d.status === 'pending' || d.status === 'pending_approval' || d.status === 'approved' || d.status === 'denied' || d.status === 'rejected')
+    (d) => d.clientId === clientId && (d.status === 'pending' || d.status === 'pending_approval' || d.status === 'approved' || d.status === 'rejected')
   ), [allDomains, clientId]);
 
   // Approved domains ready for inbox creation (purchased or active)
@@ -84,9 +84,9 @@ export default function InboxesPage() {
   const [editingDomain, setEditingDomain] = useState<Domain | null>(null);
   const [editingInbox, setEditingInbox] = useState<Inbox | null>(null);
   const [activeTab, setActiveTab] = useState<string>('inventory');
-  const [showDomainSourcingWizard, setShowDomainSourcingWizard] = useState(false);
   const [showInboxPurchaseWizard, setShowInboxPurchaseWizard] = useState(false);
   const [canGenerateInfo, setCanGenerateInfo] = useState<CanGenerateResponse | null>(null);
+  const [isGenerating, setIsGenerating] = useState(false);
 
   // Fetch can-generate info for the client
   useEffect(() => {
@@ -164,6 +164,33 @@ export default function InboxesPage() {
     }
     const generated = await generateDomainsFromOnboarding(clientId, client.onboardingData);
     toast.success(`Generated ${generated.length} domain suggestions`);
+  };
+
+  // Direct inline domain generation - triggers API which queues job for containerized Claude Code
+  const handleGenerateDomainsInline = async () => {
+    if (!canGenerateInfo?.canGenerate) {
+      toast.error(canGenerateInfo?.message || 'Cannot generate domains');
+      return;
+    }
+    setIsGenerating(true);
+    try {
+      const result = await domainSourcingApi.generateForClient(clientId, {
+        count: 10,
+        preferred_tlds: [
+          { tld: 'com', priority: 1, max_price: 15.0 },
+          { tld: 'co', priority: 2, max_price: 15.0 },
+          { tld: 'info', priority: 3, max_price: 15.0 },
+        ],
+      });
+      toast.success(`Generated ${result.generatedDomains.length} domain suggestions`);
+      // Refresh domains list to show new candidates
+      fetchDomainsByClient(clientId);
+    } catch (error) {
+      console.error('Failed to generate domains:', error);
+      toast.error('Failed to generate domain suggestions');
+    } finally {
+      setIsGenerating(false);
+    }
   };
 
   const handleGenerateInboxes = async (domainId: string) => {
@@ -332,11 +359,15 @@ export default function InboxesPage() {
                       <Button
                         size="sm"
                         variant="default"
-                        disabled={!canGenerateInfo?.canGenerate}
-                        onClick={() => setShowDomainSourcingWizard(true)}
+                        disabled={!canGenerateInfo?.canGenerate || isGenerating}
+                        onClick={handleGenerateDomainsInline}
                       >
-                        <Sparkles className="h-4 w-4 mr-1" />
-                        Generate More
+                        {isGenerating ? (
+                          <Loader2 className="h-4 w-4 mr-1 animate-spin" />
+                        ) : (
+                          <Sparkles className="h-4 w-4 mr-1" />
+                        )}
+                        {isGenerating ? 'Generating...' : 'Generate More'}
                       </Button>
                     </div>
                   </CardHeader>
@@ -361,11 +392,15 @@ export default function InboxesPage() {
                     />
                     <div className="flex justify-center mt-4">
                       <Button
-                        disabled={!canGenerateInfo?.canGenerate}
-                        onClick={() => setShowDomainSourcingWizard(true)}
+                        disabled={!canGenerateInfo?.canGenerate || isGenerating}
+                        onClick={handleGenerateDomainsInline}
                       >
-                        <Sparkles className="h-4 w-4 mr-2" />
-                        Start Domain Sourcing
+                        {isGenerating ? (
+                          <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                        ) : (
+                          <Sparkles className="h-4 w-4 mr-2" />
+                        )}
+                        {isGenerating ? 'Generating...' : 'Generate Domains'}
                       </Button>
                     </div>
                   </CardContent>
@@ -468,21 +503,6 @@ export default function InboxesPage() {
           open={editingInbox !== null}
           onOpenChange={(open) => !open && setEditingInbox(null)}
         />
-
-        {/* Domain Sourcing Wizard */}
-        {client && (
-          <DomainSourcingWizard
-            open={showDomainSourcingWizard}
-            onOpenChange={setShowDomainSourcingWizard}
-            clientId={clientId}
-            clientName={client.name}
-            onComplete={(purchasedDomains) => {
-              toast.success(`Purchased ${purchasedDomains.length} domains!`);
-              // Refresh domains list
-              fetchDomainsByClient(clientId);
-            }}
-          />
-        )}
 
         {/* Inbox Purchase Wizard */}
         {client && (

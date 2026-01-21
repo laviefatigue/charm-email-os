@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useMemo } from 'react';
 import {
   Table,
   TableBody,
@@ -11,9 +11,13 @@ import {
 } from '@/components/ui/table';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
+import { Checkbox } from '@/components/ui/checkbox';
 import { Loader2, Check, X, DollarSign, ShoppingCart, RefreshCw } from 'lucide-react';
 import { domainSourcingApi } from '@/lib/api';
+import { toast } from 'sonner';
 import type { Domain } from '@/lib/types';
+
+const PRICE_THRESHOLD = 15.0;
 
 interface DomainCandidatesTableProps {
   domains: Domain[];
@@ -35,9 +39,51 @@ export function DomainCandidatesTable({
   const [actionStates, setActionStates] = useState<Record<string, ActionState>>({});
   // Track prices after check
   const [prices, setPrices] = useState<Record<string, { price: string; available: boolean }>>({});
+  // Track selected domains for bulk purchase
+  const [selectedDomains, setSelectedDomains] = useState<Set<string>>(new Set());
+  // Track bulk purchase loading
+  const [isBulkPurchasing, setIsBulkPurchasing] = useState(false);
 
   const setDomainState = useCallback((domainId: string, state: ActionState) => {
     setActionStates((prev) => ({ ...prev, [domainId]: state }));
+  }, []);
+
+  // Get domains that qualify for purchase (approved, available, under threshold)
+  const qualifiedDomains = useMemo(() => {
+    return domains.filter((d) => {
+      if (d.status !== 'approved') return false;
+      const priceInfo = prices[d.id];
+      if (!priceInfo || !priceInfo.available) return false;
+      const priceNum = parseFloat(priceInfo.price);
+      return !isNaN(priceNum) && priceNum <= PRICE_THRESHOLD;
+    });
+  }, [domains, prices]);
+
+  // Get selected domains that are actually qualified
+  const selectedQualified = useMemo(() => {
+    return qualifiedDomains.filter((d) => selectedDomains.has(d.id));
+  }, [qualifiedDomains, selectedDomains]);
+
+  const handleSelectAll = useCallback(() => {
+    if (selectedQualified.length === qualifiedDomains.length) {
+      // Deselect all
+      setSelectedDomains(new Set());
+    } else {
+      // Select all qualified
+      setSelectedDomains(new Set(qualifiedDomains.map((d) => d.id)));
+    }
+  }, [qualifiedDomains, selectedQualified.length]);
+
+  const handleToggleSelect = useCallback((domainId: string) => {
+    setSelectedDomains((prev) => {
+      const next = new Set(prev);
+      if (next.has(domainId)) {
+        next.delete(domainId);
+      } else {
+        next.add(domainId);
+      }
+      return next;
+    });
   }, []);
 
   const handleApprove = useCallback(async (domainId: string) => {
@@ -72,12 +118,11 @@ export function DomainCandidatesTable({
         },
       }));
       setDomainState(domainId, { loading: false, error: null });
-      onDomainUpdate?.();
     } catch (err: unknown) {
       const errorMsg = err instanceof Error ? err.message : 'Failed to check price';
       setDomainState(domainId, { loading: false, error: errorMsg });
     }
-  }, [onDomainUpdate, setDomainState]);
+  }, [setDomainState]);
 
   const handlePurchase = useCallback(async (domainId: string) => {
     setDomainState(domainId, { loading: true, error: null });
@@ -94,6 +139,39 @@ export function DomainCandidatesTable({
     }
   }, [onDomainUpdate, setDomainState]);
 
+  const handleBulkPurchase = useCallback(async () => {
+    if (selectedQualified.length === 0) return;
+
+    setIsBulkPurchasing(true);
+    let successCount = 0;
+    let failCount = 0;
+
+    for (const domain of selectedQualified) {
+      try {
+        const result = await domainSourcingApi.purchaseSingle(domain.id);
+        if (result.success) {
+          successCount++;
+        } else {
+          failCount++;
+        }
+      } catch {
+        failCount++;
+      }
+    }
+
+    setIsBulkPurchasing(false);
+    setSelectedDomains(new Set());
+
+    if (successCount > 0) {
+      toast.success(`Purchased ${successCount} domain${successCount > 1 ? 's' : ''}`);
+    }
+    if (failCount > 0) {
+      toast.error(`Failed to purchase ${failCount} domain${failCount > 1 ? 's' : ''}`);
+    }
+
+    onDomainUpdate?.();
+  }, [selectedQualified, onDomainUpdate]);
+
   const getStatusBadge = (status: string) => {
     switch (status) {
       case 'pending':
@@ -103,12 +181,52 @@ export function DomainCandidatesTable({
         return <Badge variant="outline" className="text-blue-600 border-blue-600">Approved</Badge>;
       case 'denied':
       case 'rejected':
-        return <Badge variant="outline" className="text-red-600 border-red-600">Denied</Badge>;
+        return <Badge variant="outline" className="text-red-600 border-red-600">Rejected</Badge>;
       case 'purchased':
         return <Badge variant="outline" className="text-green-600 border-green-600">Purchased</Badge>;
       default:
         return <Badge variant="outline">{status}</Badge>;
     }
+  };
+
+  const renderPriceCell = (domain: Domain) => {
+    const priceInfo = prices[domain.id];
+    const state = actionStates[domain.id];
+
+    if (state?.loading) {
+      return <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />;
+    }
+
+    if (priceInfo) {
+      if (!priceInfo.available) {
+        return <span className="text-red-500 text-sm">Unavailable</span>;
+      }
+      const priceNum = parseFloat(priceInfo.price);
+      const isUnderThreshold = !isNaN(priceNum) && priceNum <= PRICE_THRESHOLD;
+      return (
+        <span className={`font-medium ${isUnderThreshold ? 'text-green-600' : 'text-orange-500'}`}>
+          ${priceInfo.price}
+          {!isUnderThreshold && <span className="text-xs ml-1">(over ${PRICE_THRESHOLD})</span>}
+        </span>
+      );
+    }
+
+    // Show check price button for approved domains
+    if (domain.status === 'approved') {
+      return (
+        <Button
+          size="sm"
+          variant="ghost"
+          className="h-7 px-2 text-xs"
+          onClick={() => handleCheckPrice(domain.id)}
+        >
+          <DollarSign className="h-3 w-3 mr-1" />
+          Check
+        </Button>
+      );
+    }
+
+    return <span className="text-muted-foreground">-</span>;
   };
 
   const renderActions = (domain: Domain) => {
@@ -142,7 +260,7 @@ export function DomainCandidatesTable({
           <Button
             size="sm"
             variant="outline"
-            className="text-green-600 hover:text-green-700 hover:bg-green-50"
+            className="h-7 text-green-600 hover:text-green-700 hover:bg-green-50"
             onClick={() => handleApprove(domain.id)}
           >
             <Check className="h-3 w-3 mr-1" />
@@ -151,7 +269,7 @@ export function DomainCandidatesTable({
           <Button
             size="sm"
             variant="outline"
-            className="text-red-600 hover:text-red-700 hover:bg-red-50"
+            className="h-7 text-red-600 hover:text-red-700 hover:bg-red-50"
             onClick={() => handleDeny(domain.id)}
           >
             <X className="h-3 w-3 mr-1" />
@@ -161,49 +279,55 @@ export function DomainCandidatesTable({
       );
     }
 
-    // Approved without price: Show Check Price
-    if (status === 'approved' && !priceInfo) {
+    // Approved with price under threshold: Show individual purchase OR checkbox selection
+    if (status === 'approved' && priceInfo?.available) {
+      const priceNum = parseFloat(priceInfo.price);
+      if (!isNaN(priceNum) && priceNum <= PRICE_THRESHOLD) {
+        return (
+          <Button
+            size="sm"
+            variant="default"
+            className="h-7 bg-green-600 hover:bg-green-700"
+            onClick={() => handlePurchase(domain.id)}
+          >
+            <ShoppingCart className="h-3 w-3 mr-1" />
+            Buy
+          </Button>
+        );
+      }
+      // Over threshold - can still purchase but highlight
       return (
         <Button
           size="sm"
           variant="outline"
-          onClick={() => handleCheckPrice(domain.id)}
-        >
-          <DollarSign className="h-3 w-3 mr-1" />
-          Check Price
-        </Button>
-      );
-    }
-
-    // Approved with price: Show Purchase button
-    if (status === 'approved' && priceInfo) {
-      if (!priceInfo.available) {
-        return <span className="text-sm text-red-500">Not Available</span>;
-      }
-      return (
-        <Button
-          size="sm"
-          variant="default"
-          className="bg-green-600 hover:bg-green-700"
+          className="h-7 text-orange-600 hover:bg-orange-50"
           onClick={() => handlePurchase(domain.id)}
         >
           <ShoppingCart className="h-3 w-3 mr-1" />
-          Purchase ${priceInfo.price}
+          Buy
         </Button>
       );
     }
 
-    // Denied: Just show status
+    // Rejected: Just show dash
     if (status === 'denied' || status === 'rejected') {
       return <span className="text-sm text-muted-foreground">-</span>;
     }
 
     // Purchased: Show completed
     if (status === 'purchased') {
-      return <span className="text-sm text-green-600">Completed</span>;
+      return <span className="text-sm text-green-600">Owned</span>;
     }
 
     return null;
+  };
+
+  const isQualified = (domain: Domain) => {
+    if (domain.status !== 'approved') return false;
+    const priceInfo = prices[domain.id];
+    if (!priceInfo || !priceInfo.available) return false;
+    const priceNum = parseFloat(priceInfo.price);
+    return !isNaN(priceNum) && priceNum <= PRICE_THRESHOLD;
   };
 
   if (domains.length === 0) {
@@ -215,46 +339,76 @@ export function DomainCandidatesTable({
   }
 
   return (
-    <Table>
-      <TableHeader>
-        <TableRow>
-          <TableHead>Domain</TableHead>
-          <TableHead>TLD</TableHead>
-          <TableHead>Status</TableHead>
-          <TableHead>Price</TableHead>
-          <TableHead className="text-right">Actions</TableHead>
-        </TableRow>
-      </TableHeader>
-      <TableBody>
-        {domains.map((domain) => {
-          const priceInfo = prices[domain.id];
-          const domainName = domain.domainName || domain.domain || '';
-          const parts = domainName.split('.');
-          const tld = parts.length > 1 ? `.${parts[parts.length - 1]}` : '';
+    <div className="space-y-4">
+      {/* Bulk Purchase Bar */}
+      {qualifiedDomains.length > 0 && (
+        <div className="flex items-center justify-between p-3 bg-green-50 rounded-lg border border-green-200">
+          <div className="flex items-center gap-3">
+            <Checkbox
+              checked={selectedQualified.length === qualifiedDomains.length && qualifiedDomains.length > 0}
+              onCheckedChange={handleSelectAll}
+            />
+            <span className="text-sm text-green-700">
+              {selectedQualified.length} of {qualifiedDomains.length} qualified domains selected
+              <span className="text-xs text-green-600 ml-2">(under ${PRICE_THRESHOLD})</span>
+            </span>
+          </div>
+          <Button
+            size="sm"
+            disabled={selectedQualified.length === 0 || isBulkPurchasing}
+            className="bg-green-600 hover:bg-green-700"
+            onClick={handleBulkPurchase}
+          >
+            {isBulkPurchasing ? (
+              <Loader2 className="h-4 w-4 mr-1 animate-spin" />
+            ) : (
+              <ShoppingCart className="h-4 w-4 mr-1" />
+            )}
+            Purchase Selected ({selectedQualified.length})
+          </Button>
+        </div>
+      )}
 
-          return (
-            <TableRow key={domain.id}>
-              <TableCell className="font-medium">{domainName}</TableCell>
-              <TableCell>
-                <Badge variant="secondary">{tld}</Badge>
-              </TableCell>
-              <TableCell>{getStatusBadge(domain.status)}</TableCell>
-              <TableCell>
-                {priceInfo ? (
-                  priceInfo.available ? (
-                    <span className="text-green-600 font-medium">${priceInfo.price}</span>
-                  ) : (
-                    <span className="text-red-500">Unavailable</span>
-                  )
-                ) : (
-                  <span className="text-muted-foreground">-</span>
-                )}
-              </TableCell>
-              <TableCell className="text-right">{renderActions(domain)}</TableCell>
-            </TableRow>
-          );
-        })}
-      </TableBody>
-    </Table>
+      <Table>
+        <TableHeader>
+          <TableRow>
+            <TableHead className="w-10"></TableHead>
+            <TableHead>Domain</TableHead>
+            <TableHead className="w-20">TLD</TableHead>
+            <TableHead className="w-24">Status</TableHead>
+            <TableHead className="w-28">Price</TableHead>
+            <TableHead className="text-right">Actions</TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {domains.map((domain) => {
+            const domainName = domain.domainName || domain.domain || '';
+            const parts = domainName.split('.');
+            const tld = parts.length > 1 ? `.${parts[parts.length - 1]}` : '';
+            const qualified = isQualified(domain);
+
+            return (
+              <TableRow key={domain.id} className={qualified && selectedDomains.has(domain.id) ? 'bg-green-50/50' : ''}>
+                <TableCell>
+                  {qualified && (
+                    <Checkbox
+                      checked={selectedDomains.has(domain.id)}
+                      onCheckedChange={() => handleToggleSelect(domain.id)}
+                    />
+                  )}
+                </TableCell>
+                <TableCell className="font-medium">{domainName}</TableCell>
+                <TableCell>
+                  <Badge variant="secondary">{tld}</Badge>
+                </TableCell>
+                <TableCell>{getStatusBadge(domain.status)}</TableCell>
+                <TableCell>{renderPriceCell(domain)}</TableCell>
+                <TableCell className="text-right">{renderActions(domain)}</TableCell>
+              </TableRow>
+            );
+          })}
+        </TableBody>
+      </Table>
+    </div>
   );
 }

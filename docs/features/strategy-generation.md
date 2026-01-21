@@ -8,6 +8,7 @@ tags: [feature, strategy, ai, claude-code, implemented]
 # AI Strategy Generation
 
 **Status:** Implemented and Working (2026-01-20)
+**Skill Version:** v2.0 Enhanced (429 lines) - Updated 2026-01-20
 
 AI-powered email campaign variant generation using Claude Code and Cold Email Skill v2.0.
 
@@ -141,53 +142,66 @@ When the "Generate More" button is clicked (or a job is created via API), the sy
 
 The Cold Email Skill v2.0 is **embedded directly in the prompt** (not loaded via `/skill-name` syntax) because the worker runs non-interactively. The full skill content is included in `strategy_worker.py`.
 
-## Cold Email Skill v2.0
+## Cold Email Skill v2.0 Enhanced
 
-### Reference Location
+### Skill Location
 
-```
-D:\Work\Claude Campaign Copywriting Skill-20251120T015618Z-1-001\
-  └── Claude Campaign Copywriting Skill\
-      ├── cold_email_v2_skill.txt      ← Core philosophy + workflow
-      ├── qa_checklist_md.txt          ← 0-100 scoring rubric
-      ├── examples_v2_md.txt           ← 10 annotated examples
-      ├── creative_ideas_md.txt        ← Creative ideas campaign
-      ├── research_playbook_v2.txt     ← Custom signal research
-      ├── followups_md.txt             ← Email sequences
-      └── icp_objection_md.txt         ← ICP mapping
-```
+**Active Skill:** `.claude/skills/generate-strategy.md` (429 lines)
+**Backup:** `backups/strategy-ai-v1-working-2026-01-20/` (original 234-line version)
+
+### Key Enhancements (2026-01-20)
+
+The skill was enhanced with techniques from the Claude Campaign Copywriting Skill to produce higher-quality output:
+
+| Enhancement | Purpose |
+|-------------|---------|
+| **3-Pass Cutting Method** | Pass 1: Delete fluff (20%), Pass 2: Compress (15%), Pass 3: Cut adjectives (10%) |
+| **11-Point QA Checklist** | Actionable pass/fail checks before saving each variant |
+| **Recipient:Sender Ratio** | Track 3:1 minimum (sentences about THEM vs US) |
+| **7 "Poke the Bear" Openers** | Proven opener patterns for engagement |
+| **Value-Exchange CTAs** | Framework for low-effort CTAs (5-word reply test) |
+| **Before/After Examples** | Annotated cutting examples (94 → 52 words) |
+| **ICP Role-Play Step** | 4 questions before writing any email |
 
 ### 5 Non-Negotiable Principles
 
-1. **Shorter & Punchier** — 50-90 words target
-2. **Research IS the personalization** — Custom signals > clever copy
-3. **Earn replies, not meetings** — Confirm situation before selling
-4. **Two valid paths** — Custom signal research OR whole-offer strategy
-5. **Every word earns its place** — Read aloud in under 20 seconds
+1. **50-90 Words Maximum** — Read aloud in under 20 seconds
+2. **Recipient:Sender Ratio >= 3:1** — Count sentences about THEM vs US
+3. **Research IS the Personalization** — Custom signals > clever copy
+4. **Earn Replies, Not Meetings** — Confirm situation before selling
+5. **Two Valid Paths** — Custom signal research OR whole-offer strategy
 
-### QA Scoring Rubric (0-100)
+### 11-Point QA Checklist
 
-| Dimension | Weight | What's Measured |
-|-----------|--------|-----------------|
-| Situation Recognition | 25 pts | Specific data about them? |
-| Value Clarity | 25 pts | Clear offer + proof? |
-| Personalization Quality | 20 pts | Custom signal OR AI insight? |
-| CTA Effort | 15 pts | 5 words or less to reply? |
-| Punchiness | 10 pts | 50-90 words? No fluff? |
-| Subject Line | 5 pts | 2-4 words OR whole offer? |
+All must pass before saving a variant:
 
-**Score Thresholds:**
-- **85+** = Ship it
-- **70-84** = One more pass
-- **<70** = Start over
+1. First line = specific signal
+2. No hallucinations
+3. Variables formatted {{correctly}}
+4. No banned phrases
+5. Recipient:sender ratio >= 3:1
+6. 50-90 words (strict)
+7. CTA = low-effort (5 words to reply)
+8. Reads in under 20 seconds
+9. Em dashes consistent (—)
+10. Subject line = 2-4 words OR whole offer
+11. "Would I reply?" = YES
+
+### Enhanced Rationale Format
+
+The skill now instructs Claude to include quality metrics in rationale:
+```
+"Ratio: 3:1. Words: 72. Cuts: removed greeting, compressed value prop. Pattern: Status Pressure opener."
+```
 
 ### Campaign Types Generated
 
 | Type | When Used | Example Subject |
 |------|-----------|-----------------|
 | `custom_signal` | Strong research available | "Quick q about {{company_name}}" |
-| `whole_offer` | Lead with proof | "47 meetings in 30 days" |
-| `risk_efficiency` | Problem-aware approach | "{{company_name}} outbound" |
+| `whole_offer` | Lead with proof | "4.7x upgrade increase" |
+| `creative_ideas` | Feature-constrained format | "3 ideas for {{company_name}}" |
+| `fallback` | Low research available | Redirect or problem-aware |
 
 ## Database Schema
 

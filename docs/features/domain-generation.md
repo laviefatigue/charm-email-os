@@ -1,7 +1,7 @@
 ---
 title: Domain Generation
 created: 2026-01-16
-updated: 2026-01-16
+updated: 2026-01-21
 tags: [feature, domains, generation]
 ---
 
@@ -98,6 +98,7 @@ See [[../architecture/claude-code-worker]] for worker details.
 
 ## Related
 
+- [[domain-purchasing]] - Registrar integration for availability and purchase
 - [[../architecture/claude-code-worker]] - Worker architecture
 - [[../architecture/api-endpoints]] - API documentation
 - [[client-profile]] - Client profile page (provides onboarding data)
