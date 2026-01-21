@@ -200,6 +200,9 @@ async def init_schema() -> None:
     # Initialize strategy generation tables (Phase 3)
     await _init_strategy_tables()
 
+    # Initialize domain sourcing columns (Phase 3)
+    await _init_domain_columns()
+
 
 async def _init_strategy_tables() -> None:
     """Initialize strategy generation tables if they don't exist"""
@@ -276,3 +279,52 @@ async def _init_strategy_tables() -> None:
         logger.info("Strategy revision requests table ready")
     except Exception as e:
         logger.warning(f"Strategy revisions table note: {e}")
+
+
+async def _init_domain_columns() -> None:
+    """Initialize domain table columns for dual provider pricing"""
+
+    # Check if domains table exists
+    check_table = """
+        SELECT EXISTS (
+            SELECT FROM information_schema.tables
+            WHERE table_name = 'domains'
+        ) as table_exists;
+    """
+    result = await fetch_one(check_table)
+    if not result or not result.get("table_exists", False):
+        logger.info("Domains table does not exist, skipping column initialization")
+        return
+
+    # Add dual provider pricing columns
+    columns_to_add = [
+        ("porkbun_price", "DECIMAL(10,2)"),
+        ("porkbun_available", "BOOLEAN"),
+        ("dynadot_price", "DECIMAL(10,2)"),
+        ("dynadot_available", "BOOLEAN"),
+        ("selected_provider", "VARCHAR(20)"),
+        ("job_id", "UUID"),
+    ]
+
+    for col_name, col_def in columns_to_add:
+        check_col = f"""
+            SELECT EXISTS (
+                SELECT FROM information_schema.columns
+                WHERE table_name = 'domains' AND column_name = '{col_name}'
+            ) as col_exists;
+        """
+        col_result = await fetch_one(check_col)
+        if col_result and not col_result.get("col_exists", False):
+            try:
+                await execute(f"ALTER TABLE domains ADD COLUMN {col_name} {col_def}")
+                logger.info(f"Added column {col_name} to domains table")
+            except Exception as e:
+                logger.warning(f"Failed to add column {col_name} to domains: {e}")
+
+    # Create index for job_id if it doesn't exist
+    try:
+        await execute("CREATE INDEX IF NOT EXISTS idx_domains_job_id ON domains(job_id)")
+    except Exception as e:
+        logger.warning(f"Domain index creation note: {e}")
+
+    logger.info("Domain table columns initialized for dual provider pricing")
