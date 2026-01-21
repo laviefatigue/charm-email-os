@@ -1273,15 +1273,29 @@ async def push_sequence_to_emailbison(sequence_id: UUID):
             sequence_steps_payload = []
             for email in sorted(sequence_data, key=lambda x: x.get("position", 1)):
                 position = email.get("position", 1)
-                # Use edited versions if available
-                subject = email.get("edited_subject_line") or email.get("subject_line") or ""
-                body = email.get("edited_email_body") or email.get("email_body", "")
+                # Use edited versions if available, check multiple field names
+                subject = (
+                    email.get("edited_subject_line") or
+                    email.get("subject_line") or
+                    email.get("subjectLine") or
+                    campaign_name  # Fallback to campaign name
+                )
+                body = (
+                    email.get("edited_email_body") or
+                    email.get("email_body") or
+                    email.get("emailBody") or
+                    ""
+                )
+                # wait_in_days must be at least 1 per EmailBison API
+                wait_days = max(email.get("wait_days", 0), 1)
+
+                logger.debug(f"Email {position}: subject='{subject[:50] if subject else 'EMPTY'}...', wait_days={wait_days}")
 
                 sequence_steps_payload.append({
                     "email_subject": transform_variables(subject),
                     "email_body": transform_variables(body),
                     "order": position,
-                    "wait_in_days": email.get("wait_days", 0),
+                    "wait_in_days": wait_days,
                     "thread_reply": email.get("thread_reply", False),
                     "variant": False,
                 })
