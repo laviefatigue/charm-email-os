@@ -145,12 +145,14 @@ class DynadotService:
             result = {}
 
             # Get response header - try multiple paths
-            # Dynadot uses SearchHeader, RegisterHeader, etc. based on command
+            # Dynadot uses SearchHeader, RegisterHeader, SetNsHeader, etc. based on command
             header = root.find('.//SearchHeader')
             if header is None:
                 header = root.find('.//ResponseHeader')
             if header is None:
                 header = root.find('.//RegisterHeader')
+            if header is None:
+                header = root.find('.//SetNsHeader')
 
             if header is not None:
                 # SuccessCode: 0 = success, -1 = error
@@ -160,7 +162,7 @@ class DynadotService:
                 result['success_code'] = success_code
             else:
                 # Check if root element indicates success
-                if root.tag in ('SearchResponse', 'RegisterResponse', 'AccountResponse'):
+                if root.tag in ('SearchResponse', 'RegisterResponse', 'AccountResponse', 'SetNsResponse'):
                     result['status'] = 'success'
 
             # Get search results - try multiple paths
