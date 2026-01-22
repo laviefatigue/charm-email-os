@@ -68,7 +68,7 @@ app.add_middleware(
 
 
 # Import and include routers
-from routes import workspaces, clients, domains, inboxes, campaigns, leads, health, domain_sourcing, inbox_purchasing, onboarding, strategy
+from routes import workspaces, clients, domains, inboxes, campaigns, leads, health, domain_sourcing, inbox_purchasing, onboarding, strategy, subscriptions
 
 app.include_router(workspaces.router, prefix=f"{settings.API_PREFIX}/workspaces", tags=["workspaces"])
 app.include_router(clients.router, prefix=f"{settings.API_PREFIX}/clients", tags=["clients"])
@@ -81,6 +81,7 @@ app.include_router(domain_sourcing.router, prefix=f"{settings.API_PREFIX}/domain
 app.include_router(inbox_purchasing.router, prefix=f"{settings.API_PREFIX}/inbox-purchasing", tags=["inbox-purchasing"])
 app.include_router(onboarding.router, prefix=f"{settings.API_PREFIX}/onboarding", tags=["onboarding"])
 app.include_router(strategy.router, prefix=f"{settings.API_PREFIX}/strategy", tags=["strategy"])
+app.include_router(subscriptions.router, prefix=f"{settings.API_PREFIX}/subscriptions", tags=["subscriptions"])
 
 
 @app.get("/")

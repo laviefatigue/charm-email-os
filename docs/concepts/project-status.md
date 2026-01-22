@@ -45,17 +45,34 @@ Current implementation progress for Charm Email OS infrastructure management.
 - Pre-selection from DomainsNeedingSetupTable
 - Legacy status for pre-existing infrastructure
 
-## Pending Phases
+## Completed Phases (cont.)
 
 ### Phase 6B: Subscription Management
-**Status: Planned**
+**Completed 2026-01-22**
 
-- Client subscription records with quotas
-- Usage tracking vs. quota
-- Upgrade/modify flows
-- Package template database
+| File | Change |
+|------|--------|
+| `migrations/008_subscription_management.sql` | NEW - Package templates, subscriptions, changes tables |
+| `api/models/subscription.py` | NEW - Pydantic models for subscriptions |
+| `api/routes/subscriptions.py` | NEW - API endpoints for subscription CRUD |
+| `api/main.py` | Added subscriptions router |
+| `api/database.py` | Added `_init_subscription_tables()` |
+| `lib/types.ts` | Added subscription types |
+| `lib/api.ts` | Added `subscriptionApi` |
+| `components/clients/SubscriptionCard.tsx` | NEW - Subscription display with usage |
+| `components/clients/SubscriptionEditModal.tsx` | NEW - Edit/create subscription |
+| `components/ui/slider.tsx` | NEW - Radix UI slider component |
+| `app/clients/[clientId]/profile/page.tsx` | Integrated subscription card |
 
-See [[package-templates]] for planned schema.
+**Key Changes in 6B:**
+- Package templates: Starter (699 inboxes) and Growth (1398 inboxes)
+- Client subscriptions with Entra/Google package counts
+- Usage tracking vs. quota with progress bars
+- Spare capacity configuration and status
+- Change history tracking (upgrade/downgrade/modify)
+- Backfill endpoint for existing clients
+
+## Pending Phases
 
 ### Phase 6C: Health Monitoring
 **Status: Planned**
@@ -75,21 +92,16 @@ See [[package-templates]] for planned schema.
 
 ## Current Focus
 
-**Wizard Usability Improvements** - Just deployed (2026-01-22)
+**HyperTide Integration Validation** - Next priority
 
-The InboxPurchaseWizard was redesigned to:
-1. Start with domain selection instead of abstract counts
-2. Show provider options with clear specifications
-3. Calculate orders automatically from selected domains
-4. Display real-time cost and inbox projections
+With Phase 6A (wizard) and Phase 6B (subscriptions) complete, the next step is validating the full HyperTide provisioning flow end-to-end.
 
 ## Next Steps
 
-1. Test wizard with actual HyperTide provisioning
-2. Implement Phase 6B (subscription management) or
-3. Implement Phase 6C (health monitoring)
+1. **Test wizard with actual HyperTide provisioning** - Validate the complete flow
+2. Implement Phase 6C (health monitoring) - Final phase
 
-User should decide which phase to prioritize.
+The subscription system is now in place, giving visibility into client quotas. The wizard can use this data to ensure provisioning stays within package limits.
 
 ## Deployment Info
 
@@ -100,7 +112,7 @@ User should decide which phase to prioritize.
 | Source | `laviefatigue/charm-email-os` |
 | Branch | `master` |
 
-Latest deployment: 2026-01-22 (wizard redesign)
+Latest deployment: 2026-01-22 (Phase 6B - subscription management)
 
 ## Related
 

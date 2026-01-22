@@ -203,6 +203,9 @@ async def init_schema() -> None:
     # Initialize domain sourcing columns (Phase 3)
     await _init_domain_columns()
 
+    # Initialize subscription tables (Phase 6B)
+    await _init_subscription_tables()
+
 
 async def _init_strategy_tables() -> None:
     """Initialize strategy generation tables if they don't exist"""
@@ -333,3 +336,99 @@ async def _init_domain_columns() -> None:
         logger.warning(f"Domain index creation note: {e}")
 
     logger.info("Domain table columns initialized for dual provider pricing")
+
+
+async def _init_subscription_tables() -> None:
+    """Initialize subscription management tables (Phase 6B)"""
+
+    # Package templates table
+    create_templates_table = """
+        CREATE TABLE IF NOT EXISTS package_templates (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            name VARCHAR(100) NOT NULL UNIQUE,
+            entra_packages INTEGER NOT NULL DEFAULT 6,
+            entra_domains_per_package INTEGER DEFAULT 2,
+            entra_inboxes_per_domain INTEGER DEFAULT 52,
+            google_packages INTEGER NOT NULL DEFAULT 5,
+            google_domains_per_package INTEGER DEFAULT 5,
+            google_inboxes_per_domain INTEGER DEFAULT 3,
+            total_domains INTEGER GENERATED ALWAYS AS (
+                (entra_packages * entra_domains_per_package) +
+                (google_packages * google_domains_per_package)
+            ) STORED,
+            total_inboxes INTEGER GENERATED ALWAYS AS (
+                (entra_packages * entra_domains_per_package * entra_inboxes_per_domain) +
+                (google_packages * google_domains_per_package * google_inboxes_per_domain)
+            ) STORED,
+            monthly_price DECIMAL(10,2),
+            is_active BOOLEAN DEFAULT true,
+            created_at TIMESTAMP DEFAULT NOW()
+        );
+    """
+    try:
+        await execute(create_templates_table)
+        logger.info("Package templates table ready")
+
+        # Seed default packages
+        await execute("""
+            INSERT INTO package_templates (name, entra_packages, google_packages, monthly_price)
+            VALUES
+                ('Starter', 6, 5, NULL),
+                ('Growth', 12, 10, NULL)
+            ON CONFLICT (name) DO NOTHING
+        """)
+        logger.info("Default package templates seeded")
+    except Exception as e:
+        logger.warning(f"Package templates table note: {e}")
+
+    # Client subscriptions table
+    create_subscriptions_table = """
+        CREATE TABLE IF NOT EXISTS client_subscriptions (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            client_id UUID NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
+            package_template_id UUID REFERENCES package_templates(id),
+            entra_packages INTEGER NOT NULL DEFAULT 6,
+            entra_domains_per_package INTEGER DEFAULT 2,
+            entra_inboxes_per_domain INTEGER DEFAULT 52,
+            google_packages INTEGER NOT NULL DEFAULT 5,
+            google_domains_per_package INTEGER DEFAULT 5,
+            google_inboxes_per_domain INTEGER DEFAULT 3,
+            spare_ratio DECIMAL(3,2) DEFAULT 0.15,
+            status VARCHAR(20) DEFAULT 'active',
+            started_at TIMESTAMP DEFAULT NOW(),
+            cancelled_at TIMESTAMP,
+            notes TEXT,
+            created_at TIMESTAMP DEFAULT NOW(),
+            updated_at TIMESTAMP DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS idx_subscriptions_client ON client_subscriptions(client_id);
+        CREATE INDEX IF NOT EXISTS idx_subscriptions_status ON client_subscriptions(status);
+    """
+    try:
+        await execute(create_subscriptions_table)
+        logger.info("Client subscriptions table ready")
+    except Exception as e:
+        logger.warning(f"Client subscriptions table note: {e}")
+
+    # Subscription changes table
+    create_changes_table = """
+        CREATE TABLE IF NOT EXISTS subscription_changes (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            subscription_id UUID NOT NULL REFERENCES client_subscriptions(id) ON DELETE CASCADE,
+            change_type VARCHAR(20) NOT NULL,
+            previous_entra_packages INTEGER,
+            previous_google_packages INTEGER,
+            new_entra_packages INTEGER,
+            new_google_packages INTEGER,
+            reason TEXT,
+            changed_by VARCHAR(100),
+            created_at TIMESTAMP DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS idx_subscription_changes_subscription ON subscription_changes(subscription_id);
+        CREATE INDEX IF NOT EXISTS idx_subscription_changes_created ON subscription_changes(created_at);
+    """
+    try:
+        await execute(create_changes_table)
+        logger.info("Subscription changes table ready")
+    except Exception as e:
+        logger.warning(f"Subscription changes table note: {e}")

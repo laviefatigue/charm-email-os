@@ -492,3 +492,87 @@ export interface Alert {
   createdAt: Date;
   acknowledgedAt?: Date;
 }
+
+// ===== SUBSCRIPTION TYPES =====
+
+export interface PackageTemplate {
+  id: string;
+  name: string;
+  entraPackages: number;
+  entraDomainsPerPackage: number;
+  entraInboxesPerDomain: number;
+  googlePackages: number;
+  googleDomainsPerPackage: number;
+  googleInboxesPerDomain: number;
+  totalDomains: number;
+  totalInboxes: number;
+  monthlyPrice?: number;
+  isActive: boolean;
+  createdAt: Date;
+}
+
+export interface Subscription {
+  id: string;
+  clientId: string;
+  packageTemplateId?: string;
+  packageTemplateName?: string;
+
+  // Entra configuration
+  entraPackages: number;
+  entraDomainsPerPackage: number;
+  entraInboxesPerDomain: number;
+
+  // Google configuration
+  googlePackages: number;
+  googleDomainsPerPackage: number;
+  googleInboxesPerDomain: number;
+
+  // Spare capacity
+  spareRatio: number;
+
+  // Status
+  status: 'active' | 'paused' | 'cancelled';
+  startedAt: Date;
+  cancelledAt?: Date;
+  notes?: string;
+  createdAt: Date;
+  updatedAt: Date;
+
+  // Computed fields
+  entraDomains: number;
+  entraInboxes: number;
+  googleDomains: number;
+  googleInboxes: number;
+  totalDomains: number;
+  totalInboxes: number;
+  targetSpareInboxes: number;
+}
+
+export interface SubscriptionWithUsage extends Subscription {
+  // Current inventory counts
+  currentActiveDomains: number;
+  currentActiveInboxes: number;
+  currentWarmingInboxes: number;
+  currentSpareInboxes: number;
+  currentFlaggedInboxes: number;
+
+  // Computed usage fields
+  domainsUsedPercent: number;
+  inboxesUsedPercent: number;
+  domainsRemaining: number;
+  inboxesRemaining: number;
+  spareStatus: 'healthy' | 'low' | 'critical';
+}
+
+export interface SubscriptionChange {
+  id: string;
+  subscriptionId: string;
+  changeType: 'created' | 'upgrade' | 'downgrade' | 'modify' | 'cancelled';
+  previousEntraPackages?: number;
+  previousGooglePackages?: number;
+  newEntraPackages?: number;
+  newGooglePackages?: number;
+  reason?: string;
+  changedBy?: string;
+  createdAt: Date;
+}

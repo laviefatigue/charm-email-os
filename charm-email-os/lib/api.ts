@@ -14,6 +14,10 @@ import type {
   PaginatedResponse,
   HealthOverview,
   Alert,
+  PackageTemplate,
+  Subscription,
+  SubscriptionWithUsage,
+  SubscriptionChange,
 } from './types';
 
 // API base URL - use environment variable or default to deployed API
@@ -1785,6 +1789,153 @@ export const healthApi = {
   },
 };
 
+// ===== SUBSCRIPTION API =====
+
+export const subscriptionApi = {
+  /**
+   * List available package templates
+   */
+  async listTemplates(activeOnly = true): Promise<PackageTemplate[]> {
+    const response = await fetchApi<Record<string, unknown>[]>(
+      `/api/subscriptions/templates?active_only=${activeOnly}`
+    );
+    return response.map((item) => toCamelCase<PackageTemplate>(item));
+  },
+
+  /**
+   * Get a specific package template
+   */
+  async getTemplate(templateId: string): Promise<PackageTemplate> {
+    const response = await fetchApi<Record<string, unknown>>(
+      `/api/subscriptions/templates/${templateId}`
+    );
+    return toCamelCase<PackageTemplate>(response);
+  },
+
+  /**
+   * Get subscription for a client with usage statistics
+   */
+  async getClientSubscription(clientId: string): Promise<SubscriptionWithUsage | null> {
+    try {
+      const response = await fetchApi<Record<string, unknown> | null>(
+        `/api/subscriptions/client/${clientId}`
+      );
+      if (!response) return null;
+      return toCamelCase<SubscriptionWithUsage>(response);
+    } catch (error) {
+      if (error instanceof APIError && error.status === 404) {
+        return null;
+      }
+      throw error;
+    }
+  },
+
+  /**
+   * Create a subscription for a client
+   */
+  async createSubscription(
+    clientId: string,
+    data: {
+      packageTemplateId?: string;
+      entraPackages?: number;
+      googlePackages?: number;
+      spareRatio?: number;
+      notes?: string;
+    }
+  ): Promise<Subscription> {
+    const response = await fetchApi<Record<string, unknown>>(
+      `/api/subscriptions/client/${clientId}`,
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          client_id: clientId,
+          ...toSnakeCase(data),
+        }),
+      }
+    );
+    return toCamelCase<Subscription>(response);
+  },
+
+  /**
+   * Update a client's subscription
+   */
+  async updateSubscription(
+    clientId: string,
+    data: {
+      entraPackages?: number;
+      googlePackages?: number;
+      spareRatio?: number;
+      notes?: string;
+      status?: 'active' | 'paused' | 'cancelled';
+      changeReason?: string;
+      changedBy?: string;
+    }
+  ): Promise<Subscription> {
+    const response = await fetchApi<Record<string, unknown>>(
+      `/api/subscriptions/client/${clientId}`,
+      {
+        method: 'PUT',
+        body: JSON.stringify(toSnakeCase(data)),
+      }
+    );
+    return toCamelCase<Subscription>(response);
+  },
+
+  /**
+   * Apply a package template to a client's subscription
+   */
+  async applyTemplate(
+    clientId: string,
+    templateId: string,
+    changeReason?: string,
+    changedBy?: string
+  ): Promise<Subscription> {
+    const response = await fetchApi<Record<string, unknown>>(
+      `/api/subscriptions/client/${clientId}/apply-template`,
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          package_template_id: templateId,
+          change_reason: changeReason,
+          changed_by: changedBy,
+        }),
+      }
+    );
+    return toCamelCase<Subscription>(response);
+  },
+
+  /**
+   * Get subscription change history for a client
+   */
+  async getSubscriptionHistory(clientId: string, limit = 20): Promise<SubscriptionChange[]> {
+    const response = await fetchApi<Record<string, unknown>[]>(
+      `/api/subscriptions/client/${clientId}/history?limit=${limit}`
+    );
+    return response.map((item) => toCamelCase<SubscriptionChange>(item));
+  },
+
+  /**
+   * Backfill Starter package subscriptions for all clients without one
+   */
+  async backfillStarterPackages(): Promise<{
+    message: string;
+    templateUsed: string;
+    createdCount: number;
+    createdSubscriptions: Array<{ clientId: string; clientName: string }>;
+  }> {
+    const response = await fetchApi<Record<string, unknown>>(
+      '/api/subscriptions/backfill/starter-package',
+      { method: 'POST' }
+    );
+    return toCamelCase<{
+      message: string;
+      templateUsed: string;
+      createdCount: number;
+      createdSubscriptions: Array<{ clientId: string; clientName: string }>;
+    }>(response);
+  },
+};
+
 // ===== COMBINED API EXPORT =====
 
 export const api = {
@@ -1798,6 +1949,7 @@ export const api = {
   health: healthApi,
   onboarding: onboardingApi,
   strategy: strategyApi,
+  subscriptions: subscriptionApi,
 };
 
 export default api;
