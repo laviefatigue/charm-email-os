@@ -1804,11 +1804,8 @@ async def update_nameservers(request: UpdateNameserversRequest):
     - ns3.dnsimple.com
     - ns4.dnsimple-edge.org
     """
-    from api.services.porkbun import PorkbunClient
-    from api.services.dynadot import DynadotClient
-
-    porkbun = PorkbunClient()
-    dynadot = DynadotClient()
+    porkbun = PorkbunService()
+    dynadot = DynadotService()
 
     results = []
     successful_count = 0
