@@ -326,8 +326,20 @@ class PorkbunService:
                     "ns": nameservers,
                 },
             )
-            response.raise_for_status()
-            data = response.json()
+
+            # Log response for debugging
+            try:
+                data = response.json()
+                logger.info(f"Porkbun set_ns response for {domain}: status={response.status_code}, data={data}")
+            except Exception:
+                logger.info(f"Porkbun set_ns response for {domain}: status={response.status_code}, text={response.text[:500]}")
+                data = {}
+
+            if response.status_code >= 400:
+                error_msg = data.get("message", response.text[:200])
+                logger.warning(f"Porkbun set_ns error for {domain}: {error_msg}")
+                return False
+
             return data.get("status") == "SUCCESS"
         except Exception as e:
             logger.error(f"Porkbun nameserver error for {domain}: {e}")
