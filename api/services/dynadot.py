@@ -10,12 +10,43 @@ import asyncio
 import httpx
 import logging
 import os
+import re
 import xml.etree.ElementTree as ET
 from decimal import Decimal
 from typing import Optional
 from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
+
+
+def _parse_dynadot_price(price_str: str) -> tuple[Optional[Decimal], Optional[Decimal]]:
+    """
+    Parse Dynadot price string into registration and renewal prices.
+
+    Dynadot returns prices in format:
+    "Registration Price: 10.88 in USD and Renewal price: 10.88 in USD and Domain is not a Premium Domain"
+
+    Returns:
+        Tuple of (registration_price, renewal_price)
+    """
+    if not price_str:
+        return None, None
+
+    # Try to extract registration price
+    reg_match = re.search(r'Registration Price:\s*([\d.]+)', price_str, re.IGNORECASE)
+    renewal_match = re.search(r'Renewal price:\s*([\d.]+)', price_str, re.IGNORECASE)
+
+    reg_price = Decimal(reg_match.group(1)) if reg_match else None
+    renewal_price = Decimal(renewal_match.group(1)) if renewal_match else None
+
+    # If no match found, try to parse as a plain number (fallback)
+    if reg_price is None:
+        try:
+            reg_price = Decimal(price_str.replace(",", ""))
+        except:
+            pass
+
+    return reg_price, renewal_price
 
 
 class DomainCheckResult(BaseModel):
@@ -287,18 +318,18 @@ class DynadotService:
                     is_available = result.get("available", False)
 
                     if is_available:
-                        price_str = result.get("price", "0")
-                        logger.info(f"Dynadot: {domain} is available at ${price_str}")
-                        try:
-                            price = Decimal(price_str.replace(",", ""))
-                        except:
-                            price = None
+                        price_str = result.get("price", "")
+                        logger.info(f"Dynadot: {domain} is available, raw price: {price_str}")
+
+                        # Parse the price string (handles both plain numbers and descriptive strings)
+                        reg_price, renewal_price = _parse_dynadot_price(price_str)
+                        logger.info(f"Dynadot: {domain} parsed prices - reg: {reg_price}, renewal: {renewal_price}")
 
                         return DomainCheckResult(
                             domain=domain,
                             available=True,
-                            price=price,
-                            renewal_price=price,  # Dynadot doesn't distinguish
+                            price=reg_price,
+                            renewal_price=renewal_price or reg_price,
                         )
                     else:
                         logger.info(f"Dynadot: {domain} is NOT available")
@@ -378,17 +409,14 @@ class DynadotService:
                     is_available = result.get("available", False)
 
                     if is_available:
-                        price_str = result.get("price", "0")
-                        try:
-                            price = Decimal(price_str.replace(",", ""))
-                        except:
-                            price = None
+                        price_str = result.get("price", "")
+                        reg_price, renewal_price = _parse_dynadot_price(price_str)
 
                         results.append(DomainCheckResult(
                             domain=domain_name,
                             available=True,
-                            price=price,
-                            renewal_price=price,
+                            price=reg_price,
+                            renewal_price=renewal_price or reg_price,
                         ))
                     else:
                         results.append(DomainCheckResult(
