@@ -550,7 +550,7 @@ export function InboxPurchaseWizard({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-6xl w-[95vw] h-[90vh] flex flex-col overflow-hidden">
+      <DialogContent className="sm:max-w-[95vw] md:max-w-[90vw] lg:max-w-6xl w-full h-[90vh] flex flex-col overflow-hidden">
         <DialogHeader className="flex-shrink-0 pb-4 border-b">
           <DialogTitle className="flex items-center gap-2 text-xl">
             <Mail className="h-6 w-6" />
