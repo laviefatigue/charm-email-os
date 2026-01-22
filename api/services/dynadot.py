@@ -271,13 +271,18 @@ class DynadotService:
             # Parse XML to find balance - try multiple possible element names
             root = ET.fromstring(response.text)
 
-            # Try various possible element paths
+            # The actual structure is:
+            # <GetAccountBalanceContent><BalanceList><Balance><Currency>USD</Currency><Amount>20.00</Amount></Balance></BalanceList>
+            # So we need to find the Amount element within Balance
+
+            # Try various possible element paths for the amount
             balance_paths = [
-                './/Balance',
-                './/AccountBalance',
-                './/balance',
-                './/Content/Balance',
-                './/GetAccountBalanceContent/Balance',
+                './/Amount',  # Direct path to Amount element
+                './/Balance/Amount',  # Amount inside Balance
+                './/BalanceList/Balance/Amount',  # Full path
+                './/GetAccountBalanceContent/BalanceList/Balance/Amount',  # Complete path
+                './/Balance',  # Fallback: Balance element with text
+                './/AccountBalance',  # Legacy path
             ]
 
             for path in balance_paths:
