@@ -89,7 +89,7 @@ export function DomainsNeedingSetupTable({
         .filter(d => selectedDomains.has(d.id))
         .map(d => d.domainName || d.domain);
 
-      const response = await fetch(`${API_BASE}/domain-sourcing/verify-nameservers`, {
+      const response = await fetch(`${API_BASE}/api/domain-sourcing/verify-nameservers`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ domain_names: domainNames }),
