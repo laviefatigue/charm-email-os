@@ -8,7 +8,20 @@ from datetime import datetime
 from uuid import UUID
 
 
-DomainStatus = Literal["pending", "approved", "purchased", "active", "flagged", "dead"]
+DomainStatus = Literal[
+    "pending",           # Generated, waiting for approval
+    "pending_approval",  # Alias for pending
+    "approved",          # Approved, ready to purchase
+    "rejected",          # Denied, won't purchase
+    "purchasing",        # Purchase in progress
+    "purchased",         # Domain bought, no inboxes yet
+    "provisioning",      # Inboxes being created in Hypertide
+    "active",            # Domain with active inboxes (proper workflow)
+    "legacy",            # Pre-existing domains before 1/22/26 (needs audit)
+    "warming",           # In warmup period
+    "flagged",           # Health issues detected
+    "dead"               # Retired/disabled
+]
 DomainHealthState = Literal["healthy", "warning", "critical", "unknown"]
 
 
