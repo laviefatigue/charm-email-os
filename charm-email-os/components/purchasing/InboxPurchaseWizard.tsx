@@ -43,7 +43,7 @@ import {
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { cn } from '@/lib/utils';
-import type { OnboardingData, OnboardingPersona } from '@/lib/types';
+import type { OnboardingData, OnboardingPersona, SubscriptionWithUsage } from '@/lib/types';
 
 // Package templates based on actual infrastructure specs
 const PACKAGE_TEMPLATES = {
@@ -125,6 +125,7 @@ interface InboxPurchaseWizardProps {
   domains: Domain[];
   selectedDomainIds?: string[];
   onboardingData?: OnboardingData;
+  subscription?: SubscriptionWithUsage | null;
   onComplete?: (totalInboxes: number) => void;
 }
 
@@ -150,6 +151,7 @@ export function InboxPurchaseWizard({
   domains,
   selectedDomainIds = [],
   onboardingData,
+  subscription,
   onComplete,
 }: InboxPurchaseWizardProps) {
   // Wizard state
@@ -600,6 +602,71 @@ export function InboxPurchaseWizard({
         <div className="flex-1 overflow-y-auto py-6 px-2">
           {currentStep === 'domains' && (
             <div className="space-y-6 max-w-5xl mx-auto">
+              {/* Subscription Quota Info */}
+              {subscription && (
+                <Card className="border-2 border-primary/20 bg-gradient-to-r from-primary/5 to-transparent">
+                  <CardHeader className="pb-3">
+                    <CardTitle className="text-lg flex items-center gap-2">
+                      <Package className="h-5 w-5" />
+                      Package Quotas: {subscription.packageTemplateName || 'Custom'}
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                      <div className="p-3 rounded-lg bg-background border">
+                        <div className="text-sm text-muted-foreground">Domain Quota</div>
+                        <div className="text-xl font-bold">
+                          <span className={subscription.currentActiveDomains > subscription.totalDomains ? 'text-destructive' : ''}>
+                            {subscription.currentActiveDomains}
+                          </span>
+                          <span className="text-muted-foreground"> / {subscription.totalDomains}</span>
+                        </div>
+                      </div>
+                      <div className="p-3 rounded-lg bg-background border">
+                        <div className="text-sm text-muted-foreground">Inbox Quota</div>
+                        <div className="text-xl font-bold">
+                          <span className={subscription.currentActiveInboxes > subscription.totalInboxes ? 'text-destructive' : ''}>
+                            {subscription.currentActiveInboxes}
+                          </span>
+                          <span className="text-muted-foreground"> / {subscription.totalInboxes}</span>
+                        </div>
+                      </div>
+                      <div className="p-3 rounded-lg bg-blue-50 border border-blue-200">
+                        <div className="text-sm text-blue-600">Entra Remaining</div>
+                        <div className="text-xl font-bold text-blue-700">
+                          {Math.max(0, subscription.entraInboxes - (subscription.currentActiveInboxes * 0.9 | 0))} inboxes
+                        </div>
+                      </div>
+                      <div className="p-3 rounded-lg bg-red-50 border border-red-200">
+                        <div className="text-sm text-red-600">Google Remaining</div>
+                        <div className="text-xl font-bold text-red-700">
+                          {Math.max(0, subscription.googleInboxes - (subscription.currentActiveInboxes * 0.1 | 0))} inboxes
+                        </div>
+                      </div>
+                    </div>
+                    {(subscription.currentActiveDomains >= subscription.totalDomains ||
+                      subscription.currentActiveInboxes >= subscription.totalInboxes) && (
+                      <Alert className="mt-4 bg-amber-50 border-amber-200">
+                        <AlertTriangle className="h-5 w-5 text-amber-600" />
+                        <AlertDescription className="text-amber-800">
+                          You are at or near your package limit. Consider upgrading to a larger package.
+                        </AlertDescription>
+                      </Alert>
+                    )}
+                  </CardContent>
+                </Card>
+              )}
+
+              {/* No subscription warning */}
+              {!subscription && (
+                <Alert className="bg-amber-50 border-amber-200">
+                  <AlertTriangle className="h-5 w-5 text-amber-600" />
+                  <AlertDescription className="text-amber-800">
+                    No subscription configured for this client. Go to the Profile tab to set up a package.
+                  </AlertDescription>
+                </Alert>
+              )}
+
               {/* Domain Selection */}
               <Card>
                 <CardHeader className="pb-4">

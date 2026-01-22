@@ -22,8 +22,8 @@ import {
 } from '@/components/inboxes';
 import { InboxPurchaseWizard, DomainCandidatesTable, DomainsNeedingSetupTable } from '@/components/purchasing';
 import { useClientStore, useInfrastructureStore } from '@/lib/stores';
-import { domainSourcingApi, type CanGenerateResponse, type GenerateForClientResponse } from '@/lib/api';
-import type { Domain, Inbox } from '@/lib/types';
+import { domainSourcingApi, subscriptionApi, type CanGenerateResponse, type GenerateForClientResponse } from '@/lib/api';
+import type { Domain, Inbox, SubscriptionWithUsage } from '@/lib/types';
 
 export default function InboxesPage() {
   const params = useParams();
@@ -94,6 +94,7 @@ export default function InboxesPage() {
   const [selectedDomainsForSetup, setSelectedDomainsForSetup] = useState<string[]>([]);
   const [canGenerateInfo, setCanGenerateInfo] = useState<CanGenerateResponse | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
+  const [subscription, setSubscription] = useState<SubscriptionWithUsage | null>(null);
 
   // Fetch can-generate info for the client
   useEffect(() => {
@@ -106,6 +107,19 @@ export default function InboxesPage() {
       }
     };
     fetchCanGenerate();
+  }, [clientId]);
+
+  // Fetch subscription for the client
+  useEffect(() => {
+    const fetchSubscription = async () => {
+      try {
+        const sub = await subscriptionApi.getClientSubscription(clientId);
+        setSubscription(sub);
+      } catch (error) {
+        console.error('Failed to fetch subscription:', error);
+      }
+    };
+    fetchSubscription();
   }, [clientId]);
 
   const filteredInboxes = useMemo(() => {
@@ -581,6 +595,7 @@ export default function InboxesPage() {
             }))}
             selectedDomainIds={selectedDomainsForSetup}
             onboardingData={client.onboardingData}
+            subscription={subscription}
             onComplete={(totalInboxes) => {
               toast.success(`Created ${totalInboxes} inboxes!`);
               // Refresh domains and inboxes
