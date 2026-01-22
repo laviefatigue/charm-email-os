@@ -23,6 +23,7 @@ DomainStatus = Literal[
     "dead"               # Retired/disabled
 ]
 DomainHealthState = Literal["healthy", "warning", "critical", "unknown"]
+NameserverStatus = Literal["pending", "verified", "failed", "mismatch"]
 
 
 class DomainBase(BaseModel):
@@ -34,6 +35,9 @@ class DomainBase(BaseModel):
 class DomainCreate(DomainBase):
     """Create a new domain"""
     status: DomainStatus = "pending"
+
+
+RegistrarProvider = Literal["porkbun", "dynadot"]
 
 
 class Domain(BaseModel):
@@ -53,6 +57,16 @@ class Domain(BaseModel):
 
     # Computed health state
     health_state: DomainHealthState = "unknown"
+
+    # Purchase & DNS tracking for Hypertide readiness
+    purchased_at: Optional[datetime] = None  # When domain was purchased
+    nameservers_updated_at: Optional[datetime] = None  # When NS set to DNSimple (24hr propagation)
+    selected_provider: Optional[RegistrarProvider] = None  # Which registrar owns this domain
+
+    # Nameserver verification status
+    nameserver_status: Optional[NameserverStatus] = "pending"  # pending, verified, failed, mismatch
+    nameserver_verified_at: Optional[datetime] = None  # When verification was last run
+    current_nameservers: Optional[list[str]] = None  # Actual NS returned from registrar
 
     # Timestamps
     flagged_at: Optional[datetime] = None

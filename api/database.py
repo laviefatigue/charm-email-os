@@ -312,6 +312,12 @@ async def _init_domain_columns() -> None:
         ("dynadot_available", "BOOLEAN"),
         ("selected_provider", "VARCHAR(20)"),
         ("job_id", "UUID"),
+        # Nameserver tracking for Hypertide readiness (24-48hr propagation)
+        ("nameservers_updated_at", "TIMESTAMP"),
+        # Nameserver verification status: pending, verified, failed, mismatch
+        ("nameserver_status", "VARCHAR(20) DEFAULT 'pending'"),
+        ("nameserver_verified_at", "TIMESTAMP"),
+        ("current_nameservers", "TEXT[]"),  # Array of current NS from registrar
     ]
 
     for col_name, col_def in columns_to_add:

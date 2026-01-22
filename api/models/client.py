@@ -3,9 +3,43 @@ Client models - New table linking to OwnRBL workspaces
 """
 
 from pydantic import BaseModel, Field
-from typing import Optional, Any
+from typing import Optional, Any, Literal
 from datetime import datetime
 from uuid import UUID
+
+
+class SenderName(BaseModel):
+    """A sender name for inbox provisioning"""
+    first_name: str = Field(..., alias="firstName")
+    last_name: str = Field(..., alias="lastName")
+    email_prefix: str = Field(..., alias="emailPrefix")
+    source: Literal["persona", "custom", "generated"] = "generated"
+
+    class Config:
+        populate_by_name = True
+
+
+class SenderNamePreferences(BaseModel):
+    """Configuration for sender name generation"""
+    use_personas: bool = Field(True, alias="usePersonas")
+    custom_names: Optional[list[SenderName]] = Field(None, alias="customNames")
+    name_count: int = Field(10, alias="nameCount")
+
+    class Config:
+        populate_by_name = True
+
+
+class OnboardingPersona(BaseModel):
+    """A persona from client onboarding data"""
+    name: Optional[str] = None
+    first_name: Optional[str] = Field(None, alias="firstName")
+    last_name: Optional[str] = Field(None, alias="lastName")
+    job_title: Optional[str] = Field(None, alias="jobTitle")
+    primary_segment: Optional[str] = Field(None, alias="primarySegment")
+    seniority_level: Optional[str] = Field(None, alias="seniorityLevel")
+
+    class Config:
+        populate_by_name = True
 
 
 class OnboardingData(BaseModel):
@@ -16,6 +50,10 @@ class OnboardingData(BaseModel):
     product: Optional[str] = None
     inboxes_needed: Optional[int] = Field(None, alias="inboxesNeeded")
     notes: Optional[str] = None
+    # Sender name configuration
+    personas: Optional[list[OnboardingPersona]] = None
+    sender_name_preferences: Optional[SenderNamePreferences] = Field(None, alias="senderNamePreferences")
+    pre_generated_sender_names: Optional[list[SenderName]] = Field(None, alias="preGeneratedSenderNames")
 
     class Config:
         populate_by_name = True

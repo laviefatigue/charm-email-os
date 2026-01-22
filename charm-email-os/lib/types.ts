@@ -57,6 +57,21 @@ export interface OnboardingPersona {
   seniority_level?: string;
 }
 
+// Sender name for inbox provisioning
+export interface SenderName {
+  firstName: string;
+  lastName: string;
+  emailPrefix: string;  // e.g., "john.smith"
+  source: 'persona' | 'custom' | 'generated';  // Where this name came from
+}
+
+// Sender name preferences for Hypertide inbox setup
+export interface SenderNamePreferences {
+  usePersonas: boolean;  // Use personas from onboarding
+  customNames?: SenderName[];  // Custom names provided by client
+  nameCount: number;  // How many names to use (max 10 for Hypertide)
+}
+
 export interface OnboardingData {
   contactFirstNames: string[];
   primaryDomain: string;
@@ -65,6 +80,9 @@ export interface OnboardingData {
   inboxesNeeded: number;
   notes?: string;
   personas?: OnboardingPersona[];
+  // Sender name configuration for inbox provisioning
+  senderNamePreferences?: SenderNamePreferences;
+  preGeneratedSenderNames?: SenderName[];  // Names ready for Hypertide
 }
 
 // Domain status enum (aligned with OwnRBL)
@@ -84,6 +102,9 @@ export type DomainStatus =
   | 'legacy';     // Pre-existing domains before new workflow (1/22/26) - needs audit
 
 // Domain entity (from OwnRBL domains table)
+// Nameserver verification status
+export type NameserverStatus = 'pending' | 'verified' | 'mismatch' | 'failed';
+
 export interface Domain {
   id: string;
   clientId: string;  // Kept for backwards compatibility
@@ -94,6 +115,14 @@ export interface Domain {
   healthScore?: number;
   createdAt: Date;
   updatedAt?: Date;
+  // Purchase & DNS tracking for Hypertide readiness
+  purchasedAt?: Date;  // When domain was purchased
+  nameserversUpdatedAt?: Date;  // When nameservers were set to DNSimple (for Hypertide readiness)
+  selectedProvider?: 'porkbun' | 'dynadot';  // Which registrar owns this domain
+  // Nameserver verification (can we confirm NS at registrar matches DNSimple?)
+  nameserverStatus?: NameserverStatus;  // pending, verified, mismatch, failed
+  nameserverVerifiedAt?: Date;  // When verification was last run
+  currentNameservers?: string[];  // Actual NS returned from registrar
   // Health monitoring fields (from OwnRBL domain_check_summary)
   healthState?: 'live' | 'flagged' | 'dead' | 'healthy' | 'warning' | 'critical' | 'unknown';
   latestHealthScore?: number;  // OwnRBL
@@ -109,6 +138,23 @@ export interface Domain {
   deadInboxCount?: number;
   // Blacklist details (names of RBLs domain is listed on)
   blacklistNames?: string[];
+}
+
+// Helper to check if DNS has propagated (24 hours since nameserver update)
+export function isDnsReady(domain: Domain): boolean {
+  if (!domain.nameserversUpdatedAt) return false;
+  const nsDate = new Date(domain.nameserversUpdatedAt);
+  const hoursSinceUpdate = (Date.now() - nsDate.getTime()) / (1000 * 60 * 60);
+  return hoursSinceUpdate >= 24;
+}
+
+// Get hours remaining until DNS is ready
+export function hoursUntilDnsReady(domain: Domain): number | null {
+  if (!domain.nameserversUpdatedAt) return null;
+  const nsDate = new Date(domain.nameserversUpdatedAt);
+  const hoursSinceUpdate = (Date.now() - nsDate.getTime()) / (1000 * 60 * 60);
+  if (hoursSinceUpdate >= 24) return 0;
+  return Math.ceil(24 - hoursSinceUpdate);
 }
 
 // Inbox status enum (aligned with OwnRBL)

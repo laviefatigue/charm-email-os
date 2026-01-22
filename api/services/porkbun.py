@@ -345,6 +345,33 @@ class PorkbunService:
             logger.error(f"Porkbun nameserver error for {domain}: {e}")
             return False
 
+    async def get_nameservers(self, domain: str) -> Optional[list[str]]:
+        """
+        Get current nameservers for a domain.
+
+        Args:
+            domain: Domain name to check
+
+        Returns:
+            List of nameserver hostnames, or None if failed
+        """
+        try:
+            response = await self.client.post(
+                f"{self.base_url}/domain/getNs/{domain}",
+                json=self._auth_payload(),
+            )
+            data = response.json()
+
+            if data.get("status") == "SUCCESS":
+                # Porkbun returns ns array in response
+                return data.get("ns", [])
+            else:
+                logger.warning(f"Porkbun get_ns failed for {domain}: {data.get('message')}")
+                return None
+        except Exception as e:
+            logger.error(f"Porkbun get_ns error for {domain}: {e}")
+            return None
+
     async def get_pricing(self) -> dict:
         """
         Get pricing for all TLDs.

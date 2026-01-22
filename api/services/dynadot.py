@@ -576,3 +576,48 @@ class DynadotService:
         except Exception as e:
             logger.error(f"Dynadot nameserver error for {domain}: {e}")
             return False
+
+    async def get_nameservers(self, domain: str) -> Optional[list[str]]:
+        """
+        Get current nameservers for a domain.
+
+        Args:
+            domain: Domain name to check
+
+        Returns:
+            List of nameserver hostnames, or None if failed
+        """
+        try:
+            response = await self.client.get(
+                self.base_url,
+                params={
+                    "key": self.api_key,
+                    "command": "domain_info",
+                    "domain": domain,
+                },
+            )
+            response.raise_for_status()
+
+            # Parse XML to find nameservers
+            root = ET.fromstring(response.text)
+
+            # Dynadot returns nameservers in NameServers element
+            nameservers = []
+            ns_container = root.find('.//NameServers')
+            if ns_container is not None:
+                for ns_elem in ns_container.findall('.//NsName'):
+                    if ns_elem.text:
+                        nameservers.append(ns_elem.text.strip())
+
+            # Fallback: try direct NS elements
+            if not nameservers:
+                for i in range(10):
+                    ns_elem = root.find(f'.//Ns{i}')
+                    if ns_elem is not None and ns_elem.text:
+                        nameservers.append(ns_elem.text.strip())
+
+            return nameservers if nameservers else None
+
+        except Exception as e:
+            logger.error(f"Dynadot get_ns error for {domain}: {e}")
+            return None

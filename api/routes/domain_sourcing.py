@@ -1546,6 +1546,15 @@ async def check_domain_price(domain_id: UUID):
         await dynadot.close()
 
 
+# DNSimple nameservers required by Hypertide (must be set at purchase time)
+DNSIMPLE_NAMESERVERS = [
+    "ns1.dnsimple.com",
+    "ns2.dnsimple-edge.net",
+    "ns3.dnsimple.com",
+    "ns4.dnsimple-edge.org",
+]
+
+
 @router.post("/purchase/{domain_id}", response_model=PurchaseSingleResponse)
 async def purchase_single_domain(domain_id: UUID, provider: Optional[str] = None):
     """
@@ -1553,6 +1562,10 @@ async def purchase_single_domain(domain_id: UUID, provider: Optional[str] = None
 
     Used for inline table actions - purchases the domain and updates status.
     Requires the domain to be approved first.
+
+    IMPORTANT: Automatically sets DNSimple nameservers at purchase time.
+    This is REQUIRED for Hypertide - nameservers must be configured before
+    placing a Hypertide order. DNS propagation takes 24-48 hours.
 
     Args:
         domain_id: UUID of the domain to purchase
@@ -1622,20 +1635,29 @@ async def purchase_single_domain(domain_id: UUID, provider: Optional[str] = None
                 detail=f"Insufficient {registrar_name} balance. Need ${price}, have ${balance}."
             )
 
-        # Purchase the domain
-        result = await registrar.purchase(domain["domain_name"])
+        # Purchase the domain WITH DNSimple nameservers for Hypertide
+        # Nameservers MUST be set at purchase time, before Hypertide order
+        logger.info(f"Purchasing {domain['domain_name']} via {registrar_name} with DNSimple nameservers")
+        result = await registrar.purchase(
+            domain["domain_name"],
+            nameservers=DNSIMPLE_NAMESERVERS,
+        )
 
         if result.success:
-            # Update domain status to purchased
+            # Update domain status to purchased with nameserver tracking
+            # nameservers_updated_at is used to determine when DNS is ready (24-48 hrs)
             await execute("""
                 UPDATE domains
                 SET approval_status = 'purchased',
                     cached_price = $1,
                     selected_provider = $2,
                     purchased_at = NOW(),
+                    nameservers_updated_at = NOW(),
                     updated_at = NOW()
                 WHERE id = $3
             """, float(price), registrar_name, domain_id)
+
+            logger.info(f"Successfully purchased {domain['domain_name']} - DNS propagation started")
 
             return PurchaseSingleResponse(
                 domain_id=str(domain_id),
@@ -1821,6 +1843,14 @@ async def update_nameservers(request: UpdateNameserversRequest):
                 logger.info(f"Trying Porkbun for {domain_name}")
                 success = await porkbun.set_nameservers(domain_name, request.nameservers)
                 if success:
+                    # Update nameservers_updated_at in database for DNS readiness tracking
+                    await execute("""
+                        UPDATE domains
+                        SET nameservers_updated_at = NOW(),
+                            selected_provider = 'porkbun',
+                            updated_at = NOW()
+                        WHERE domain_name = $1
+                    """, domain_name)
                     results.append({
                         "domain": domain_name,
                         "success": True,
@@ -1828,7 +1858,7 @@ async def update_nameservers(request: UpdateNameserversRequest):
                         "nameservers": request.nameservers,
                     })
                     successful_count += 1
-                    logger.info(f"Updated nameservers for {domain_name} via Porkbun")
+                    logger.info(f"Updated nameservers for {domain_name} via Porkbun - DNS propagation started")
                     continue
                 else:
                     porkbun_error = "API returned failure (domain may not be in this account)"
@@ -1842,6 +1872,14 @@ async def update_nameservers(request: UpdateNameserversRequest):
                 logger.info(f"Trying Dynadot for {domain_name}")
                 success = await dynadot.set_nameservers(domain_name, request.nameservers)
                 if success:
+                    # Update nameservers_updated_at in database for DNS readiness tracking
+                    await execute("""
+                        UPDATE domains
+                        SET nameservers_updated_at = NOW(),
+                            selected_provider = 'dynadot',
+                            updated_at = NOW()
+                        WHERE domain_name = $1
+                    """, domain_name)
                     results.append({
                         "domain": domain_name,
                         "success": True,
@@ -1849,7 +1887,7 @@ async def update_nameservers(request: UpdateNameserversRequest):
                         "nameservers": request.nameservers,
                     })
                     successful_count += 1
-                    logger.info(f"Updated nameservers for {domain_name} via Dynadot")
+                    logger.info(f"Updated nameservers for {domain_name} via Dynadot - DNS propagation started")
                     continue
                 else:
                     dynadot_error = "API returned failure (domain may not be in this account)"
@@ -1875,3 +1913,176 @@ async def update_nameservers(request: UpdateNameserversRequest):
     finally:
         await porkbun.close()
         await dynadot.close()
+
+
+class VerifyNameserversRequest(BaseModel):
+    """Request to verify nameservers for domains."""
+    domain_names: list[str]
+
+
+class NameserverVerificationResult(BaseModel):
+    """Result of verifying nameservers for a single domain."""
+    domain: str
+    status: str  # pending, verified, mismatch, failed
+    current_nameservers: Optional[list[str]] = None
+    expected_nameservers: list[str] = DNSIMPLE_NAMESERVERS
+    registrar: Optional[str] = None
+    error: Optional[str] = None
+
+
+class VerifyNameserversResponse(BaseModel):
+    """Response from nameserver verification."""
+    results: list[NameserverVerificationResult]
+    verified_count: int
+    mismatch_count: int
+    failed_count: int
+
+
+@router.post("/verify-nameservers", response_model=VerifyNameserversResponse)
+async def verify_nameservers(request: VerifyNameserversRequest):
+    """
+    Verify that nameservers are correctly set at the registrar.
+
+    Checks both Porkbun and Dynadot to find which registrar owns each domain,
+    then verifies the nameservers match the expected DNSimple nameservers.
+
+    Status values:
+    - verified: Nameservers match DNSimple requirements
+    - mismatch: Domain found but nameservers don't match
+    - failed: Could not retrieve nameserver info from any registrar
+    """
+    porkbun = PorkbunService()
+    dynadot = DynadotService()
+
+    results = []
+    verified_count = 0
+    mismatch_count = 0
+    failed_count = 0
+
+    # Normalize expected nameservers for comparison (lowercase, sorted)
+    expected_ns_set = set(ns.lower() for ns in DNSIMPLE_NAMESERVERS)
+
+    try:
+        for domain_name in request.domain_names:
+            current_ns = None
+            registrar = None
+            error = None
+
+            # Try Porkbun first
+            try:
+                ns_list = await porkbun.get_nameservers(domain_name)
+                if ns_list:
+                    current_ns = ns_list
+                    registrar = "porkbun"
+            except Exception as e:
+                logger.debug(f"Porkbun NS lookup failed for {domain_name}: {e}")
+
+            # Try Dynadot if Porkbun didn't work
+            if current_ns is None:
+                try:
+                    ns_list = await dynadot.get_nameservers(domain_name)
+                    if ns_list:
+                        current_ns = ns_list
+                        registrar = "dynadot"
+                except Exception as e:
+                    logger.debug(f"Dynadot NS lookup failed for {domain_name}: {e}")
+
+            # Determine status
+            if current_ns is None:
+                status = "failed"
+                error = "Could not retrieve nameservers from any registrar"
+                failed_count += 1
+            else:
+                # Normalize current nameservers for comparison
+                current_ns_set = set(ns.lower() for ns in current_ns)
+
+                # Check if expected nameservers are a subset of current
+                # (registrar may return additional NS entries)
+                if expected_ns_set.issubset(current_ns_set) or current_ns_set == expected_ns_set:
+                    status = "verified"
+                    verified_count += 1
+                else:
+                    status = "mismatch"
+                    mismatch_count += 1
+
+            # Update database with verification results
+            await execute("""
+                UPDATE domains
+                SET nameserver_status = $1,
+                    nameserver_verified_at = NOW(),
+                    current_nameservers = $2,
+                    selected_provider = COALESCE($3, selected_provider),
+                    updated_at = NOW()
+                WHERE domain_name = $4
+            """, status, current_ns, registrar, domain_name)
+
+            results.append(NameserverVerificationResult(
+                domain=domain_name,
+                status=status,
+                current_nameservers=current_ns,
+                expected_nameservers=DNSIMPLE_NAMESERVERS,
+                registrar=registrar,
+                error=error,
+            ))
+
+            logger.info(f"NS verification for {domain_name}: {status} "
+                       f"(registrar={registrar}, ns={current_ns})")
+
+        return VerifyNameserversResponse(
+            results=results,
+            verified_count=verified_count,
+            mismatch_count=mismatch_count,
+            failed_count=failed_count,
+        )
+
+    finally:
+        await porkbun.close()
+        await dynadot.close()
+
+
+@router.get("/nameserver-status/{domain_name}")
+async def get_nameserver_status(domain_name: str):
+    """
+    Get the current nameserver status for a domain.
+
+    Returns verification status, current nameservers, and DNS readiness.
+    """
+    domain = await fetch_one("""
+        SELECT
+            domain_name,
+            selected_provider,
+            nameservers_updated_at,
+            nameserver_status,
+            nameserver_verified_at,
+            current_nameservers
+        FROM domains
+        WHERE domain_name = $1
+    """, domain_name)
+
+    if not domain:
+        raise HTTPException(status_code=404, detail="Domain not found")
+
+    # Calculate DNS readiness
+    dns_ready = False
+    hours_until_ready = None
+
+    if domain["nameservers_updated_at"]:
+        from datetime import datetime, timezone
+        ns_date = domain["nameservers_updated_at"]
+        if ns_date.tzinfo is None:
+            ns_date = ns_date.replace(tzinfo=timezone.utc)
+        hours_since = (datetime.now(timezone.utc) - ns_date).total_seconds() / 3600
+        dns_ready = hours_since >= 24
+        hours_until_ready = max(0, 24 - hours_since) if not dns_ready else 0
+
+    return {
+        "domain": domain["domain_name"],
+        "registrar": domain["selected_provider"],
+        "nameserver_status": domain["nameserver_status"] or "pending",
+        "current_nameservers": domain["current_nameservers"],
+        "expected_nameservers": DNSIMPLE_NAMESERVERS,
+        "nameservers_updated_at": domain["nameservers_updated_at"],
+        "nameserver_verified_at": domain["nameserver_verified_at"],
+        "dns_ready": dns_ready,
+        "hours_until_ready": round(hours_until_ready, 1) if hours_until_ready is not None else 0,
+    }

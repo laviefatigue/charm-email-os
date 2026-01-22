@@ -12,21 +12,33 @@ import {
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Checkbox } from '@/components/ui/checkbox';
-import { Loader2, Settings, Server } from 'lucide-react';
-import type { Domain } from '@/lib/types';
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from '@/components/ui/tooltip';
+import { Loader2, Settings, Server, Clock, CheckCircle2, AlertCircle, RefreshCw, ShieldCheck, ShieldAlert, ShieldQuestion } from 'lucide-react';
+import type { Domain, NameserverStatus } from '@/lib/types';
+import { isDnsReady, hoursUntilDnsReady } from '@/lib/types';
+import { toast } from 'sonner';
+
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000/api/v1';
 
 interface DomainsNeedingSetupTableProps {
   domains: Domain[];
   onSetupClick: (selectedDomainIds: string[]) => void;
   isSettingUp?: boolean;
+  onDomainsChange?: () => void;  // Callback to refresh domains after verification
 }
 
 export function DomainsNeedingSetupTable({
   domains,
   onSetupClick,
   isSettingUp = false,
+  onDomainsChange,
 }: DomainsNeedingSetupTableProps) {
   const [selectedDomains, setSelectedDomains] = useState<Set<string>>(new Set());
+  const [isVerifying, setIsVerifying] = useState(false);
 
   // Filter only purchased domains (not provisioning)
   const purchasedDomains = useMemo(() =>
@@ -64,6 +76,128 @@ export function DomainsNeedingSetupTable({
     onSetupClick(Array.from(selectedDomains));
   }, [selectedDomains, onSetupClick]);
 
+  // Verify nameservers for selected domains
+  const handleVerifyNameservers = useCallback(async () => {
+    if (selectedDomains.size === 0) {
+      toast.error('No domains selected');
+      return;
+    }
+
+    setIsVerifying(true);
+    try {
+      const domainNames = purchasedDomains
+        .filter(d => selectedDomains.has(d.id))
+        .map(d => d.domainName || d.domain);
+
+      const response = await fetch(`${API_BASE}/domain-sourcing/verify-nameservers`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ domain_names: domainNames }),
+      });
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.detail || 'Verification failed');
+      }
+
+      const data = await response.json();
+
+      if (data.verified_count > 0) {
+        toast.success(`Verified ${data.verified_count} domain(s)`);
+      }
+      if (data.mismatch_count > 0) {
+        toast.warning(`${data.mismatch_count} domain(s) have incorrect nameservers`);
+      }
+      if (data.failed_count > 0) {
+        toast.error(`${data.failed_count} domain(s) could not be verified`);
+      }
+
+      // Refresh domains list
+      onDomainsChange?.();
+    } catch (error: any) {
+      toast.error(error.message || 'Failed to verify nameservers');
+    } finally {
+      setIsVerifying(false);
+    }
+  }, [selectedDomains, purchasedDomains, onDomainsChange]);
+
+  // Get NS verification status badge
+  const getNsStatusBadge = (domain: Domain) => {
+    const status = domain.nameserverStatus || 'pending';
+
+    switch (status) {
+      case 'verified':
+        return (
+          <Tooltip>
+            <TooltipTrigger>
+              <Badge variant="outline" className="text-green-600 border-green-600">
+                <ShieldCheck className="h-3 w-3 mr-1" />
+                Verified
+              </Badge>
+            </TooltipTrigger>
+            <TooltipContent>
+              Nameservers confirmed at {domain.selectedProvider || 'registrar'}.
+              {domain.currentNameservers && (
+                <>
+                  <br />
+                  Current: {domain.currentNameservers.slice(0, 2).join(', ')}...
+                </>
+              )}
+            </TooltipContent>
+          </Tooltip>
+        );
+      case 'mismatch':
+        return (
+          <Tooltip>
+            <TooltipTrigger>
+              <Badge variant="outline" className="text-amber-600 border-amber-600">
+                <ShieldAlert className="h-3 w-3 mr-1" />
+                Mismatch
+              </Badge>
+            </TooltipTrigger>
+            <TooltipContent>
+              Nameservers don't match DNSimple requirements.
+              {domain.currentNameservers && (
+                <>
+                  <br />
+                  Found: {domain.currentNameservers.slice(0, 2).join(', ')}...
+                </>
+              )}
+            </TooltipContent>
+          </Tooltip>
+        );
+      case 'failed':
+        return (
+          <Tooltip>
+            <TooltipTrigger>
+              <Badge variant="outline" className="text-red-600 border-red-600">
+                <AlertCircle className="h-3 w-3 mr-1" />
+                Failed
+              </Badge>
+            </TooltipTrigger>
+            <TooltipContent>
+              Could not verify nameservers at registrar.
+              Domain may not be in Porkbun/Dynadot account.
+            </TooltipContent>
+          </Tooltip>
+        );
+      default:
+        return (
+          <Tooltip>
+            <TooltipTrigger>
+              <Badge variant="outline" className="text-gray-500 border-gray-300">
+                <ShieldQuestion className="h-3 w-3 mr-1" />
+                Pending
+              </Badge>
+            </TooltipTrigger>
+            <TooltipContent>
+              Not yet verified. Click "Verify NS" to check.
+            </TooltipContent>
+          </Tooltip>
+        );
+    }
+  };
+
   const getStatusBadge = (status: string) => {
     switch (status) {
       case 'purchased':
@@ -99,22 +233,37 @@ export function DomainsNeedingSetupTable({
               onCheckedChange={handleSelectAll}
             />
             <span className="text-sm text-orange-700">
-              {selectedDomains.size} of {purchasedDomains.length} domains selected for inbox setup
+              {selectedDomains.size} of {purchasedDomains.length} domains selected
             </span>
           </div>
-          <Button
-            size="sm"
-            disabled={selectedDomains.size === 0 || isSettingUp}
-            className="bg-orange-600 hover:bg-orange-700"
-            onClick={handleSetupClick}
-          >
-            {isSettingUp ? (
-              <Loader2 className="h-4 w-4 mr-1 animate-spin" />
-            ) : (
-              <Settings className="h-4 w-4 mr-1" />
-            )}
-            Setup Inboxes ({selectedDomains.size})
-          </Button>
+          <div className="flex gap-2">
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={selectedDomains.size === 0 || isVerifying}
+              onClick={handleVerifyNameservers}
+            >
+              {isVerifying ? (
+                <Loader2 className="h-4 w-4 mr-1 animate-spin" />
+              ) : (
+                <RefreshCw className="h-4 w-4 mr-1" />
+              )}
+              Verify NS
+            </Button>
+            <Button
+              size="sm"
+              disabled={selectedDomains.size === 0 || isSettingUp}
+              className="bg-orange-600 hover:bg-orange-700"
+              onClick={handleSetupClick}
+            >
+              {isSettingUp ? (
+                <Loader2 className="h-4 w-4 mr-1 animate-spin" />
+              ) : (
+                <Settings className="h-4 w-4 mr-1" />
+              )}
+              Setup Inboxes ({selectedDomains.size})
+            </Button>
+          </div>
         </div>
       )}
 
@@ -122,11 +271,13 @@ export function DomainsNeedingSetupTable({
         <TableHeader>
           <TableRow>
             <TableHead className="w-[40px]"></TableHead>
-            <TableHead className="w-[200px]">Domain</TableHead>
+            <TableHead className="w-[180px]">Domain</TableHead>
             <TableHead className="w-[60px] text-center">TLD</TableHead>
-            <TableHead className="w-[120px] text-center">Status</TableHead>
-            <TableHead className="w-[100px] text-center">Provider</TableHead>
-            <TableHead className="w-[150px]">Purchased</TableHead>
+            <TableHead className="w-[110px] text-center">Status</TableHead>
+            <TableHead className="w-[100px] text-center">NS Verified</TableHead>
+            <TableHead className="w-[100px] text-center">DNS Ready</TableHead>
+            <TableHead className="w-[90px] text-center">Provider</TableHead>
+            <TableHead className="w-[120px]">Purchased</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -137,6 +288,8 @@ export function DomainsNeedingSetupTable({
             const isPurchased = domain.status === 'purchased';
             const isProvisioning = domain.status === 'provisioning';
             const isSelected = selectedDomains.has(domain.id);
+            const dnsReady = isDnsReady(domain);
+            const hoursRemaining = hoursUntilDnsReady(domain);
 
             return (
               <TableRow
@@ -159,18 +312,67 @@ export function DomainsNeedingSetupTable({
                 <TableCell className="w-[60px] text-center">
                   <Badge variant="secondary">{tld}</Badge>
                 </TableCell>
-                <TableCell className="w-[120px] text-center">
+                <TableCell className="w-[110px] text-center">
                   {getStatusBadge(domain.status)}
                 </TableCell>
                 <TableCell className="w-[100px] text-center">
-                  <Badge variant="outline" className="text-xs">
+                  {getNsStatusBadge(domain)}
+                </TableCell>
+                <TableCell className="w-[100px] text-center">
+                  {domain.nameserversUpdatedAt ? (
+                    dnsReady ? (
+                      <Tooltip>
+                        <TooltipTrigger>
+                          <Badge variant="outline" className="text-green-600 border-green-600">
+                            <CheckCircle2 className="h-3 w-3 mr-1" />
+                            Ready
+                          </Badge>
+                        </TooltipTrigger>
+                        <TooltipContent>
+                          DNS propagated. Ready for Hypertide setup.
+                        </TooltipContent>
+                      </Tooltip>
+                    ) : (
+                      <Tooltip>
+                        <TooltipTrigger>
+                          <Badge variant="outline" className="text-amber-600 border-amber-600">
+                            <Clock className="h-3 w-3 mr-1" />
+                            {hoursRemaining}h left
+                          </Badge>
+                        </TooltipTrigger>
+                        <TooltipContent>
+                          DNS propagating. ~{hoursRemaining} hours until ready.
+                          <br />
+                          Started: {new Date(domain.nameserversUpdatedAt).toLocaleString()}
+                        </TooltipContent>
+                      </Tooltip>
+                    )
+                  ) : (
+                    <Tooltip>
+                      <TooltipTrigger>
+                        <Badge variant="outline" className="text-red-600 border-red-600">
+                          <AlertCircle className="h-3 w-3 mr-1" />
+                          No NS
+                        </Badge>
+                      </TooltipTrigger>
+                      <TooltipContent>
+                        Nameservers not set. This domain needs DNS configuration.
+                      </TooltipContent>
+                    </Tooltip>
+                  )}
+                </TableCell>
+                <TableCell className="w-[90px] text-center">
+                  <Badge variant="outline" className="text-xs capitalize">
                     <Server className="h-3 w-3 mr-1" />
-                    {/* Provider info could come from domain metadata */}
-                    Auto
+                    {domain.selectedProvider || '?'}
                   </Badge>
                 </TableCell>
-                <TableCell className="w-[150px] text-muted-foreground text-sm">
-                  {domain.createdAt ? new Date(domain.createdAt).toLocaleDateString() : '-'}
+                <TableCell className="w-[120px] text-muted-foreground text-sm">
+                  {domain.purchasedAt
+                    ? new Date(domain.purchasedAt).toLocaleDateString()
+                    : domain.createdAt
+                    ? new Date(domain.createdAt).toLocaleDateString()
+                    : '-'}
                 </TableCell>
               </TableRow>
             );

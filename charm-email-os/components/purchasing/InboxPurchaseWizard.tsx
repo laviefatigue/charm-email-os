@@ -186,8 +186,18 @@ export function InboxPurchaseWizard({
       if (selectedDomainIds.length > 0) {
         setSelectedDomains(new Set(selectedDomainIds));
       }
+      // Auto-load pre-generated names if available
+      const preGenerated = onboardingData?.preGeneratedSenderNames;
+      if (preGenerated && preGenerated.length > 0) {
+        const newNames: InboxName[] = preGenerated.map((n: any) => ({
+          firstName: n.firstName || n.first_name,
+          lastName: n.lastName || n.last_name,
+          emailPrefix: n.emailPrefix || n.email_prefix,
+        }));
+        setInboxNames(newNames.slice(0, 10));
+      }
     }
-  }, [open, selectedDomainIds]);
+  }, [open, selectedDomainIds, onboardingData]);
 
   // Get current step index
   const currentStepIndex = WIZARD_STEPS.findIndex((s) => s.key === currentStep);
@@ -322,6 +332,24 @@ export function InboxPurchaseWizard({
       setIsLoading(false);
     }
   }, [clientId]);
+
+  // Load pre-generated sender names from onboarding data
+  const loadPreGeneratedNames = useCallback(() => {
+    const preGenerated = onboardingData?.preGeneratedSenderNames;
+    if (!preGenerated || preGenerated.length === 0) {
+      toast.error('No pre-generated names found');
+      return;
+    }
+
+    const newNames: InboxName[] = preGenerated.map((n: any) => ({
+      firstName: n.firstName || n.first_name,
+      lastName: n.lastName || n.last_name,
+      emailPrefix: n.emailPrefix || n.email_prefix,
+    }));
+
+    setInboxNames(newNames.slice(0, 10));
+    toast.success(`Loaded ${Math.min(newNames.length, 10)} pre-generated sender names`);
+  }, [onboardingData]);
 
   // Load names from onboarding personas
   const loadFromPersonas = useCallback(() => {
@@ -550,7 +578,7 @@ export function InboxPurchaseWizard({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-[95vw] md:max-w-[90vw] lg:max-w-6xl w-full h-[90vh] flex flex-col overflow-hidden">
+      <DialogContent className="!max-w-[95vw] !w-[95vw] h-[90vh] flex flex-col overflow-hidden" style={{ maxWidth: '95vw', width: '95vw' }}>
         <DialogHeader className="flex-shrink-0 pb-4 border-b">
           <DialogTitle className="flex items-center gap-2 text-xl">
             <Mail className="h-6 w-6" />
@@ -911,8 +939,18 @@ export function InboxPurchaseWizard({
                 <CardContent className="space-y-6">
                   {/* Generate Buttons */}
                   <div className="flex gap-3 flex-wrap">
+                    {onboardingData?.preGeneratedSenderNames && onboardingData.preGeneratedSenderNames.length > 0 && (
+                      <Button onClick={loadPreGeneratedNames} variant="default" size="lg">
+                        <Check className="h-5 w-5 mr-2" />
+                        Use Pre-Generated Names ({onboardingData.preGeneratedSenderNames.length})
+                      </Button>
+                    )}
                     {onboardingData?.personas && onboardingData.personas.length > 0 && (
-                      <Button onClick={loadFromPersonas} variant="default" size="lg">
+                      <Button
+                        onClick={loadFromPersonas}
+                        variant={onboardingData?.preGeneratedSenderNames?.length ? 'outline' : 'default'}
+                        size="lg"
+                      >
                         <Users className="h-5 w-5 mr-2" />
                         Use Onboarding Personas ({onboardingData.personas.length})
                       </Button>
@@ -920,7 +958,7 @@ export function InboxPurchaseWizard({
                     <Button
                       onClick={handleGenerateNames}
                       disabled={isLoading}
-                      variant={onboardingData?.personas?.length ? 'outline' : 'default'}
+                      variant="outline"
                       size="lg"
                     >
                       {isLoading ? (

@@ -301,6 +301,78 @@ export const clientApi = {
     });
     return toCamelCase<Client>(response);
   },
+
+  /**
+   * Generate sender names for a client
+   * Generates names based on personas, custom names, or random generation
+   */
+  async generateSenderNames(
+    clientId: string,
+    options?: {
+      count?: number;
+      usePersonas?: boolean;
+      customNames?: Array<{
+        firstName: string;
+        lastName: string;
+        emailPrefix: string;
+      }>;
+    }
+  ) {
+    const response = await fetchApi<{
+      names: Array<{
+        firstName: string;
+        lastName: string;
+        emailPrefix: string;
+        source: 'persona' | 'custom' | 'generated';
+      }>;
+      total_count: number;
+      from_personas: number;
+      from_custom: number;
+      from_generated: number;
+    }>(`/api/clients/${clientId}/generate-sender-names`, {
+      method: 'POST',
+      body: JSON.stringify({
+        count: options?.count ?? 10,
+        use_personas: options?.usePersonas ?? true,
+        custom_names: options?.customNames?.map(n => ({
+          first_name: n.firstName,
+          last_name: n.lastName,
+          email_prefix: n.emailPrefix,
+        })),
+      }),
+    });
+    return {
+      names: response.names,
+      totalCount: response.total_count,
+      fromPersonas: response.from_personas,
+      fromCustom: response.from_custom,
+      fromGenerated: response.from_generated,
+    };
+  },
+
+  /**
+   * Get pre-generated sender names for a client
+   */
+  async getSenderNames(clientId: string) {
+    return fetchApi<{
+      names: Array<{
+        firstName: string;
+        lastName: string;
+        emailPrefix: string;
+        source: 'persona' | 'custom' | 'generated';
+      }>;
+      count: number;
+      preferences: {
+        usePersonas: boolean;
+        nameCount: number;
+        customNames?: Array<{
+          firstName: string;
+          lastName: string;
+          emailPrefix: string;
+        }>;
+      } | null;
+    }>(`/api/clients/${clientId}/sender-names`);
+  },
 };
 
 // ===== DOMAIN API =====

@@ -14,8 +14,9 @@ import os
 from database import fetch_all, fetch_one, execute
 from models.client import (
     Client, ClientCreate, ClientUpdate, ClientOnboard,
-    ClientList, LinkWorkspaceRequest
+    ClientList, LinkWorkspaceRequest, SenderName, SenderNamePreferences
 )
+import random
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -545,6 +546,261 @@ async def complete_onboarding(client_id: UUID, onboard: ClientOnboard):
         raise HTTPException(status_code=404, detail="Client not found")
 
     return await get_client(client_id)
+
+
+# Common first names for cold email (professional, neutral)
+FIRST_NAMES = [
+    'Alex', 'Jordan', 'Taylor', 'Morgan', 'Casey',
+    'Riley', 'Cameron', 'Avery', 'Parker', 'Quinn',
+    'Jamie', 'Drew', 'Blake', 'Reese', 'Skyler',
+    'Sam', 'Chris', 'Pat', 'Robin', 'Dana',
+]
+
+# Common last names
+LAST_NAMES = [
+    'Smith', 'Johnson', 'Williams', 'Brown', 'Davis',
+    'Miller', 'Wilson', 'Moore', 'Taylor', 'Anderson',
+    'Thomas', 'Jackson', 'White', 'Harris', 'Martin',
+    'Thompson', 'Garcia', 'Martinez', 'Robinson', 'Clark',
+]
+
+
+def generate_email_prefix(first_name: str, last_name: str) -> str:
+    """Generate email prefix from name (e.g., 'John Smith' -> 'john.smith')"""
+    return f"{first_name.lower()}.{last_name.lower()}"
+
+
+def generate_random_sender_names(count: int = 10) -> list[dict]:
+    """Generate random sender names for inbox provisioning"""
+    names = []
+    used_prefixes = set()
+    target_count = min(count, 10)  # Hypertide max is 10
+
+    while len(names) < target_count:
+        first_name = random.choice(FIRST_NAMES)
+        last_name = random.choice(LAST_NAMES)
+        email_prefix = generate_email_prefix(first_name, last_name)
+
+        if email_prefix not in used_prefixes:
+            used_prefixes.add(email_prefix)
+            names.append({
+                "firstName": first_name,
+                "lastName": last_name,
+                "emailPrefix": email_prefix,
+                "source": "generated",
+            })
+
+    return names
+
+
+def personas_to_sender_names(personas: list[dict], max_count: int = 10) -> list[dict]:
+    """Convert onboarding personas to sender names"""
+    names = []
+    used_prefixes = set()
+
+    for persona in personas:
+        if len(names) >= max_count:
+            break
+
+        # Extract first name from persona
+        first_name = persona.get("firstName") or persona.get("first_name")
+        if not first_name and persona.get("name"):
+            parts = persona["name"].split(" ")
+            first_name = parts[0]
+        if not first_name and persona.get("jobTitle") or persona.get("job_title"):
+            # Use random name if only job title provided
+            first_name = random.choice(FIRST_NAMES)
+
+        if not first_name:
+            continue
+
+        # Get or generate last name
+        last_name = persona.get("lastName") or persona.get("last_name")
+        if not last_name and persona.get("name"):
+            parts = persona["name"].split(" ")
+            last_name = parts[-1] if len(parts) > 1 else None
+        if not last_name:
+            last_name = random.choice(LAST_NAMES)
+
+        email_prefix = generate_email_prefix(first_name, last_name)
+
+        if email_prefix not in used_prefixes:
+            used_prefixes.add(email_prefix)
+            names.append({
+                "firstName": first_name,
+                "lastName": last_name,
+                "emailPrefix": email_prefix,
+                "source": "persona",
+            })
+
+    return names
+
+
+class GenerateSenderNamesRequest(BaseModel):
+    """Request to generate sender names"""
+    count: int = 10
+    use_personas: bool = True
+    custom_names: Optional[list[SenderName]] = None
+
+
+class GenerateSenderNamesResponse(BaseModel):
+    """Response with generated sender names"""
+    names: list[dict]
+    total_count: int
+    from_personas: int
+    from_custom: int
+    from_generated: int
+
+
+@router.post("/{client_id}/generate-sender-names", response_model=GenerateSenderNamesResponse)
+async def generate_sender_names(client_id: UUID, request: GenerateSenderNamesRequest):
+    """
+    Generate sender names for a client and save to their onboarding data.
+
+    Names are generated based on:
+    1. Custom names if provided
+    2. Personas from onboarding data (if use_personas=true)
+    3. Random generation to fill remaining slots
+
+    Hypertide allows max 10 names per order, and names are reused across domains.
+    """
+    # Get client with onboarding data
+    client = await fetch_one(
+        "SELECT id, name, onboarding_data FROM clients WHERE id = $1",
+        client_id
+    )
+
+    if not client:
+        raise HTTPException(status_code=404, detail="Client not found")
+
+    target_count = min(request.count, 10)  # Hypertide max
+    names = []
+    used_prefixes = set()
+    from_personas = 0
+    from_custom = 0
+    from_generated = 0
+
+    def add_name(name: dict) -> bool:
+        nonlocal from_personas, from_custom, from_generated
+        prefix = name.get("emailPrefix")
+        if prefix not in used_prefixes and len(names) < target_count:
+            used_prefixes.add(prefix)
+            names.append(name)
+            source = name.get("source", "generated")
+            if source == "persona":
+                from_personas += 1
+            elif source == "custom":
+                from_custom += 1
+            else:
+                from_generated += 1
+            return True
+        return False
+
+    # 1. Use custom names if provided
+    if request.custom_names:
+        for custom in request.custom_names:
+            add_name({
+                "firstName": custom.first_name,
+                "lastName": custom.last_name,
+                "emailPrefix": custom.email_prefix,
+                "source": "custom",
+            })
+
+    # 2. Use personas if enabled
+    if request.use_personas:
+        onboarding_data = client.get("onboarding_data")
+        if onboarding_data:
+            if isinstance(onboarding_data, str):
+                onboarding_data = json.loads(onboarding_data)
+
+            personas = onboarding_data.get("personas", [])
+            if personas:
+                persona_names = personas_to_sender_names(personas, target_count)
+                for name in persona_names:
+                    add_name(name)
+
+    # 3. Fill remaining with random names
+    if len(names) < target_count:
+        random_names = generate_random_sender_names(target_count - len(names))
+        for name in random_names:
+            add_name(name)
+
+    # Save to client's onboarding_data
+    onboarding_data = client.get("onboarding_data")
+    if isinstance(onboarding_data, str):
+        onboarding_data = json.loads(onboarding_data)
+    elif onboarding_data is None:
+        onboarding_data = {}
+
+    onboarding_data["preGeneratedSenderNames"] = names
+    onboarding_data["senderNamePreferences"] = {
+        "usePersonas": request.use_personas,
+        "nameCount": target_count,
+    }
+    if request.custom_names:
+        onboarding_data["senderNamePreferences"]["customNames"] = [
+            {
+                "firstName": n.first_name,
+                "lastName": n.last_name,
+                "emailPrefix": n.email_prefix,
+                "source": "custom",
+            }
+            for n in request.custom_names
+        ]
+
+    await execute(
+        """
+        UPDATE clients
+        SET onboarding_data = $1, updated_at = NOW()
+        WHERE id = $2
+        """,
+        json.dumps(onboarding_data),
+        client_id
+    )
+
+    logger.info(f"Generated {len(names)} sender names for client {client_id} "
+                f"(personas: {from_personas}, custom: {from_custom}, generated: {from_generated})")
+
+    return GenerateSenderNamesResponse(
+        names=names,
+        total_count=len(names),
+        from_personas=from_personas,
+        from_custom=from_custom,
+        from_generated=from_generated,
+    )
+
+
+@router.get("/{client_id}/sender-names")
+async def get_sender_names(client_id: UUID):
+    """
+    Get the pre-generated sender names for a client.
+
+    Returns the names from onboarding_data.preGeneratedSenderNames.
+    """
+    client = await fetch_one(
+        "SELECT id, onboarding_data FROM clients WHERE id = $1",
+        client_id
+    )
+
+    if not client:
+        raise HTTPException(status_code=404, detail="Client not found")
+
+    onboarding_data = client.get("onboarding_data")
+    if isinstance(onboarding_data, str):
+        onboarding_data = json.loads(onboarding_data)
+
+    names = []
+    preferences = None
+
+    if onboarding_data:
+        names = onboarding_data.get("preGeneratedSenderNames", [])
+        preferences = onboarding_data.get("senderNamePreferences")
+
+    return {
+        "names": names,
+        "count": len(names),
+        "preferences": preferences,
+    }
 
 
 @router.post("/backfill/from-workspaces")
