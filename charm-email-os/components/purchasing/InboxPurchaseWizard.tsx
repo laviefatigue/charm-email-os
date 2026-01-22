@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useMemo } from 'react';
 import {
   Dialog,
   DialogContent,
@@ -16,6 +16,7 @@ import { Badge } from '@/components/ui/badge';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Progress } from '@/components/ui/progress';
+import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import {
   Select,
   SelectContent,
@@ -30,17 +31,66 @@ import {
   Loader2,
   Check,
   X,
-  DollarSign,
   AlertTriangle,
   Users,
   RefreshCw,
   Play,
   CheckCircle,
   XCircle,
+  Package,
+  Globe,
+  Server,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { cn } from '@/lib/utils';
 import type { OnboardingData, OnboardingPersona } from '@/lib/types';
+
+// Package templates based on actual infrastructure specs
+const PACKAGE_TEMPLATES = {
+  starter: {
+    name: 'Starter Package',
+    description: '37 domains, 699 inboxes',
+    entraPackages: 6,   // 6 orders × 2 domains × 52 inboxes = 624
+    googlePackages: 5,  // 5 orders × 5 domains × 3 inboxes = 75
+    entraDomains: 12,
+    entraInboxes: 624,
+    googleDomains: 25,
+    googleInboxes: 75,
+    totalDomains: 37,
+    totalInboxes: 699,
+  },
+  growth: {
+    name: 'Growth Package',
+    description: '74 domains, 1398 inboxes',
+    entraPackages: 12,  // 12 orders × 2 domains × 52 inboxes = 1248
+    googlePackages: 10, // 10 orders × 5 domains × 3 inboxes = 150
+    entraDomains: 24,
+    entraInboxes: 1248,
+    googleDomains: 50,
+    googleInboxes: 150,
+    totalDomains: 74,
+    totalInboxes: 1398,
+  },
+  custom: {
+    name: 'Custom',
+    description: 'Configure manually',
+    entraPackages: 0,
+    googlePackages: 0,
+    entraDomains: 0,
+    entraInboxes: 0,
+    googleDomains: 0,
+    googleInboxes: 0,
+    totalDomains: 0,
+    totalInboxes: 0,
+  },
+};
+
+// Hypertide specs
+const ENTRA_INBOXES_PER_DOMAIN = 52;
+const ENTRA_DOMAINS_PER_ORDER = 2;
+const GOOGLE_INBOXES_PER_DOMAIN = 3;
+const GOOGLE_DOMAINS_PER_ORDER = 5;
+const COST_PER_ORDER = 50;
 
 // Types
 interface Domain {
@@ -54,23 +104,6 @@ interface InboxName {
   firstName: string;
   lastName: string;
   emailPrefix: string;
-}
-
-interface OrderBreakdown {
-  entraOrders: number;
-  entraDomains: number;
-  entraInboxesActual: number;
-  googleOrders: number;
-  googleDomains: number;
-  googleInboxesActual: number;
-  totalOrders: number;
-  totalInboxes: number;
-  totalDomains: number;
-  totalMonthlyCapacity: number;
-  estimatedMonthlyCost: number;
-  hasEntra: boolean;
-  hasGoogle: boolean;
-  isMixed: boolean;
 }
 
 interface JobStatus {
@@ -90,17 +123,20 @@ interface InboxPurchaseWizardProps {
   clientName: string;
   forwardingDomain: string;
   domains: Domain[];
+  selectedDomainIds?: string[];
   onboardingData?: OnboardingData;
   onComplete?: (totalInboxes: number) => void;
 }
 
-type WizardStep = 'configure' | 'names' | 'review' | 'execute';
+type WizardStep = 'domains' | 'names' | 'review' | 'execute';
+type PackageType = 'starter' | 'growth' | 'custom';
+type ProviderType = 'entra' | 'google' | 'mixed';
 
 const WIZARD_STEPS: { key: WizardStep; label: string; description: string }[] = [
-  { key: 'configure', label: 'Configure', description: 'Set inbox targets' },
-  { key: 'names', label: 'Names', description: 'Generate inbox names' },
-  { key: 'review', label: 'Review', description: 'Review order' },
-  { key: 'execute', label: 'Execute', description: 'Run automation' },
+  { key: 'domains', label: 'Domains', description: 'Select domains to provision' },
+  { key: 'names', label: 'Names', description: 'Configure inbox names' },
+  { key: 'review', label: 'Review', description: 'Review configuration' },
+  { key: 'execute', label: 'Execute', description: 'Run provisioning' },
 ];
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000/api/v1';
@@ -112,18 +148,17 @@ export function InboxPurchaseWizard({
   clientName,
   forwardingDomain,
   domains,
+  selectedDomainIds = [],
   onboardingData,
   onComplete,
 }: InboxPurchaseWizardProps) {
   // Wizard state
-  const [currentStep, setCurrentStep] = useState<WizardStep>('configure');
+  const [currentStep, setCurrentStep] = useState<WizardStep>('domains');
   const [isLoading, setIsLoading] = useState(false);
 
-  // Configuration state
-  const [entraInboxes, setEntraInboxes] = useState(100);
-  const [googleInboxes, setGoogleInboxes] = useState(0);
-  const [orderBreakdown, setOrderBreakdown] = useState<OrderBreakdown | null>(null);
-  const [selectedDomains, setSelectedDomains] = useState<string[]>([]);
+  // Domain selection state
+  const [selectedDomains, setSelectedDomains] = useState<Set<string>>(new Set(selectedDomainIds));
+  const [providerType, setProviderType] = useState<ProviderType>('entra');
 
   // Names state
   const [inboxNames, setInboxNames] = useState<InboxName[]>([]);
@@ -135,8 +170,76 @@ export function InboxPurchaseWizard({
   const [jobStatus, setJobStatus] = useState<JobStatus | null>(null);
   const [pollingInterval, setPollingInterval] = useState<NodeJS.Timeout | null>(null);
 
+  // Initialize selected domains when prop changes
+  useEffect(() => {
+    if (selectedDomainIds.length > 0) {
+      setSelectedDomains(new Set(selectedDomainIds));
+    }
+  }, [selectedDomainIds]);
+
+  // Reset state when dialog opens
+  useEffect(() => {
+    if (open) {
+      setCurrentStep('domains');
+      if (selectedDomainIds.length > 0) {
+        setSelectedDomains(new Set(selectedDomainIds));
+      }
+    }
+  }, [open, selectedDomainIds]);
+
   // Get current step index
   const currentStepIndex = WIZARD_STEPS.findIndex((s) => s.key === currentStep);
+
+  // Calculate order breakdown based on selected domains
+  const orderBreakdown = useMemo(() => {
+    const domainCount = selectedDomains.size;
+
+    if (domainCount === 0) {
+      return null;
+    }
+
+    let entraDomains = 0;
+    let googleDomains = 0;
+
+    if (providerType === 'entra') {
+      entraDomains = domainCount;
+    } else if (providerType === 'google') {
+      googleDomains = domainCount;
+    } else {
+      // Mixed: prioritize Entra (better volume), use Google for remainder
+      entraDomains = Math.min(domainCount, Math.floor(domainCount * 0.7));
+      googleDomains = domainCount - entraDomains;
+    }
+
+    // Calculate orders needed (round up to complete orders)
+    const entraOrders = Math.ceil(entraDomains / ENTRA_DOMAINS_PER_ORDER);
+    const googleOrders = Math.ceil(googleDomains / GOOGLE_DOMAINS_PER_ORDER);
+
+    // Actual domains used (orders × domains per order)
+    const entraDomainsActual = entraOrders * ENTRA_DOMAINS_PER_ORDER;
+    const googleDomainsActual = googleOrders * GOOGLE_DOMAINS_PER_ORDER;
+
+    // Inbox counts
+    const entraInboxes = entraDomainsActual * ENTRA_INBOXES_PER_DOMAIN;
+    const googleInboxes = googleDomainsActual * GOOGLE_INBOXES_PER_DOMAIN;
+
+    return {
+      selectedDomains: domainCount,
+      entraDomains: entraDomainsActual,
+      entraOrders,
+      entraInboxes,
+      googleDomains: googleDomainsActual,
+      googleOrders,
+      googleInboxes,
+      totalOrders: entraOrders + googleOrders,
+      totalDomains: entraDomainsActual + googleDomainsActual,
+      totalInboxes: entraInboxes + googleInboxes,
+      estimatedMonthlyCost: (entraOrders + googleOrders) * COST_PER_ORDER,
+      hasEntra: entraOrders > 0,
+      hasGoogle: googleOrders > 0,
+      extraDomainsNeeded: (entraDomainsActual + googleDomainsActual) - domainCount,
+    };
+  }, [selectedDomains.size, providerType]);
 
   // Cleanup polling on unmount
   useEffect(() => {
@@ -162,56 +265,27 @@ export function InboxPurchaseWizard({
     }
   };
 
-  // Calculate order breakdown
-  const handleCalculate = useCallback(async () => {
-    if (entraInboxes === 0 && googleInboxes === 0) {
-      toast.error('Set at least one inbox target');
-      return;
-    }
-
-    setIsLoading(true);
-    try {
-      const response = await fetch(`${API_BASE}/inbox-purchasing/calculate`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          client_id: clientId,
-          inbox_target: {
-            entra_inboxes: entraInboxes,
-            google_inboxes: googleInboxes,
-          },
-        }),
-      });
-
-      if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.detail || 'Failed to calculate orders');
+  // Toggle domain selection
+  const toggleDomain = (domainId: string) => {
+    setSelectedDomains((prev) => {
+      const next = new Set(prev);
+      if (next.has(domainId)) {
+        next.delete(domainId);
+      } else {
+        next.add(domainId);
       }
+      return next;
+    });
+  };
 
-      const data = await response.json();
-      setOrderBreakdown({
-        entraOrders: data.breakdown.entra_orders,
-        entraDomains: data.breakdown.entra_domains,
-        entraInboxesActual: data.breakdown.entra_inboxes_actual,
-        googleOrders: data.breakdown.google_orders,
-        googleDomains: data.breakdown.google_domains,
-        googleInboxesActual: data.breakdown.google_inboxes_actual,
-        totalOrders: data.breakdown.total_orders,
-        totalInboxes: data.breakdown.total_inboxes,
-        totalDomains: data.breakdown.total_domains,
-        totalMonthlyCapacity: data.breakdown.total_monthly_capacity,
-        estimatedMonthlyCost: data.breakdown.estimated_monthly_cost,
-        hasEntra: data.breakdown.has_entra,
-        hasGoogle: data.breakdown.has_google,
-        isMixed: data.breakdown.is_mixed,
-      });
-      toast.success('Order calculated');
-    } catch (error: any) {
-      toast.error(error.message || 'Failed to calculate');
-    } finally {
-      setIsLoading(false);
+  // Select all domains
+  const selectAllDomains = () => {
+    if (selectedDomains.size === domains.length) {
+      setSelectedDomains(new Set());
+    } else {
+      setSelectedDomains(new Set(domains.map(d => d.id)));
     }
-  }, [clientId, entraInboxes, googleInboxes]);
+  };
 
   // Generate inbox names
   const handleGenerateNames = useCallback(async () => {
@@ -222,7 +296,7 @@ export function InboxPurchaseWizard({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           client_id: clientId,
-          count: Math.min(10, orderBreakdown?.totalInboxes || 10),
+          count: 10,
         }),
       });
 
@@ -245,7 +319,7 @@ export function InboxPurchaseWizard({
     } finally {
       setIsLoading(false);
     }
-  }, [clientId, orderBreakdown]);
+  }, [clientId]);
 
   // Load names from onboarding personas
   const loadFromPersonas = useCallback(() => {
@@ -255,7 +329,6 @@ export function InboxPurchaseWizard({
       return;
     }
 
-    // Common last names to pair with job titles
     const COMMON_LAST_NAMES = [
       'Smith', 'Johnson', 'Williams', 'Brown', 'Jones', 'Garcia', 'Miller',
       'Davis', 'Rodriguez', 'Martinez', 'Anderson', 'Taylor', 'Thomas'
@@ -264,43 +337,34 @@ export function InboxPurchaseWizard({
     const newNames: InboxName[] = [];
 
     personas.forEach((persona, index) => {
-      // Try to extract first name from various sources
       let firstName = persona.first_name;
 
-      // If no first_name, try to extract from job_title (e.g., "VP Sales" -> "VP")
-      // Or use common first names based on job seniority
       if (!firstName && persona.job_title) {
-        const titleWords = persona.job_title.split(' ');
-        // Use first word of title as a base for generating a name
         const seniorityMap: Record<string, string[]> = {
           'VP': ['Alex', 'Jordan', 'Morgan', 'Taylor', 'Cameron'],
           'Director': ['Sam', 'Jamie', 'Casey', 'Riley', 'Quinn'],
           'Manager': ['Chris', 'Pat', 'Drew', 'Blake', 'Avery'],
           'Head': ['Sydney', 'Peyton', 'Skyler', 'Reese', 'Finley'],
           'Chief': ['Alex', 'Morgan', 'Jordan', 'Sage', 'Hayden'],
-          'CEO': ['Alex', 'Morgan', 'Jordan', 'Sage', 'Hayden'],
-          'CTO': ['Max', 'Sam', 'Charlie', 'Jesse', 'Phoenix'],
           'default': ['Alex', 'Jordan', 'Taylor', 'Morgan', 'Casey']
         };
 
+        const titleWords = persona.job_title.split(' ');
         const prefix = titleWords[0].toUpperCase();
         const namePool = seniorityMap[prefix] || seniorityMap['default'];
         firstName = namePool[index % namePool.length];
       }
 
       if (!firstName && persona.name) {
-        // Try to split a full name
         const nameParts = persona.name.split(' ');
         firstName = nameParts[0];
       }
 
-      // Fallback to generic first names
       if (!firstName) {
         const fallbackNames = ['Alex', 'Jordan', 'Taylor', 'Morgan', 'Casey'];
         firstName = fallbackNames[index % fallbackNames.length];
       }
 
-      // Get last name
       let lastName = persona.last_name;
       if (!lastName && persona.name) {
         const nameParts = persona.name.split(' ');
@@ -314,13 +378,11 @@ export function InboxPurchaseWizard({
 
       const emailPrefix = `${firstName.toLowerCase()}.${lastName.toLowerCase()}`;
 
-      // Avoid duplicates
       if (!newNames.some(n => n.emailPrefix === emailPrefix)) {
         newNames.push({ firstName, lastName, emailPrefix });
       }
     });
 
-    // Limit to 10 names
     const limitedNames = newNames.slice(0, 10);
     setInboxNames(limitedNames);
     toast.success(`Loaded ${limitedNames.length} names from onboarding personas`);
@@ -359,12 +421,15 @@ export function InboxPurchaseWizard({
   // Execute purchase
   const handleExecutePurchase = useCallback(async () => {
     if (!orderBreakdown) {
-      toast.error('Calculate order first');
+      toast.error('No domains selected');
       return;
     }
 
     setIsLoading(true);
     try {
+      // Get selected domain details
+      const selectedDomainsList = domains.filter(d => selectedDomains.has(d.id));
+
       const response = await fetch(`${API_BASE}/inbox-purchasing/execute`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -373,13 +438,19 @@ export function InboxPurchaseWizard({
           client_name: clientName,
           forwarding_domain: forwardingDomain,
           inbox_target: {
-            entra_inboxes: entraInboxes,
-            google_inboxes: googleInboxes,
+            entra_inboxes: orderBreakdown.entraInboxes,
+            google_inboxes: orderBreakdown.googleInboxes,
           },
           inbox_names: inboxNames.map((n) => ({
             first_name: n.firstName,
             last_name: n.lastName,
           })),
+          entra_domains: selectedDomainsList
+            .slice(0, orderBreakdown.entraDomains)
+            .map(d => ({ domain_name: d.domainName })),
+          google_domains: selectedDomainsList
+            .slice(orderBreakdown.entraDomains)
+            .map(d => ({ domain_name: d.domainName })),
           use_saved_payment: true,
         }),
       });
@@ -412,7 +483,7 @@ export function InboxPurchaseWizard({
     } finally {
       setIsLoading(false);
     }
-  }, [clientId, clientName, forwardingDomain, entraInboxes, googleInboxes, inboxNames, orderBreakdown]);
+  }, [clientId, clientName, forwardingDomain, inboxNames, orderBreakdown, domains, selectedDomains]);
 
   // Poll job status
   const pollJobStatus = async (id: string) => {
@@ -433,7 +504,6 @@ export function InboxPurchaseWizard({
         errors: data.errors || [],
       });
 
-      // Stop polling if completed or failed
       if (data.status === 'completed' || data.status === 'failed') {
         if (pollingInterval) {
           clearInterval(pollingInterval);
@@ -450,15 +520,6 @@ export function InboxPurchaseWizard({
     } catch (error) {
       console.error('Failed to poll job status:', error);
     }
-  };
-
-  // Toggle domain selection
-  const toggleDomain = (domainId: string) => {
-    setSelectedDomains((prev) =>
-      prev.includes(domainId)
-        ? prev.filter((id) => id !== domainId)
-        : [...prev, domainId]
-    );
   };
 
   // Get job progress percentage
@@ -482,16 +543,19 @@ export function InboxPurchaseWizard({
     }
   };
 
+  const canProceedFromDomains = selectedDomains.size > 0;
+  const canProceedFromNames = inboxNames.length > 0;
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <Mail className="h-5 w-5" />
-            Inbox Purchase Wizard
+            Setup Inboxes for {clientName}
           </DialogTitle>
           <DialogDescription>
-            Purchase inboxes from HyperTide (Entra or Google)
+            Configure inbox provisioning for purchased domains via HyperTide
           </DialogDescription>
         </DialogHeader>
 
@@ -533,117 +597,183 @@ export function InboxPurchaseWizard({
 
         {/* Step Content */}
         <div className="min-h-[400px]">
-          {currentStep === 'configure' && (
+          {currentStep === 'domains' && (
             <div className="space-y-6">
+              {/* Domain Selection */}
               <Card>
                 <CardHeader>
-                  <CardTitle className="text-base">Inbox Targets</CardTitle>
-                  <CardDescription>
-                    Set how many inboxes you need for {clientName}
-                  </CardDescription>
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <CardTitle className="text-base">Select Domains to Provision</CardTitle>
+                      <CardDescription>
+                        Choose which purchased domains should have inboxes created
+                      </CardDescription>
+                    </div>
+                    <Button variant="outline" size="sm" onClick={selectAllDomains}>
+                      {selectedDomains.size === domains.length ? 'Deselect All' : 'Select All'}
+                    </Button>
+                  </div>
                 </CardHeader>
-                <CardContent className="space-y-4">
-                  {/* Entra Inboxes */}
-                  <div className="space-y-2">
-                    <Label>Entra (Microsoft) Inboxes</Label>
-                    <Input
-                      type="number"
-                      value={entraInboxes}
-                      onChange={(e) => setEntraInboxes(Math.max(0, parseInt(e.target.value) || 0))}
-                      step={104}
-                      min={0}
-                    />
-                    <p className="text-xs text-muted-foreground">
-                      104 inboxes per order (2 domains × 52 inboxes). $50/mo per order.
-                    </p>
-                  </div>
-
-                  {/* Google Inboxes */}
-                  <div className="space-y-2">
-                    <Label>Google Workspace Inboxes</Label>
-                    <Input
-                      type="number"
-                      value={googleInboxes}
-                      onChange={(e) => setGoogleInboxes(Math.max(0, parseInt(e.target.value) || 0))}
-                      step={15}
-                      min={0}
-                    />
-                    <p className="text-xs text-muted-foreground">
-                      15 inboxes per order (5 domains × 3 inboxes). $50/mo per order.
-                    </p>
-                  </div>
-
-                  <Button onClick={handleCalculate} disabled={isLoading}>
-                    {isLoading ? (
-                      <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                    ) : (
-                      <RefreshCw className="h-4 w-4 mr-2" />
-                    )}
-                    Calculate Order
-                  </Button>
+                <CardContent>
+                  {domains.length === 0 ? (
+                    <div className="text-center py-8 text-muted-foreground">
+                      <Globe className="h-12 w-12 mx-auto mb-4 opacity-50" />
+                      <p>No purchased domains available for setup.</p>
+                      <p className="text-sm mt-2">Purchase domains first from the Domain Candidates table.</p>
+                    </div>
+                  ) : (
+                    <div className="space-y-2 max-h-[200px] overflow-y-auto">
+                      {domains.map((domain) => (
+                        <div
+                          key={domain.id}
+                          className={cn(
+                            'flex items-center justify-between p-3 rounded-lg border cursor-pointer transition-colors',
+                            selectedDomains.has(domain.id)
+                              ? 'bg-primary/5 border-primary'
+                              : 'hover:bg-muted/50'
+                          )}
+                          onClick={() => toggleDomain(domain.id)}
+                        >
+                          <div className="flex items-center gap-3">
+                            <Checkbox
+                              checked={selectedDomains.has(domain.id)}
+                              onCheckedChange={() => toggleDomain(domain.id)}
+                            />
+                            <div>
+                              <p className="font-medium">{domain.domainName}</p>
+                              <p className="text-xs text-muted-foreground">
+                                Status: {domain.status}
+                              </p>
+                            </div>
+                          </div>
+                          <Badge variant="outline">
+                            {domain.domainName.split('.').pop()}
+                          </Badge>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </CardContent>
               </Card>
 
-              {/* Order Breakdown */}
-              {orderBreakdown && (
+              {/* Provider Selection */}
+              {selectedDomains.size > 0 && (
                 <Card>
+                  <CardHeader>
+                    <CardTitle className="text-base">Inbox Provider</CardTitle>
+                    <CardDescription>
+                      Choose the email provider for these inboxes
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent>
+                    <RadioGroup
+                      value={providerType}
+                      onValueChange={(v) => setProviderType(v as ProviderType)}
+                      className="space-y-3"
+                    >
+                      <div className="flex items-center space-x-3 p-3 rounded-lg border hover:bg-muted/50">
+                        <RadioGroupItem value="entra" id="entra" />
+                        <Label htmlFor="entra" className="flex-1 cursor-pointer">
+                          <div className="flex items-center justify-between">
+                            <div>
+                              <p className="font-medium">Microsoft Entra</p>
+                              <p className="text-sm text-muted-foreground">
+                                52 inboxes/domain, 2 domains/order
+                              </p>
+                            </div>
+                            <Badge>Recommended</Badge>
+                          </div>
+                        </Label>
+                      </div>
+                      <div className="flex items-center space-x-3 p-3 rounded-lg border hover:bg-muted/50">
+                        <RadioGroupItem value="google" id="google" />
+                        <Label htmlFor="google" className="flex-1 cursor-pointer">
+                          <div>
+                            <p className="font-medium">Google Workspace</p>
+                            <p className="text-sm text-muted-foreground">
+                              3 inboxes/domain, 5 domains/order
+                            </p>
+                          </div>
+                        </Label>
+                      </div>
+                      <div className="flex items-center space-x-3 p-3 rounded-lg border hover:bg-muted/50">
+                        <RadioGroupItem value="mixed" id="mixed" />
+                        <Label htmlFor="mixed" className="flex-1 cursor-pointer">
+                          <div>
+                            <p className="font-medium">Mixed (70% Entra / 30% Google)</p>
+                            <p className="text-sm text-muted-foreground">
+                              Balance between volume and diversity
+                            </p>
+                          </div>
+                        </Label>
+                      </div>
+                    </RadioGroup>
+                  </CardContent>
+                </Card>
+              )}
+
+              {/* Order Preview */}
+              {orderBreakdown && (
+                <Card className="border-primary/50">
                   <CardHeader className="pb-2">
-                    <CardTitle className="text-base">Order Breakdown</CardTitle>
+                    <CardTitle className="text-base">Order Preview</CardTitle>
                   </CardHeader>
                   <CardContent>
                     <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
                       <div className="text-center p-3 bg-muted rounded-lg">
+                        <div className="text-2xl font-bold">{orderBreakdown.selectedDomains}</div>
+                        <div className="text-xs text-muted-foreground">Domains Selected</div>
+                      </div>
+                      <div className="text-center p-3 bg-muted rounded-lg">
                         <div className="text-2xl font-bold">{orderBreakdown.totalOrders}</div>
-                        <div className="text-xs text-muted-foreground">Total Orders</div>
+                        <div className="text-xs text-muted-foreground">HyperTide Orders</div>
                       </div>
                       <div className="text-center p-3 bg-muted rounded-lg">
                         <div className="text-2xl font-bold">{orderBreakdown.totalInboxes}</div>
                         <div className="text-xs text-muted-foreground">Total Inboxes</div>
                       </div>
-                      <div className="text-center p-3 bg-muted rounded-lg">
-                        <div className="text-2xl font-bold">{orderBreakdown.totalDomains}</div>
-                        <div className="text-xs text-muted-foreground">Total Domains</div>
-                      </div>
-                      <div className="text-center p-3 bg-muted rounded-lg">
-                        <div className="text-2xl font-bold text-green-600">
+                      <div className="text-center p-3 bg-green-50 rounded-lg">
+                        <div className="text-2xl font-bold text-green-700">
                           ${orderBreakdown.estimatedMonthlyCost}
                         </div>
-                        <div className="text-xs text-muted-foreground">Monthly Cost</div>
+                        <div className="text-xs text-green-600">Monthly Cost</div>
                       </div>
                     </div>
 
-                    {orderBreakdown.isMixed && (
+                    {orderBreakdown.extraDomainsNeeded > 0 && (
                       <Alert>
                         <AlertTriangle className="h-4 w-4" />
                         <AlertDescription>
-                          Mixed order: {orderBreakdown.entraOrders} Entra order(s) + {orderBreakdown.googleOrders} Google order(s).
-                          HyperTide will process these sequentially.
+                          HyperTide orders use complete packages. {orderBreakdown.extraDomainsNeeded} additional domain(s)
+                          will be purchased to fill orders.
                         </AlertDescription>
                       </Alert>
                     )}
 
                     <div className="grid grid-cols-2 gap-4 mt-4">
                       {orderBreakdown.hasEntra && (
-                        <div className="p-3 border rounded-lg">
+                        <div className="p-3 border rounded-lg bg-blue-50/50">
                           <div className="font-medium flex items-center gap-2">
-                            <Badge variant="outline">Entra</Badge>
+                            <Server className="h-4 w-4" />
+                            <Badge variant="outline" className="border-blue-600 text-blue-600">Entra</Badge>
                           </div>
-                          <div className="text-sm text-muted-foreground mt-2">
+                          <div className="text-sm text-muted-foreground mt-2 space-y-1">
                             <p>{orderBreakdown.entraOrders} order(s)</p>
                             <p>{orderBreakdown.entraDomains} domains</p>
-                            <p>{orderBreakdown.entraInboxesActual} inboxes</p>
+                            <p className="font-medium text-blue-700">{orderBreakdown.entraInboxes} inboxes</p>
                           </div>
                         </div>
                       )}
                       {orderBreakdown.hasGoogle && (
-                        <div className="p-3 border rounded-lg">
+                        <div className="p-3 border rounded-lg bg-red-50/50">
                           <div className="font-medium flex items-center gap-2">
-                            <Badge variant="outline">Google</Badge>
+                            <Server className="h-4 w-4" />
+                            <Badge variant="outline" className="border-red-600 text-red-600">Google</Badge>
                           </div>
-                          <div className="text-sm text-muted-foreground mt-2">
+                          <div className="text-sm text-muted-foreground mt-2 space-y-1">
                             <p>{orderBreakdown.googleOrders} order(s)</p>
                             <p>{orderBreakdown.googleDomains} domains</p>
-                            <p>{orderBreakdown.googleInboxesActual} inboxes</p>
+                            <p className="font-medium text-red-700">{orderBreakdown.googleInboxes} inboxes</p>
                           </div>
                         </div>
                       )}
@@ -664,7 +794,7 @@ export function InboxPurchaseWizard({
                   </CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-4">
-                  {/* Generate Button */}
+                  {/* Generate Buttons */}
                   <div className="flex gap-2 flex-wrap">
                     {onboardingData?.personas && onboardingData.personas.length > 0 && (
                       <Button onClick={loadFromPersonas} variant="default">
@@ -672,7 +802,11 @@ export function InboxPurchaseWizard({
                         Use Onboarding Personas ({onboardingData.personas.length})
                       </Button>
                     )}
-                    <Button onClick={handleGenerateNames} disabled={isLoading} variant={onboardingData?.personas?.length ? 'outline' : 'default'}>
+                    <Button
+                      onClick={handleGenerateNames}
+                      disabled={isLoading}
+                      variant={onboardingData?.personas?.length ? 'outline' : 'default'}
+                    >
                       {isLoading ? (
                         <Loader2 className="h-4 w-4 mr-2 animate-spin" />
                       ) : (
@@ -693,6 +827,7 @@ export function InboxPurchaseWizard({
                       placeholder="Last name"
                       value={customLastName}
                       onChange={(e) => setCustomLastName(e.target.value)}
+                      onKeyDown={(e) => e.key === 'Enter' && addCustomName()}
                     />
                     <Button variant="outline" onClick={addCustomName}>
                       Add
@@ -700,7 +835,7 @@ export function InboxPurchaseWizard({
                   </div>
 
                   {/* Names List */}
-                  {inboxNames.length > 0 && (
+                  {inboxNames.length > 0 ? (
                     <div className="space-y-2">
                       <Label>Names ({inboxNames.length}/10)</Label>
                       <div className="flex flex-wrap gap-2">
@@ -708,11 +843,11 @@ export function InboxPurchaseWizard({
                           <Badge
                             key={name.emailPrefix}
                             variant="secondary"
-                            className="cursor-pointer hover:bg-destructive hover:text-destructive-foreground"
+                            className="cursor-pointer hover:bg-destructive hover:text-destructive-foreground py-1 px-3"
                             onClick={() => removeName(name.emailPrefix)}
                           >
                             {name.firstName} {name.lastName}
-                            <X className="h-3 w-3 ml-1" />
+                            <X className="h-3 w-3 ml-2" />
                           </Badge>
                         ))}
                       </div>
@@ -720,27 +855,25 @@ export function InboxPurchaseWizard({
                         Click to remove. These names will be used across all purchased inboxes.
                       </p>
                     </div>
+                  ) : (
+                    <Alert>
+                      <AlertTriangle className="h-4 w-4" />
+                      <AlertDescription>
+                        No names configured. Generate names or add them manually before proceeding.
+                      </AlertDescription>
+                    </Alert>
                   )}
                 </CardContent>
               </Card>
-
-              {inboxNames.length === 0 && (
-                <Alert>
-                  <AlertTriangle className="h-4 w-4" />
-                  <AlertDescription>
-                    No names configured. HyperTide will generate default names if you continue.
-                  </AlertDescription>
-                </Alert>
-              )}
             </div>
           )}
 
           {currentStep === 'review' && (
             <div className="space-y-6">
-              <Alert>
+              <Alert className="bg-blue-50 border-blue-200">
                 <Mail className="h-4 w-4" />
                 <AlertDescription>
-                  Review your order before starting the HyperTide automation.
+                  Review your configuration before starting HyperTide automation.
                   This process typically takes 2-5 minutes per order.
                 </AlertDescription>
               </Alert>
@@ -748,7 +881,7 @@ export function InboxPurchaseWizard({
               {/* Order Summary */}
               <Card>
                 <CardHeader>
-                  <CardTitle className="text-base">Order Summary</CardTitle>
+                  <CardTitle className="text-base">Configuration Summary</CardTitle>
                 </CardHeader>
                 <CardContent>
                   <div className="space-y-4">
@@ -766,7 +899,11 @@ export function InboxPurchaseWizard({
                     {orderBreakdown && (
                       <>
                         <div className="border-t pt-4">
-                          <div className="grid grid-cols-3 gap-4 text-center">
+                          <div className="grid grid-cols-4 gap-4 text-center">
+                            <div>
+                              <div className="text-2xl font-bold">{orderBreakdown.selectedDomains}</div>
+                              <div className="text-xs text-muted-foreground">Domains</div>
+                            </div>
                             <div>
                               <div className="text-2xl font-bold">{orderBreakdown.totalOrders}</div>
                               <div className="text-xs text-muted-foreground">Orders</div>
@@ -785,18 +922,18 @@ export function InboxPurchaseWizard({
                         </div>
 
                         <div className="border-t pt-4">
-                          <span className="text-sm text-muted-foreground">Order Details</span>
+                          <span className="text-sm text-muted-foreground">Provider Breakdown</span>
                           <div className="mt-2 space-y-2">
                             {orderBreakdown.hasEntra && (
-                              <div className="flex justify-between">
+                              <div className="flex justify-between items-center p-2 bg-blue-50 rounded">
                                 <span>Entra ({orderBreakdown.entraOrders} order × $50)</span>
-                                <span>${orderBreakdown.entraOrders * 50}/mo</span>
+                                <span className="font-medium">{orderBreakdown.entraInboxes} inboxes</span>
                               </div>
                             )}
                             {orderBreakdown.hasGoogle && (
-                              <div className="flex justify-between">
+                              <div className="flex justify-between items-center p-2 bg-red-50 rounded">
                                 <span>Google ({orderBreakdown.googleOrders} order × $50)</span>
-                                <span>${orderBreakdown.googleOrders * 50}/mo</span>
+                                <span className="font-medium">{orderBreakdown.googleInboxes} inboxes</span>
                               </div>
                             )}
                           </div>
@@ -816,6 +953,18 @@ export function InboxPurchaseWizard({
                         </div>
                       </div>
                     )}
+
+                    {/* Selected Domains */}
+                    <div className="border-t pt-4">
+                      <span className="text-sm text-muted-foreground">Selected Domains ({selectedDomains.size})</span>
+                      <div className="flex flex-wrap gap-1 mt-2">
+                        {domains.filter(d => selectedDomains.has(d.id)).map((domain) => (
+                          <Badge key={domain.id} variant="secondary" className="text-xs">
+                            {domain.domainName}
+                          </Badge>
+                        ))}
+                      </div>
+                    </div>
                   </div>
                 </CardContent>
               </Card>
@@ -823,8 +972,7 @@ export function InboxPurchaseWizard({
               <Alert variant="destructive">
                 <AlertTriangle className="h-4 w-4" />
                 <AlertDescription>
-                  HyperTide automation requires browser access. Ensure the server can run Playwright.
-                  The purchase will use saved payment methods in Stripe.
+                  HyperTide automation requires browser access. The purchase will use saved payment methods in Stripe.
                 </AlertDescription>
               </Alert>
             </div>
@@ -832,7 +980,6 @@ export function InboxPurchaseWizard({
 
           {currentStep === 'execute' && (
             <div className="space-y-6">
-              {/* Progress */}
               <Card>
                 <CardHeader>
                   <CardTitle className="text-base flex items-center gap-2">
@@ -844,10 +991,10 @@ export function InboxPurchaseWizard({
                       <Loader2 className="h-5 w-5 animate-spin" />
                     )}
                     {jobStatus?.status === 'completed'
-                      ? 'Purchase Complete'
+                      ? 'Provisioning Complete'
                       : jobStatus?.status === 'failed'
-                      ? 'Purchase Failed'
-                      : 'Processing Purchase'}
+                      ? 'Provisioning Failed'
+                      : 'Processing...'}
                   </CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-4">
@@ -862,7 +1009,6 @@ export function InboxPurchaseWizard({
                     )}
                   </div>
 
-                  {/* Results */}
                   {jobStatus?.status === 'completed' && (
                     <div className="text-center p-6 bg-green-50 rounded-lg">
                       <CheckCircle className="h-12 w-12 text-green-600 mx-auto mb-2" />
@@ -872,7 +1018,6 @@ export function InboxPurchaseWizard({
                     </div>
                   )}
 
-                  {/* Errors */}
                   {jobStatus?.errors && jobStatus.errors.length > 0 && (
                     <Alert variant="destructive">
                       <AlertTriangle className="h-4 w-4" />
@@ -888,7 +1033,7 @@ export function InboxPurchaseWizard({
                 </CardContent>
               </Card>
 
-              {jobStatus?.status === 'completed' && (
+              {(jobStatus?.status === 'completed' || jobStatus?.status === 'failed') && (
                 <div className="text-center">
                   <Button onClick={() => onOpenChange(false)}>
                     Close
@@ -916,15 +1061,15 @@ export function InboxPurchaseWizard({
                 Cancel
               </Button>
 
-              {currentStep === 'configure' && (
-                <Button onClick={goNext} disabled={!orderBreakdown}>
+              {currentStep === 'domains' && (
+                <Button onClick={goNext} disabled={!canProceedFromDomains}>
                   Continue
                   <ArrowRight className="h-4 w-4 ml-2" />
                 </Button>
               )}
 
               {currentStep === 'names' && (
-                <Button onClick={goNext}>
+                <Button onClick={goNext} disabled={!canProceedFromNames}>
                   Continue
                   <ArrowRight className="h-4 w-4 ml-2" />
                 </Button>
@@ -937,7 +1082,7 @@ export function InboxPurchaseWizard({
                   ) : (
                     <Play className="h-4 w-4 mr-2" />
                   )}
-                  Start Purchase
+                  Start Provisioning
                 </Button>
               )}
             </div>

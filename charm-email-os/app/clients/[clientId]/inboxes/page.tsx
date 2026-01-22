@@ -91,6 +91,7 @@ export default function InboxesPage() {
   const [editingInbox, setEditingInbox] = useState<Inbox | null>(null);
   const [activeTab, setActiveTab] = useState<string>('inventory');
   const [showInboxPurchaseWizard, setShowInboxPurchaseWizard] = useState(false);
+  const [selectedDomainsForSetup, setSelectedDomainsForSetup] = useState<string[]>([]);
   const [canGenerateInfo, setCanGenerateInfo] = useState<CanGenerateResponse | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
 
@@ -451,7 +452,10 @@ export default function InboxesPage() {
                   <CardContent>
                     <DomainsNeedingSetupTable
                       domains={purchasedNeedingSetup}
-                      onSetupClick={() => setShowInboxPurchaseWizard(true)}
+                      onSetupClick={(selectedIds) => {
+                        setSelectedDomainsForSetup(selectedIds);
+                        setShowInboxPurchaseWizard(true);
+                      }}
                     />
                   </CardContent>
                 </Card>
@@ -562,22 +566,27 @@ export default function InboxesPage() {
         {client && (
           <InboxPurchaseWizard
             open={showInboxPurchaseWizard}
-            onOpenChange={setShowInboxPurchaseWizard}
+            onOpenChange={(open) => {
+              setShowInboxPurchaseWizard(open);
+              if (!open) setSelectedDomainsForSetup([]);
+            }}
             clientId={clientId}
             clientName={client.name}
             forwardingDomain={client.onboardingData?.primaryDomain || client.name.toLowerCase().replace(/\s+/g, '') + '.com'}
-            domains={approvedDomains.map(d => ({
+            domains={purchasedNeedingSetup.map(d => ({
               id: d.id,
-              domainName: d.domain,
+              domainName: d.domain || d.domainName || '',
               status: d.status,
               inboxCount: allInboxes.filter(i => i.domainId === d.id).length,
             }))}
+            selectedDomainIds={selectedDomainsForSetup}
             onboardingData={client.onboardingData}
             onComplete={(totalInboxes) => {
               toast.success(`Created ${totalInboxes} inboxes!`);
               // Refresh domains and inboxes
               fetchDomainsByClient(clientId);
               fetchInboxesByClient(clientId);
+              setSelectedDomainsForSetup([]);
             }}
           />
         )}
