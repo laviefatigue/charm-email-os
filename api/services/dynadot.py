@@ -601,19 +601,24 @@ class DynadotService:
             # Parse XML to find nameservers
             root = ET.fromstring(response.text)
 
-            # Dynadot returns nameservers in NameServers element
+            # Dynadot returns nameservers in NameServers/NameServer/ServerName elements
             nameservers = []
             ns_container = root.find('.//NameServers')
             if ns_container is not None:
-                for ns_elem in ns_container.findall('.//NsName'):
+                # Primary: Look for ServerName inside NameServer elements
+                for ns_elem in ns_container.findall('.//NameServer/ServerName'):
                     if ns_elem.text:
                         nameservers.append(ns_elem.text.strip())
+                # Fallback: Look for ServerName directly
+                if not nameservers:
+                    for ns_elem in ns_container.findall('.//ServerName'):
+                        if ns_elem.text:
+                            nameservers.append(ns_elem.text.strip())
 
-            # Fallback: try direct NS elements
+            # Fallback: try NsName elements (older API versions)
             if not nameservers:
-                for i in range(10):
-                    ns_elem = root.find(f'.//Ns{i}')
-                    if ns_elem is not None and ns_elem.text:
+                for ns_elem in root.findall('.//NsName'):
+                    if ns_elem.text:
                         nameservers.append(ns_elem.text.strip())
 
             return nameservers if nameservers else None
