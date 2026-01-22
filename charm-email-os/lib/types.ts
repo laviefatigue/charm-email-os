@@ -48,6 +48,15 @@ export interface Client {
 }
 
 // Onboarding data collected during client setup
+export interface OnboardingPersona {
+  job_title?: string;
+  first_name?: string;
+  last_name?: string;
+  name?: string;
+  primary_segment?: string;
+  seniority_level?: string;
+}
+
 export interface OnboardingData {
   contactFirstNames: string[];
   primaryDomain: string;
@@ -55,10 +64,11 @@ export interface OnboardingData {
   product: string;
   inboxesNeeded: number;
   notes?: string;
+  personas?: OnboardingPersona[];
 }
 
 // Domain status enum (aligned with OwnRBL)
-// Flow: pending → approved → purchased → active (with inboxes)
+// Flow: pending → approved → purchased → provisioning → active (with inboxes)
 export type DomainStatus =
   | 'pending'      // Generated, waiting for approval
   | 'pending_approval'  // Legacy alias for pending
@@ -66,8 +76,9 @@ export type DomainStatus =
   | 'rejected'    // Denied, won't purchase
   | 'purchasing'  // Legacy: purchase in progress
   | 'purchased'   // Domain bought, no inboxes yet
-  | 'active'      // Domain with active inboxes
-  | 'warming'     // Legacy
+  | 'provisioning' // Inboxes being created in Hypertide
+  | 'active'      // Domain with active inboxes in EmailBison
+  | 'warming'     // In warmup period (< 2 weeks)
   | 'flagged'     // OwnRBL: flagged for issues
   | 'dead';       // OwnRBL: dead/retired
 

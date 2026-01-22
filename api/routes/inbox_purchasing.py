@@ -443,6 +443,28 @@ async def _execute_purchase_task(
                     
                     logger.info(f"Created {created_count} inbox records in database")
                     job["db_records_created"] = created_count
+
+                    # Update domain status to 'active' for provisioned domains
+                    domains_provisioned = []
+                    for order_result in result.order_results:
+                        if order_result.success and order_result.domains_created:
+                            domains_provisioned.extend(order_result.domains_created)
+
+                    if domains_provisioned:
+                        # Update status of provisioned domains from 'purchased' to 'active'
+                        await execute(
+                            """
+                            UPDATE domains
+                            SET approval_status = 'active', updated_at = NOW()
+                            WHERE workspace_id = $1
+                            AND domain_name = ANY($2)
+                            AND approval_status IN ('purchased', 'provisioning')
+                            """,
+                            workspace_id,
+                            domains_provisioned
+                        )
+                        logger.info(f"Updated {len(domains_provisioned)} domain(s) to 'active' status")
+                        job["domains_activated"] = domains_provisioned
             except Exception as db_error:
                 logger.error(f"Failed to save inboxes to database: {db_error}")
                 job["db_error"] = str(db_error)

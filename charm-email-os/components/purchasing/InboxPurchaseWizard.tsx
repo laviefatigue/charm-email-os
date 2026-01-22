@@ -40,6 +40,7 @@ import {
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { cn } from '@/lib/utils';
+import type { OnboardingData, OnboardingPersona } from '@/lib/types';
 
 // Types
 interface Domain {
@@ -89,6 +90,7 @@ interface InboxPurchaseWizardProps {
   clientName: string;
   forwardingDomain: string;
   domains: Domain[];
+  onboardingData?: OnboardingData;
   onComplete?: (totalInboxes: number) => void;
 }
 
@@ -110,6 +112,7 @@ export function InboxPurchaseWizard({
   clientName,
   forwardingDomain,
   domains,
+  onboardingData,
   onComplete,
 }: InboxPurchaseWizardProps) {
   // Wizard state
@@ -243,6 +246,85 @@ export function InboxPurchaseWizard({
       setIsLoading(false);
     }
   }, [clientId, orderBreakdown]);
+
+  // Load names from onboarding personas
+  const loadFromPersonas = useCallback(() => {
+    const personas = onboardingData?.personas;
+    if (!personas || personas.length === 0) {
+      toast.error('No personas found in onboarding data');
+      return;
+    }
+
+    // Common last names to pair with job titles
+    const COMMON_LAST_NAMES = [
+      'Smith', 'Johnson', 'Williams', 'Brown', 'Jones', 'Garcia', 'Miller',
+      'Davis', 'Rodriguez', 'Martinez', 'Anderson', 'Taylor', 'Thomas'
+    ];
+
+    const newNames: InboxName[] = [];
+
+    personas.forEach((persona, index) => {
+      // Try to extract first name from various sources
+      let firstName = persona.first_name;
+
+      // If no first_name, try to extract from job_title (e.g., "VP Sales" -> "VP")
+      // Or use common first names based on job seniority
+      if (!firstName && persona.job_title) {
+        const titleWords = persona.job_title.split(' ');
+        // Use first word of title as a base for generating a name
+        const seniorityMap: Record<string, string[]> = {
+          'VP': ['Alex', 'Jordan', 'Morgan', 'Taylor', 'Cameron'],
+          'Director': ['Sam', 'Jamie', 'Casey', 'Riley', 'Quinn'],
+          'Manager': ['Chris', 'Pat', 'Drew', 'Blake', 'Avery'],
+          'Head': ['Sydney', 'Peyton', 'Skyler', 'Reese', 'Finley'],
+          'Chief': ['Alex', 'Morgan', 'Jordan', 'Sage', 'Hayden'],
+          'CEO': ['Alex', 'Morgan', 'Jordan', 'Sage', 'Hayden'],
+          'CTO': ['Max', 'Sam', 'Charlie', 'Jesse', 'Phoenix'],
+          'default': ['Alex', 'Jordan', 'Taylor', 'Morgan', 'Casey']
+        };
+
+        const prefix = titleWords[0].toUpperCase();
+        const namePool = seniorityMap[prefix] || seniorityMap['default'];
+        firstName = namePool[index % namePool.length];
+      }
+
+      if (!firstName && persona.name) {
+        // Try to split a full name
+        const nameParts = persona.name.split(' ');
+        firstName = nameParts[0];
+      }
+
+      // Fallback to generic first names
+      if (!firstName) {
+        const fallbackNames = ['Alex', 'Jordan', 'Taylor', 'Morgan', 'Casey'];
+        firstName = fallbackNames[index % fallbackNames.length];
+      }
+
+      // Get last name
+      let lastName = persona.last_name;
+      if (!lastName && persona.name) {
+        const nameParts = persona.name.split(' ');
+        if (nameParts.length > 1) {
+          lastName = nameParts.slice(1).join(' ');
+        }
+      }
+      if (!lastName) {
+        lastName = COMMON_LAST_NAMES[index % COMMON_LAST_NAMES.length];
+      }
+
+      const emailPrefix = `${firstName.toLowerCase()}.${lastName.toLowerCase()}`;
+
+      // Avoid duplicates
+      if (!newNames.some(n => n.emailPrefix === emailPrefix)) {
+        newNames.push({ firstName, lastName, emailPrefix });
+      }
+    });
+
+    // Limit to 10 names
+    const limitedNames = newNames.slice(0, 10);
+    setInboxNames(limitedNames);
+    toast.success(`Loaded ${limitedNames.length} names from onboarding personas`);
+  }, [onboardingData]);
 
   // Add custom name
   const addCustomName = () => {
@@ -468,11 +550,11 @@ export function InboxPurchaseWizard({
                       type="number"
                       value={entraInboxes}
                       onChange={(e) => setEntraInboxes(Math.max(0, parseInt(e.target.value) || 0))}
-                      step={100}
+                      step={104}
                       min={0}
                     />
                     <p className="text-xs text-muted-foreground">
-                      100 inboxes per order (2 domains × 50 inboxes). $50/mo per order.
+                      104 inboxes per order (2 domains × 52 inboxes). $50/mo per order.
                     </p>
                   </div>
 
@@ -583,12 +665,18 @@ export function InboxPurchaseWizard({
                 </CardHeader>
                 <CardContent className="space-y-4">
                   {/* Generate Button */}
-                  <div className="flex gap-2">
-                    <Button onClick={handleGenerateNames} disabled={isLoading}>
+                  <div className="flex gap-2 flex-wrap">
+                    {onboardingData?.personas && onboardingData.personas.length > 0 && (
+                      <Button onClick={loadFromPersonas} variant="default">
+                        <Users className="h-4 w-4 mr-2" />
+                        Use Onboarding Personas ({onboardingData.personas.length})
+                      </Button>
+                    )}
+                    <Button onClick={handleGenerateNames} disabled={isLoading} variant={onboardingData?.personas?.length ? 'outline' : 'default'}>
                       {isLoading ? (
                         <Loader2 className="h-4 w-4 mr-2 animate-spin" />
                       ) : (
-                        <Users className="h-4 w-4 mr-2" />
+                        <RefreshCw className="h-4 w-4 mr-2" />
                       )}
                       Generate Random Names
                     </Button>

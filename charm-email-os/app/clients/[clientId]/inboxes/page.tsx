@@ -20,7 +20,7 @@ import {
   InboxEditModal,
   DomainInboxTree,
 } from '@/components/inboxes';
-import { InboxPurchaseWizard, DomainCandidatesTable } from '@/components/purchasing';
+import { InboxPurchaseWizard, DomainCandidatesTable, DomainsNeedingSetupTable } from '@/components/purchasing';
 import { useClientStore, useInfrastructureStore } from '@/lib/stores';
 import { domainSourcingApi, type CanGenerateResponse, type GenerateForClientResponse } from '@/lib/api';
 import type { Domain, Inbox } from '@/lib/types';
@@ -61,14 +61,19 @@ export default function InboxesPage() {
   // Filter domains/inboxes for this client - now reactive because we subscribe to the arrays
   const domains = useMemo(() => allDomains.filter((d) => d.clientId === clientId), [allDomains, clientId]);
 
-  // Inventory domains: purchased or active (domains we own)
+  // Inventory domains: ONLY domains with active inboxes in EmailBison (not purchased-only)
   const inventoryDomains = useMemo(() => allDomains.filter(
-    (d) => d.clientId === clientId && (d.status === 'purchased' || d.status === 'active' || d.status === 'warming' || d.status === 'flagged' || d.status === 'dead')
+    (d) => d.clientId === clientId && (d.status === 'active' || d.status === 'warming' || d.status === 'flagged' || d.status === 'dead')
   ), [allDomains, clientId]);
 
-  // Purchase domains: pending, approved, or rejected (domains to review/buy - rejected stays visible)
+  // Purchase domains: pending, approved, rejected, purchased (need inbox setup), provisioning
   const purchaseDomains = useMemo(() => allDomains.filter(
-    (d) => d.clientId === clientId && (d.status === 'pending' || d.status === 'pending_approval' || d.status === 'approved' || d.status === 'rejected')
+    (d) => d.clientId === clientId && (d.status === 'pending' || d.status === 'pending_approval' || d.status === 'approved' || d.status === 'rejected' || d.status === 'purchased' || d.status === 'provisioning')
+  ), [allDomains, clientId]);
+
+  // Purchased domains needing inbox setup (bought but no inboxes yet)
+  const purchasedNeedingSetup = useMemo(() => allDomains.filter(
+    (d) => d.clientId === clientId && (d.status === 'purchased' || d.status === 'provisioning')
   ), [allDomains, clientId]);
 
   // Approved domains ready for inbox creation (purchased or active)
@@ -426,6 +431,31 @@ export default function InboxesPage() {
                 </Card>
               )}
 
+              {/* Domains Ready for Inbox Setup - Step 2 */}
+              {purchasedNeedingSetup.length > 0 && (
+                <Card>
+                  <CardHeader>
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <CardTitle className="text-base font-semibold flex items-center gap-2">
+                          <Mail className="h-4 w-4" />
+                          Step 2: Setup Inboxes
+                        </CardTitle>
+                        <CardDescription className="mt-1">
+                          These domains are purchased and ready for inbox provisioning in Hypertide
+                        </CardDescription>
+                      </div>
+                    </div>
+                  </CardHeader>
+                  <CardContent>
+                    <DomainsNeedingSetupTable
+                      domains={purchasedNeedingSetup}
+                      onSetupClick={() => setShowInboxPurchaseWizard(true)}
+                    />
+                  </CardContent>
+                </Card>
+              )}
+
               {/* Inbox Purchasing Card - Only show when we have purchased domains */}
               {approvedDomains.length > 0 && (
                 <Card>
@@ -444,7 +474,7 @@ export default function InboxesPage() {
                         <ul className="space-y-2">
                           <li className="flex items-center gap-2">
                             <div className="h-1.5 w-1.5 rounded-full bg-primary" />
-                            Entra: 100 inboxes/order (2 domains × 50 inboxes)
+                            Entra: 104 inboxes/order (2 domains × 52 inboxes)
                           </li>
                           <li className="flex items-center gap-2">
                             <div className="h-1.5 w-1.5 rounded-full bg-primary" />
@@ -474,7 +504,7 @@ export default function InboxesPage() {
                   <CardTitle className="text-base">Domain Pipeline Summary</CardTitle>
                 </CardHeader>
                 <CardContent>
-                  <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                  <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
                     <div className="text-center p-3 bg-yellow-50 rounded-lg">
                       <div className="text-2xl font-bold text-yellow-700">{pendingDomainsCount}</div>
                       <div className="text-xs text-yellow-600">Pending Approval</div>
@@ -483,9 +513,13 @@ export default function InboxesPage() {
                       <div className="text-2xl font-bold text-blue-700">{approvedDomainsCount}</div>
                       <div className="text-xs text-blue-600">Ready to Purchase</div>
                     </div>
+                    <div className="text-center p-3 bg-orange-50 rounded-lg">
+                      <div className="text-2xl font-bold text-orange-700">{purchasedNeedingSetup.length}</div>
+                      <div className="text-xs text-orange-600">Needs Inbox Setup</div>
+                    </div>
                     <div className="text-center p-3 bg-green-50 rounded-lg">
                       <div className="text-2xl font-bold text-green-700">{inventoryDomains.length}</div>
-                      <div className="text-xs text-green-600">Purchased</div>
+                      <div className="text-xs text-green-600">Active Inventory</div>
                     </div>
                     <div className="text-center p-3 bg-muted rounded-lg">
                       <div className="text-2xl font-bold">{allInboxes.length}</div>
@@ -537,9 +571,11 @@ export default function InboxesPage() {
               status: d.status,
               inboxCount: allInboxes.filter(i => i.domainId === d.id).length,
             }))}
+            onboardingData={client.onboardingData}
             onComplete={(totalInboxes) => {
               toast.success(`Created ${totalInboxes} inboxes!`);
-              // Refresh inboxes list
+              // Refresh domains and inboxes
+              fetchDomainsByClient(clientId);
               fetchInboxesByClient(clientId);
             }}
           />
