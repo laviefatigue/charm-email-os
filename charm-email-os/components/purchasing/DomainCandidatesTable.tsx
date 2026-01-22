@@ -159,18 +159,21 @@ export function DomainCandidatesTable({
 
     setIsBulkPurchasing(true);
     let successCount = 0;
-    let failCount = 0;
+    const errors: string[] = [];
 
     for (const domain of selectedQualified) {
+      const domainName = domain.domainName || domain.domain || domain.id;
       try {
         const result = await domainSourcingApi.purchaseSingle(domain.id);
         if (result.success) {
           successCount++;
         } else {
-          failCount++;
+          errors.push(result.error || `${domainName}: Purchase failed`);
         }
-      } catch {
-        failCount++;
+      } catch (err: unknown) {
+        // Extract detailed error message from API response
+        const errorMsg = err instanceof Error ? err.message : 'Unknown error';
+        errors.push(`${domainName}: ${errorMsg}`);
       }
     }
 
@@ -180,8 +183,9 @@ export function DomainCandidatesTable({
     if (successCount > 0) {
       toast.success(`Purchased ${successCount} domain${successCount > 1 ? 's' : ''}`);
     }
-    if (failCount > 0) {
-      toast.error(`Failed to purchase ${failCount} domain${failCount > 1 ? 's' : ''}`);
+    if (errors.length > 0) {
+      // Show detailed error message
+      toast.error(errors[0], { duration: 8000 });
     }
 
     onDomainUpdate?.();
