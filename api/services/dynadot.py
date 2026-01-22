@@ -258,8 +258,11 @@ class DynadotService:
             )
             response.raise_for_status()
 
-            logger.debug(f"Dynadot response status: {response.status_code}")
+            logger.info(f"Dynadot response status: {response.status_code}")
+            # Log raw XML for debugging (first 1000 chars)
+            logger.info(f"Dynadot raw response: {response.text[:1000]}")
             data = self._parse_xml_response(response.text)
+            logger.info(f"Dynadot parsed data: {data}")
 
             if data.get("status", "").lower() == "success":
                 results = data.get("search_results", [])
