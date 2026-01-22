@@ -244,26 +244,54 @@ class DynadotService:
 
     async def get_balance(self) -> Decimal:
         """
-        Get account balance.
+        Get account balance using Dynadot's get_account_balance command.
 
         Returns:
             Current balance in USD
         """
+        # Check if API key is configured
+        if not self.api_key:
+            logger.warning("Dynadot API key not configured")
+            return Decimal("0")
+
         try:
+            # Use get_account_balance command (not account_info)
             response = await self.client.get(
                 self.base_url,
                 params={
                     "key": self.api_key,
-                    "command": "account_info",
+                    "command": "get_account_balance",
                 },
             )
             response.raise_for_status()
 
-            # Parse XML to find balance
+            # Log raw response for debugging
+            logger.info(f"Dynadot balance response: {response.text[:500]}")
+
+            # Parse XML to find balance - try multiple possible element names
             root = ET.fromstring(response.text)
-            balance_elem = root.find('.//AccountBalance')
-            if balance_elem is not None:
-                return Decimal(balance_elem.text or "0")
+
+            # Try various possible element paths
+            balance_paths = [
+                './/Balance',
+                './/AccountBalance',
+                './/balance',
+                './/Content/Balance',
+                './/GetAccountBalanceContent/Balance',
+            ]
+
+            for path in balance_paths:
+                balance_elem = root.find(path)
+                if balance_elem is not None and balance_elem.text:
+                    try:
+                        balance = Decimal(balance_elem.text.strip())
+                        logger.info(f"Dynadot balance found at {path}: ${balance}")
+                        return balance
+                    except Exception as e:
+                        logger.warning(f"Failed to parse balance at {path}: {e}")
+
+            # Log the full XML structure for debugging
+            logger.warning(f"Could not find balance in Dynadot response. Full XML: {response.text}")
             return Decimal("0")
 
         except Exception as e:
