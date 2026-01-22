@@ -148,18 +148,30 @@ class DynadotService:
                     logger.debug(f"Dynadot parsed result: {domain_result}")
                 result['search_results'] = results
             else:
-                # Fallback: try direct SearchResult under root
-                results = []
-                for item in root.findall('.//SearchResult'):
+                # Fallback 1: Check if SearchHeader contains domain info directly
+                # Dynadot sometimes returns: <SearchHeader><DomainName>...</DomainName><Available>yes</Available></SearchHeader>
+                if header is not None and header.findtext('DomainName'):
                     domain_result = {
-                        'domain': item.findtext('DomainName', ''),
-                        'available': item.findtext('Available', 'no').lower() == 'yes',
-                        'price': item.findtext('Price', ''),
-                        'currency': item.findtext('Currency', 'USD'),
+                        'domain': header.findtext('DomainName', ''),
+                        'available': header.findtext('Available', 'no').lower() == 'yes',
+                        'price': header.findtext('Price', ''),
+                        'currency': header.findtext('Currency', 'USD'),
                     }
-                    results.append(domain_result)
-                if results:
-                    result['search_results'] = results
+                    logger.info(f"Dynadot parsed from SearchHeader: {domain_result}")
+                    result['search_results'] = [domain_result]
+                else:
+                    # Fallback 2: try direct SearchResult under root
+                    results = []
+                    for item in root.findall('.//SearchResult'):
+                        domain_result = {
+                            'domain': item.findtext('DomainName', ''),
+                            'available': item.findtext('Available', 'no').lower() == 'yes',
+                            'price': item.findtext('Price', ''),
+                            'currency': item.findtext('Currency', 'USD'),
+                        }
+                        results.append(domain_result)
+                    if results:
+                        result['search_results'] = results
 
             # Get registration result
             reg_response = root.find('.//RegisterResponse')
@@ -254,6 +266,8 @@ class DynadotService:
                     "key": self.api_key,
                     "command": "search",
                     "domain0": domain,
+                    "show_price": "1",  # Request pricing information
+                    "currency": "USD",
                 },
             )
             response.raise_for_status()
@@ -347,6 +361,8 @@ class DynadotService:
                 params = {
                     "key": self.api_key,
                     "command": "search",
+                    "show_price": "1",  # Request pricing information
+                    "currency": "USD",
                 }
                 for j, domain in enumerate(batch):
                     params[f"domain{j}"] = domain
