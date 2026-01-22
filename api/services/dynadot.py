@@ -559,7 +559,16 @@ class DynadotService:
             response = await self.client.get(self.base_url, params=params)
             response.raise_for_status()
 
+            # Log the raw response for debugging
+            logger.info(f"Dynadot set_ns response for {domain}: {response.text[:500]}")
+
             data = self._parse_xml_response(response.text)
+            logger.info(f"Dynadot parsed data for {domain}: {data}")
+
+            if data.get("error"):
+                logger.warning(f"Dynadot set_ns error for {domain}: {data.get('error')}")
+                return False
+
             return data.get("status", "").lower() == "success"
 
         except Exception as e:
