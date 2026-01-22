@@ -344,3 +344,60 @@ async def generate_domains(request: DomainGenerateRequest):
         "message": "Domain created",
         "domain": dict(result)
     }
+
+
+@router.post("/migrate/activate-domains-with-inboxes")
+async def migrate_activate_domains_with_inboxes():
+    """
+    Migration endpoint: Update domains that have inboxes to 'active' status.
+
+    This fixes domains that were purchased and have inboxes set up but still
+    show 'purchased' status, causing them to appear in the wrong tab.
+    """
+    # First, find domains with inboxes that are still marked as 'purchased'
+    domains_to_update = await fetch_all("""
+        SELECT
+            d.id,
+            d.domain_name,
+            d.approval_status,
+            COUNT(sa.id) as inbox_count
+        FROM domains d
+        INNER JOIN sender_accounts sa
+            ON SPLIT_PART(sa.email_address, '@', 2) = d.domain_name
+            AND sa.workspace_id = d.workspace_id
+        WHERE d.approval_status = 'purchased'
+           OR d.approval_status IS NULL
+        GROUP BY d.id, d.domain_name, d.approval_status
+        HAVING COUNT(sa.id) > 0
+    """)
+
+    if not domains_to_update:
+        return {
+            "message": "No domains need migration",
+            "updated_count": 0,
+            "domains": []
+        }
+
+    # Update each domain to 'active' status
+    domain_ids = [d["id"] for d in domains_to_update]
+
+    await execute("""
+        UPDATE domains
+        SET approval_status = 'active',
+            updated_at = NOW()
+        WHERE id = ANY($1)
+    """, domain_ids)
+
+    return {
+        "message": f"Successfully migrated {len(domains_to_update)} domains to 'active' status",
+        "updated_count": len(domains_to_update),
+        "domains": [
+            {
+                "id": str(d["id"]),
+                "domain_name": d["domain_name"],
+                "previous_status": d["approval_status"],
+                "inbox_count": d["inbox_count"]
+            }
+            for d in domains_to_update
+        ]
+    }
