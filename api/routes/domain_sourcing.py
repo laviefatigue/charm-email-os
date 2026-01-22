@@ -1813,8 +1813,12 @@ async def update_nameservers(request: UpdateNameserversRequest):
 
     try:
         for domain_name in request.domain_names:
+            porkbun_error = None
+            dynadot_error = None
+
             # Try Porkbun first
             try:
+                logger.info(f"Trying Porkbun for {domain_name}")
                 success = await porkbun.set_nameservers(domain_name, request.nameservers)
                 if success:
                     results.append({
@@ -1826,11 +1830,16 @@ async def update_nameservers(request: UpdateNameserversRequest):
                     successful_count += 1
                     logger.info(f"Updated nameservers for {domain_name} via Porkbun")
                     continue
+                else:
+                    porkbun_error = "API returned failure (domain may not be in this account)"
+                    logger.info(f"Porkbun returned False for {domain_name}")
             except Exception as e:
-                logger.debug(f"Porkbun failed for {domain_name}: {e}")
+                porkbun_error = str(e)
+                logger.info(f"Porkbun exception for {domain_name}: {e}")
 
             # Try Dynadot
             try:
+                logger.info(f"Trying Dynadot for {domain_name}")
                 success = await dynadot.set_nameservers(domain_name, request.nameservers)
                 if success:
                     results.append({
@@ -1842,14 +1851,18 @@ async def update_nameservers(request: UpdateNameserversRequest):
                     successful_count += 1
                     logger.info(f"Updated nameservers for {domain_name} via Dynadot")
                     continue
+                else:
+                    dynadot_error = "API returned failure (domain may not be in this account)"
+                    logger.info(f"Dynadot returned False for {domain_name}")
             except Exception as e:
-                logger.debug(f"Dynadot failed for {domain_name}: {e}")
+                dynadot_error = str(e)
+                logger.info(f"Dynadot exception for {domain_name}: {e}")
 
             # Both failed
             results.append({
                 "domain": domain_name,
                 "success": False,
-                "error": "Domain not found in Porkbun or Dynadot, or update failed",
+                "error": f"Porkbun: {porkbun_error}, Dynadot: {dynadot_error}",
             })
             failed_count += 1
 
