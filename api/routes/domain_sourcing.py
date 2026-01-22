@@ -1198,7 +1198,7 @@ async def can_generate_domains(client_id: UUID):
 from services.porkbun import PorkbunService, DomainCheckResult as PorkbunCheckResult
 from services.dynadot import DynadotService, DomainCheckResult as DynadotCheckResult
 from services.domain_generator import generate_domain_suggestions, DomainSuggestion
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 import json
 
 
