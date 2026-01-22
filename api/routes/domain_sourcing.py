@@ -1767,3 +1767,101 @@ async def purchase_approved_domains(request: PurchaseDomainsRequest):
 
     finally:
         await porkbun.close()
+
+
+class UpdateNameserversRequest(BaseModel):
+    """Request to update nameservers for existing domains."""
+    domain_names: list[str] = Field(..., description="Domain names to update")
+    nameservers: list[str] = Field(
+        default_factory=lambda: [
+            "ns1.dnsimple.com",
+            "ns2.dnsimple-edge.net",
+            "ns3.dnsimple.com",
+            "ns4.dnsimple-edge.org",
+        ],
+        description="DNSimple nameservers required by Hypertide"
+    )
+
+
+class UpdateNameserversResponse(BaseModel):
+    """Response from nameserver update."""
+    results: list[dict]
+    successful_count: int
+    failed_count: int
+
+
+@router.post("/update-nameservers", response_model=UpdateNameserversResponse)
+async def update_nameservers(request: UpdateNameserversRequest):
+    """
+    Update nameservers for existing domains.
+
+    Use this to fix domains that were purchased with incorrect nameservers.
+    Domains must be owned in either Porkbun or Dynadot.
+
+    Hypertide requires these DNSimple nameservers:
+    - ns1.dnsimple.com
+    - ns2.dnsimple-edge.net
+    - ns3.dnsimple.com
+    - ns4.dnsimple-edge.org
+    """
+    from api.services.porkbun import PorkbunClient
+    from api.services.dynadot import DynadotClient
+
+    porkbun = PorkbunClient()
+    dynadot = DynadotClient()
+
+    results = []
+    successful_count = 0
+    failed_count = 0
+
+    try:
+        for domain_name in request.domain_names:
+            # Try Porkbun first
+            try:
+                success = await porkbun.set_nameservers(domain_name, request.nameservers)
+                if success:
+                    results.append({
+                        "domain": domain_name,
+                        "success": True,
+                        "registrar": "porkbun",
+                        "nameservers": request.nameservers,
+                    })
+                    successful_count += 1
+                    logger.info(f"Updated nameservers for {domain_name} via Porkbun")
+                    continue
+            except Exception as e:
+                logger.debug(f"Porkbun failed for {domain_name}: {e}")
+
+            # Try Dynadot
+            try:
+                success = await dynadot.set_nameservers(domain_name, request.nameservers)
+                if success:
+                    results.append({
+                        "domain": domain_name,
+                        "success": True,
+                        "registrar": "dynadot",
+                        "nameservers": request.nameservers,
+                    })
+                    successful_count += 1
+                    logger.info(f"Updated nameservers for {domain_name} via Dynadot")
+                    continue
+            except Exception as e:
+                logger.debug(f"Dynadot failed for {domain_name}: {e}")
+
+            # Both failed
+            results.append({
+                "domain": domain_name,
+                "success": False,
+                "error": "Domain not found in Porkbun or Dynadot, or update failed",
+            })
+            failed_count += 1
+
+        return UpdateNameserversResponse(
+            results=results,
+            successful_count=successful_count,
+            failed_count=failed_count,
+        )
+
+    finally:
+        await porkbun.close()
+        await dynadot.close()

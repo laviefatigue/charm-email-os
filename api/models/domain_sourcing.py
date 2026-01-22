@@ -127,10 +127,12 @@ class DomainPurchaseRequest(BaseModel):
     approved_domains: list[dict] = Field(..., description="Approved domains to purchase")
     nameservers: list[str] = Field(
         default_factory=lambda: [
-            "ns1.hypertide.io",
-            "ns2.hypertide.io",
+            "ns1.dnsimple.com",
+            "ns2.dnsimple-edge.net",
+            "ns3.dnsimple.com",
+            "ns4.dnsimple-edge.org",
         ],
-        description="Nameservers to set after purchase"
+        description="DNSimple nameservers required by Hypertide"
     )
 
 
