@@ -346,28 +346,34 @@ async def generate_domains(request: DomainGenerateRequest):
     }
 
 
-@router.post("/migrate/activate-domains-with-inboxes")
-async def migrate_activate_domains_with_inboxes():
+@router.post("/migrate/legacy-domains-with-inboxes")
+async def migrate_legacy_domains_with_inboxes():
     """
-    Migration endpoint: Update domains that have inboxes to 'active' status.
+    Migration endpoint: Update pre-existing domains with inboxes to 'legacy' status.
 
-    This fixes domains that were purchased and have inboxes set up but still
-    show 'purchased' status, causing them to appear in the wrong tab.
+    These are domains that existed before the new purchase workflow (1/22/26).
+    They have inboxes but weren't created through the proper flow, so they
+    need to be marked as 'legacy' for later audit while still appearing
+    in Current Inventory.
+
+    'legacy' status = managed infrastructure, needs audit to assign proper ownership
     """
-    # First, find domains with inboxes that are still marked as 'purchased'
+    # Find domains with inboxes that are NOT already in a proper managed state
+    # Exclude: active (properly provisioned), legacy (already migrated), warming, flagged, dead
     domains_to_update = await fetch_all("""
         SELECT
             d.id,
             d.domain_name,
             d.approval_status,
+            d.created_at,
             COUNT(sa.id) as inbox_count
         FROM domains d
         INNER JOIN sender_accounts sa
             ON SPLIT_PART(sa.email_address, '@', 2) = d.domain_name
             AND sa.workspace_id = d.workspace_id
-        WHERE d.approval_status = 'purchased'
-           OR d.approval_status IS NULL
-        GROUP BY d.id, d.domain_name, d.approval_status
+        WHERE d.approval_status IS NULL
+           OR d.approval_status IN ('purchased', 'pending', 'approved')
+        GROUP BY d.id, d.domain_name, d.approval_status, d.created_at
         HAVING COUNT(sa.id) > 0
     """)
 
@@ -378,25 +384,27 @@ async def migrate_activate_domains_with_inboxes():
             "domains": []
         }
 
-    # Update each domain to 'active' status
+    # Update to 'legacy' status (admin bypass for pre-existing infrastructure)
     domain_ids = [d["id"] for d in domains_to_update]
 
     await execute("""
         UPDATE domains
-        SET approval_status = 'active',
+        SET approval_status = 'legacy',
             updated_at = NOW()
         WHERE id = ANY($1)
     """, domain_ids)
 
     return {
-        "message": f"Successfully migrated {len(domains_to_update)} domains to 'active' status",
+        "message": f"Successfully migrated {len(domains_to_update)} domains to 'legacy' status",
         "updated_count": len(domains_to_update),
+        "note": "Legacy domains appear in Current Inventory but need audit for proper ownership assignment",
         "domains": [
             {
                 "id": str(d["id"]),
                 "domain_name": d["domain_name"],
                 "previous_status": d["approval_status"],
-                "inbox_count": d["inbox_count"]
+                "inbox_count": d["inbox_count"],
+                "created_at": str(d["created_at"]) if d["created_at"] else None
             }
             for d in domains_to_update
         ]

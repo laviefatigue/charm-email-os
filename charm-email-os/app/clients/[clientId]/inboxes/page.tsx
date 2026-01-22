@@ -61,9 +61,10 @@ export default function InboxesPage() {
   // Filter domains/inboxes for this client - now reactive because we subscribe to the arrays
   const domains = useMemo(() => allDomains.filter((d) => d.clientId === clientId), [allDomains, clientId]);
 
-  // Inventory domains: ONLY domains with active inboxes in EmailBison (not purchased-only)
+  // Inventory domains: Domains with inboxes in EmailBison (active, legacy, warming, flagged, dead)
+  // 'legacy' = pre-existing domains before new workflow (1/22/26) - managed but needs audit
   const inventoryDomains = useMemo(() => allDomains.filter(
-    (d) => d.clientId === clientId && (d.status === 'active' || d.status === 'warming' || d.status === 'flagged' || d.status === 'dead')
+    (d) => d.clientId === clientId && (d.status === 'active' || d.status === 'legacy' || d.status === 'warming' || d.status === 'flagged' || d.status === 'dead')
   ), [allDomains, clientId]);
 
   // Purchase domains: pending, approved, rejected, purchased (need inbox setup), provisioning

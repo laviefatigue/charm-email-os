@@ -80,7 +80,8 @@ export type DomainStatus =
   | 'active'      // Domain with active inboxes in EmailBison
   | 'warming'     // In warmup period (< 2 weeks)
   | 'flagged'     // OwnRBL: flagged for issues
-  | 'dead';       // OwnRBL: dead/retired
+  | 'dead'        // OwnRBL: dead/retired
+  | 'legacy';     // Pre-existing domains before new workflow (1/22/26) - needs audit
 
 // Domain entity (from OwnRBL domains table)
 export interface Domain {
