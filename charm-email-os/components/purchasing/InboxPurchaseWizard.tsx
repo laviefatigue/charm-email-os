@@ -548,106 +548,108 @@ export function InboxPurchaseWizard({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto">
-        <DialogHeader>
-          <DialogTitle className="flex items-center gap-2">
-            <Mail className="h-5 w-5" />
+      <DialogContent className="max-w-6xl w-[95vw] h-[90vh] flex flex-col overflow-hidden">
+        <DialogHeader className="flex-shrink-0 pb-4 border-b">
+          <DialogTitle className="flex items-center gap-2 text-xl">
+            <Mail className="h-6 w-6" />
             Setup Inboxes for {clientName}
           </DialogTitle>
-          <DialogDescription>
+          <DialogDescription className="text-base">
             Configure inbox provisioning for purchased domains via HyperTide
           </DialogDescription>
         </DialogHeader>
 
-        {/* Step Indicator */}
-        <div className="flex items-center justify-between mb-6">
-          {WIZARD_STEPS.map((step, index) => (
-            <div key={step.key} className="flex items-center">
-              <div
-                className={cn(
-                  'flex items-center justify-center w-8 h-8 rounded-full text-sm font-medium',
-                  index < currentStepIndex
-                    ? 'bg-primary text-primary-foreground'
-                    : index === currentStepIndex
-                    ? 'bg-primary text-primary-foreground'
-                    : 'bg-muted text-muted-foreground'
-                )}
-              >
-                {index < currentStepIndex ? (
-                  <Check className="h-4 w-4" />
-                ) : (
-                  index + 1
-                )}
-              </div>
-              <div className="ml-2 hidden sm:block">
-                <p className="text-sm font-medium">{step.label}</p>
-                <p className="text-xs text-muted-foreground">{step.description}</p>
-              </div>
-              {index < WIZARD_STEPS.length - 1 && (
+        {/* Step Indicator - Compact horizontal */}
+        <div className="flex-shrink-0 py-4 border-b bg-muted/30">
+          <div className="flex items-center justify-center gap-2">
+            {WIZARD_STEPS.map((step, index) => (
+              <div key={step.key} className="flex items-center">
                 <div
                   className={cn(
-                    'w-12 h-0.5 mx-2',
-                    index < currentStepIndex ? 'bg-primary' : 'bg-muted'
+                    'flex items-center gap-2 px-4 py-2 rounded-full text-sm font-medium transition-all',
+                    index < currentStepIndex
+                      ? 'bg-primary text-primary-foreground'
+                      : index === currentStepIndex
+                      ? 'bg-primary text-primary-foreground shadow-md scale-105'
+                      : 'bg-muted text-muted-foreground'
                   )}
-                />
-              )}
-            </div>
-          ))}
+                >
+                  {index < currentStepIndex ? (
+                    <Check className="h-4 w-4" />
+                  ) : (
+                    <span className="w-5 h-5 flex items-center justify-center rounded-full bg-background/20 text-xs">
+                      {index + 1}
+                    </span>
+                  )}
+                  <span className="hidden sm:inline">{step.label}</span>
+                </div>
+                {index < WIZARD_STEPS.length - 1 && (
+                  <div
+                    className={cn(
+                      'w-8 h-0.5 mx-1',
+                      index < currentStepIndex ? 'bg-primary' : 'bg-muted'
+                    )}
+                  />
+                )}
+              </div>
+            ))}
+          </div>
         </div>
 
-        {/* Step Content */}
-        <div className="min-h-[400px]">
+        {/* Step Content - Scrollable area */}
+        <div className="flex-1 overflow-y-auto py-6 px-2">
           {currentStep === 'domains' && (
-            <div className="space-y-6">
+            <div className="space-y-6 max-w-5xl mx-auto">
               {/* Domain Selection */}
               <Card>
-                <CardHeader>
+                <CardHeader className="pb-4">
                   <div className="flex items-center justify-between">
                     <div>
-                      <CardTitle className="text-base">Select Domains to Provision</CardTitle>
-                      <CardDescription>
+                      <CardTitle className="text-lg">Select Domains to Provision</CardTitle>
+                      <CardDescription className="mt-1">
                         Choose which purchased domains should have inboxes created
                       </CardDescription>
                     </div>
-                    <Button variant="outline" size="sm" onClick={selectAllDomains}>
+                    <Button variant="outline" onClick={selectAllDomains}>
                       {selectedDomains.size === domains.length ? 'Deselect All' : 'Select All'}
                     </Button>
                   </div>
                 </CardHeader>
                 <CardContent>
                   {domains.length === 0 ? (
-                    <div className="text-center py-8 text-muted-foreground">
-                      <Globe className="h-12 w-12 mx-auto mb-4 opacity-50" />
-                      <p>No purchased domains available for setup.</p>
+                    <div className="text-center py-12 text-muted-foreground">
+                      <Globe className="h-16 w-16 mx-auto mb-4 opacity-50" />
+                      <p className="text-lg">No purchased domains available for setup.</p>
                       <p className="text-sm mt-2">Purchase domains first from the Domain Candidates table.</p>
                     </div>
                   ) : (
-                    <div className="space-y-2 max-h-[200px] overflow-y-auto">
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3 max-h-[350px] overflow-y-auto pr-2">
                       {domains.map((domain) => (
                         <div
                           key={domain.id}
                           className={cn(
-                            'flex items-center justify-between p-3 rounded-lg border cursor-pointer transition-colors',
+                            'flex items-center justify-between p-4 rounded-lg border-2 cursor-pointer transition-all',
                             selectedDomains.has(domain.id)
-                              ? 'bg-primary/5 border-primary'
-                              : 'hover:bg-muted/50'
+                              ? 'bg-primary/10 border-primary shadow-sm'
+                              : 'hover:bg-muted/50 border-transparent bg-muted/30'
                           )}
                           onClick={() => toggleDomain(domain.id)}
                         >
-                          <div className="flex items-center gap-3">
+                          <div className="flex items-center gap-4">
                             <Checkbox
                               checked={selectedDomains.has(domain.id)}
                               onCheckedChange={() => toggleDomain(domain.id)}
+                              className="h-5 w-5"
                             />
                             <div>
-                              <p className="font-medium">{domain.domainName}</p>
-                              <p className="text-xs text-muted-foreground">
+                              <p className="font-medium text-base">{domain.domainName}</p>
+                              <p className="text-sm text-muted-foreground">
                                 Status: {domain.status}
                               </p>
                             </div>
                           </div>
-                          <Badge variant="outline">
-                            {domain.domainName.split('.').pop()}
+                          <Badge variant="secondary" className="text-sm px-3 py-1">
+                            .{domain.domainName.split('.').pop()}
                           </Badge>
                         </div>
                       ))}
@@ -659,9 +661,9 @@ export function InboxPurchaseWizard({
               {/* Provider Selection */}
               {selectedDomains.size > 0 && (
                 <Card>
-                  <CardHeader>
-                    <CardTitle className="text-base">Inbox Provider</CardTitle>
-                    <CardDescription>
+                  <CardHeader className="pb-4">
+                    <CardTitle className="text-lg">Inbox Provider</CardTitle>
+                    <CardDescription className="mt-1">
                       Choose the email provider for these inboxes
                     </CardDescription>
                   </CardHeader>
@@ -669,43 +671,65 @@ export function InboxPurchaseWizard({
                     <RadioGroup
                       value={providerType}
                       onValueChange={(v) => setProviderType(v as ProviderType)}
-                      className="space-y-3"
+                      className="grid grid-cols-1 md:grid-cols-3 gap-4"
                     >
-                      <div className="flex items-center space-x-3 p-3 rounded-lg border hover:bg-muted/50">
-                        <RadioGroupItem value="entra" id="entra" />
-                        <Label htmlFor="entra" className="flex-1 cursor-pointer">
-                          <div className="flex items-center justify-between">
-                            <div>
-                              <p className="font-medium">Microsoft Entra</p>
-                              <p className="text-sm text-muted-foreground">
-                                52 inboxes/domain, 2 domains/order
-                              </p>
-                            </div>
-                            <Badge>Recommended</Badge>
-                          </div>
-                        </Label>
+                      <div
+                        className={cn(
+                          "flex flex-col p-5 rounded-xl border-2 cursor-pointer transition-all",
+                          providerType === 'entra'
+                            ? "border-blue-500 bg-blue-50/50 shadow-sm"
+                            : "hover:bg-muted/50 border-muted"
+                        )}
+                        onClick={() => setProviderType('entra')}
+                      >
+                        <div className="flex items-center gap-3 mb-3">
+                          <RadioGroupItem value="entra" id="entra" />
+                          <Label htmlFor="entra" className="text-lg font-semibold cursor-pointer">
+                            Microsoft Entra
+                          </Label>
+                        </div>
+                        <Badge className="w-fit mb-3">Recommended</Badge>
+                        <p className="text-sm text-muted-foreground">
+                          52 inboxes/domain<br />2 domains/order
+                        </p>
                       </div>
-                      <div className="flex items-center space-x-3 p-3 rounded-lg border hover:bg-muted/50">
-                        <RadioGroupItem value="google" id="google" />
-                        <Label htmlFor="google" className="flex-1 cursor-pointer">
-                          <div>
-                            <p className="font-medium">Google Workspace</p>
-                            <p className="text-sm text-muted-foreground">
-                              3 inboxes/domain, 5 domains/order
-                            </p>
-                          </div>
-                        </Label>
+                      <div
+                        className={cn(
+                          "flex flex-col p-5 rounded-xl border-2 cursor-pointer transition-all",
+                          providerType === 'google'
+                            ? "border-red-500 bg-red-50/50 shadow-sm"
+                            : "hover:bg-muted/50 border-muted"
+                        )}
+                        onClick={() => setProviderType('google')}
+                      >
+                        <div className="flex items-center gap-3 mb-3">
+                          <RadioGroupItem value="google" id="google" />
+                          <Label htmlFor="google" className="text-lg font-semibold cursor-pointer">
+                            Google Workspace
+                          </Label>
+                        </div>
+                        <p className="text-sm text-muted-foreground mt-auto">
+                          3 inboxes/domain<br />5 domains/order
+                        </p>
                       </div>
-                      <div className="flex items-center space-x-3 p-3 rounded-lg border hover:bg-muted/50">
-                        <RadioGroupItem value="mixed" id="mixed" />
-                        <Label htmlFor="mixed" className="flex-1 cursor-pointer">
-                          <div>
-                            <p className="font-medium">Mixed (70% Entra / 30% Google)</p>
-                            <p className="text-sm text-muted-foreground">
-                              Balance between volume and diversity
-                            </p>
-                          </div>
-                        </Label>
+                      <div
+                        className={cn(
+                          "flex flex-col p-5 rounded-xl border-2 cursor-pointer transition-all",
+                          providerType === 'mixed'
+                            ? "border-purple-500 bg-purple-50/50 shadow-sm"
+                            : "hover:bg-muted/50 border-muted"
+                        )}
+                        onClick={() => setProviderType('mixed')}
+                      >
+                        <div className="flex items-center gap-3 mb-3">
+                          <RadioGroupItem value="mixed" id="mixed" />
+                          <Label htmlFor="mixed" className="text-lg font-semibold cursor-pointer">
+                            Mixed
+                          </Label>
+                        </div>
+                        <p className="text-sm text-muted-foreground mt-auto">
+                          70% Entra / 30% Google<br />Balance volume & diversity
+                        </p>
                       </div>
                     </RadioGroup>
                   </CardContent>
@@ -714,66 +738,87 @@ export function InboxPurchaseWizard({
 
               {/* Order Preview */}
               {orderBreakdown && (
-                <Card className="border-primary/50">
-                  <CardHeader className="pb-2">
-                    <CardTitle className="text-base">Order Preview</CardTitle>
+                <Card className="border-2 border-primary/30 bg-gradient-to-br from-primary/5 to-transparent">
+                  <CardHeader className="pb-4">
+                    <CardTitle className="text-lg flex items-center gap-2">
+                      <Package className="h-5 w-5" />
+                      Order Preview
+                    </CardTitle>
                   </CardHeader>
-                  <CardContent>
-                    <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
-                      <div className="text-center p-3 bg-muted rounded-lg">
-                        <div className="text-2xl font-bold">{orderBreakdown.selectedDomains}</div>
-                        <div className="text-xs text-muted-foreground">Domains Selected</div>
+                  <CardContent className="space-y-6">
+                    {/* Main Stats */}
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                      <div className="text-center p-4 bg-background rounded-xl border shadow-sm">
+                        <div className="text-3xl font-bold text-primary">{orderBreakdown.selectedDomains}</div>
+                        <div className="text-sm text-muted-foreground mt-1">Domains Selected</div>
                       </div>
-                      <div className="text-center p-3 bg-muted rounded-lg">
-                        <div className="text-2xl font-bold">{orderBreakdown.totalOrders}</div>
-                        <div className="text-xs text-muted-foreground">HyperTide Orders</div>
+                      <div className="text-center p-4 bg-background rounded-xl border shadow-sm">
+                        <div className="text-3xl font-bold text-primary">{orderBreakdown.totalOrders}</div>
+                        <div className="text-sm text-muted-foreground mt-1">HyperTide Orders</div>
                       </div>
-                      <div className="text-center p-3 bg-muted rounded-lg">
-                        <div className="text-2xl font-bold">{orderBreakdown.totalInboxes}</div>
-                        <div className="text-xs text-muted-foreground">Total Inboxes</div>
+                      <div className="text-center p-4 bg-background rounded-xl border shadow-sm">
+                        <div className="text-3xl font-bold text-primary">{orderBreakdown.totalInboxes}</div>
+                        <div className="text-sm text-muted-foreground mt-1">Total Inboxes</div>
                       </div>
-                      <div className="text-center p-3 bg-green-50 rounded-lg">
-                        <div className="text-2xl font-bold text-green-700">
+                      <div className="text-center p-4 bg-green-50 rounded-xl border border-green-200 shadow-sm">
+                        <div className="text-3xl font-bold text-green-700">
                           ${orderBreakdown.estimatedMonthlyCost}
                         </div>
-                        <div className="text-xs text-green-600">Monthly Cost</div>
+                        <div className="text-sm text-green-600 mt-1">Monthly Cost</div>
                       </div>
                     </div>
 
                     {orderBreakdown.extraDomainsNeeded > 0 && (
-                      <Alert>
-                        <AlertTriangle className="h-4 w-4" />
-                        <AlertDescription>
+                      <Alert className="bg-amber-50 border-amber-200">
+                        <AlertTriangle className="h-4 w-4 text-amber-600" />
+                        <AlertDescription className="text-amber-800">
                           HyperTide orders use complete packages. {orderBreakdown.extraDomainsNeeded} additional domain(s)
                           will be purchased to fill orders.
                         </AlertDescription>
                       </Alert>
                     )}
 
-                    <div className="grid grid-cols-2 gap-4 mt-4">
+                    {/* Provider Breakdown */}
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                       {orderBreakdown.hasEntra && (
-                        <div className="p-3 border rounded-lg bg-blue-50/50">
-                          <div className="font-medium flex items-center gap-2">
-                            <Server className="h-4 w-4" />
-                            <Badge variant="outline" className="border-blue-600 text-blue-600">Entra</Badge>
+                        <div className="p-5 rounded-xl bg-blue-50 border-2 border-blue-200">
+                          <div className="flex items-center justify-between mb-4">
+                            <div className="flex items-center gap-2">
+                              <Server className="h-5 w-5 text-blue-600" />
+                              <span className="font-semibold text-blue-800 text-lg">Microsoft Entra</span>
+                            </div>
+                            <Badge className="bg-blue-600">{orderBreakdown.entraOrders} order(s)</Badge>
                           </div>
-                          <div className="text-sm text-muted-foreground mt-2 space-y-1">
-                            <p>{orderBreakdown.entraOrders} order(s)</p>
-                            <p>{orderBreakdown.entraDomains} domains</p>
-                            <p className="font-medium text-blue-700">{orderBreakdown.entraInboxes} inboxes</p>
+                          <div className="grid grid-cols-2 gap-4 text-center">
+                            <div>
+                              <div className="text-2xl font-bold text-blue-700">{orderBreakdown.entraDomains}</div>
+                              <div className="text-sm text-blue-600">Domains</div>
+                            </div>
+                            <div>
+                              <div className="text-2xl font-bold text-blue-700">{orderBreakdown.entraInboxes}</div>
+                              <div className="text-sm text-blue-600">Inboxes</div>
+                            </div>
                           </div>
                         </div>
                       )}
                       {orderBreakdown.hasGoogle && (
-                        <div className="p-3 border rounded-lg bg-red-50/50">
-                          <div className="font-medium flex items-center gap-2">
-                            <Server className="h-4 w-4" />
-                            <Badge variant="outline" className="border-red-600 text-red-600">Google</Badge>
+                        <div className="p-5 rounded-xl bg-red-50 border-2 border-red-200">
+                          <div className="flex items-center justify-between mb-4">
+                            <div className="flex items-center gap-2">
+                              <Server className="h-5 w-5 text-red-600" />
+                              <span className="font-semibold text-red-800 text-lg">Google Workspace</span>
+                            </div>
+                            <Badge className="bg-red-600">{orderBreakdown.googleOrders} order(s)</Badge>
                           </div>
-                          <div className="text-sm text-muted-foreground mt-2 space-y-1">
-                            <p>{orderBreakdown.googleOrders} order(s)</p>
-                            <p>{orderBreakdown.googleDomains} domains</p>
-                            <p className="font-medium text-red-700">{orderBreakdown.googleInboxes} inboxes</p>
+                          <div className="grid grid-cols-2 gap-4 text-center">
+                            <div>
+                              <div className="text-2xl font-bold text-red-700">{orderBreakdown.googleDomains}</div>
+                              <div className="text-sm text-red-600">Domains</div>
+                            </div>
+                            <div>
+                              <div className="text-2xl font-bold text-red-700">{orderBreakdown.googleInboxes}</div>
+                              <div className="text-sm text-red-600">Inboxes</div>
+                            </div>
                           </div>
                         </div>
                       )}
@@ -785,20 +830,23 @@ export function InboxPurchaseWizard({
           )}
 
           {currentStep === 'names' && (
-            <div className="space-y-6">
+            <div className="space-y-6 max-w-4xl mx-auto">
               <Card>
-                <CardHeader>
-                  <CardTitle className="text-base">Inbox Names</CardTitle>
-                  <CardDescription>
+                <CardHeader className="pb-4">
+                  <CardTitle className="text-lg flex items-center gap-2">
+                    <Users className="h-5 w-5" />
+                    Inbox Names
+                  </CardTitle>
+                  <CardDescription className="mt-1 text-base">
                     Configure names for inbox accounts (first.last@domain.com)
                   </CardDescription>
                 </CardHeader>
-                <CardContent className="space-y-4">
+                <CardContent className="space-y-6">
                   {/* Generate Buttons */}
-                  <div className="flex gap-2 flex-wrap">
+                  <div className="flex gap-3 flex-wrap">
                     {onboardingData?.personas && onboardingData.personas.length > 0 && (
-                      <Button onClick={loadFromPersonas} variant="default">
-                        <Users className="h-4 w-4 mr-2" />
+                      <Button onClick={loadFromPersonas} variant="default" size="lg">
+                        <Users className="h-5 w-5 mr-2" />
                         Use Onboarding Personas ({onboardingData.personas.length})
                       </Button>
                     )}
@@ -806,59 +854,67 @@ export function InboxPurchaseWizard({
                       onClick={handleGenerateNames}
                       disabled={isLoading}
                       variant={onboardingData?.personas?.length ? 'outline' : 'default'}
+                      size="lg"
                     >
                       {isLoading ? (
-                        <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                        <Loader2 className="h-5 w-5 mr-2 animate-spin" />
                       ) : (
-                        <RefreshCw className="h-4 w-4 mr-2" />
+                        <RefreshCw className="h-5 w-5 mr-2" />
                       )}
                       Generate Random Names
                     </Button>
                   </div>
 
                   {/* Custom Name Input */}
-                  <div className="flex gap-2">
-                    <Input
-                      placeholder="First name"
-                      value={customFirstName}
-                      onChange={(e) => setCustomFirstName(e.target.value)}
-                    />
-                    <Input
-                      placeholder="Last name"
-                      value={customLastName}
-                      onChange={(e) => setCustomLastName(e.target.value)}
-                      onKeyDown={(e) => e.key === 'Enter' && addCustomName()}
-                    />
-                    <Button variant="outline" onClick={addCustomName}>
-                      Add
-                    </Button>
+                  <div className="p-4 rounded-xl bg-muted/50 border">
+                    <Label className="text-sm font-medium mb-3 block">Add Custom Name</Label>
+                    <div className="flex gap-3">
+                      <Input
+                        placeholder="First name"
+                        value={customFirstName}
+                        onChange={(e) => setCustomFirstName(e.target.value)}
+                        className="text-base h-11"
+                      />
+                      <Input
+                        placeholder="Last name"
+                        value={customLastName}
+                        onChange={(e) => setCustomLastName(e.target.value)}
+                        onKeyDown={(e) => e.key === 'Enter' && addCustomName()}
+                        className="text-base h-11"
+                      />
+                      <Button variant="default" onClick={addCustomName} className="px-6 h-11">
+                        Add
+                      </Button>
+                    </div>
                   </div>
 
                   {/* Names List */}
                   {inboxNames.length > 0 ? (
-                    <div className="space-y-2">
-                      <Label>Names ({inboxNames.length}/10)</Label>
-                      <div className="flex flex-wrap gap-2">
+                    <div className="space-y-4">
+                      <div className="flex items-center justify-between">
+                        <Label className="text-base font-medium">Configured Names</Label>
+                        <Badge variant="outline" className="text-sm">{inboxNames.length}/10</Badge>
+                      </div>
+                      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3">
                         {inboxNames.map((name) => (
-                          <Badge
+                          <div
                             key={name.emailPrefix}
-                            variant="secondary"
-                            className="cursor-pointer hover:bg-destructive hover:text-destructive-foreground py-1 px-3"
+                            className="flex items-center justify-between p-3 rounded-lg bg-primary/10 border border-primary/20 cursor-pointer hover:bg-destructive/10 hover:border-destructive/30 transition-colors group"
                             onClick={() => removeName(name.emailPrefix)}
                           >
-                            {name.firstName} {name.lastName}
-                            <X className="h-3 w-3 ml-2" />
-                          </Badge>
+                            <span className="font-medium text-sm truncate">{name.firstName} {name.lastName}</span>
+                            <X className="h-4 w-4 ml-2 opacity-50 group-hover:opacity-100 group-hover:text-destructive shrink-0" />
+                          </div>
                         ))}
                       </div>
-                      <p className="text-xs text-muted-foreground">
-                        Click to remove. These names will be used across all purchased inboxes.
+                      <p className="text-sm text-muted-foreground">
+                        Click a name to remove it. These names will be used across all purchased inboxes.
                       </p>
                     </div>
                   ) : (
-                    <Alert>
-                      <AlertTriangle className="h-4 w-4" />
-                      <AlertDescription>
+                    <Alert className="bg-amber-50 border-amber-200">
+                      <AlertTriangle className="h-5 w-5 text-amber-600" />
+                      <AlertDescription className="text-amber-800 text-base">
                         No names configured. Generate names or add them manually before proceeding.
                       </AlertDescription>
                     </Alert>
@@ -869,109 +925,125 @@ export function InboxPurchaseWizard({
           )}
 
           {currentStep === 'review' && (
-            <div className="space-y-6">
+            <div className="space-y-6 max-w-5xl mx-auto">
               <Alert className="bg-blue-50 border-blue-200">
-                <Mail className="h-4 w-4" />
-                <AlertDescription>
+                <Mail className="h-5 w-5 text-blue-600" />
+                <AlertDescription className="text-blue-800 text-base">
                   Review your configuration before starting HyperTide automation.
                   This process typically takes 2-5 minutes per order.
                 </AlertDescription>
               </Alert>
 
               {/* Order Summary */}
-              <Card>
-                <CardHeader>
-                  <CardTitle className="text-base">Configuration Summary</CardTitle>
+              <Card className="border-2">
+                <CardHeader className="pb-4">
+                  <CardTitle className="text-lg">Configuration Summary</CardTitle>
                 </CardHeader>
-                <CardContent>
-                  <div className="space-y-4">
-                    <div className="grid grid-cols-2 gap-4">
-                      <div>
-                        <span className="text-sm text-muted-foreground">Client</span>
-                        <p className="font-medium">{clientName}</p>
-                      </div>
-                      <div>
-                        <span className="text-sm text-muted-foreground">Forwarding Domain</span>
-                        <p className="font-medium">{forwardingDomain}</p>
-                      </div>
+                <CardContent className="space-y-6">
+                  {/* Client Info */}
+                  <div className="grid grid-cols-2 gap-6 p-4 rounded-xl bg-muted/50">
+                    <div>
+                      <span className="text-sm text-muted-foreground block mb-1">Client</span>
+                      <p className="font-semibold text-lg">{clientName}</p>
                     </div>
+                    <div>
+                      <span className="text-sm text-muted-foreground block mb-1">Forwarding Domain</span>
+                      <p className="font-semibold text-lg">{forwardingDomain}</p>
+                    </div>
+                  </div>
 
-                    {orderBreakdown && (
-                      <>
-                        <div className="border-t pt-4">
-                          <div className="grid grid-cols-4 gap-4 text-center">
-                            <div>
-                              <div className="text-2xl font-bold">{orderBreakdown.selectedDomains}</div>
-                              <div className="text-xs text-muted-foreground">Domains</div>
-                            </div>
-                            <div>
-                              <div className="text-2xl font-bold">{orderBreakdown.totalOrders}</div>
-                              <div className="text-xs text-muted-foreground">Orders</div>
-                            </div>
-                            <div>
-                              <div className="text-2xl font-bold">{orderBreakdown.totalInboxes}</div>
-                              <div className="text-xs text-muted-foreground">Inboxes</div>
-                            </div>
-                            <div>
-                              <div className="text-2xl font-bold text-green-600">
-                                ${orderBreakdown.estimatedMonthlyCost}/mo
-                              </div>
-                              <div className="text-xs text-muted-foreground">Cost</div>
-                            </div>
-                          </div>
+                  {orderBreakdown && (
+                    <>
+                      {/* Stats Grid */}
+                      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                        <div className="text-center p-4 bg-primary/5 rounded-xl border">
+                          <div className="text-3xl font-bold text-primary">{orderBreakdown.selectedDomains}</div>
+                          <div className="text-sm text-muted-foreground mt-1">Domains</div>
                         </div>
-
-                        <div className="border-t pt-4">
-                          <span className="text-sm text-muted-foreground">Provider Breakdown</span>
-                          <div className="mt-2 space-y-2">
-                            {orderBreakdown.hasEntra && (
-                              <div className="flex justify-between items-center p-2 bg-blue-50 rounded">
-                                <span>Entra ({orderBreakdown.entraOrders} order × $50)</span>
-                                <span className="font-medium">{orderBreakdown.entraInboxes} inboxes</span>
-                              </div>
-                            )}
-                            {orderBreakdown.hasGoogle && (
-                              <div className="flex justify-between items-center p-2 bg-red-50 rounded">
-                                <span>Google ({orderBreakdown.googleOrders} order × $50)</span>
-                                <span className="font-medium">{orderBreakdown.googleInboxes} inboxes</span>
-                              </div>
-                            )}
-                          </div>
+                        <div className="text-center p-4 bg-primary/5 rounded-xl border">
+                          <div className="text-3xl font-bold text-primary">{orderBreakdown.totalOrders}</div>
+                          <div className="text-sm text-muted-foreground mt-1">Orders</div>
                         </div>
-                      </>
-                    )}
-
-                    {inboxNames.length > 0 && (
-                      <div className="border-t pt-4">
-                        <span className="text-sm text-muted-foreground">Inbox Names ({inboxNames.length})</span>
-                        <div className="flex flex-wrap gap-1 mt-2">
-                          {inboxNames.map((name) => (
-                            <Badge key={name.emailPrefix} variant="outline" className="text-xs">
-                              {name.emailPrefix}
-                            </Badge>
-                          ))}
+                        <div className="text-center p-4 bg-primary/5 rounded-xl border">
+                          <div className="text-3xl font-bold text-primary">{orderBreakdown.totalInboxes}</div>
+                          <div className="text-sm text-muted-foreground mt-1">Inboxes</div>
+                        </div>
+                        <div className="text-center p-4 bg-green-50 rounded-xl border border-green-200">
+                          <div className="text-3xl font-bold text-green-600">
+                            ${orderBreakdown.estimatedMonthlyCost}
+                          </div>
+                          <div className="text-sm text-green-600 mt-1">Monthly</div>
                         </div>
                       </div>
-                    )}
 
-                    {/* Selected Domains */}
-                    <div className="border-t pt-4">
-                      <span className="text-sm text-muted-foreground">Selected Domains ({selectedDomains.size})</span>
-                      <div className="flex flex-wrap gap-1 mt-2">
-                        {domains.filter(d => selectedDomains.has(d.id)).map((domain) => (
-                          <Badge key={domain.id} variant="secondary" className="text-xs">
-                            {domain.domainName}
+                      {/* Provider Breakdown */}
+                      <div>
+                        <span className="text-sm font-medium text-muted-foreground block mb-3">Provider Breakdown</span>
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                          {orderBreakdown.hasEntra && (
+                            <div className="flex justify-between items-center p-4 bg-blue-50 rounded-xl border border-blue-200">
+                              <div className="flex items-center gap-3">
+                                <Server className="h-5 w-5 text-blue-600" />
+                                <div>
+                                  <span className="font-semibold text-blue-800">Entra</span>
+                                  <span className="text-blue-600 text-sm ml-2">({orderBreakdown.entraOrders} order × $50)</span>
+                                </div>
+                              </div>
+                              <span className="font-bold text-blue-700 text-lg">{orderBreakdown.entraInboxes} inboxes</span>
+                            </div>
+                          )}
+                          {orderBreakdown.hasGoogle && (
+                            <div className="flex justify-between items-center p-4 bg-red-50 rounded-xl border border-red-200">
+                              <div className="flex items-center gap-3">
+                                <Server className="h-5 w-5 text-red-600" />
+                                <div>
+                                  <span className="font-semibold text-red-800">Google</span>
+                                  <span className="text-red-600 text-sm ml-2">({orderBreakdown.googleOrders} order × $50)</span>
+                                </div>
+                              </div>
+                              <span className="font-bold text-red-700 text-lg">{orderBreakdown.googleInboxes} inboxes</span>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </>
+                  )}
+
+                  {/* Inbox Names */}
+                  {inboxNames.length > 0 && (
+                    <div>
+                      <span className="text-sm font-medium text-muted-foreground block mb-3">
+                        Inbox Names ({inboxNames.length})
+                      </span>
+                      <div className="flex flex-wrap gap-2">
+                        {inboxNames.map((name) => (
+                          <Badge key={name.emailPrefix} variant="secondary" className="text-sm py-1 px-3">
+                            {name.emailPrefix}
                           </Badge>
                         ))}
                       </div>
+                    </div>
+                  )}
+
+                  {/* Selected Domains */}
+                  <div>
+                    <span className="text-sm font-medium text-muted-foreground block mb-3">
+                      Selected Domains ({selectedDomains.size})
+                    </span>
+                    <div className="flex flex-wrap gap-2">
+                      {domains.filter(d => selectedDomains.has(d.id)).map((domain) => (
+                        <Badge key={domain.id} variant="outline" className="text-sm py-1 px-3">
+                          {domain.domainName}
+                        </Badge>
+                      ))}
                     </div>
                   </div>
                 </CardContent>
               </Card>
 
-              <Alert variant="destructive">
-                <AlertTriangle className="h-4 w-4" />
-                <AlertDescription>
+              <Alert className="bg-amber-50 border-amber-200">
+                <AlertTriangle className="h-5 w-5 text-amber-600" />
+                <AlertDescription className="text-amber-800 text-base">
                   HyperTide automation requires browser access. The purchase will use saved payment methods in Stripe.
                 </AlertDescription>
               </Alert>
@@ -979,16 +1051,16 @@ export function InboxPurchaseWizard({
           )}
 
           {currentStep === 'execute' && (
-            <div className="space-y-6">
-              <Card>
-                <CardHeader>
-                  <CardTitle className="text-base flex items-center gap-2">
+            <div className="space-y-6 max-w-3xl mx-auto">
+              <Card className="border-2">
+                <CardHeader className="pb-4">
+                  <CardTitle className="text-xl flex items-center gap-3">
                     {jobStatus?.status === 'completed' ? (
-                      <CheckCircle className="h-5 w-5 text-green-600" />
+                      <CheckCircle className="h-7 w-7 text-green-600" />
                     ) : jobStatus?.status === 'failed' ? (
-                      <XCircle className="h-5 w-5 text-destructive" />
+                      <XCircle className="h-7 w-7 text-destructive" />
                     ) : (
-                      <Loader2 className="h-5 w-5 animate-spin" />
+                      <Loader2 className="h-7 w-7 animate-spin text-primary" />
                     )}
                     {jobStatus?.status === 'completed'
                       ? 'Provisioning Complete'
@@ -997,32 +1069,36 @@ export function InboxPurchaseWizard({
                       : 'Processing...'}
                   </CardTitle>
                 </CardHeader>
-                <CardContent className="space-y-4">
-                  <Progress value={getProgressPercentage()} className="h-2" />
+                <CardContent className="space-y-6">
+                  <div className="space-y-2">
+                    <Progress value={getProgressPercentage()} className="h-3" />
+                    <div className="flex justify-between text-sm text-muted-foreground">
+                      <span>{Math.round(getProgressPercentage())}% complete</span>
+                      {jobStatus && jobStatus.ordersTotal > 0 && (
+                        <span>{jobStatus.ordersCompleted} of {jobStatus.ordersTotal} orders</span>
+                      )}
+                    </div>
+                  </div>
 
-                  <div className="text-center">
-                    <p className="text-sm font-medium">{jobStatus?.currentStep}</p>
-                    {jobStatus && jobStatus.ordersTotal > 0 && (
-                      <p className="text-xs text-muted-foreground">
-                        {jobStatus.ordersCompleted} of {jobStatus.ordersTotal} orders completed
-                      </p>
-                    )}
+                  <div className="text-center py-4">
+                    <p className="text-lg font-medium">{jobStatus?.currentStep}</p>
                   </div>
 
                   {jobStatus?.status === 'completed' && (
-                    <div className="text-center p-6 bg-green-50 rounded-lg">
-                      <CheckCircle className="h-12 w-12 text-green-600 mx-auto mb-2" />
-                      <p className="text-lg font-medium text-green-800">
+                    <div className="text-center p-8 bg-green-50 rounded-xl border border-green-200">
+                      <CheckCircle className="h-16 w-16 text-green-600 mx-auto mb-4" />
+                      <p className="text-2xl font-bold text-green-800 mb-2">
                         Successfully created {jobStatus.totalInboxes} inboxes!
                       </p>
+                      <p className="text-green-600">Your domains are now ready for warmup.</p>
                     </div>
                   )}
 
                   {jobStatus?.errors && jobStatus.errors.length > 0 && (
-                    <Alert variant="destructive">
-                      <AlertTriangle className="h-4 w-4" />
+                    <Alert variant="destructive" className="border-2">
+                      <AlertTriangle className="h-5 w-5" />
                       <AlertDescription>
-                        <ul className="list-disc list-inside">
+                        <ul className="list-disc list-inside space-y-1">
                           {jobStatus.errors.map((error, i) => (
                             <li key={i}>{error}</li>
                           ))}
@@ -1035,7 +1111,7 @@ export function InboxPurchaseWizard({
 
               {(jobStatus?.status === 'completed' || jobStatus?.status === 'failed') && (
                 <div className="text-center">
-                  <Button onClick={() => onOpenChange(false)}>
+                  <Button onClick={() => onOpenChange(false)} size="lg" className="px-8">
                     Close
                   </Button>
                 </div>
@@ -1044,43 +1120,50 @@ export function InboxPurchaseWizard({
           )}
         </div>
 
-        {/* Navigation */}
+        {/* Navigation Footer - Fixed at bottom */}
         {currentStep !== 'execute' && (
-          <div className="flex items-center justify-between pt-4 border-t">
+          <div className="shrink-0 flex items-center justify-between pt-4 pb-2 px-2 border-t bg-background">
             <Button
               variant="outline"
               onClick={goBack}
               disabled={currentStepIndex === 0}
+              size="lg"
+              className="gap-2"
             >
-              <ArrowLeft className="h-4 w-4 mr-2" />
+              <ArrowLeft className="h-5 w-5" />
               Back
             </Button>
 
-            <div className="flex gap-2">
-              <Button variant="ghost" onClick={() => onOpenChange(false)}>
+            <div className="flex gap-3">
+              <Button variant="ghost" onClick={() => onOpenChange(false)} size="lg">
                 Cancel
               </Button>
 
               {currentStep === 'domains' && (
-                <Button onClick={goNext} disabled={!canProceedFromDomains}>
+                <Button onClick={goNext} disabled={!canProceedFromDomains} size="lg" className="gap-2 px-6">
                   Continue
-                  <ArrowRight className="h-4 w-4 ml-2" />
+                  <ArrowRight className="h-5 w-5" />
                 </Button>
               )}
 
               {currentStep === 'names' && (
-                <Button onClick={goNext} disabled={!canProceedFromNames}>
+                <Button onClick={goNext} disabled={!canProceedFromNames} size="lg" className="gap-2 px-6">
                   Continue
-                  <ArrowRight className="h-4 w-4 ml-2" />
+                  <ArrowRight className="h-5 w-5" />
                 </Button>
               )}
 
               {currentStep === 'review' && (
-                <Button onClick={handleExecutePurchase} disabled={isLoading || !orderBreakdown}>
+                <Button
+                  onClick={handleExecutePurchase}
+                  disabled={isLoading || !orderBreakdown}
+                  size="lg"
+                  className="gap-2 px-6 bg-green-600 hover:bg-green-700"
+                >
                   {isLoading ? (
-                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                    <Loader2 className="h-5 w-5 animate-spin" />
                   ) : (
-                    <Play className="h-4 w-4 mr-2" />
+                    <Play className="h-5 w-5" />
                   )}
                   Start Provisioning
                 </Button>
