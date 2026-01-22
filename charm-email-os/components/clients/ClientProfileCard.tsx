@@ -23,8 +23,8 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import type { Client } from '@/lib/types';
-import { clientApi } from '@/lib/api';
 import { INDUSTRIES } from '@/lib/types';
+import { useClientStore } from '@/lib/stores/clientStore';
 
 interface ClientProfileCardProps {
   client: Client;
@@ -43,12 +43,12 @@ export function ClientProfileCard({ client, onUpdate }: ClientProfileCardProps) 
   });
 
   const handleSave = async () => {
+    const { updateClient } = useClientStore.getState();
     setIsSaving(true);
     try {
-      const updated = await clientApi.update(client.id, {
-        ...formData,
-      });
-      onUpdate?.(updated);
+      await updateClient(client.id, formData);
+      // Store is updated, UI will refresh automatically
+      onUpdate?.(client); // Call callback if provided (for backward compatibility)
       setIsEditing(false);
     } catch (error) {
       console.error('Failed to update client:', error);

@@ -166,7 +166,7 @@ export default function InboxesPage() {
     toast.success(`Generated ${generated.length} domain suggestions`);
   };
 
-  // Direct inline domain generation - triggers API which queues job for containerized Claude Code
+  // Direct inline domain generation - queues job for containerized Claude Code worker
   const handleGenerateDomainsInline = async () => {
     if (!canGenerateInfo?.canGenerate) {
       toast.error(canGenerateInfo?.message || 'Cannot generate domains');
@@ -174,21 +174,40 @@ export default function InboxesPage() {
     }
     setIsGenerating(true);
     try {
-      const result = await domainSourcingApi.generateForClient(clientId, {
-        count: 10,
-        preferred_tlds: [
-          { tld: 'com', priority: 1, max_price: 15.0 },
-          { tld: 'co', priority: 2, max_price: 15.0 },
-          { tld: 'info', priority: 3, max_price: 15.0 },
-        ],
-      });
-      toast.success(`Generated ${result.generatedDomains.length} domain suggestions`);
-      // Refresh domains list to show new candidates
-      fetchDomainsByClient(clientId);
+      // Create a job for the Claude Code domain worker
+      const job = await domainSourcingApi.createGenerationJob(clientId, 10);
+      toast.success(`Domain generation job queued. Domains will appear shortly.`);
+
+      // Poll for job completion and refresh domains
+      const pollInterval = setInterval(async () => {
+        try {
+          const status = await domainSourcingApi.getJobStatus(job.jobId);
+          if (status.status === 'completed') {
+            clearInterval(pollInterval);
+            fetchDomainsByClient(clientId);
+            toast.success('Domain generation complete!');
+            setIsGenerating(false);
+          } else if (status.status === 'failed') {
+            clearInterval(pollInterval);
+            toast.error(status.errorMessage || 'Domain generation failed');
+            setIsGenerating(false);
+          }
+        } catch {
+          // Ignore polling errors
+        }
+      }, 3000); // Poll every 3 seconds
+
+      // Timeout after 2 minutes
+      setTimeout(() => {
+        clearInterval(pollInterval);
+        if (isGenerating) {
+          setIsGenerating(false);
+          fetchDomainsByClient(clientId);
+        }
+      }, 120000);
     } catch (error) {
-      console.error('Failed to generate domains:', error);
-      toast.error('Failed to generate domain suggestions');
-    } finally {
+      console.error('Failed to queue domain generation:', error);
+      toast.error('Failed to queue domain generation');
       setIsGenerating(false);
     }
   };

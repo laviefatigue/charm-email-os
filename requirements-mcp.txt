@@ -1,8 +1,14 @@
 # Charm Email OS - MCP Server Dependencies
-# Used by strategy_mcp/server.py for database interaction
+# Used by strategy_mcp/server.py and domain_mcp/server.py
 
 # MCP Protocol library
 mcp>=1.0.0
 
 # PostgreSQL database driver (sync for MCP server)
 psycopg2-binary>=2.9.9
+
+# HTTP client for web scraping (domain_mcp enrichment)
+httpx>=0.27.0
+
+# HTML parsing (domain_mcp website keyword extraction)
+beautifulsoup4>=4.12.0

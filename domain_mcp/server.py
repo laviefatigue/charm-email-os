@@ -3,11 +3,13 @@ MCP Server providing domain generation tools to Claude Code.
 
 This server gives Claude the ability to:
 - Get client context including existing domains and onboarding data
+- Enrich context by fetching and analyzing client website
 - Save domain suggestions for human review
 - Mark generation jobs as complete
 """
 import json
 import os
+import re
 import uuid
 from datetime import datetime
 from typing import Optional
@@ -16,6 +18,8 @@ from psycopg2.extras import RealDictCursor
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import Tool, TextContent
+import httpx
+from bs4 import BeautifulSoup
 
 # Database configuration from environment
 DB_CONFIG = {
@@ -36,6 +40,160 @@ def get_db():
     """Get database connection with dict cursor."""
     conn = psycopg2.connect(**DB_CONFIG)
     return conn
+
+
+def extract_base_name(website: str) -> Optional[str]:
+    """
+    Extract brand base name from website URL.
+
+    Examples:
+        hirecharm.com → charm
+        usecharm.com → charm
+        selery.com → selery
+        getspout.io → spout
+
+    For cold email domains, we want the client's brand as the SUFFIX,
+    so generated domains will be like: trycharm.com, getcharm.co
+    """
+    from urllib.parse import urlparse
+
+    if not website:
+        return None
+
+    # Parse the URL
+    parsed = urlparse(website if '://' in website else f'https://{website}')
+    hostname = parsed.netloc or parsed.path
+
+    # Remove www. prefix
+    if hostname.startswith('www.'):
+        hostname = hostname[4:]
+
+    # Remove port if present
+    hostname = hostname.split(':')[0]
+
+    # Get domain without TLD (handle multi-part TLDs like .co.uk)
+    parts = hostname.split('.')
+    if len(parts) < 2:
+        return hostname if hostname else None
+
+    # Take the first part (subdomain/main domain)
+    domain_part = parts[0].lower()
+
+    # Strip common prefixes to get the brand name
+    prefixes_to_strip = ['get', 'try', 'use', 'hire', 'go', 'my', 'the', 'hello', 'meet', 'join', 'hey']
+    for prefix in prefixes_to_strip:
+        if domain_part.startswith(prefix) and len(domain_part) > len(prefix) + 2:
+            # Only strip if remaining part is long enough to be a brand
+            return domain_part[len(prefix):]
+
+    return domain_part
+
+
+async def fetch_website_keywords(url: str) -> dict:
+    """
+    Fetch a website and extract business-relevant keywords.
+
+    Returns a dict with:
+    - title: Page title
+    - description: Meta description
+    - keywords: List of extracted business keywords
+    - industry_terms: Cold-email relevant industry terms
+    """
+    try:
+        # Ensure URL has protocol
+        if not url.startswith(('http://', 'https://')):
+            url = f'https://{url}'
+
+        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
+            response = await client.get(url, headers={
+                'User-Agent': 'Mozilla/5.0 (compatible; DomainBot/1.0)'
+            })
+            response.raise_for_status()
+
+        soup = BeautifulSoup(response.text, 'html.parser')
+
+        # Extract title
+        title = soup.title.string.strip() if soup.title else ""
+
+        # Extract meta description
+        meta_desc = soup.find('meta', attrs={'name': 'description'})
+        description = meta_desc.get('content', '').strip() if meta_desc else ""
+
+        # Extract meta keywords if present
+        meta_keywords = soup.find('meta', attrs={'name': 'keywords'})
+        meta_kw_list = []
+        if meta_keywords:
+            meta_kw_list = [k.strip().lower() for k in meta_keywords.get('content', '').split(',')]
+
+        # Extract text from key elements
+        text_content = []
+        for tag in ['h1', 'h2', 'h3', 'p']:
+            for element in soup.find_all(tag)[:10]:  # Limit to first 10 of each
+                text_content.append(element.get_text(strip=True))
+
+        full_text = ' '.join(text_content).lower()
+
+        # Cold email / B2B relevant industry terms to look for
+        industry_term_patterns = {
+            # Sales & GTM
+            'gtm': ['gtm', 'go-to-market', 'go to market'],
+            'sales': ['sales', 'selling', 'revenue'],
+            'outreach': ['outreach', 'prospecting', 'cold email'],
+            'growth': ['growth', 'scaling', 'scale'],
+            'leads': ['leads', 'lead gen', 'lead generation'],
+            # Fulfillment & Logistics
+            'fulfillment': ['fulfillment', 'fulfil', '3pl', 'warehouse'],
+            'shipping': ['shipping', 'ship', 'delivery', 'logistics'],
+            'ecommerce': ['ecommerce', 'e-commerce', 'online store', 'shopify'],
+            # Tech & SaaS
+            'saas': ['saas', 'software', 'platform', 'app'],
+            'api': ['api', 'integration', 'developer'],
+            'automation': ['automation', 'automate', 'workflow'],
+            # Finance
+            'fintech': ['fintech', 'payments', 'billing', 'invoicing'],
+            'commission': ['commission', 'compensation', 'incentive'],
+            # Marketing
+            'marketing': ['marketing', 'advertising', 'brand'],
+            'content': ['content', 'copywriting', 'messaging'],
+            # HR & Recruiting
+            'recruiting': ['recruiting', 'hiring', 'talent', 'hr'],
+            'staffing': ['staffing', 'workforce', 'employment'],
+        }
+
+        found_terms = []
+        for term_key, patterns in industry_term_patterns.items():
+            for pattern in patterns:
+                if pattern in full_text or pattern in title.lower() or pattern in description.lower():
+                    found_terms.append(term_key)
+                    break
+
+        # Extract unique keywords from title and description
+        keywords = set()
+
+        # Add meta keywords
+        keywords.update([k for k in meta_kw_list if len(k) > 2 and len(k) < 20])
+
+        # Extract significant words from title
+        title_words = re.findall(r'\b[a-z]{3,15}\b', title.lower())
+        keywords.update([w for w in title_words if w not in ['the', 'and', 'for', 'with', 'your', 'our', 'that', 'this', 'from', 'are', 'was', 'were', 'will', 'have', 'has', 'been']])
+
+        return {
+            "title": title[:200],
+            "description": description[:500],
+            "keywords": list(keywords)[:20],
+            "industry_terms": list(set(found_terms)),
+            "success": True
+        }
+
+    except Exception as e:
+        return {
+            "title": "",
+            "description": "",
+            "keywords": [],
+            "industry_terms": [],
+            "success": False,
+            "error": str(e)
+        }
 
 
 def find_common_suffix(domain_names: list[str]) -> Optional[str]:
@@ -161,6 +319,32 @@ async def list_tools():
                 },
                 "required": ["client_id"]
             }
+        ),
+        Tool(
+            name="enrich_client_context",
+            description="""Fetch the client's website and extract business keywords for better domain generation.
+
+            Call this AFTER get_client_context if you want to generate contextual domains.
+            Returns industry terms and keywords extracted from the website content.
+
+            IMPORTANT: Brand name must ALWAYS be at the END of the domain (suffix).
+
+            Use the returned keywords to generate domains like:
+            - {keyword}with{brand}.com (e.g., growthwithcharm.com, shipwithselery.com)
+            - {keyword}{brand}.com (e.g., gtmcharm.com, fulfillmentselery.com)
+            - {action}{keyword}{brand}.com (e.g., scalegrowthcharm.com)
+
+            The brand is ALWAYS the suffix - never put it at the beginning.""",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "website_url": {
+                        "type": "string",
+                        "description": "The client's website URL to fetch and analyze"
+                    }
+                },
+                "required": ["website_url"]
+            }
         )
     ]
 
@@ -175,10 +359,10 @@ async def call_tool(name: str, arguments: dict):
         cur = conn.cursor(cursor_factory=RealDictCursor)
 
         try:
-            # Get client info
+            # Get client info including website
             cur.execute("""
                 SELECT c.id, c.name, c.workspace_id, c.onboarding_data,
-                       c.onboarding_complete
+                       c.onboarding_complete, c.website, c.domain_pattern
                 FROM clients c
                 WHERE c.id = %s
             """, (client_id,))
@@ -222,6 +406,23 @@ async def call_tool(name: str, arguments: dict):
                 else:
                     onboarding = client["onboarding_data"]
 
+            # Get website from client or onboarding data
+            website = client.get("website") or onboarding.get("website") or onboarding.get("company_website")
+
+            # Extract base name for suffix-based generation
+            base_name = extract_base_name(website) if website else None
+
+            # Also check client's explicit domain_pattern
+            client_domain_pattern = client.get("domain_pattern")
+
+            # Determine generation mode
+            if base_name:
+                generation_mode = "suffix"  # Generate domains ending with brand name
+            elif onboarding:
+                generation_mode = "onboarding"
+            else:
+                generation_mode = "pattern_fallback"
+
             context = {
                 "client_id": str(client["id"]),
                 "client_name": client["name"],
@@ -230,13 +431,16 @@ async def call_tool(name: str, arguments: dict):
                 "industry": onboarding.get("industry", "Unknown"),
                 "product": onboarding.get("product", onboarding.get("core_product", "")),
                 "workspace_id": str(workspace_id) if workspace_id else None,
+                "website": website,
+                "base_name": base_name,  # For suffix-based generation (e.g., "charm" -> trycharm.com)
+                "client_domain_pattern": client_domain_pattern,  # Explicit pattern if set
                 "total_domains": len(domain_names),
                 "existing_domains": domain_names[:20],  # Limit to first 20
                 "approved_domains": approved_domains[:10],
                 "denied_domains": denied_domains,  # Show all denied to avoid
-                "domain_pattern": domain_pattern,
+                "domain_pattern": domain_pattern,  # Extracted from existing domains
                 "used_prefixes": used_prefixes[:50],  # Limit
-                "generation_mode": "onboarding" if onboarding else "pattern_fallback"
+                "generation_mode": generation_mode
             }
 
             return [TextContent(type="text", text=json.dumps(context, indent=2))]
@@ -386,6 +590,32 @@ async def call_tool(name: str, arguments: dict):
         finally:
             cur.close()
             conn.close()
+
+    elif name == "enrich_client_context":
+        website_url = arguments["website_url"]
+
+        # Fetch and analyze the website
+        result = await fetch_website_keywords(website_url)
+
+        if result["success"]:
+            # Generate suggested domain patterns based on found terms
+            suggested_patterns = []
+            for term in result["industry_terms"][:5]:
+                suggested_patterns.extend([
+                    f"{term}with{{brand}}.com",
+                    f"{term}{{brand}}.com",
+                ])
+
+            result["suggested_patterns"] = suggested_patterns
+            result["usage_hint"] = (
+                "Use these industry_terms to create contextual domains. "
+                "ALWAYS put the brand name at the END. Examples:\n"
+                "- growthwithcharm.com (growth + with + charm)\n"
+                "- gtmcharm.com (gtm + charm)\n"
+                "- fulfillmentwithselery.com (fulfillment + with + selery)"
+            )
+
+        return [TextContent(type="text", text=json.dumps(result, indent=2))]
 
     else:
         return [TextContent(type="text", text=f"❌ Unknown tool: {name}")]
