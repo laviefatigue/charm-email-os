@@ -17,7 +17,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from '@/components/ui/tooltip';
-import { Loader2, Settings, Server, Clock, CheckCircle2, AlertCircle, RefreshCw, ShieldCheck, ShieldAlert, ShieldQuestion } from 'lucide-react';
+import { Loader2, Settings, Server, Clock, CheckCircle2, AlertCircle, RefreshCw, ShieldCheck, ShieldAlert, ShieldQuestion, Wrench } from 'lucide-react';
 import type { Domain, NameserverStatus } from '@/lib/types';
 import { isDnsReady, hoursUntilDnsReady } from '@/lib/types';
 import { toast } from 'sonner';
@@ -39,6 +39,7 @@ export function DomainsNeedingSetupTable({
 }: DomainsNeedingSetupTableProps) {
   const [selectedDomains, setSelectedDomains] = useState<Set<string>>(new Set());
   const [isVerifying, setIsVerifying] = useState(false);
+  const [isFixingNs, setIsFixingNs] = useState(false);
 
   // Filter only purchased domains (not provisioning)
   const purchasedDomains = useMemo(() =>
@@ -120,6 +121,67 @@ export function DomainsNeedingSetupTable({
       setIsVerifying(false);
     }
   }, [selectedDomains, purchasedDomains, onDomainsChange]);
+
+  // Fix nameservers for selected domains (set to DNSimple)
+  const handleFixNameservers = useCallback(async () => {
+    if (selectedDomains.size === 0) {
+      toast.error('No domains selected');
+      return;
+    }
+
+    // Get domains that need fixing (failed, mismatch, or pending)
+    const domainsToFix = purchasedDomains
+      .filter(d => selectedDomains.has(d.id))
+      .filter(d => !d.nameserverStatus || d.nameserverStatus !== 'verified')
+      .map(d => d.domainName || d.domain);
+
+    if (domainsToFix.length === 0) {
+      toast.info('All selected domains already have verified nameservers');
+      return;
+    }
+
+    setIsFixingNs(true);
+    try {
+      const response = await fetch(`${API_BASE}/api/domain-sourcing/set-nameservers`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ domain_names: domainsToFix }),
+      });
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.detail || 'Failed to set nameservers');
+      }
+
+      const data = await response.json();
+
+      if (data.success_count > 0) {
+        if (data.verified_count > 0) {
+          toast.success(`Set nameservers for ${data.success_count} domain(s), ${data.verified_count} verified immediately`);
+        } else {
+          toast.success(`Set nameservers for ${data.success_count} domain(s). Verification pending.`);
+        }
+      }
+      if (data.failed_count > 0) {
+        toast.error(`Failed to set nameservers for ${data.failed_count} domain(s)`);
+      }
+
+      // Refresh domains list
+      onDomainsChange?.();
+    } catch (error: any) {
+      toast.error(error.message || 'Failed to set nameservers');
+    } finally {
+      setIsFixingNs(false);
+    }
+  }, [selectedDomains, purchasedDomains, onDomainsChange]);
+
+  // Count domains needing NS fix (selected domains that aren't verified)
+  const domainsNeedingFix = useMemo(() => {
+    return purchasedDomains
+      .filter(d => selectedDomains.has(d.id))
+      .filter(d => !d.nameserverStatus || d.nameserverStatus !== 'verified')
+      .length;
+  }, [purchasedDomains, selectedDomains]);
 
   // Get NS verification status badge
   const getNsStatusBadge = (domain: Domain) => {
@@ -250,6 +312,22 @@ export function DomainsNeedingSetupTable({
               )}
               Verify NS
             </Button>
+            {domainsNeedingFix > 0 && (
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={isFixingNs}
+                onClick={handleFixNameservers}
+                className="border-amber-500 text-amber-600 hover:bg-amber-50"
+              >
+                {isFixingNs ? (
+                  <Loader2 className="h-4 w-4 mr-1 animate-spin" />
+                ) : (
+                  <Wrench className="h-4 w-4 mr-1" />
+                )}
+                Fix NS ({domainsNeedingFix})
+              </Button>
+            )}
             <Button
               size="sm"
               disabled={selectedDomains.size === 0 || isSettingUp}

@@ -11,6 +11,7 @@ from fastapi import APIRouter, HTTPException, BackgroundTasks
 from typing import Optional
 from uuid import UUID
 from database import fetch_one, fetch_all, execute
+import asyncio
 import logging
 import sys
 from pathlib import Path
@@ -2086,3 +2087,165 @@ async def get_nameserver_status(domain_name: str):
         "dns_ready": dns_ready,
         "hours_until_ready": round(hours_until_ready, 1) if hours_until_ready is not None else 0,
     }
+
+
+class SetNameserversRequest(BaseModel):
+    """Request to set nameservers for domains."""
+    domain_names: list[str]
+
+
+class SetNameserverResult(BaseModel):
+    """Result from setting nameservers for a single domain."""
+    domain: str
+    success: bool
+    registrar: Optional[str] = None
+    new_nameservers: Optional[list[str]] = None
+    verified: bool = False
+    error: Optional[str] = None
+
+
+class SetNameserversResponse(BaseModel):
+    """Response from setting nameservers."""
+    results: list[SetNameserverResult]
+    success_count: int
+    failed_count: int
+    verified_count: int
+
+
+@router.post("/set-nameservers", response_model=SetNameserversResponse)
+async def set_nameservers(request: SetNameserversRequest):
+    """
+    Set nameservers to DNSimple for the specified domains.
+
+    This endpoint:
+    1. Detects which registrar owns each domain (Porkbun or Dynadot)
+    2. Sets the nameservers to DNSimple's nameservers
+    3. Verifies the change was applied
+    4. Updates the database with the new status
+
+    Use this when:
+    - Initial nameserver setup failed during purchase
+    - Nameservers show as "mismatch" or "failed"
+    - You need to manually fix DNS configuration
+    """
+    porkbun = PorkbunService()
+    dynadot = DynadotService()
+
+    results = []
+    success_count = 0
+    failed_count = 0
+    verified_count = 0
+
+    try:
+        for domain_name in request.domain_names:
+            registrar = None
+            success = False
+            verified = False
+            error = None
+            new_nameservers = None
+
+            # First, detect which registrar owns this domain by trying to get current NS
+            try:
+                ns_list = await porkbun.get_nameservers(domain_name)
+                if ns_list:
+                    registrar = "porkbun"
+            except Exception as e:
+                logger.debug(f"Porkbun lookup failed for {domain_name}: {e}")
+
+            if registrar is None:
+                try:
+                    ns_list = await dynadot.get_nameservers(domain_name)
+                    if ns_list:
+                        registrar = "dynadot"
+                except Exception as e:
+                    logger.debug(f"Dynadot lookup failed for {domain_name}: {e}")
+
+            if registrar is None:
+                error = "Domain not found in Porkbun or Dynadot"
+                failed_count += 1
+                results.append(SetNameserverResult(
+                    domain=domain_name,
+                    success=False,
+                    error=error,
+                ))
+                continue
+
+            # Set nameservers based on registrar
+            try:
+                if registrar == "porkbun":
+                    success = await porkbun.set_nameservers(domain_name, DNSIMPLE_NAMESERVERS)
+                else:  # dynadot
+                    success = await dynadot.set_nameservers(domain_name, DNSIMPLE_NAMESERVERS)
+
+                if not success:
+                    error = f"Failed to set nameservers at {registrar}"
+            except Exception as e:
+                error = str(e)
+                success = False
+
+            if success:
+                success_count += 1
+                new_nameservers = DNSIMPLE_NAMESERVERS
+
+                # Verify the change by re-reading nameservers
+                await asyncio.sleep(1)  # Brief delay for registrar to process
+                try:
+                    if registrar == "porkbun":
+                        current_ns = await porkbun.get_nameservers(domain_name)
+                    else:
+                        current_ns = await dynadot.get_nameservers(domain_name)
+
+                    if current_ns:
+                        current_ns_set = set(ns.lower() for ns in current_ns)
+                        expected_ns_set = set(ns.lower() for ns in DNSIMPLE_NAMESERVERS)
+                        if expected_ns_set.issubset(current_ns_set) or current_ns_set == expected_ns_set:
+                            verified = True
+                            verified_count += 1
+                            new_nameservers = current_ns
+                except Exception as e:
+                    logger.debug(f"Verification read failed for {domain_name}: {e}")
+
+                # Update database
+                status = "verified" if verified else "pending"
+                await execute("""
+                    UPDATE domains
+                    SET nameserver_status = $1,
+                        nameservers_updated_at = NOW(),
+                        current_nameservers = $2,
+                        selected_provider = $3,
+                        updated_at = NOW()
+                    WHERE domain_name = $4
+                """, status, new_nameservers, registrar, domain_name)
+
+                logger.info(f"Set nameservers for {domain_name} at {registrar}: "
+                           f"success={success}, verified={verified}")
+            else:
+                failed_count += 1
+                # Update database with failed status
+                await execute("""
+                    UPDATE domains
+                    SET nameserver_status = 'failed',
+                        selected_provider = COALESCE($1, selected_provider),
+                        updated_at = NOW()
+                    WHERE domain_name = $2
+                """, registrar, domain_name)
+
+            results.append(SetNameserverResult(
+                domain=domain_name,
+                success=success,
+                registrar=registrar,
+                new_nameservers=new_nameservers,
+                verified=verified,
+                error=error,
+            ))
+
+    finally:
+        await porkbun.close()
+        await dynadot.close()
+
+    return SetNameserversResponse(
+        results=results,
+        success_count=success_count,
+        failed_count=failed_count,
+        verified_count=verified_count,
+    )
