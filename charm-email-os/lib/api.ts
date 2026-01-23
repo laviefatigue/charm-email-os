@@ -18,6 +18,9 @@ import type {
   Subscription,
   SubscriptionWithUsage,
   SubscriptionChange,
+  BaseName,
+  SenderNameVariation,
+  VariationPattern,
 } from './types';
 
 // API base URL - use environment variable or default to deployed API
@@ -372,6 +375,166 @@ export const clientApi = {
         }>;
       } | null;
     }>(`/api/clients/${clientId}/sender-names`);
+  },
+
+  // ===== NAME VARIATION ENDPOINTS (Phase 6A.5) =====
+
+  /**
+   * Get available name variation patterns
+   * Returns list of patterns with descriptions and examples
+   */
+  async getNamePatterns() {
+    return fetchApi<{
+      patterns: VariationPattern[];
+      default_patterns: string[];
+    }>('/api/clients/name-patterns');
+  },
+
+  /**
+   * Generate email prefix variations from base names
+   * Base names are the real identities (1-2 names like "Chris Booth")
+   * Variations are different email prefix formats generated from those names
+   */
+  async generateNameVariations(
+    clientId: string,
+    baseNames: BaseName[],
+    patterns?: string[],
+    count: number = 10
+  ): Promise<{
+    variations: SenderNameVariation[];
+    count: number;
+    patternsUsed: string[];
+    baseNames: BaseName[];
+  }> {
+    const response = await fetchApi<{
+      variations: Array<{
+        firstName: string;
+        lastName: string;
+        emailPrefix: string;
+        baseName: string;
+        pattern: string;
+        isFounder?: boolean;
+      }>;
+      count: number;
+      patterns_used: string[];
+      base_names: Array<{
+        firstName: string;
+        lastName: string;
+        isFounder?: boolean;
+      }>;
+    }>(`/api/clients/${clientId}/generate-name-variations`, {
+      method: 'POST',
+      body: JSON.stringify({
+        base_names: baseNames.map(bn => ({
+          first_name: bn.firstName,
+          last_name: bn.lastName,
+          is_founder: bn.isFounder ?? false,
+        })),
+        patterns: patterns ?? undefined,
+        count,
+      }),
+    });
+
+    return {
+      variations: response.variations.map(v => ({
+        firstName: v.firstName,
+        lastName: v.lastName,
+        emailPrefix: v.emailPrefix,
+        baseName: v.baseName,
+        pattern: v.pattern,
+        isFounder: v.isFounder,
+      })),
+      count: response.count,
+      patternsUsed: response.patterns_used,
+      baseNames: response.base_names.map(bn => ({
+        firstName: bn.firstName,
+        lastName: bn.lastName,
+        isFounder: bn.isFounder,
+      })),
+    };
+  },
+
+  /**
+   * Save sender names (base names + variations) to client profile
+   * Stores in onboarding_data JSONB for reuse in Hypertide purchase wizard
+   */
+  async saveSenderNames(
+    clientId: string,
+    baseNames: BaseName[],
+    variations: SenderNameVariation[],
+    patterns: string[]
+  ): Promise<Client> {
+    const response = await fetchApi<Record<string, unknown>>(
+      `/api/clients/${clientId}/sender-names`,
+      {
+        method: 'PUT',
+        body: JSON.stringify({
+          base_names: baseNames.map(bn => ({
+            first_name: bn.firstName,
+            last_name: bn.lastName,
+            is_founder: bn.isFounder ?? false,
+          })),
+          variations: variations.map(v => ({
+            first_name: v.firstName,
+            last_name: v.lastName,
+            email_prefix: v.emailPrefix,
+            base_name: v.baseName,
+            pattern: v.pattern,
+            is_founder: v.isFounder ?? false,
+          })),
+          patterns,
+        }),
+      }
+    );
+    return toCamelCase<Client>(response);
+  },
+
+  /**
+   * Get the full sender name configuration for a client
+   * Returns base names, patterns, and generated variations
+   */
+  async getSenderNameConfig(clientId: string): Promise<{
+    baseNames: BaseName[];
+    patterns: string[];
+    variations: SenderNameVariation[];
+    hasConfig: boolean;
+    availablePatterns: VariationPattern[];
+  }> {
+    const response = await fetchApi<{
+      baseNames: Array<{
+        firstName: string;
+        lastName: string;
+        isFounder?: boolean;
+      }>;
+      patterns: string[];
+      variations: Array<{
+        firstName: string;
+        lastName: string;
+        emailPrefix: string;
+        source?: string;
+      }>;
+      hasConfig: boolean;
+      availablePatterns: VariationPattern[];
+    }>(`/api/clients/${clientId}/sender-name-config`);
+
+    return {
+      baseNames: response.baseNames.map(bn => ({
+        firstName: bn.firstName,
+        lastName: bn.lastName,
+        isFounder: bn.isFounder,
+      })),
+      patterns: response.patterns,
+      variations: response.variations.map(v => ({
+        firstName: v.firstName,
+        lastName: v.lastName,
+        emailPrefix: v.emailPrefix,
+        baseName: '', // Not stored in preGeneratedSenderNames
+        pattern: '', // Not stored
+        isFounder: v.source === 'founder',
+      })),
+      hasConfig: response.hasConfig,
+      availablePatterns: response.availablePatterns,
+    };
   },
 };
 
@@ -1775,7 +1938,58 @@ export const strategyApi = {
   },
 
   /**
-   * Push an approved sequence to EmailBison
+   * Create a spintax processing job for an approved sequence
+   */
+  async createSpintaxJob(sequenceId: string): Promise<{
+    jobId: string;
+    sequenceId: string;
+    clientId: string;
+    status: string;
+    createdAt: string;
+  }> {
+    const response = await fetchApi<Record<string, unknown>>(
+      `/api/strategy/sequences/${sequenceId}/spintax`,
+      { method: 'POST' }
+    );
+    return toCamelCase<{
+      jobId: string;
+      sequenceId: string;
+      clientId: string;
+      status: string;
+      createdAt: string;
+    }>(response);
+  },
+
+  /**
+   * Get spintax job status for polling
+   */
+  async getSpintaxJobStatus(jobId: string): Promise<{
+    jobId: string;
+    sequenceId: string;
+    clientId: string;
+    status: string;
+    errorMessage?: string;
+    createdAt: string;
+    startedAt?: string;
+    completedAt?: string;
+  }> {
+    const response = await fetchApi<Record<string, unknown>>(
+      `/api/strategy/spintax-jobs/${jobId}/status`
+    );
+    return toCamelCase<{
+      jobId: string;
+      sequenceId: string;
+      clientId: string;
+      status: string;
+      errorMessage?: string;
+      createdAt: string;
+      startedAt?: string;
+      completedAt?: string;
+    }>(response);
+  },
+
+  /**
+   * Push a spintaxed sequence to EmailBison
    */
   async pushSequenceToEmailBison(sequenceId: string): Promise<{
     sequenceId: string;

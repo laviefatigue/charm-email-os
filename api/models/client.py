@@ -8,12 +8,35 @@ from datetime import datetime
 from uuid import UUID
 
 
+class BaseName(BaseModel):
+    """A base/seed name for variation generation"""
+    first_name: str = Field(..., alias="firstName")
+    last_name: str = Field(..., alias="lastName")
+    is_founder: bool = Field(False, alias="isFounder")
+
+    class Config:
+        populate_by_name = True
+
+
 class SenderName(BaseModel):
     """A sender name for inbox provisioning"""
     first_name: str = Field(..., alias="firstName")
     last_name: str = Field(..., alias="lastName")
     email_prefix: str = Field(..., alias="emailPrefix")
-    source: Literal["persona", "custom", "generated"] = "generated"
+    source: Literal["persona", "custom", "generated", "founder"] = "generated"
+
+    class Config:
+        populate_by_name = True
+
+
+class SenderNameVariation(BaseModel):
+    """A generated variation from a base name"""
+    first_name: str = Field(..., alias="firstName")
+    last_name: str = Field(..., alias="lastName")
+    email_prefix: str = Field(..., alias="emailPrefix")
+    base_name: str = Field(..., alias="baseName")
+    pattern: str
+    is_founder: bool = Field(False, alias="isFounder")
 
     class Config:
         populate_by_name = True
@@ -54,6 +77,9 @@ class OnboardingData(BaseModel):
     personas: Optional[list[OnboardingPersona]] = None
     sender_name_preferences: Optional[SenderNamePreferences] = Field(None, alias="senderNamePreferences")
     pre_generated_sender_names: Optional[list[SenderName]] = Field(None, alias="preGeneratedSenderNames")
+    # Variation-based name generation (Phase 6A.5)
+    base_sender_names: Optional[list[BaseName]] = Field(None, alias="baseSenderNames")
+    variation_patterns: Optional[list[str]] = Field(None, alias="variationPatterns")
 
     class Config:
         populate_by_name = True
@@ -127,3 +153,25 @@ class ClientList(BaseModel):
 class LinkWorkspaceRequest(BaseModel):
     """Request to link a client to a workspace"""
     workspace_id: UUID
+
+
+class GenerateVariationsRequest(BaseModel):
+    """Request to generate name variations from base names"""
+    base_names: list[BaseName] = Field(..., alias="baseNames")
+    patterns: Optional[list[str]] = Field(
+        default=["firstname.lastname", "f.lastname", "firstnamelastname", "firstname.l", "flastname"]
+    )
+    count: int = Field(10, ge=1, le=10)
+
+    class Config:
+        populate_by_name = True
+
+
+class SaveSenderNamesRequest(BaseModel):
+    """Request to save sender names to client profile"""
+    base_names: list[BaseName] = Field(..., alias="baseNames")
+    variations: list[SenderNameVariation]
+    patterns: list[str]
+
+    class Config:
+        populate_by_name = True

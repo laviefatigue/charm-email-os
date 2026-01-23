@@ -6,3 +6,4 @@ export { WarmupProgress } from './WarmupProgress';
 export { DomainEditModal } from './DomainEditModal';
 export { InboxEditModal } from './InboxEditModal';
 export { DomainInboxTree } from './DomainInboxTree';
+export { SenderNamesTab } from './SenderNamesTab';

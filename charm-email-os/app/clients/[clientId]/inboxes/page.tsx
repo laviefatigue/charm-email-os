@@ -2,7 +2,7 @@
 
 import { useState, useMemo, useEffect, useCallback } from 'react';
 import { useParams } from 'next/navigation';
-import { Plus, Globe, Mail, Info, Sparkles, AlertTriangle, CheckCheck, Loader2, AlertCircle, ShoppingCart, Package } from 'lucide-react';
+import { Plus, Globe, Mail, Info, Sparkles, AlertTriangle, CheckCheck, Loader2, AlertCircle, ShoppingCart, Package, Users } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
@@ -19,6 +19,7 @@ import {
   DomainEditModal,
   InboxEditModal,
   DomainInboxTree,
+  SenderNamesTab,
 } from '@/components/inboxes';
 import { InboxPurchaseWizard, DomainCandidatesTable, DomainsNeedingSetupTable } from '@/components/purchasing';
 import { useClientStore, useInfrastructureStore } from '@/lib/stores';
@@ -275,6 +276,10 @@ export default function InboxesPage() {
             <TabsTrigger value="purchase" className="flex items-center gap-2">
               <ShoppingCart className="h-4 w-4" />
               Purchase New
+            </TabsTrigger>
+            <TabsTrigger value="names" className="flex items-center gap-2">
+              <Users className="h-4 w-4" />
+              Names
             </TabsTrigger>
           </TabsList>
 
@@ -549,6 +554,18 @@ export default function InboxesPage() {
                 </CardContent>
               </Card>
             </div>
+          </TabsContent>
+
+          {/* Names Tab - Sender Name Management */}
+          <TabsContent value="names">
+            <SenderNamesTab
+              clientId={clientId}
+              client={client}
+              onSave={() => {
+                // Refresh client data after saving names
+                fetchClients();
+              }}
+            />
           </TabsContent>
         </Tabs>
 

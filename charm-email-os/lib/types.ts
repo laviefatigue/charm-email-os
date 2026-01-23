@@ -57,12 +57,36 @@ export interface OnboardingPersona {
   seniority_level?: string;
 }
 
+// Base/seed name for variation generation (Phase 6A.5)
+export interface BaseName {
+  firstName: string;
+  lastName: string;
+  isFounder?: boolean;  // If true, always include firstname.lastname as first variation
+}
+
 // Sender name for inbox provisioning
 export interface SenderName {
   firstName: string;
   lastName: string;
   emailPrefix: string;  // e.g., "john.smith"
-  source: 'persona' | 'custom' | 'generated';  // Where this name came from
+  source: 'persona' | 'custom' | 'generated' | 'founder';  // Where this name came from
+}
+
+// Generated variation from a base name (Phase 6A.5)
+export interface SenderNameVariation {
+  firstName: string;      // Display name (may be abbreviated, e.g., "C" for initial)
+  lastName: string;       // Display name (may be abbreviated)
+  emailPrefix: string;    // e.g., "chris.booth", "c.booth", "chrisbooth"
+  baseName: string;       // Reference to base name: "Chris Booth"
+  pattern: string;        // Pattern used: "firstname.lastname", "f.lastname", etc.
+  isFounder?: boolean;    // True if this is the founder's primary variation
+}
+
+// Available variation pattern info
+export interface VariationPattern {
+  name: string;           // e.g., "firstname.lastname"
+  description: string;    // e.g., "Full name with dot (chris.booth)"
+  example: string;        // e.g., "chris.booth"
 }
 
 // Sender name preferences for Hypertide inbox setup
@@ -83,6 +107,9 @@ export interface OnboardingData {
   // Sender name configuration for inbox provisioning
   senderNamePreferences?: SenderNamePreferences;
   preGeneratedSenderNames?: SenderName[];  // Names ready for Hypertide
+  // Variation-based name generation (Phase 6A.5)
+  baseSenderNames?: BaseName[];            // Base/seed names for variation generation
+  variationPatterns?: string[];            // Which patterns to use for generation
 }
 
 // Domain status enum (aligned with OwnRBL)

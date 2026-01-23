@@ -14,8 +14,16 @@ import os
 from database import fetch_all, fetch_one, execute
 from models.client import (
     Client, ClientCreate, ClientUpdate, ClientOnboard,
-    ClientList, LinkWorkspaceRequest, SenderName, SenderNamePreferences
+    ClientList, LinkWorkspaceRequest, SenderName, SenderNamePreferences,
+    BaseName, SenderNameVariation, GenerateVariationsRequest, SaveSenderNamesRequest
 )
+from data.sender_names import (
+    FIRST_NAMES_POOL, LAST_NAMES_POOL,
+    generate_email_prefix as _generate_email_prefix,
+    generate_random_names as _generate_random_names,
+)
+from data.client_name_strategies import get_strategy, get_founder_name
+from data.name_variations import generate_variations, get_available_patterns, VARIATION_PATTERNS
 import random
 
 router = APIRouter()
@@ -253,6 +261,24 @@ async def create_client(client: ClientCreate):
         domain_count=0,
         campaign_count=0
     )
+
+
+# ============================================
+# Static Routes (MUST be before /{client_id} routes)
+# ============================================
+
+@router.get("/name-patterns")
+async def get_name_patterns():
+    """
+    Get available name variation patterns.
+
+    Returns list of patterns with descriptions and examples.
+    Used by the frontend to populate pattern checkboxes.
+    """
+    return {
+        "patterns": get_available_patterns(),
+        "default_patterns": ["firstname.lastname", "f.lastname", "firstnamelastname", "firstname.l", "flastname"],
+    }
 
 
 @router.get("/{client_id}", response_model=Client)
@@ -548,21 +574,9 @@ async def complete_onboarding(client_id: UUID, onboard: ClientOnboard):
     return await get_client(client_id)
 
 
-# Common first names for cold email (professional, neutral)
-FIRST_NAMES = [
-    'Alex', 'Jordan', 'Taylor', 'Morgan', 'Casey',
-    'Riley', 'Cameron', 'Avery', 'Parker', 'Quinn',
-    'Jamie', 'Drew', 'Blake', 'Reese', 'Skyler',
-    'Sam', 'Chris', 'Pat', 'Robin', 'Dana',
-]
-
-# Common last names
-LAST_NAMES = [
-    'Smith', 'Johnson', 'Williams', 'Brown', 'Davis',
-    'Miller', 'Wilson', 'Moore', 'Taylor', 'Anderson',
-    'Thomas', 'Jackson', 'White', 'Harris', 'Martin',
-    'Thompson', 'Garcia', 'Martinez', 'Robinson', 'Clark',
-]
+# Use expanded name pools from data module (50+ names each)
+FIRST_NAMES = FIRST_NAMES_POOL
+LAST_NAMES = LAST_NAMES_POOL
 
 
 def generate_email_prefix(first_name: str, last_name: str) -> str:
@@ -640,6 +654,7 @@ class GenerateSenderNamesRequest(BaseModel):
     """Request to generate sender names"""
     count: int = 10
     use_personas: bool = True
+    use_client_strategy: bool = True  # Apply client-specific strategy (founder name, etc.)
     custom_names: Optional[list[SenderName]] = None
 
 
@@ -647,9 +662,11 @@ class GenerateSenderNamesResponse(BaseModel):
     """Response with generated sender names"""
     names: list[dict]
     total_count: int
+    from_founder: int = 0
     from_personas: int
     from_custom: int
     from_generated: int
+    strategy_applied: Optional[str] = None
 
 
 @router.post("/{client_id}/generate-sender-names", response_model=GenerateSenderNamesResponse)
@@ -658,9 +675,10 @@ async def generate_sender_names(client_id: UUID, request: GenerateSenderNamesReq
     Generate sender names for a client and save to their onboarding data.
 
     Names are generated based on:
-    1. Custom names if provided
-    2. Personas from onboarding data (if use_personas=true)
-    3. Random generation to fill remaining slots
+    1. Client strategy (founder name first, if configured)
+    2. Custom names if provided
+    3. Personas from onboarding data (if use_personas=true)
+    4. Random generation to fill remaining slots (from 50+ name pool)
 
     Hypertide allows max 10 names per order, and names are reused across domains.
     """
@@ -676,18 +694,22 @@ async def generate_sender_names(client_id: UUID, request: GenerateSenderNamesReq
     target_count = min(request.count, 10)  # Hypertide max
     names = []
     used_prefixes = set()
+    from_founder = 0
     from_personas = 0
     from_custom = 0
     from_generated = 0
+    strategy_applied = None
 
     def add_name(name: dict) -> bool:
-        nonlocal from_personas, from_custom, from_generated
+        nonlocal from_founder, from_personas, from_custom, from_generated
         prefix = name.get("emailPrefix")
         if prefix not in used_prefixes and len(names) < target_count:
             used_prefixes.add(prefix)
             names.append(name)
             source = name.get("source", "generated")
-            if source == "persona":
+            if source == "founder":
+                from_founder += 1
+            elif source == "persona":
                 from_personas += 1
             elif source == "custom":
                 from_custom += 1
@@ -695,6 +717,17 @@ async def generate_sender_names(client_id: UUID, request: GenerateSenderNamesReq
                 from_generated += 1
             return True
         return False
+
+    # 0. Apply client strategy (founder name first)
+    if request.use_client_strategy:
+        client_name = client.get("name", "")
+        strategy = get_strategy(client_name=client_name)
+        if strategy.get("include_founder"):
+            founder = get_founder_name(strategy)
+            if founder:
+                add_name(founder)
+                strategy_applied = client_name.lower() if client_name else None
+                logger.info(f"Applied founder name for client '{client_name}': {founder['emailPrefix']}")
 
     # 1. Use custom names if provided
     if request.custom_names:
@@ -719,7 +752,7 @@ async def generate_sender_names(client_id: UUID, request: GenerateSenderNamesReq
                 for name in persona_names:
                     add_name(name)
 
-    # 3. Fill remaining with random names
+    # 3. Fill remaining with random names (using expanded 50+ name pool)
     if len(names) < target_count:
         random_names = generate_random_sender_names(target_count - len(names))
         for name in random_names:
@@ -759,14 +792,16 @@ async def generate_sender_names(client_id: UUID, request: GenerateSenderNamesReq
     )
 
     logger.info(f"Generated {len(names)} sender names for client {client_id} "
-                f"(personas: {from_personas}, custom: {from_custom}, generated: {from_generated})")
+                f"(founder: {from_founder}, personas: {from_personas}, custom: {from_custom}, generated: {from_generated})")
 
     return GenerateSenderNamesResponse(
         names=names,
         total_count=len(names),
+        from_founder=from_founder,
         from_personas=from_personas,
         from_custom=from_custom,
         from_generated=from_generated,
+        strategy_applied=strategy_applied,
     )
 
 
@@ -800,6 +835,173 @@ async def get_sender_names(client_id: UUID):
         "names": names,
         "count": len(names),
         "preferences": preferences,
+    }
+
+
+# ============================================
+# Name Variation Endpoints (Phase 6A.5)
+# ============================================
+
+@router.post("/{client_id}/generate-name-variations")
+async def generate_name_variations(client_id: UUID, request: GenerateVariationsRequest):
+    """
+    Generate email prefix variations from base names.
+
+    Base names are the real identities (1-2 names like "Chris Booth").
+    Variations are different email prefix formats generated from those names.
+
+    Example for base name "Chris Booth":
+    - chris.booth (firstname.lastname)
+    - c.booth (f.lastname)
+    - chrisbooth (firstnamelastname)
+    - chris.b (firstname.l)
+    - cbooth (flastname)
+    """
+    # Verify client exists
+    client = await fetch_one("SELECT id, name FROM clients WHERE id = $1", client_id)
+    if not client:
+        raise HTTPException(status_code=404, detail="Client not found")
+
+    # Convert Pydantic models to dicts for the variation generator
+    base_names_dicts = [
+        {
+            "firstName": bn.first_name,
+            "lastName": bn.last_name,
+            "isFounder": bn.is_founder,
+        }
+        for bn in request.base_names
+    ]
+
+    # Generate variations
+    variations = generate_variations(
+        base_names=base_names_dicts,
+        patterns=request.patterns,
+        count=request.count,
+    )
+
+    logger.info(f"Generated {len(variations)} name variations for client {client_id}")
+
+    return {
+        "variations": variations,
+        "count": len(variations),
+        "patterns_used": request.patterns,
+        "base_names": base_names_dicts,
+    }
+
+
+@router.put("/{client_id}/sender-names")
+async def save_sender_names(client_id: UUID, request: SaveSenderNamesRequest):
+    """
+    Save sender names (base names + variations) to client profile.
+
+    This saves:
+    - baseSenderNames: The original names (1-2 identities)
+    - variationPatterns: Which patterns were used to generate variations
+    - preGeneratedSenderNames: The generated variations ready for Hypertide
+
+    These are stored in onboarding_data JSONB column.
+    """
+    # Get client
+    client = await fetch_one(
+        "SELECT id, onboarding_data FROM clients WHERE id = $1",
+        client_id
+    )
+    if not client:
+        raise HTTPException(status_code=404, detail="Client not found")
+
+    # Parse existing onboarding data
+    onboarding_data = client.get("onboarding_data")
+    if isinstance(onboarding_data, str):
+        onboarding_data = json.loads(onboarding_data)
+    elif onboarding_data is None:
+        onboarding_data = {}
+
+    # Convert base names to serializable dicts
+    base_names_data = [
+        {
+            "firstName": bn.first_name,
+            "lastName": bn.last_name,
+            "isFounder": bn.is_founder,
+        }
+        for bn in request.base_names
+    ]
+
+    # Convert variations to SenderName format for compatibility with existing code
+    pre_generated_names = [
+        {
+            "firstName": v.first_name,
+            "lastName": v.last_name,
+            "emailPrefix": v.email_prefix,
+            "source": "founder" if v.is_founder else "generated",
+        }
+        for v in request.variations
+    ]
+
+    # Update onboarding data
+    onboarding_data["baseSenderNames"] = base_names_data
+    onboarding_data["variationPatterns"] = request.patterns
+    onboarding_data["preGeneratedSenderNames"] = pre_generated_names
+    onboarding_data["senderNamePreferences"] = {
+        "usePersonas": False,  # Not using personas when using variations
+        "nameCount": len(request.variations),
+    }
+
+    # Save to database
+    await execute(
+        """
+        UPDATE clients
+        SET onboarding_data = $1, updated_at = NOW()
+        WHERE id = $2
+        """,
+        json.dumps(onboarding_data),
+        client_id
+    )
+
+    logger.info(f"Saved {len(request.variations)} sender name variations for client {client_id}")
+
+    # Return updated client
+    return await get_client(client_id)
+
+
+@router.get("/{client_id}/sender-name-config")
+async def get_sender_name_config(client_id: UUID):
+    """
+    Get the full sender name configuration for a client.
+
+    Returns:
+    - baseNames: The original names (seeds)
+    - patterns: Which variation patterns are enabled
+    - variations: Generated variations
+    - hasConfig: Whether names have been configured
+    """
+    client = await fetch_one(
+        "SELECT id, onboarding_data FROM clients WHERE id = $1",
+        client_id
+    )
+    if not client:
+        raise HTTPException(status_code=404, detail="Client not found")
+
+    onboarding_data = client.get("onboarding_data")
+    if isinstance(onboarding_data, str):
+        onboarding_data = json.loads(onboarding_data)
+
+    base_names = []
+    patterns = ["firstname.lastname", "f.lastname", "firstnamelastname", "firstname.l", "flastname"]
+    variations = []
+    has_config = False
+
+    if onboarding_data:
+        base_names = onboarding_data.get("baseSenderNames", [])
+        patterns = onboarding_data.get("variationPatterns", patterns)
+        variations = onboarding_data.get("preGeneratedSenderNames", [])
+        has_config = bool(base_names)
+
+    return {
+        "baseNames": base_names,
+        "patterns": patterns,
+        "variations": variations,
+        "hasConfig": has_config,
+        "availablePatterns": get_available_patterns(),
     }
 
 
