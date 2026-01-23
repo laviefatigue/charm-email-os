@@ -49,6 +49,7 @@ export function SenderNamesTab({ clientId, client, onSave }: SenderNamesTabProps
 
   // State for variations
   const [variations, setVariations] = useState<SenderNameVariation[]>([]);
+  const [approvedIndices, setApprovedIndices] = useState<Set<number>>(new Set());
   const [variationCount, setVariationCount] = useState(10);
 
   // UI state
@@ -69,6 +70,8 @@ export function SenderNamesTab({ clientId, client, onSave }: SenderNamesTabProps
       setBaseNames(config.baseNames);
       setSelectedPatterns(config.patterns.length > 0 ? config.patterns : DEFAULT_PATTERNS);
       setVariations(config.variations);
+      // All loaded variations are approved by default (they were saved)
+      setApprovedIndices(new Set(config.variations.map((_, i) => i)));
       setAvailablePatterns(config.availablePatterns);
       setHasUnsavedChanges(false);
     } catch (error) {
@@ -124,6 +127,7 @@ export function SenderNamesTab({ clientId, client, onSave }: SenderNamesTabProps
     setBaseNames(newBaseNames);
     setHasUnsavedChanges(true);
     setVariations([]); // Clear variations when base names change
+    setApprovedIndices(new Set());
   };
 
   const toggleFounder = (index: number) => {
@@ -143,9 +147,10 @@ export function SenderNamesTab({ clientId, client, onSave }: SenderNamesTabProps
     );
     setHasUnsavedChanges(true);
     setVariations([]); // Clear variations when patterns change
+    setApprovedIndices(new Set());
   };
 
-  const generateVariations = async () => {
+  const generateVariations = async (append = false) => {
     if (baseNames.length === 0) {
       toast.error('Please add at least one base name');
       return;
@@ -164,9 +169,32 @@ export function SenderNamesTab({ clientId, client, onSave }: SenderNamesTabProps
         selectedPatterns,
         variationCount
       );
-      setVariations(result.variations);
+
+      if (append && variations.length > 0) {
+        // Get existing email prefixes to filter duplicates
+        const existingPrefixes = new Set(variations.map(v => v.emailPrefix));
+        const newVariations = result.variations.filter(v => !existingPrefixes.has(v.emailPrefix));
+
+        if (newVariations.length === 0) {
+          toast.info('No new unique variations could be generated. Try adding more base names or patterns.');
+        } else {
+          const startIndex = variations.length;
+          setVariations([...variations, ...newVariations]);
+          // Approve all new variations by default
+          setApprovedIndices(prev => {
+            const next = new Set(prev);
+            newVariations.forEach((_, i) => next.add(startIndex + i));
+            return next;
+          });
+          toast.success(`Added ${newVariations.length} new variations`);
+        }
+      } else {
+        // Fresh generation - all approved by default
+        setVariations(result.variations);
+        setApprovedIndices(new Set(result.variations.map((_, i) => i)));
+        toast.success(`Generated ${result.count} name variations`);
+      }
       setHasUnsavedChanges(true);
-      toast.success(`Generated ${result.count} name variations`);
     } catch (error) {
       console.error('Failed to generate variations:', error);
       toast.error('Failed to generate name variations');
@@ -175,17 +203,53 @@ export function SenderNamesTab({ clientId, client, onSave }: SenderNamesTabProps
     }
   };
 
+  const toggleApproval = (index: number) => {
+    setApprovedIndices(prev => {
+      const next = new Set(prev);
+      if (next.has(index)) {
+        next.delete(index);
+      } else {
+        next.add(index);
+      }
+      return next;
+    });
+    setHasUnsavedChanges(true);
+  };
+
+  const approveAll = () => {
+    setApprovedIndices(new Set(variations.map((_, i) => i)));
+    setHasUnsavedChanges(true);
+  };
+
+  const clearAll = () => {
+    setApprovedIndices(new Set());
+    setHasUnsavedChanges(true);
+  };
+
+  const removeRejected = () => {
+    const approvedVariations = variations.filter((_, i) => approvedIndices.has(i));
+    setVariations(approvedVariations);
+    setApprovedIndices(new Set(approvedVariations.map((_, i) => i)));
+    setHasUnsavedChanges(true);
+    toast.success(`Removed ${variations.length - approvedVariations.length} unapproved variations`);
+  };
+
   const saveConfig = async () => {
-    if (variations.length === 0) {
-      toast.error('Please generate variations first');
+    const approvedVariations = variations.filter((_, i) => approvedIndices.has(i));
+
+    if (approvedVariations.length === 0) {
+      toast.error('Please approve at least one variation to save');
       return;
     }
 
     setIsSaving(true);
     try {
-      await clientApi.saveSenderNames(clientId, baseNames, variations, selectedPatterns);
+      await clientApi.saveSenderNames(clientId, baseNames, approvedVariations, selectedPatterns);
+      // Update state to only keep approved variations
+      setVariations(approvedVariations);
+      setApprovedIndices(new Set(approvedVariations.map((_, i) => i)));
       setHasUnsavedChanges(false);
-      toast.success('Sender names saved to client profile');
+      toast.success(`Saved ${approvedVariations.length} sender names to client profile`);
       onSave?.();
     } catch (error) {
       console.error('Failed to save sender names:', error);
@@ -350,7 +414,7 @@ export function SenderNamesTab({ clientId, client, onSave }: SenderNamesTabProps
               />
             </div>
             <Button
-              onClick={generateVariations}
+              onClick={() => generateVariations(false)}
               disabled={isGenerating || baseNames.length === 0 || selectedPatterns.length === 0}
             >
               {isGenerating ? (
@@ -372,34 +436,74 @@ export function SenderNamesTab({ clientId, client, onSave }: SenderNamesTabProps
       {/* Generated Variations Preview */}
       {variations.length > 0 && (
         <Card>
-          <CardHeader className="flex-row items-center justify-between">
-            <div>
-              <CardTitle>Generated Variations ({variations.length}/10)</CardTitle>
-              <CardDescription>
-                These email prefixes will be used when creating inboxes in Hypertide.
-              </CardDescription>
+          <CardHeader>
+            <div className="flex items-center justify-between">
+              <div>
+                <CardTitle>
+                  Generated Variations ({approvedIndices.size} approved / {variations.length} total)
+                </CardTitle>
+                <CardDescription>
+                  Check the variations you want to use. Only approved variations will be saved.
+                </CardDescription>
+              </div>
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => generateVariations(true)}
+                  disabled={isGenerating}
+                >
+                  {isGenerating ? (
+                    <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
+                  ) : (
+                    <Plus className="h-4 w-4 mr-2" />
+                  )}
+                  Generate More
+                </Button>
+                <Button
+                  onClick={saveConfig}
+                  disabled={isSaving || approvedIndices.size === 0}
+                >
+                  {isSaving ? (
+                    <>
+                      <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
+                      Saving...
+                    </>
+                  ) : (
+                    <>
+                      <Save className="h-4 w-4 mr-2" />
+                      Save {approvedIndices.size} Names
+                    </>
+                  )}
+                </Button>
+              </div>
             </div>
-            <Button
-              onClick={saveConfig}
-              disabled={isSaving || !hasUnsavedChanges}
-            >
-              {isSaving ? (
-                <>
-                  <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
-                  Saving...
-                </>
-              ) : (
-                <>
-                  <Save className="h-4 w-4 mr-2" />
-                  Save to Client
-                </>
+            {/* Bulk actions */}
+            <div className="flex items-center gap-2 pt-2">
+              <Button variant="ghost" size="sm" onClick={approveAll}>
+                Select All
+              </Button>
+              <Button variant="ghost" size="sm" onClick={clearAll}>
+                Clear All
+              </Button>
+              {approvedIndices.size < variations.length && approvedIndices.size > 0 && (
+                <Button variant="ghost" size="sm" onClick={removeRejected} className="text-destructive">
+                  <Trash2 className="h-4 w-4 mr-1" />
+                  Remove Unchecked
+                </Button>
               )}
-            </Button>
+            </div>
           </CardHeader>
           <CardContent>
             <Table>
               <TableHeader>
                 <TableRow>
+                  <TableHead className="w-12">
+                    <Checkbox
+                      checked={approvedIndices.size === variations.length}
+                      onCheckedChange={(checked) => checked ? approveAll() : clearAll()}
+                    />
+                  </TableHead>
                   <TableHead className="w-12">#</TableHead>
                   <TableHead>Display Name</TableHead>
                   <TableHead>Email Prefix</TableHead>
@@ -409,7 +513,16 @@ export function SenderNamesTab({ clientId, client, onSave }: SenderNamesTabProps
               </TableHeader>
               <TableBody>
                 {variations.map((v, index) => (
-                  <TableRow key={index}>
+                  <TableRow
+                    key={index}
+                    className={!approvedIndices.has(index) ? 'opacity-50' : ''}
+                  >
+                    <TableCell>
+                      <Checkbox
+                        checked={approvedIndices.has(index)}
+                        onCheckedChange={() => toggleApproval(index)}
+                      />
+                    </TableCell>
                     <TableCell className="font-medium">{index + 1}</TableCell>
                     <TableCell>
                       <div className="flex items-center gap-2">
@@ -437,11 +550,11 @@ export function SenderNamesTab({ clientId, client, onSave }: SenderNamesTabProps
               </TableBody>
             </Table>
 
-            {hasUnsavedChanges && (
-              <Alert className="mt-4">
+            {approvedIndices.size === 0 && (
+              <Alert className="mt-4" variant="destructive">
                 <AlertCircle className="h-4 w-4" />
                 <AlertDescription>
-                  You have unsaved changes. Click &quot;Save to Client&quot; to persist these variations.
+                  No variations selected. Check at least one variation to save.
                 </AlertDescription>
               </Alert>
             )}
