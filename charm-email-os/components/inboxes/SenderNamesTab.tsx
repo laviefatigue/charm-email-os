@@ -514,6 +514,7 @@ export function SenderNamesTab({ clientId, client, onSave }: SenderNamesTabProps
                   <TableHead>Email Prefix</TableHead>
                   <TableHead>Base Name</TableHead>
                   <TableHead>Pattern</TableHead>
+                  <TableHead>Status</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -540,23 +541,27 @@ export function SenderNamesTab({ clientId, client, onSave }: SenderNamesTabProps
                       </div>
                     </TableCell>
                     <TableCell>
-                      <div className="flex items-center gap-2">
-                        <code className="px-2 py-1 bg-muted rounded text-sm">
-                          {v.emailPrefix}
-                        </code>
-                        {savedPrefixes.has(v.emailPrefix) && (
-                          <Badge variant="default" className="gap-1 bg-green-600 hover:bg-green-600">
-                            <CheckCircle2 className="h-3 w-3" />
-                            Saved
-                          </Badge>
-                        )}
-                      </div>
+                      <code className="px-2 py-1 bg-muted rounded text-sm">
+                        {v.emailPrefix}
+                      </code>
                     </TableCell>
                     <TableCell className="text-muted-foreground">
                       {v.baseName}
                     </TableCell>
                     <TableCell>
                       <Badge variant="outline">{v.pattern}</Badge>
+                    </TableCell>
+                    <TableCell>
+                      {savedPrefixes.has(v.emailPrefix) ? (
+                        <Badge variant="default" className="gap-1 bg-green-600 hover:bg-green-600">
+                          <CheckCircle2 className="h-3 w-3" />
+                          Saved
+                        </Badge>
+                      ) : (
+                        <Badge variant="outline" className="gap-1 text-muted-foreground">
+                          New
+                        </Badge>
+                      )}
                     </TableCell>
                   </TableRow>
                 ))}
