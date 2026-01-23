@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { Plus, Trash2, RefreshCw, Save, User, Star, AlertCircle } from 'lucide-react';
+import { Plus, Trash2, RefreshCw, Save, User, Star, AlertCircle, CheckCircle2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -50,6 +50,7 @@ export function SenderNamesTab({ clientId, client, onSave }: SenderNamesTabProps
   // State for variations
   const [variations, setVariations] = useState<SenderNameVariation[]>([]);
   const [approvedIndices, setApprovedIndices] = useState<Set<number>>(new Set());
+  const [savedPrefixes, setSavedPrefixes] = useState<Set<string>>(new Set());
   const [variationCount, setVariationCount] = useState(10);
 
   // UI state
@@ -72,6 +73,8 @@ export function SenderNamesTab({ clientId, client, onSave }: SenderNamesTabProps
       setVariations(config.variations);
       // All loaded variations are approved by default (they were saved)
       setApprovedIndices(new Set(config.variations.map((_, i) => i)));
+      // Track which prefixes are already saved
+      setSavedPrefixes(new Set(config.variations.map(v => v.emailPrefix)));
       setAvailablePatterns(config.availablePatterns);
       setHasUnsavedChanges(false);
     } catch (error) {
@@ -248,6 +251,8 @@ export function SenderNamesTab({ clientId, client, onSave }: SenderNamesTabProps
       // Update state to only keep approved variations
       setVariations(approvedVariations);
       setApprovedIndices(new Set(approvedVariations.map((_, i) => i)));
+      // Mark all approved variations as saved
+      setSavedPrefixes(new Set(approvedVariations.map(v => v.emailPrefix)));
       setHasUnsavedChanges(false);
       toast.success(`Saved ${approvedVariations.length} sender names to client profile`);
       onSave?.();
@@ -535,9 +540,17 @@ export function SenderNamesTab({ clientId, client, onSave }: SenderNamesTabProps
                       </div>
                     </TableCell>
                     <TableCell>
-                      <code className="px-2 py-1 bg-muted rounded text-sm">
-                        {v.emailPrefix}
-                      </code>
+                      <div className="flex items-center gap-2">
+                        <code className="px-2 py-1 bg-muted rounded text-sm">
+                          {v.emailPrefix}
+                        </code>
+                        {savedPrefixes.has(v.emailPrefix) && (
+                          <Badge variant="default" className="gap-1 bg-green-600 hover:bg-green-600">
+                            <CheckCircle2 className="h-3 w-3" />
+                            Saved
+                          </Badge>
+                        )}
+                      </div>
                     </TableCell>
                     <TableCell className="text-muted-foreground">
                       {v.baseName}
