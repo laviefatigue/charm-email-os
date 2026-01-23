@@ -470,6 +470,7 @@ export default function InboxesPage() {
                         setSelectedDomainsForSetup(selectedIds);
                         setShowInboxPurchaseWizard(true);
                       }}
+                      onDomainsChange={() => fetchDomainsByClient(clientId)}
                     />
                   </CardContent>
                 </Card>
