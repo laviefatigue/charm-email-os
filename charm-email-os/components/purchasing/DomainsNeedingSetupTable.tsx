@@ -106,6 +106,9 @@ export function DomainsNeedingSetupTable({
       if (data.verified_count > 0) {
         toast.success(`Verified ${data.verified_count} domain(s)`);
       }
+      if (data.propagating_count > 0) {
+        toast.info(`${data.propagating_count} domain(s) propagating (set recently, wait up to 48h)`);
+      }
       if (data.mismatch_count > 0) {
         toast.warning(`${data.mismatch_count} domain(s) have incorrect nameservers`);
       }
@@ -129,10 +132,15 @@ export function DomainsNeedingSetupTable({
       return;
     }
 
-    // Get domains that need fixing (failed, mismatch, or pending)
+    // Get domains that need fixing (failed, mismatch, or pending - NOT propagating)
     const domainsToFix = purchasedDomains
       .filter(d => selectedDomains.has(d.id))
-      .filter(d => !d.nameserverStatus || d.nameserverStatus !== 'verified')
+      .filter(d => {
+        const status = d.nameserverStatus;
+        // Only fix if failed, mismatch, or never set (pending)
+        // Propagating domains don't need fixing - they're already set correctly
+        return !status || status === 'pending' || status === 'failed' || status === 'mismatch';
+      })
       .map(d => d.domainName || d.domain);
 
     if (domainsToFix.length === 0) {
@@ -175,11 +183,16 @@ export function DomainsNeedingSetupTable({
     }
   }, [selectedDomains, purchasedDomains, onDomainsChange]);
 
-  // Count domains needing NS fix (selected domains that aren't verified)
+  // Count domains needing NS fix (selected domains that aren't verified or propagating)
+  // Propagating domains don't need fixing - they just need to wait for DNS propagation
   const domainsNeedingFix = useMemo(() => {
     return purchasedDomains
       .filter(d => selectedDomains.has(d.id))
-      .filter(d => !d.nameserverStatus || d.nameserverStatus !== 'verified')
+      .filter(d => {
+        const status = d.nameserverStatus;
+        // Only needs fix if failed, mismatch, or never set (pending)
+        return !status || status === 'pending' || status === 'failed' || status === 'mismatch';
+      })
       .length;
   }, [purchasedDomains, selectedDomains]);
 
@@ -203,6 +216,28 @@ export function DomainsNeedingSetupTable({
                 <>
                   <br />
                   Current: {domain.currentNameservers.slice(0, 2).join(', ')}...
+                </>
+              )}
+            </TooltipContent>
+          </Tooltip>
+        );
+      case 'propagating':
+        return (
+          <Tooltip>
+            <TooltipTrigger>
+              <Badge variant="outline" className="text-blue-600 border-blue-600">
+                <Clock className="h-3 w-3 mr-1" />
+                Propagating
+              </Badge>
+            </TooltipTrigger>
+            <TooltipContent>
+              Nameservers set to DNSimple, waiting for DNS propagation.
+              <br />
+              This can take up to 48 hours.
+              {domain.nameserversUpdatedAt && (
+                <>
+                  <br />
+                  Set: {new Date(domain.nameserversUpdatedAt).toLocaleString()}
                 </>
               )}
             </TooltipContent>

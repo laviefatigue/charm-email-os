@@ -23,7 +23,7 @@ DomainStatus = Literal[
     "dead"               # Retired/disabled
 ]
 DomainHealthState = Literal["healthy", "warning", "critical", "unknown"]
-NameserverStatus = Literal["pending", "verified", "failed", "mismatch"]
+NameserverStatus = Literal["pending", "verified", "failed", "mismatch", "propagating"]
 
 
 class DomainBase(BaseModel):

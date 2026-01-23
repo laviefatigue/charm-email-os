@@ -585,7 +585,8 @@ class DynadotService:
             domain: Domain name to check
 
         Returns:
-            List of nameserver hostnames, or None if failed
+            List of nameserver hostnames (empty list if domain exists but parked),
+            or None if domain not found/error
         """
         try:
             response = await self.client.get(
@@ -598,10 +599,26 @@ class DynadotService:
             )
             response.raise_for_status()
 
-            # Parse XML to find nameservers
+            # Parse XML response
             root = ET.fromstring(response.text)
 
-            # Dynadot returns nameservers in NameServers/NameServer/ServerName elements
+            # Check for error response (domain not in account)
+            error_elem = root.find('.//Error')
+            if error_elem is not None and error_elem.text:
+                logger.debug(f"Dynadot domain_info error for {domain}: {error_elem.text}")
+                return None
+
+            # Check for successful response with domain info
+            # Dynadot returns: <DomainInfoResponse><DomainInfoContent><Domain>...
+            domain_info = root.find('.//DomainInfoContent') or root.find('.//Domain')
+            if domain_info is None:
+                # No domain info means domain not in account
+                logger.debug(f"Dynadot no DomainInfoContent found for {domain}")
+                return None
+
+            logger.info(f"Dynadot domain {domain} found in account")
+
+            # Domain exists in account - now check for nameservers
             nameservers = []
             ns_container = root.find('.//NameServers')
             if ns_container is not None:
@@ -621,7 +638,10 @@ class DynadotService:
                     if ns_elem.text:
                         nameservers.append(ns_elem.text.strip())
 
-            return nameservers if nameservers else None
+            # Return empty list for parked domains (domain exists but no NS configured)
+            # This is different from None (domain doesn't exist)
+            logger.debug(f"Dynadot nameservers for {domain}: {nameservers} (empty = parked)")
+            return nameservers
 
         except Exception as e:
             logger.error(f"Dynadot get_ns error for {domain}: {e}")

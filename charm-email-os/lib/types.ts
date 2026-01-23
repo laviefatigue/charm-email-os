@@ -103,7 +103,7 @@ export type DomainStatus =
 
 // Domain entity (from OwnRBL domains table)
 // Nameserver verification status
-export type NameserverStatus = 'pending' | 'verified' | 'mismatch' | 'failed';
+export type NameserverStatus = 'pending' | 'verified' | 'propagating' | 'mismatch' | 'failed';
 
 export interface Domain {
   id: string;
@@ -120,7 +120,7 @@ export interface Domain {
   nameserversUpdatedAt?: Date;  // When nameservers were set to DNSimple (for Hypertide readiness)
   selectedProvider?: 'porkbun' | 'dynadot';  // Which registrar owns this domain
   // Nameserver verification (can we confirm NS at registrar matches DNSimple?)
-  nameserverStatus?: NameserverStatus;  // pending, verified, mismatch, failed
+  nameserverStatus?: NameserverStatus;  // pending, verified, propagating, mismatch, failed
   nameserverVerifiedAt?: Date;  // When verification was last run
   currentNameservers?: string[];  // Actual NS returned from registrar
   // Health monitoring fields (from OwnRBL domain_check_summary)

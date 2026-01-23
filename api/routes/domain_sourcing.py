@@ -1636,29 +1636,46 @@ async def purchase_single_domain(domain_id: UUID, provider: Optional[str] = None
                 detail=f"Insufficient {registrar_name} balance. Need ${price}, have ${balance}."
             )
 
-        # Purchase the domain WITH DNSimple nameservers for Hypertide
-        # Nameservers MUST be set at purchase time, before Hypertide order
-        logger.info(f"Purchasing {domain['domain_name']} via {registrar_name} with DNSimple nameservers")
+        # Purchase the domain (nameservers set separately after purchase)
+        logger.info(f"Purchasing {domain['domain_name']} via {registrar_name}")
         result = await registrar.purchase(
             domain["domain_name"],
-            nameservers=DNSIMPLE_NAMESERVERS,
+            nameservers=DNSIMPLE_NAMESERVERS,  # Some registrars may accept this
         )
 
         if result.success:
+            # Explicitly set nameservers after purchase (required for Dynadot)
+            # The register API often doesn't apply NS, so we must call set_nameservers
+            ns_success = False
+            ns_status = "pending"
+            try:
+                logger.info(f"Setting DNSimple nameservers for {domain['domain_name']} at {registrar_name}")
+                ns_success = await registrar.set_nameservers(domain["domain_name"], DNSIMPLE_NAMESERVERS)
+                if ns_success:
+                    ns_status = "propagating"  # NS set, waiting for DNS propagation
+                    logger.info(f"Nameservers set successfully for {domain['domain_name']}")
+                else:
+                    ns_status = "failed"
+                    logger.warning(f"Failed to set nameservers for {domain['domain_name']} - will need manual fix")
+            except Exception as ns_error:
+                ns_status = "failed"
+                logger.error(f"Error setting nameservers for {domain['domain_name']}: {ns_error}")
+
             # Update domain status to purchased with nameserver tracking
-            # nameservers_updated_at is used to determine when DNS is ready (24-48 hrs)
+            # nameservers_updated_at is set only if NS were successfully configured
             await execute("""
                 UPDATE domains
                 SET approval_status = 'purchased',
                     cached_price = $1,
                     selected_provider = $2,
                     purchased_at = NOW(),
-                    nameservers_updated_at = NOW(),
+                    nameservers_updated_at = CASE WHEN $3 THEN NOW() ELSE NULL END,
+                    nameserver_status = $4,
                     updated_at = NOW()
-                WHERE id = $3
-            """, float(price), registrar_name, domain_id)
+                WHERE id = $5
+            """, float(price), registrar_name, ns_success, ns_status, domain_id)
 
-            logger.info(f"Successfully purchased {domain['domain_name']} - DNS propagation started")
+            logger.info(f"Successfully purchased {domain['domain_name']} - NS status: {ns_status}")
 
             return PurchaseSingleResponse(
                 domain_id=str(domain_id),
@@ -1924,7 +1941,7 @@ class VerifyNameserversRequest(BaseModel):
 class NameserverVerificationResult(BaseModel):
     """Result of verifying nameservers for a single domain."""
     domain: str
-    status: str  # pending, verified, mismatch, failed
+    status: str  # pending, verified, propagating, mismatch, failed
     current_nameservers: Optional[list[str]] = None
     expected_nameservers: list[str] = DNSIMPLE_NAMESERVERS
     registrar: Optional[str] = None
@@ -1937,6 +1954,7 @@ class VerifyNameserversResponse(BaseModel):
     verified_count: int
     mismatch_count: int
     failed_count: int
+    propagating_count: int = 0
 
 
 @router.post("/verify-nameservers", response_model=VerifyNameserversResponse)
@@ -1949,9 +1967,12 @@ async def verify_nameservers(request: VerifyNameserversRequest):
 
     Status values:
     - verified: Nameservers match DNSimple requirements
-    - mismatch: Domain found but nameservers don't match
+    - propagating: NS were recently set, waiting for DNS propagation (up to 48h)
+    - mismatch: Domain found but nameservers don't match (and >48h since last set)
     - failed: Could not retrieve nameserver info from any registrar
     """
+    from datetime import datetime, timezone, timedelta
+
     porkbun = PorkbunService()
     dynadot = DynadotService()
 
@@ -1959,15 +1980,36 @@ async def verify_nameservers(request: VerifyNameserversRequest):
     verified_count = 0
     mismatch_count = 0
     failed_count = 0
+    propagating_count = 0
 
     # Normalize expected nameservers for comparison (lowercase, sorted)
     expected_ns_set = set(ns.lower() for ns in DNSIMPLE_NAMESERVERS)
+
+    # DNS propagation window (48 hours)
+    PROPAGATION_HOURS = 48
 
     try:
         for domain_name in request.domain_names:
             current_ns = None
             registrar = None
             error = None
+
+            # Get domain's nameservers_updated_at to check propagation window
+            domain_record = await fetch_one("""
+                SELECT nameservers_updated_at FROM domains WHERE domain_name = $1
+            """, domain_name)
+            ns_updated_at = domain_record.get("nameservers_updated_at") if domain_record else None
+
+            # Check if we're within propagation window
+            within_propagation_window = False
+            if ns_updated_at:
+                if isinstance(ns_updated_at, datetime):
+                    # Make sure both are timezone-aware for comparison
+                    now = datetime.now(timezone.utc)
+                    if ns_updated_at.tzinfo is None:
+                        ns_updated_at = ns_updated_at.replace(tzinfo=timezone.utc)
+                    hours_since_update = (now - ns_updated_at).total_seconds() / 3600
+                    within_propagation_window = hours_since_update < PROPAGATION_HOURS
 
             # Try Porkbun first
             try:
@@ -1990,9 +2032,14 @@ async def verify_nameservers(request: VerifyNameserversRequest):
 
             # Determine status
             if current_ns is None:
-                status = "failed"
-                error = "Could not retrieve nameservers from any registrar"
-                failed_count += 1
+                # If we recently set NS but can't verify yet, it's propagating
+                if within_propagation_window:
+                    status = "propagating"
+                    propagating_count += 1
+                else:
+                    status = "failed"
+                    error = "Could not retrieve nameservers from any registrar"
+                    failed_count += 1
             else:
                 # Normalize current nameservers for comparison
                 current_ns_set = set(ns.lower() for ns in current_ns)
@@ -2003,8 +2050,13 @@ async def verify_nameservers(request: VerifyNameserversRequest):
                     status = "verified"
                     verified_count += 1
                 else:
-                    status = "mismatch"
-                    mismatch_count += 1
+                    # If we recently set NS, consider it propagating not mismatch
+                    if within_propagation_window:
+                        status = "propagating"
+                        propagating_count += 1
+                    else:
+                        status = "mismatch"
+                        mismatch_count += 1
 
             # Update database with verification results
             await execute("""
@@ -2034,6 +2086,7 @@ async def verify_nameservers(request: VerifyNameserversRequest):
             verified_count=verified_count,
             mismatch_count=mismatch_count,
             failed_count=failed_count,
+            propagating_count=propagating_count,
         )
 
     finally:
@@ -2144,21 +2197,51 @@ async def set_nameservers(request: SetNameserversRequest):
             error = None
             new_nameservers = None
 
-            # First, detect which registrar owns this domain by trying to get current NS
+            # Try to detect registrar via get_nameservers first
+            # Note: get_nameservers returns [] for parked domains (exists but no NS)
+            # and None for domains not in the account
             try:
                 ns_list = await porkbun.get_nameservers(domain_name)
-                if ns_list:
+                if ns_list is not None:  # Domain exists in Porkbun (even if empty/parked)
                     registrar = "porkbun"
+                    logger.info(f"{domain_name} found in Porkbun (NS: {ns_list})")
             except Exception as e:
                 logger.debug(f"Porkbun lookup failed for {domain_name}: {e}")
 
             if registrar is None:
                 try:
                     ns_list = await dynadot.get_nameservers(domain_name)
-                    if ns_list:
+                    if ns_list is not None:  # Domain exists in Dynadot (even if empty/parked)
                         registrar = "dynadot"
+                        logger.info(f"{domain_name} found in Dynadot (NS: {ns_list})")
                 except Exception as e:
                     logger.debug(f"Dynadot lookup failed for {domain_name}: {e}")
+
+            # If no registrar detected (parked domain with no NS), try setting directly
+            # The registrar that owns the domain will accept the set command
+            if registrar is None:
+                logger.info(f"No NS found for {domain_name}, trying to set directly on each registrar")
+
+                # Try Porkbun first
+                try:
+                    porkbun_success = await porkbun.set_nameservers(domain_name, DNSIMPLE_NAMESERVERS)
+                    if porkbun_success:
+                        registrar = "porkbun"
+                        success = True
+                        logger.info(f"Successfully set NS for {domain_name} via Porkbun")
+                except Exception as e:
+                    logger.debug(f"Porkbun set_ns failed for {domain_name}: {e}")
+
+                # Try Dynadot if Porkbun didn't work
+                if registrar is None:
+                    try:
+                        dynadot_success = await dynadot.set_nameservers(domain_name, DNSIMPLE_NAMESERVERS)
+                        if dynadot_success:
+                            registrar = "dynadot"
+                            success = True
+                            logger.info(f"Successfully set NS for {domain_name} via Dynadot")
+                    except Exception as e:
+                        logger.debug(f"Dynadot set_ns failed for {domain_name}: {e}")
 
             if registrar is None:
                 error = "Domain not found in Porkbun or Dynadot"
@@ -2170,18 +2253,19 @@ async def set_nameservers(request: SetNameserversRequest):
                 ))
                 continue
 
-            # Set nameservers based on registrar
-            try:
-                if registrar == "porkbun":
-                    success = await porkbun.set_nameservers(domain_name, DNSIMPLE_NAMESERVERS)
-                else:  # dynadot
-                    success = await dynadot.set_nameservers(domain_name, DNSIMPLE_NAMESERVERS)
+            # Set nameservers if not already set above (detected via get_nameservers)
+            if not success:
+                try:
+                    if registrar == "porkbun":
+                        success = await porkbun.set_nameservers(domain_name, DNSIMPLE_NAMESERVERS)
+                    else:  # dynadot
+                        success = await dynadot.set_nameservers(domain_name, DNSIMPLE_NAMESERVERS)
 
-                if not success:
-                    error = f"Failed to set nameservers at {registrar}"
-            except Exception as e:
-                error = str(e)
-                success = False
+                    if not success:
+                        error = f"Failed to set nameservers at {registrar}"
+                except Exception as e:
+                    error = str(e)
+                    success = False
 
             if success:
                 success_count += 1
@@ -2206,7 +2290,8 @@ async def set_nameservers(request: SetNameserversRequest):
                     logger.debug(f"Verification read failed for {domain_name}: {e}")
 
                 # Update database
-                status = "verified" if verified else "pending"
+                # Use "propagating" when NS set but not verified yet (DNS propagation takes 24-48h)
+                status = "verified" if verified else "propagating"
                 await execute("""
                     UPDATE domains
                     SET nameserver_status = $1,
