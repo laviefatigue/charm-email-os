@@ -72,14 +72,21 @@ export function CampaignSequenceCard({
   const [isDenying, setIsDenying] = useState(false);
   const [isSpintaxing, setIsSpintaxing] = useState(false);
   const [isPushing, setIsPushing] = useState(false);
+  const [viewMode, setViewMode] = useState<'original' | 'spintaxed'>('spintaxed');
 
   const statusStyle = STATUS_STYLES[sequence.status] || STATUS_STYLES.pending;
   const campaignTypeLabel = sequence.campaignType
     ? CAMPAIGN_TYPE_LABELS[sequence.campaignType] || sequence.campaignType
     : null;
 
+  // Determine which emails to display based on view mode
+  const hasSpintaxedEmails = sequence.spintaxedEmails && sequence.spintaxedEmails.length > 0;
+  const emailsToShow = viewMode === 'spintaxed' && hasSpintaxedEmails
+    ? sequence.spintaxedEmails!
+    : sequence.emails;
+
   // Sort emails by position
-  const sortedEmails = [...sequence.emails].sort((a, b) => a.position - b.position);
+  const sortedEmails = [...emailsToShow].sort((a, b) => a.position - b.position);
 
   const toggleEmailExpanded = (position: number) => {
     setExpandedEmails((prev) => {
@@ -212,6 +219,44 @@ export function CampaignSequenceCard({
           {/* Timeline visualization */}
           <SequenceTimeline />
 
+          {/* Spintax view toggle - show when spintaxed */}
+          {(sequence.status === 'spintaxed' || sequence.status === 'sent') && hasSpintaxedEmails && (
+            <div className="flex items-center justify-between bg-gray-50 rounded-lg p-2">
+              <span className="text-xs text-muted-foreground">View:</span>
+              <div className="flex gap-1 bg-white rounded-md p-0.5 border">
+                <Button
+                  variant={viewMode === 'original' ? 'default' : 'ghost'}
+                  size="sm"
+                  className={cn(
+                    'h-7 px-3 text-xs',
+                    viewMode === 'original' && 'bg-gray-900 text-white'
+                  )}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setViewMode('original');
+                  }}
+                >
+                  Original
+                </Button>
+                <Button
+                  variant={viewMode === 'spintaxed' ? 'default' : 'ghost'}
+                  size="sm"
+                  className={cn(
+                    'h-7 px-3 text-xs',
+                    viewMode === 'spintaxed' && 'bg-purple-600 text-white hover:bg-purple-700'
+                  )}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setViewMode('spintaxed');
+                  }}
+                >
+                  <Sparkles className="w-3 h-3 mr-1" />
+                  Spintaxed
+                </Button>
+              </div>
+            </div>
+          )}
+
           {/* Email list */}
           <div className="space-y-2">
             {sortedEmails.map((email) => (
@@ -224,6 +269,7 @@ export function CampaignSequenceCard({
                 onRequestRevision={
                   onRequestRevision ? (pos) => onRequestRevision(sequence.id, pos) : undefined
                 }
+                highlightSpintax={viewMode === 'spintaxed' && hasSpintaxedEmails}
               />
             ))}
           </div>

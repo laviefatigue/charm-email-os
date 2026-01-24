@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import React, { useState } from 'react';
 import { ChevronDown, ChevronUp, Copy, Check, Edit2, Clock, MessageSquare } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -13,7 +13,62 @@ interface EmailStepCardProps {
   onRequestRevision?: (position: number) => void;
   isExpanded?: boolean;
   onToggleExpand?: () => void;
+  highlightSpintax?: boolean;
   className?: string;
+}
+
+// Highlight spintax and liquid syntax in text
+function renderWithSpintaxHighlight(text: string): React.ReactNode {
+  if (!text) return text;
+
+  // Split by spintax patterns {option1|option2} and liquid {% ... %} and {{ ... }}
+  const parts: React.ReactNode[] = [];
+  let lastIndex = 0;
+
+  // Combined regex for spintax {a|b|c}, liquid tags {% %}, and liquid vars {{ }}
+  const regex = /(\{[^{}|]+(?:\|[^{}|]+)+\})|(\{%[^%]+%\})|(\{\{[^}]+\}\})/g;
+  let match;
+
+  while ((match = regex.exec(text)) !== null) {
+    // Add text before match
+    if (match.index > lastIndex) {
+      parts.push(text.slice(lastIndex, match.index));
+    }
+
+    // Determine type and style
+    const matchedText = match[0];
+    if (match[1]) {
+      // Spintax {option1|option2}
+      parts.push(
+        <span key={match.index} className="bg-purple-100 text-purple-800 rounded px-0.5 font-mono text-xs">
+          {matchedText}
+        </span>
+      );
+    } else if (match[2]) {
+      // Liquid tag {% if %}{% endif %}
+      parts.push(
+        <span key={match.index} className="bg-blue-100 text-blue-800 rounded px-0.5 font-mono text-xs">
+          {matchedText}
+        </span>
+      );
+    } else if (match[3]) {
+      // Liquid variable {{var}}
+      parts.push(
+        <span key={match.index} className="bg-green-100 text-green-800 rounded px-0.5 font-mono text-xs">
+          {matchedText}
+        </span>
+      );
+    }
+
+    lastIndex = regex.lastIndex;
+  }
+
+  // Add remaining text
+  if (lastIndex < text.length) {
+    parts.push(text.slice(lastIndex));
+  }
+
+  return parts.length > 0 ? parts : text;
 }
 
 const VALUE_PROP_LABELS: Record<string, { label: string; icon: string; color: string }> = {
@@ -37,6 +92,7 @@ export function EmailStepCard({
   onRequestRevision,
   isExpanded = false,
   onToggleExpand,
+  highlightSpintax = false,
   className,
 }: EmailStepCardProps) {
   const [copied, setCopied] = useState<'subject' | 'body' | null>(null);
@@ -143,7 +199,7 @@ export function EmailStepCard({
                 </Button>
               </div>
               <div className="bg-gray-50 rounded p-2 font-mono text-sm">
-                {displaySubject}
+                {highlightSpintax ? renderWithSpintaxHighlight(displaySubject) : displaySubject}
               </div>
             </div>
           )}
@@ -174,7 +230,7 @@ export function EmailStepCard({
               </Button>
             </div>
             <pre className="bg-gray-50 rounded p-3 text-sm whitespace-pre-wrap font-sans leading-relaxed">
-              {displayBody}
+              {highlightSpintax ? renderWithSpintaxHighlight(displayBody) : displayBody}
             </pre>
           </div>
 
