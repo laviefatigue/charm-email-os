@@ -531,7 +531,15 @@ export function SenderNamesTab({ clientId, client, onSave }: SenderNamesTabProps
                     <TableCell className="font-medium">{index + 1}</TableCell>
                     <TableCell>
                       <div className="flex items-center gap-2">
-                        {v.baseName || `${v.firstName} ${v.lastName}`}
+                        {(() => {
+                          // Show full base name, not abbreviated display name
+                          if (v.baseName) return v.baseName;
+                          const matchingBase = baseNames.find(bn =>
+                            bn.lastName.toLowerCase() === v.lastName?.toLowerCase()
+                          );
+                          if (matchingBase) return `${matchingBase.firstName} ${matchingBase.lastName}`;
+                          return `${v.firstName} ${v.lastName}`;
+                        })()}
                         {v.isFounder && (
                           <Badge variant="secondary" className="gap-1">
                             <Star className="h-3 w-3" />
