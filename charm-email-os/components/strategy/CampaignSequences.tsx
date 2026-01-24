@@ -251,6 +251,41 @@ export function CampaignSequences({ clientId, className }: CampaignSequencesProp
     }
   };
 
+  // Handle spintax processing
+  const handleSpintax = async (sequenceId: string) => {
+    try {
+      const result = await strategyApi.createSpintaxJob(sequenceId);
+      toast.success('Spintax processing started');
+      // Start polling for completion
+      pollSpintaxStatus(result.jobId);
+    } catch (error) {
+      console.error('Failed to start spintax processing:', error);
+      toast.error('Failed to start spintax processing');
+    }
+  };
+
+  // Poll for spintax job completion
+  const pollSpintaxStatus = async (jobId: string) => {
+    const poll = async () => {
+      try {
+        const status = await strategyApi.getSpintaxJobStatus(jobId);
+        if (status.status === 'completed') {
+          toast.success('Spintax processing complete');
+          fetchSequences();
+        } else if (status.status === 'failed') {
+          toast.error(`Spintax processing failed: ${status.errorMessage || 'Unknown error'}`);
+          fetchSequences();
+        } else {
+          // Still processing, poll again in 2 seconds
+          setTimeout(poll, 2000);
+        }
+      } catch (error) {
+        console.error('Failed to check spintax status:', error);
+      }
+    };
+    poll();
+  };
+
   // Handle push to EmailBison
   const handlePushToEmailBison = async (sequenceId: string) => {
     try {
@@ -395,6 +430,7 @@ export function CampaignSequences({ clientId, className }: CampaignSequencesProp
               onDeny={handleDeny}
               onEditEmail={handleEditEmail}
               onRequestRevision={handleRequestRevision}
+              onSpintax={handleSpintax}
               onPushToEmailBison={handlePushToEmailBison}
             />
           ))}

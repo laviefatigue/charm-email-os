@@ -95,7 +95,7 @@ export function OnboardingSummary({ client }: OnboardingSummaryProps) {
                 <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
                   Sender Personas
                 </p>
-                {data.contactFirstNames.length > 0 ? (
+                {data.contactFirstNames && data.contactFirstNames.length > 0 ? (
                   <div className="flex flex-wrap gap-1 mt-1">
                     {data.contactFirstNames.map((name) => (
                       <Badge key={name} variant="outline" className="text-xs">

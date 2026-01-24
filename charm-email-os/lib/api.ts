@@ -1577,10 +1577,11 @@ export interface CampaignSequence {
   strategyId?: string;
   campaignName: string;  // Email 1 subject
   campaignType?: 'custom_signal' | 'creative_ideas' | 'whole_offer' | 'fallback';
-  status: 'pending' | 'approved' | 'denied' | 'revision_requested' | 'sent';
+  status: 'pending' | 'approved' | 'denied' | 'revision_requested' | 'spintax_pending' | 'spintaxed' | 'sent';
   score?: number;
   valuePropRotation?: ('save_time' | 'save_money' | 'make_money')[];
   emails: SequenceEmail[];
+  spintaxedEmails?: SequenceEmail[];  // Populated after spintax processing
   usedVariables?: string[];
   missingVariables?: string[];
   rationale?: string;

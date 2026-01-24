@@ -11,7 +11,8 @@ import {
   Send,
   Loader2,
   Star,
-  ExternalLink
+  ExternalLink,
+  Sparkles,
 } from 'lucide-react';
 import { Card, CardHeader, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -27,6 +28,7 @@ interface CampaignSequenceCardProps {
   onDeny?: (sequenceId: string) => Promise<void>;
   onEditEmail?: (sequenceId: string, position: number) => void;
   onRequestRevision?: (sequenceId: string, position?: number) => void;
+  onSpintax?: (sequenceId: string) => Promise<void>;
   onPushToEmailBison?: (sequenceId: string) => Promise<void>;
   className?: string;
 }
@@ -36,6 +38,8 @@ const STATUS_STYLES: Record<string, { bg: string; text: string; label: string }>
   approved: { bg: 'bg-green-100', text: 'text-green-700', label: 'Approved' },
   denied: { bg: 'bg-red-100', text: 'text-red-700', label: 'Denied' },
   revision_requested: { bg: 'bg-orange-100', text: 'text-orange-700', label: 'Revision Requested' },
+  spintax_pending: { bg: 'bg-purple-100', text: 'text-purple-700', label: 'Spintax Processing' },
+  spintaxed: { bg: 'bg-indigo-100', text: 'text-indigo-700', label: 'Spintaxed' },
   sent: { bg: 'bg-blue-100', text: 'text-blue-700', label: 'Sent' },
 };
 
@@ -58,6 +62,7 @@ export function CampaignSequenceCard({
   onDeny,
   onEditEmail,
   onRequestRevision,
+  onSpintax,
   onPushToEmailBison,
   className,
 }: CampaignSequenceCardProps) {
@@ -65,6 +70,7 @@ export function CampaignSequenceCard({
   const [expandedEmails, setExpandedEmails] = useState<Set<number>>(new Set([1]));
   const [isApproving, setIsApproving] = useState(false);
   const [isDenying, setIsDenying] = useState(false);
+  const [isSpintaxing, setIsSpintaxing] = useState(false);
   const [isPushing, setIsPushing] = useState(false);
 
   const statusStyle = STATUS_STYLES[sequence.status] || STATUS_STYLES.pending;
@@ -104,6 +110,16 @@ export function CampaignSequenceCard({
       await onDeny(sequence.id);
     } finally {
       setIsDenying(false);
+    }
+  };
+
+  const handleSpintax = async () => {
+    if (!onSpintax) return;
+    setIsSpintaxing(true);
+    try {
+      await onSpintax(sequence.id);
+    } finally {
+      setIsSpintaxing(false);
     }
   };
 
@@ -292,7 +308,34 @@ export function CampaignSequenceCard({
               </>
             )}
 
-            {sequence.status === 'approved' && !sequence.pushedToEmailbison && onPushToEmailBison && (
+            {/* Approved: Show Spintax button */}
+            {sequence.status === 'approved' && onSpintax && (
+              <Button
+                variant="default"
+                size="sm"
+                className="bg-purple-600 hover:bg-purple-700"
+                onClick={handleSpintax}
+                disabled={isSpintaxing}
+              >
+                {isSpintaxing ? (
+                  <Loader2 className="w-4 h-4 mr-1 animate-spin" />
+                ) : (
+                  <Sparkles className="w-4 h-4 mr-1" />
+                )}
+                Add Spintax
+              </Button>
+            )}
+
+            {/* Spintax pending: Show processing indicator */}
+            {sequence.status === 'spintax_pending' && (
+              <Badge className="bg-purple-100 text-purple-700">
+                <Loader2 className="w-3 h-3 mr-1 animate-spin" />
+                Processing Spintax...
+              </Badge>
+            )}
+
+            {/* Spintaxed: Show Push to EmailBison button */}
+            {sequence.status === 'spintaxed' && !sequence.pushedToEmailbison && onPushToEmailBison && (
               <Button
                 variant="default"
                 size="sm"
