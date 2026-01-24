@@ -203,3 +203,19 @@ class SequenceRevisionRequest(BaseModel):
     email_position: int  # 1-4 for specific email, 0 for whole sequence
     instruction: str
     scope: str = "single"  # 'single', 'subsequent', 'all'
+
+
+# ============================================================================
+# Spintax Processing Models
+# ============================================================================
+
+class SpintaxJobResponse(BaseModel):
+    """Response for a spintax processing job."""
+    job_id: UUID
+    sequence_id: UUID
+    client_id: UUID
+    status: str  # pending, processing, completed, failed
+    error_message: Optional[str] = None
+    created_at: datetime
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None

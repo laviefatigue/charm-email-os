@@ -37,6 +37,8 @@ from models.strategy import (
     SequenceReviewRequest,
     SequenceEmailEditRequest,
     SequenceRevisionRequest,
+    # Spintax models
+    SpintaxJobResponse,
 )
 
 router = APIRouter()
@@ -1147,14 +1149,16 @@ async def request_sequence_revision(sequence_id: UUID, request: SequenceRevision
 @router.post("/sequences/{sequence_id}/push-to-emailbison")
 async def push_sequence_to_emailbison(sequence_id: UUID):
     """
-    Push an approved 4-email sequence to EmailBison to create a complete campaign.
+    Push a spintaxed 4-email sequence to EmailBison to create a complete campaign.
 
     This endpoint:
-    1. Validates the sequence is approved and not already pushed
+    1. Validates the sequence is spintaxed and not already pushed
     2. Switches to the correct EmailBison workspace
     3. Creates a campaign with Email 1 subject as name
-    4. Adds all 4 sequence steps with correct timing and threading
+    4. Adds all 4 sequence steps with spintax/liquid syntax
     5. Updates the sequence status to 'sent'
+
+    Note: Sequences must be spintaxed before pushing. Use POST /sequences/{id}/spintax first.
     """
     # Get sequence with client and workspace info
     sequence = await fetch_one("""
@@ -1168,10 +1172,16 @@ async def push_sequence_to_emailbison(sequence_id: UUID):
     if not sequence:
         raise HTTPException(status_code=404, detail="Sequence not found")
 
-    if sequence["status"] != "approved":
+    # Only spintaxed sequences can be pushed (spintax is required before push)
+    if sequence["status"] != "spintaxed":
+        if sequence["status"] == "approved":
+            raise HTTPException(
+                status_code=400,
+                detail="Sequence must be spintaxed before pushing to EmailBison. Click 'Add Spintax' first."
+            )
         raise HTTPException(
             status_code=400,
-            detail="Only approved sequences can be pushed to EmailBison"
+            detail=f"Only spintaxed sequences can be pushed to EmailBison. Current status: {sequence['status']}"
         )
 
     if sequence.get("pushed_to_emailbison"):
@@ -1193,7 +1203,8 @@ async def push_sequence_to_emailbison(sequence_id: UUID):
             detail="EmailBison API key not configured"
         )
 
-    sequence_data = sequence.get("sequence_data") or []
+    # Use spintaxed version if available, otherwise fall back to original
+    sequence_data = sequence.get("spintaxed_sequence_data") or sequence.get("sequence_data") or []
     if len(sequence_data) != 4:
         raise HTTPException(
             status_code=400,
@@ -1383,6 +1394,153 @@ async def push_sequence_to_emailbison(sequence_id: UUID):
         "status": "draft",
         "message": "4-email campaign created in EmailBison as draft",
         "next_steps": ["Assign sender emails", "Add leads list", "Review and activate"]
+    }
+
+
+# ============================================================================
+# Spintax Processing
+# ============================================================================
+
+@router.post("/sequences/{sequence_id}/spintax")
+async def create_spintax_job(sequence_id: UUID):
+    """
+    Create a spintax processing job for an approved sequence.
+
+    This endpoint:
+    1. Validates the sequence is approved and not already spintaxed
+    2. Creates a spintax_processing_jobs record
+    3. Updates sequence status to 'spintax_pending'
+    4. Returns the job_id for status polling
+
+    The spintax_worker daemon will pick up the job and process it.
+    """
+    # Get sequence
+    sequence = await fetch_one("""
+        SELECT s.id, s.client_id, s.status, s.is_sequence,
+               s.spintaxed_sequence_data
+        FROM strategy_suggestions s
+        WHERE s.id = $1 AND s.is_sequence = TRUE
+    """, sequence_id)
+
+    if not sequence:
+        raise HTTPException(status_code=404, detail="Sequence not found")
+
+    if sequence["status"] != "approved":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Only approved sequences can be spintaxed. Current status: {sequence['status']}"
+        )
+
+    if sequence.get("spintaxed_sequence_data"):
+        raise HTTPException(
+            status_code=400,
+            detail="Sequence has already been spintaxed"
+        )
+
+    # Check if there's already a pending/processing spintax job for this sequence
+    existing_job = await fetch_one("""
+        SELECT id, status FROM spintax_processing_jobs
+        WHERE sequence_id = $1 AND status IN ('pending', 'processing')
+    """, sequence_id)
+
+    if existing_job:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Spintax job already in progress (status: {existing_job['status']})"
+        )
+
+    # Create spintax processing job
+    job = await fetch_one("""
+        INSERT INTO spintax_processing_jobs (sequence_id, client_id, status)
+        VALUES ($1, $2, 'pending')
+        RETURNING id, sequence_id, client_id, status, created_at
+    """, sequence_id, sequence["client_id"])
+
+    # Update sequence status to spintax_pending
+    await execute("""
+        UPDATE strategy_suggestions
+        SET status = 'spintax_pending'
+        WHERE id = $1
+    """, sequence_id)
+
+    logger.info(f"Created spintax job {job['id']} for sequence {sequence_id}")
+
+    return SpintaxJobResponse(
+        job_id=job["id"],
+        sequence_id=job["sequence_id"],
+        client_id=job["client_id"],
+        status=job["status"],
+        created_at=job["created_at"],
+    )
+
+
+@router.get("/spintax-jobs/{job_id}/status")
+async def get_spintax_job_status(job_id: UUID):
+    """
+    Get the status of a spintax processing job.
+
+    Use this endpoint to poll for job completion.
+    Status values: pending, processing, completed, failed
+    """
+    job = await fetch_one("""
+        SELECT id, sequence_id, client_id, status, error_message,
+               created_at, started_at, completed_at
+        FROM spintax_processing_jobs
+        WHERE id = $1
+    """, job_id)
+
+    if not job:
+        raise HTTPException(status_code=404, detail="Spintax job not found")
+
+    return SpintaxJobResponse(
+        job_id=job["id"],
+        sequence_id=job["sequence_id"],
+        client_id=job["client_id"],
+        status=job["status"],
+        error_message=job.get("error_message"),
+        created_at=job["created_at"],
+        started_at=job.get("started_at"),
+        completed_at=job.get("completed_at"),
+    )
+
+
+@router.get("/sequences/{sequence_id}/spintax-status")
+async def get_sequence_spintax_status(sequence_id: UUID):
+    """
+    Get the spintax status for a sequence.
+
+    Returns the most recent spintax job for this sequence, if any.
+    """
+    # Get the most recent spintax job for this sequence
+    job = await fetch_one("""
+        SELECT id, sequence_id, client_id, status, error_message,
+               created_at, started_at, completed_at
+        FROM spintax_processing_jobs
+        WHERE sequence_id = $1
+        ORDER BY created_at DESC
+        LIMIT 1
+    """, sequence_id)
+
+    if not job:
+        return {
+            "sequence_id": str(sequence_id),
+            "has_spintax_job": False,
+            "message": "No spintax job found for this sequence"
+        }
+
+    return {
+        "sequence_id": str(sequence_id),
+        "has_spintax_job": True,
+        "job": SpintaxJobResponse(
+            job_id=job["id"],
+            sequence_id=job["sequence_id"],
+            client_id=job["client_id"],
+            status=job["status"],
+            error_message=job.get("error_message"),
+            created_at=job["created_at"],
+            started_at=job.get("started_at"),
+            completed_at=job.get("completed_at"),
+        )
     }
 
 
