@@ -534,9 +534,22 @@ export function SenderNamesTab({ clientId, client, onSave }: SenderNamesTabProps
                         {(() => {
                           // Show full base name, not abbreviated display name
                           if (v.baseName) return v.baseName;
-                          const matchingBase = baseNames.find(bn =>
-                            bn.lastName.toLowerCase() === v.lastName?.toLowerCase()
-                          );
+                          // Try to find matching base name by various criteria
+                          const matchingBase = baseNames.find(bn => {
+                            const vFirst = v.firstName?.toLowerCase() || '';
+                            const vLast = v.lastName?.toLowerCase() || '';
+                            const bnFirst = bn.firstName.toLowerCase();
+                            const bnLast = bn.lastName.toLowerCase();
+                            // Exact match
+                            if (bnFirst === vFirst && bnLast === vLast) return true;
+                            // Match by first name + lastName initial (handles "firstname.l" pattern)
+                            if (bnFirst === vFirst && vLast.length === 1 && bnLast.startsWith(vLast)) return true;
+                            // Match by last name + firstName initial (handles "f.lastname" and "flastname" patterns)
+                            if (bnLast === vLast && vFirst.length === 1 && bnFirst.startsWith(vFirst)) return true;
+                            // Match by last name only (handles most patterns)
+                            if (bnLast === vLast) return true;
+                            return false;
+                          });
                           if (matchingBase) return `${matchingBase.firstName} ${matchingBase.lastName}`;
                           return `${v.firstName} ${v.lastName}`;
                         })()}
