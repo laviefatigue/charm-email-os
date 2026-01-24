@@ -510,9 +510,8 @@ export function SenderNamesTab({ clientId, client, onSave }: SenderNamesTabProps
                     />
                   </TableHead>
                   <TableHead className="w-12">#</TableHead>
-                  <TableHead>Display Name</TableHead>
+                  <TableHead>Name</TableHead>
                   <TableHead>Email Prefix</TableHead>
-                  <TableHead>Base Name</TableHead>
                   <TableHead>Pattern</TableHead>
                   <TableHead>Status</TableHead>
                 </TableRow>
@@ -532,7 +531,7 @@ export function SenderNamesTab({ clientId, client, onSave }: SenderNamesTabProps
                     <TableCell className="font-medium">{index + 1}</TableCell>
                     <TableCell>
                       <div className="flex items-center gap-2">
-                        {v.firstName} {v.lastName}
+                        {v.baseName}
                         {v.isFounder && (
                           <Badge variant="secondary" className="gap-1">
                             <Star className="h-3 w-3" />
@@ -545,11 +544,10 @@ export function SenderNamesTab({ clientId, client, onSave }: SenderNamesTabProps
                         {v.emailPrefix}
                       </code>
                     </TableCell>
-                    <TableCell className="text-muted-foreground">
-                      {v.baseName}
-                    </TableCell>
                     <TableCell>
-                      <Badge variant="outline">{v.pattern}</Badge>
+                      <code className="px-2 py-1 bg-muted rounded text-xs">
+                        {v.pattern}
+                      </code>
                     </TableCell>
                     <TableCell>
                       {savedPrefixes.has(v.emailPrefix) ? (
