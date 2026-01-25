@@ -15,7 +15,8 @@ from database import fetch_all, fetch_one, execute
 from models.client import (
     Client, ClientCreate, ClientUpdate, ClientOnboard,
     ClientList, LinkWorkspaceRequest, SenderName, SenderNamePreferences,
-    BaseName, SenderNameVariation, GenerateVariationsRequest, SaveSenderNamesRequest
+    BaseName, SenderNameVariation, GenerateVariationsRequest, SaveSenderNamesRequest,
+    SetBaseNameRequest
 )
 from data.sender_names import (
     FIRST_NAMES_POOL, LAST_NAMES_POOL,
@@ -23,7 +24,15 @@ from data.sender_names import (
     generate_random_names as _generate_random_names,
 )
 from data.client_name_strategies import get_strategy, get_founder_name
-from data.name_variations import generate_variations, get_available_patterns, VARIATION_PATTERNS
+from data.name_variations import (
+    generate_variations,
+    generate_all_prefixes,
+    get_available_patterns,
+    get_patterns_for_provider,
+    PATTERN_TEMPLATES_52,
+    TIER_1_PATTERNS,
+    ALL_PATTERNS_RANKED,
+)
 import random
 
 router = APIRouter()
@@ -268,16 +277,31 @@ async def create_client(client: ClientCreate):
 # ============================================
 
 @router.get("/name-patterns")
-async def get_name_patterns():
+async def get_name_patterns(provider: Optional[str] = None):
     """
     Get available name variation patterns.
 
-    Returns list of patterns with descriptions and examples.
+    Args:
+        provider: Optional filter by provider ("entra" or "google")
+
+    Returns list of patterns with descriptions, examples, and tier info.
     Used by the frontend to populate pattern checkboxes.
+
+    Provider-specific behavior:
+    - entra: Returns all 52 patterns (full domain coverage)
+    - google: Returns top 10 patterns (tier 1 only)
     """
+    patterns = get_available_patterns(provider=provider)
+
     return {
-        "patterns": get_available_patterns(),
-        "default_patterns": ["firstname.lastname", "f.lastname", "firstnamelastname", "firstname.l", "flastname"],
+        "patterns": patterns,
+        "total_count": len(patterns),
+        "default_patterns": get_patterns_for_provider(provider or "google", 10),
+        "provider": provider,
+        "provider_limits": {
+            "entra": 52,
+            "google": 10,
+        },
     }
 
 
@@ -850,12 +874,16 @@ async def generate_name_variations(client_id: UUID, request: GenerateVariationsR
     Base names are the real identities (1-2 names like "Chris Booth").
     Variations are different email prefix formats generated from those names.
 
-    Example for base name "Chris Booth":
+    Provider-specific behavior:
+    - entra (Microsoft): Up to 52 variations using all pattern tiers
+    - google: Up to 10 variations using tier 1 patterns only
+
+    Example for base name "Chris Booth" with provider="entra":
     - chris.booth (firstname.lastname)
+    - chris (firstname)
     - c.booth (f.lastname)
     - chrisbooth (firstnamelastname)
-    - chris.b (firstname.l)
-    - cbooth (flastname)
+    - ... up to 52 variations
     """
     # Verify client exists
     client = await fetch_one("SELECT id, name FROM clients WHERE id = $1", client_id)
@@ -872,20 +900,26 @@ async def generate_name_variations(client_id: UUID, request: GenerateVariationsR
         for bn in request.base_names
     ]
 
-    # Generate variations
+    # Generate variations with provider-aware patterns
     variations = generate_variations(
         base_names=base_names_dicts,
         patterns=request.patterns,
         count=request.count,
+        provider=request.provider,
     )
 
-    logger.info(f"Generated {len(variations)} name variations for client {client_id}")
+    # Determine which patterns were used
+    patterns_used = request.patterns if request.patterns else get_patterns_for_provider(request.provider, request.count)
+
+    logger.info(f"Generated {len(variations)} name variations for client {client_id} (provider: {request.provider})")
 
     return {
         "variations": variations,
         "count": len(variations),
-        "patterns_used": request.patterns,
+        "patterns_used": patterns_used,
         "base_names": base_names_dicts,
+        "provider": request.provider,
+        "max_for_provider": 52 if request.provider == "entra" else 10,
     }
 
 
@@ -944,6 +978,7 @@ async def save_sender_names(client_id: UUID, request: SaveSenderNamesRequest):
     onboarding_data["senderNamePreferences"] = {
         "usePersonas": False,  # Not using personas when using variations
         "nameCount": len(request.variations),
+        "provider": request.provider,
     }
 
     # Save to database
@@ -996,12 +1031,119 @@ async def get_sender_name_config(client_id: UUID):
         variations = onboarding_data.get("preGeneratedSenderNames", [])
         has_config = bool(base_names)
 
+    # Get provider from preferences if set
+    preferences = onboarding_data.get("senderNamePreferences", {}) if onboarding_data else {}
+    provider = preferences.get("provider", "google")
+
     return {
         "baseNames": base_names,
         "patterns": patterns,
         "variations": variations,
         "hasConfig": has_config,
-        "availablePatterns": get_available_patterns(),
+        "provider": provider,
+        "availablePatterns": get_available_patterns(provider=provider),
+        "providerLimits": {
+            "entra": 52,
+            "google": 10,
+        },
+    }
+
+
+@router.post("/{client_id}/set-sender-name")
+async def set_sender_name(client_id: UUID, request: SetBaseNameRequest):
+    """
+    Simplified endpoint: Set base sender name and auto-generate all prefixes.
+
+    Just provide first/last name and provider. The system automatically generates
+    all email prefixes using the 52-pattern template system (for Entra) or
+    top 10 patterns (for Google).
+
+    No manual pattern selection or approval needed.
+
+    Example:
+        POST /clients/{id}/set-sender-name
+        {
+            "firstName": "Chris",
+            "lastName": "Booth",
+            "provider": "entra"
+        }
+
+    This will auto-generate 52 email prefixes like:
+        chris.booth, chris, c.booth, chrisbooth, chris.b, ...
+    """
+    # Verify client exists
+    client = await fetch_one(
+        "SELECT id, onboarding_data FROM clients WHERE id = $1",
+        client_id
+    )
+    if not client:
+        raise HTTPException(status_code=404, detail="Client not found")
+
+    # Parse existing onboarding data
+    onboarding_data = client.get("onboarding_data")
+    if isinstance(onboarding_data, str):
+        onboarding_data = json.loads(onboarding_data)
+    elif onboarding_data is None:
+        onboarding_data = {}
+
+    # Generate all prefixes for this name
+    prefixes = generate_all_prefixes(
+        request.first_name,
+        request.last_name,
+        request.provider
+    )
+
+    # Build base name data
+    base_name_data = {
+        "firstName": request.first_name,
+        "lastName": request.last_name,
+        "isFounder": request.is_founder,
+    }
+
+    # Build pre-generated sender names from prefixes
+    pre_generated_names = [
+        {
+            "firstName": request.first_name,
+            "lastName": request.last_name,
+            "emailPrefix": prefix,
+            "source": "generated",
+        }
+        for prefix in prefixes
+    ]
+
+    # Get patterns used
+    patterns_used = get_patterns_for_provider(request.provider)
+
+    # Update onboarding data
+    onboarding_data["baseSenderNames"] = [base_name_data]
+    onboarding_data["variationPatterns"] = patterns_used
+    onboarding_data["preGeneratedSenderNames"] = pre_generated_names
+    onboarding_data["senderNamePreferences"] = {
+        "usePersonas": False,
+        "nameCount": len(prefixes),
+        "provider": request.provider,
+    }
+
+    # Save to database
+    await execute(
+        """
+        UPDATE clients
+        SET onboarding_data = $1, updated_at = NOW()
+        WHERE id = $2
+        """,
+        json.dumps(onboarding_data),
+        client_id
+    )
+
+    logger.info(f"Set sender name for client {client_id}: {request.first_name} {request.last_name} ({request.provider}, {len(prefixes)} prefixes)")
+
+    return {
+        "success": True,
+        "baseName": base_name_data,
+        "prefixCount": len(prefixes),
+        "prefixes": prefixes,
+        "provider": request.provider,
+        "patterns": patterns_used,
     }
 
 

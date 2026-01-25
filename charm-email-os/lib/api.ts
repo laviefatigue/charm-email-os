@@ -536,6 +536,34 @@ export const clientApi = {
       availablePatterns: response.availablePatterns,
     };
   },
+
+  /**
+   * Set sender name (simplified) - auto-generates all prefixes
+   * Just provide first/last name and provider, prefixes are auto-generated
+   */
+  async setSenderName(
+    clientId: string,
+    firstName: string,
+    lastName: string,
+    provider: 'entra' | 'google' = 'entra'
+  ): Promise<{
+    success: boolean;
+    baseName: BaseName;
+    prefixCount: number;
+    prefixes: string[];
+    provider: string;
+    patterns: string[];
+  }> {
+    return fetchApi(`/api/clients/${clientId}/set-sender-name`, {
+      method: 'POST',
+      body: JSON.stringify({
+        firstName,
+        lastName,
+        isFounder: true,
+        provider,
+      }),
+    });
+  },
 };
 
 // ===== DOMAIN API =====

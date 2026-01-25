@@ -156,12 +156,19 @@ class LinkWorkspaceRequest(BaseModel):
 
 
 class GenerateVariationsRequest(BaseModel):
-    """Request to generate name variations from base names"""
+    """Request to generate name variations from base names.
+
+    Provider-specific behavior:
+    - entra: Up to 52 variations using all pattern tiers
+    - google: Up to 10 variations using tier 1 patterns only
+    """
     base_names: list[BaseName] = Field(..., alias="baseNames")
     patterns: Optional[list[str]] = Field(
-        default=["firstname.lastname", "f.lastname", "firstnamelastname", "firstname.l", "flastname"]
+        default=None,  # Will use provider-specific defaults
+        description="Pattern names to use. If not specified, uses provider-specific ranked patterns."
     )
-    count: int = Field(10, ge=1, le=10)
+    count: int = Field(10, ge=1, le=52, description="Number of variations to generate (max 52 for Entra, 10 for Google)")
+    provider: Literal["entra", "google"] = Field("google", description="Infrastructure provider: 'entra' (Microsoft, 52 inboxes) or 'google' (10 inboxes)")
 
     class Config:
         populate_by_name = True
@@ -172,6 +179,23 @@ class SaveSenderNamesRequest(BaseModel):
     base_names: list[BaseName] = Field(..., alias="baseNames")
     variations: list[SenderNameVariation]
     patterns: list[str]
+    provider: Literal["entra", "google"] = Field("google", description="Infrastructure provider used for generation")
+
+    class Config:
+        populate_by_name = True
+
+
+class SetBaseNameRequest(BaseModel):
+    """
+    Simplified request to set base sender name.
+
+    Just provide first/last name and provider - the 52 email prefixes
+    are auto-generated using the pattern template system.
+    """
+    first_name: str = Field(..., alias="firstName")
+    last_name: str = Field(..., alias="lastName")
+    is_founder: bool = Field(True, alias="isFounder")
+    provider: Literal["entra", "google"] = Field("entra", description="Infrastructure provider: 'entra' (52 prefixes) or 'google' (10 prefixes)")
 
     class Config:
         populate_by_name = True

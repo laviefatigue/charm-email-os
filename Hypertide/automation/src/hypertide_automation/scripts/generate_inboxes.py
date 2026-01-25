@@ -29,6 +29,23 @@ from rich.table import Table
 
 from ..database import Database
 
+# Try to import shared pattern generation from API module
+# Falls back to local patterns if not available
+try:
+    import sys
+    # Add API path for shared module access
+    api_path = Path(__file__).parent.parent.parent.parent.parent.parent / "api"
+    if api_path.exists():
+        sys.path.insert(0, str(api_path))
+    from data.name_variations import (
+        generate_all_prefixes,
+        get_patterns_for_provider,
+        PATTERN_TEMPLATES_52,
+    )
+    SHARED_PATTERNS_AVAILABLE = True
+except ImportError:
+    SHARED_PATTERNS_AVAILABLE = False
+
 # Configure logging
 structlog.configure(
     processors=[
@@ -73,9 +90,9 @@ DEFAULT_USERS = [
 def get_inboxes_per_domain(provider: str) -> int:
     """Get number of inboxes to create per domain based on provider."""
     if provider.lower() == "entra":
-        return 50  # Entra: 50 inboxes per domain
+        return 52  # Entra: 52 inboxes per domain (matches pattern count)
     elif provider.lower() == "google":
-        return 3   # Google: 3 inboxes per domain
+        return 10  # Google: up to 10 inboxes per domain
     else:
         return 10  # Default fallback
 
@@ -102,33 +119,60 @@ def generate_inboxes_for_domain(
     provider: str,
     users: List[Dict[str, str]],
 ) -> List[Dict[str, Any]]:
-    """Generate inbox specs for a single domain."""
+    """
+    Generate inbox specs for a single domain.
+
+    Uses the shared 52-pattern system when available for consistent
+    prefix generation across the codebase.
+    """
     inboxes = []
     inbox_count = get_inboxes_per_domain(provider)
 
-    # Use provided users, cycling through if we need more
-    user_cycle = cycle(users) if users else cycle(DEFAULT_USERS)
+    # Use first user as the base name for pattern generation
+    base_user = users[0] if users else DEFAULT_USERS[0]
+    first_name = base_user["first_name"]
+    last_name = base_user["last_name"]
 
-    for i in range(inbox_count):
-        user = next(user_cycle)
-        # Calculate repeat index for this user on this domain
-        user_key = f"{user['first_name']}.{user['last_name']}"
-        repeat_index = sum(1 for inbox in inboxes if inbox["first_name"] == user["first_name"] and inbox["last_name"] == user["last_name"])
+    # Use shared pattern generation if available
+    if SHARED_PATTERNS_AVAILABLE:
+        # Generate all prefixes using the 52-pattern system
+        prefixes = generate_all_prefixes(first_name, last_name, provider)
 
-        email = generate_inbox_email(
-            user["first_name"],
-            user["last_name"],
-            domain,
-            repeat_index,
-        )
+        for prefix in prefixes[:inbox_count]:
+            inboxes.append({
+                "email": f"{prefix}@{domain}",
+                "first_name": first_name,
+                "last_name": last_name,
+                "domain": domain,
+                "provider": provider,
+            })
+    else:
+        # Fallback: cycle through users with numbered suffixes
+        user_cycle = cycle(users) if users else cycle(DEFAULT_USERS)
 
-        inboxes.append({
-            "email": email,
-            "first_name": user["first_name"],
-            "last_name": user["last_name"],
-            "domain": domain,
-            "provider": provider,
-        })
+        for i in range(inbox_count):
+            user = next(user_cycle)
+            # Calculate repeat index for this user on this domain
+            repeat_index = sum(
+                1 for inbox in inboxes
+                if inbox["first_name"] == user["first_name"]
+                and inbox["last_name"] == user["last_name"]
+            )
+
+            email = generate_inbox_email(
+                user["first_name"],
+                user["last_name"],
+                domain,
+                repeat_index,
+            )
+
+            inboxes.append({
+                "email": email,
+                "first_name": user["first_name"],
+                "last_name": user["last_name"],
+                "domain": domain,
+                "provider": provider,
+            })
 
     return inboxes
 
@@ -338,10 +382,12 @@ def generate(
     Generate inbox specifications from purchased domains.
 
     Creates inbox naming based on domain provider:
-    - Entra: 50 inboxes per domain
-    - Google: 3 inboxes per domain
+    - Entra: 52 inboxes per domain (using 52 pattern templates)
+    - Google: 10 inboxes per domain (using top 10 patterns)
 
-    Uses default user names or custom names from --users file.
+    Uses the shared 52-pattern system from api/data/name_variations.py
+    for consistent prefix generation. Falls back to cycling user names
+    if the shared module is not available.
     """
     if not input_file and not client_id:
         console.print("[red]Must provide either --input file or --client-id[/red]")
