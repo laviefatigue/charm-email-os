@@ -197,8 +197,48 @@ async def init_schema() -> None:
 
     logger.info("Database schema initialized (clients table ready)")
 
+    # Initialize strategies table columns
+    await _ensure_strategies_table_columns()
+
     # Initialize strategy generation tables (Phase 3)
     await _init_strategy_tables()
+
+
+async def _ensure_strategies_table_columns() -> None:
+    """Ensure strategies table has all required columns"""
+
+    # Check if strategies table exists
+    check_table = """
+        SELECT EXISTS (
+            SELECT FROM information_schema.tables
+            WHERE table_name = 'strategies'
+        ) as table_exists;
+    """
+    result = await fetch_one(check_table)
+    if not result or not result.get("table_exists", False):
+        logger.info("Strategies table does not exist, skipping column initialization")
+        return
+
+    # Add missing columns
+    columns_to_add = [
+        ("submission_id", "UUID"),
+        ("emailbison_campaign_id", "VARCHAR(255)"),
+    ]
+
+    for col_name, col_def in columns_to_add:
+        check_col = f"""
+            SELECT EXISTS (
+                SELECT FROM information_schema.columns
+                WHERE table_name = 'strategies' AND column_name = '{col_name}'
+            ) as col_exists;
+        """
+        col_result = await fetch_one(check_col)
+        if col_result and not col_result.get("col_exists", False):
+            try:
+                await execute(f"ALTER TABLE strategies ADD COLUMN {col_name} {col_def}")
+                logger.info(f"Added column {col_name} to strategies table")
+            except Exception as e:
+                logger.warning(f"Failed to add column {col_name} to strategies: {e}")
 
     # Initialize domain sourcing columns (Phase 3)
     await _init_domain_columns()
