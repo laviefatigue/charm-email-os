@@ -23,8 +23,9 @@ import {
 import { Textarea } from '@/components/ui/textarea';
 import { Label } from '@/components/ui/label';
 import { Input } from '@/components/ui/input';
-import { CampaignSequenceCard } from './CampaignSequenceCard';
 import { StrategySelector } from './StrategySelector';
+import { SequenceCampaignSelector } from './SequenceCampaignSelector';
+import { SelectedCampaignDetail } from './SelectedCampaignDetail';
 import {
   strategyApi,
   type CampaignSequence,
@@ -56,6 +57,9 @@ export function CampaignSequences({ clientId, className }: CampaignSequencesProp
   const [selectedStrategyId, setSelectedStrategyId] = useState<string>('');
   const [sortBy, setSortBy] = useState<'created_at' | 'score'>('created_at');
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
+
+  // Selected campaign for detail view
+  const [selectedCampaignId, setSelectedCampaignId] = useState<string | null>(null);
 
   // Edit modal state
   const [editingEmail, setEditingEmail] = useState<{
@@ -108,6 +112,27 @@ export function CampaignSequences({ clientId, className }: CampaignSequencesProp
   useEffect(() => {
     fetchSequences();
   }, [fetchSequences]);
+
+  // Auto-select first campaign when sequences load (if none selected)
+  useEffect(() => {
+    if (sequences.length > 0 && !selectedCampaignId) {
+      // Select first non-denied sequence
+      const firstActive = sequences.find(s => s.status !== 'denied');
+      if (firstActive) {
+        setSelectedCampaignId(firstActive.id);
+      }
+    }
+    // Clear selection if selected campaign no longer exists
+    if (selectedCampaignId && !sequences.find(s => s.id === selectedCampaignId)) {
+      const firstActive = sequences.find(s => s.status !== 'denied');
+      setSelectedCampaignId(firstActive?.id || null);
+    }
+  }, [sequences, selectedCampaignId]);
+
+  // Get selected campaign details
+  const selectedCampaign = selectedCampaignId
+    ? sequences.find(s => s.id === selectedCampaignId)
+    : null;
 
   // Generate more sequences
   const handleGenerate = async () => {
@@ -298,13 +323,14 @@ export function CampaignSequences({ clientId, className }: CampaignSequencesProp
     }
   };
 
-  // Filtered sequences for display
-  const activeSequences = sequences.filter((s) => s.status !== 'denied');
-  const deniedSequences = sequences.filter((s) => s.status === 'denied');
+  // Filter sequences for selector (exclude denied by default unless filter is set)
+  const selectableSequences = statusFilter === 'denied'
+    ? sequences
+    : sequences.filter((s) => s.status !== 'denied');
 
   return (
     <div className={cn('space-y-4', className)}>
-      {/* Header Card */}
+      {/* Header Card with Filters */}
       <Card>
         <CardHeader className="pb-3">
           <div className="flex items-center justify-between">
@@ -324,7 +350,7 @@ export function CampaignSequences({ clientId, className }: CampaignSequencesProp
             </Button>
           </div>
 
-          {/* Filters */}
+          {/* Filters row */}
           <div className="flex items-center gap-3 mt-4 flex-wrap">
             <StrategySelector
               clientId={clientId}
@@ -369,6 +395,17 @@ export function CampaignSequences({ clientId, className }: CampaignSequencesProp
               <RefreshCw className="w-4 h-4" />
             </Button>
           </div>
+
+          {/* Campaign selector */}
+          {!loading && sequences.length > 0 && (
+            <div className="mt-4 pt-4 border-t">
+              <SequenceCampaignSelector
+                sequences={selectableSequences}
+                selectedId={selectedCampaignId}
+                onSelect={setSelectedCampaignId}
+              />
+            </div>
+          )}
 
           {/* Stats */}
           <div className="flex items-center gap-4 mt-4 text-sm">
@@ -419,36 +456,28 @@ export function CampaignSequences({ clientId, className }: CampaignSequencesProp
         </Card>
       )}
 
-      {/* Active sequences */}
-      {!loading && activeSequences.length > 0 && (
-        <div className="space-y-3">
-          {activeSequences.map((sequence) => (
-            <CampaignSequenceCard
-              key={sequence.id}
-              sequence={sequence}
-              onApprove={handleApprove}
-              onDeny={handleDeny}
-              onEditEmail={handleEditEmail}
-              onRequestRevision={handleRequestRevision}
-              onSpintax={handleSpintax}
-              onPushToEmailBison={handlePushToEmailBison}
-            />
-          ))}
-        </div>
+      {/* Selected campaign detail */}
+      {!loading && selectedCampaign && (
+        <SelectedCampaignDetail
+          sequence={selectedCampaign}
+          onApprove={async () => handleApprove(selectedCampaign.id)}
+          onDeny={async () => handleDeny(selectedCampaign.id)}
+          onSpintax={async () => handleSpintax(selectedCampaign.id)}
+          onPushToEmailBison={async () => handlePushToEmailBison(selectedCampaign.id)}
+          onEditEmail={(pos) => handleEditEmail(selectedCampaign.id, pos)}
+          onRequestRevision={(pos) => handleRequestRevision(selectedCampaign.id, pos)}
+        />
       )}
 
-      {/* Denied sequences (collapsible) */}
-      {!loading && deniedSequences.length > 0 && (
+      {/* No campaign selected state */}
+      {!loading && sequences.length > 0 && !selectedCampaign && (
         <Card>
-          <CardHeader>
-            <CardTitle className="text-sm font-medium text-muted-foreground">
-              Denied Sequences ({deniedSequences.length})
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            {deniedSequences.map((sequence) => (
-              <CampaignSequenceCard key={sequence.id} sequence={sequence} />
-            ))}
+          <CardContent className="text-center py-12">
+            <Sparkles className="w-12 h-12 mx-auto text-muted-foreground mb-4" />
+            <h3 className="font-medium mb-2">Select a campaign</h3>
+            <p className="text-sm text-muted-foreground">
+              Choose a campaign from the dropdown above to view and configure it
+            </p>
           </CardContent>
         </Card>
       )}
