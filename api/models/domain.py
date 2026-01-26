@@ -68,6 +68,16 @@ class Domain(BaseModel):
     nameserver_verified_at: Optional[datetime] = None  # When verification was last run
     current_nameservers: Optional[list[str]] = None  # Actual NS returned from registrar
 
+    # Domain age tracking (for 30-day setup requirement)
+    registration_date: Optional[datetime] = None  # When domain was first registered (from WHOIS/registrar)
+    available_for_setup_at: Optional[datetime] = None  # registration_date + 30 days
+
+    # Computed domain age fields (populated by API)
+    domain_age_days: Optional[int] = None  # Days since registration
+    days_until_available: Optional[int] = None  # Days until 30-day threshold (0 if ready/exempt)
+    is_setup_eligible: bool = False  # True if (30+ days old OR exempt) AND NS verified
+    is_age_exempt: bool = False  # True if status is 'legacy' or 'active' (bypasses 30-day check)
+
     # Timestamps
     flagged_at: Optional[datetime] = None
     dead_at: Optional[datetime] = None

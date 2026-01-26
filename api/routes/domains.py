@@ -5,6 +5,7 @@ Domain routes - Read from OwnRBL domains table
 from fastapi import APIRouter, HTTPException, Query
 from typing import Optional
 from uuid import UUID
+from datetime import datetime, timezone
 import logging
 
 from database import fetch_all, fetch_one, execute
@@ -12,6 +13,10 @@ from models.domain import Domain, DomainCreate, DomainList, DomainHealth, Domain
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+# Statuses that bypass the 30-day age check
+AGE_EXEMPT_STATUSES = ("legacy", "active")
+DOMAIN_AGE_REQUIREMENT_DAYS = 30
 
 
 def calculate_health_state(health_score: Optional[float], blacklist_count: int) -> str:
@@ -23,6 +28,50 @@ def calculate_health_state(health_score: Optional[float], blacklist_count: int) 
     if blacklist_count > 0 or health_score < 80:
         return "warning"
     return "healthy"
+
+
+def compute_domain_age_fields(domain: dict) -> dict:
+    """
+    Compute domain age-related fields for setup eligibility.
+
+    Rules:
+    - Domains must be 30+ days old before inbox provisioning
+    - Legacy/active domains bypass the age check
+    - NS must be verified for full setup eligibility
+    """
+    status = domain.get("status", "")
+    is_age_exempt = status in AGE_EXEMPT_STATUSES
+
+    registration_date = domain.get("registration_date")
+    domain_age_days = None
+    days_until_available = None
+    is_setup_eligible = False
+
+    if registration_date:
+        # Make sure we're comparing timezone-aware datetimes
+        if registration_date.tzinfo is None:
+            registration_date = registration_date.replace(tzinfo=timezone.utc)
+        now = datetime.now(timezone.utc)
+        age_delta = now - registration_date
+        domain_age_days = age_delta.days
+
+        if is_age_exempt or domain_age_days >= DOMAIN_AGE_REQUIREMENT_DAYS:
+            days_until_available = 0
+            # Also check NS verified for full eligibility
+            is_setup_eligible = domain.get("nameserver_status") == "verified"
+        else:
+            days_until_available = DOMAIN_AGE_REQUIREMENT_DAYS - domain_age_days
+    elif is_age_exempt:
+        # Exempt domains without registration_date are still eligible
+        is_setup_eligible = domain.get("nameserver_status") == "verified"
+        days_until_available = 0
+
+    return {
+        "domain_age_days": domain_age_days,
+        "days_until_available": days_until_available,
+        "is_setup_eligible": is_setup_eligible,
+        "is_age_exempt": is_age_exempt,
+    }
 
 
 @router.get("", response_model=DomainList)
@@ -88,6 +137,8 @@ async def list_domains(
             d.nameserver_status,
             d.nameserver_verified_at,
             d.current_nameservers,
+            d.registration_date,
+            d.available_for_setup_at,
             COALESCE(
                 (SELECT COUNT(*) FROM sender_accounts sa
                  WHERE SPLIT_PART(sa.email_address, '@', 2) = d.domain_name
@@ -125,7 +176,7 @@ async def list_domains(
 
     rows = await fetch_all(query, *params)
 
-    # Add computed health_state
+    # Add computed health_state and age fields
     items = []
     for row in rows:
         domain = dict(row)
@@ -133,6 +184,9 @@ async def list_domains(
             domain.get("latest_health_score"),
             domain.get("latest_blacklist_count", 0) or 0
         )
+        # Compute domain age and setup eligibility
+        age_fields = compute_domain_age_fields(domain)
+        domain.update(age_fields)
         items.append(Domain(**domain))
 
     return DomainList(
@@ -167,6 +221,8 @@ async def get_domain(domain_id: UUID):
             d.nameserver_status,
             d.nameserver_verified_at,
             d.current_nameservers,
+            d.registration_date,
+            d.available_for_setup_at,
             COALESCE(
                 (SELECT COUNT(*) FROM sender_accounts sa
                  WHERE SPLIT_PART(sa.email_address, '@', 2) = d.domain_name
@@ -186,6 +242,9 @@ async def get_domain(domain_id: UUID):
         domain.get("latest_health_score"),
         domain.get("latest_blacklist_count", 0) or 0
     )
+    # Compute domain age and setup eligibility
+    age_fields = compute_domain_age_fields(domain)
+    domain.update(age_fields)
 
     return Domain(**domain)
 

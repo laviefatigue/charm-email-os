@@ -150,6 +150,13 @@ export interface Domain {
   nameserverStatus?: NameserverStatus;  // pending, verified, propagating, mismatch, failed
   nameserverVerifiedAt?: Date;  // When verification was last run
   currentNameservers?: string[];  // Actual NS returned from registrar
+  // Domain age tracking (30-day setup requirement)
+  registrationDate?: Date;  // When domain was first registered (from WHOIS/registrar)
+  availableForSetupAt?: Date;  // When domain becomes eligible (registration + 30 days)
+  domainAgeDays?: number;  // Computed: days since registration
+  daysUntilAvailable?: number;  // Computed: days until 30-day threshold (0 if ready/exempt)
+  isSetupEligible?: boolean;  // Computed: (30+ days old OR exempt) AND NS verified
+  isAgeExempt?: boolean;  // True if status is 'legacy' or 'active' (bypasses 30-day check)
   // Health monitoring fields (from OwnRBL domain_check_summary)
   healthState?: 'live' | 'flagged' | 'dead' | 'healthy' | 'warning' | 'critical' | 'unknown';
   latestHealthScore?: number;  // OwnRBL
@@ -182,6 +189,24 @@ export function hoursUntilDnsReady(domain: Domain): number | null {
   const hoursSinceUpdate = (Date.now() - nsDate.getTime()) / (1000 * 60 * 60);
   if (hoursSinceUpdate >= 24) return 0;
   return Math.ceil(24 - hoursSinceUpdate);
+}
+
+// Check if domain meets 30-day age requirement (or is exempt)
+export function isDomainAgeEligible(domain: Domain): boolean {
+  if (domain.isAgeExempt) return true;
+  return (domain.domainAgeDays ?? 0) >= 30;
+}
+
+// Get days until domain is ready for setup (0 if ready, null if unknown)
+export function daysUntilDomainReady(domain: Domain): number | null {
+  if (domain.isAgeExempt) return 0;
+  if (domain.daysUntilAvailable !== undefined) return domain.daysUntilAvailable;
+  if (!domain.registrationDate) return null;
+  const regDate = new Date(domain.registrationDate);
+  const ageMs = Date.now() - regDate.getTime();
+  const ageDays = Math.floor(ageMs / (1000 * 60 * 60 * 24));
+  if (ageDays >= 30) return 0;
+  return 30 - ageDays;
 }
 
 // Inbox status enum (aligned with OwnRBL)

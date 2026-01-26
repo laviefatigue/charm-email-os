@@ -17,9 +17,9 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from '@/components/ui/tooltip';
-import { Loader2, Settings, Server, Clock, CheckCircle2, AlertCircle, RefreshCw, ShieldCheck, ShieldAlert, ShieldQuestion, Wrench } from 'lucide-react';
+import { Loader2, Settings, Server, Clock, CheckCircle2, AlertCircle, RefreshCw, ShieldCheck, ShieldAlert, ShieldQuestion, Wrench, Calendar } from 'lucide-react';
 import type { Domain, NameserverStatus } from '@/lib/types';
-import { isDnsReady, hoursUntilDnsReady } from '@/lib/types';
+import { isDnsReady, hoursUntilDnsReady, isDomainAgeEligible } from '@/lib/types';
 import { toast } from 'sonner';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000/api/v1';
@@ -47,6 +47,18 @@ export function DomainsNeedingSetupTable({
     [domains]
   );
 
+  // Domains eligible for setup (30+ days old OR exempt, AND has verified NS)
+  const eligibleDomains = useMemo(() =>
+    purchasedDomains.filter(d => d.isSetupEligible === true),
+    [purchasedDomains]
+  );
+
+  // Domains too young for setup (< 30 days and not exempt)
+  const tooYoungDomains = useMemo(() =>
+    purchasedDomains.filter(d => !isDomainAgeEligible(d)),
+    [purchasedDomains]
+  );
+
   // Provisioning domains (being set up)
   const provisioningDomains = useMemo(() =>
     domains.filter(d => d.status === 'provisioning'),
@@ -54,12 +66,13 @@ export function DomainsNeedingSetupTable({
   );
 
   const handleSelectAll = useCallback(() => {
-    if (selectedDomains.size === purchasedDomains.length) {
+    // Only select eligible domains
+    if (selectedDomains.size === eligibleDomains.length && eligibleDomains.length > 0) {
       setSelectedDomains(new Set());
     } else {
-      setSelectedDomains(new Set(purchasedDomains.map(d => d.id)));
+      setSelectedDomains(new Set(eligibleDomains.map(d => d.id)));
     }
-  }, [purchasedDomains, selectedDomains.size]);
+  }, [eligibleDomains, selectedDomains.size]);
 
   const handleToggleSelect = useCallback((domainId: string) => {
     setSelectedDomains(prev => {
@@ -295,6 +308,80 @@ export function DomainsNeedingSetupTable({
     }
   };
 
+  // Get domain age badge
+  const getAgeBadge = (domain: Domain) => {
+    // Exempt domains (legacy/active) bypass age check
+    if (domain.isAgeExempt) {
+      return (
+        <Tooltip>
+          <TooltipTrigger>
+            <Badge variant="outline" className="text-blue-600 border-blue-600">
+              <ShieldCheck className="h-3 w-3 mr-1" />
+              Exempt
+            </Badge>
+          </TooltipTrigger>
+          <TooltipContent>
+            Legacy/active domain - age check bypassed
+          </TooltipContent>
+        </Tooltip>
+      );
+    }
+
+    // Has registration date - show age
+    if (domain.registrationDate || domain.domainAgeDays !== undefined) {
+      const ageDays = domain.domainAgeDays ?? 0;
+      const daysLeft = domain.daysUntilAvailable ?? (30 - ageDays);
+
+      if (ageDays >= 30 || daysLeft <= 0) {
+        // Domain is old enough
+        return (
+          <Tooltip>
+            <TooltipTrigger>
+              <Badge variant="outline" className="text-green-600 border-green-600">
+                <CheckCircle2 className="h-3 w-3 mr-1" />
+                {ageDays}d
+              </Badge>
+            </TooltipTrigger>
+            <TooltipContent>
+              Domain is {ageDays} days old - eligible for setup
+            </TooltipContent>
+          </Tooltip>
+        );
+      } else {
+        // Domain is too young
+        return (
+          <Tooltip>
+            <TooltipTrigger>
+              <Badge variant="outline" className="text-amber-600 border-amber-600">
+                <Clock className="h-3 w-3 mr-1" />
+                {daysLeft}d left
+              </Badge>
+            </TooltipTrigger>
+            <TooltipContent>
+              Domain is only {ageDays} days old.
+              <br />
+              Available for setup in {daysLeft} days.
+              {domain.registrationDate && (
+                <>
+                  <br />
+                  Registered: {new Date(domain.registrationDate).toLocaleDateString()}
+                </>
+              )}
+            </TooltipContent>
+          </Tooltip>
+        );
+      }
+    }
+
+    // No registration date available
+    return (
+      <Badge variant="outline" className="text-gray-500 border-gray-300">
+        <Calendar className="h-3 w-3 mr-1" />
+        Unknown
+      </Badge>
+    );
+  };
+
   const getStatusBadge = (status: string) => {
     switch (status) {
       case 'purchased':
@@ -326,11 +413,17 @@ export function DomainsNeedingSetupTable({
         <div className="flex items-center justify-between p-3 bg-orange-50 rounded-lg border border-orange-200">
           <div className="flex items-center gap-3">
             <Checkbox
-              checked={selectedDomains.size === purchasedDomains.length && purchasedDomains.length > 0}
+              checked={selectedDomains.size === eligibleDomains.length && eligibleDomains.length > 0}
               onCheckedChange={handleSelectAll}
+              disabled={eligibleDomains.length === 0}
             />
             <span className="text-sm text-orange-700">
-              {selectedDomains.size} of {purchasedDomains.length} domains selected
+              {selectedDomains.size} of {eligibleDomains.length} eligible domains selected
+              {tooYoungDomains.length > 0 && (
+                <span className="text-amber-600 ml-2">
+                  ({tooYoungDomains.length} too young)
+                </span>
+              )}
             </span>
           </div>
           <div className="flex gap-2">
@@ -389,6 +482,7 @@ export function DomainsNeedingSetupTable({
             <TableHead className="w-[110px] text-center">Status</TableHead>
             <TableHead className="w-[100px] text-center">NS Verified</TableHead>
             <TableHead className="w-[100px] text-center">DNS Ready</TableHead>
+            <TableHead className="w-20 text-center">Age</TableHead>
             <TableHead className="w-[90px] text-center">Provider</TableHead>
             <TableHead className="w-[120px]">Purchased</TableHead>
           </TableRow>
@@ -411,11 +505,24 @@ export function DomainsNeedingSetupTable({
               >
                 <TableCell className="w-[40px]">
                   {isPurchased && (
-                    <Checkbox
-                      checked={isSelected}
-                      onCheckedChange={() => handleToggleSelect(domain.id)}
-                      disabled={isSettingUp}
-                    />
+                    domain.isSetupEligible ? (
+                      <Checkbox
+                        checked={isSelected}
+                        onCheckedChange={() => handleToggleSelect(domain.id)}
+                        disabled={isSettingUp}
+                      />
+                    ) : (
+                      <Tooltip>
+                        <TooltipTrigger>
+                          <Checkbox disabled checked={false} className="opacity-50" />
+                        </TooltipTrigger>
+                        <TooltipContent>
+                          {!isDomainAgeEligible(domain)
+                            ? `Domain must be 30+ days old for setup. ${domain.daysUntilAvailable ? `Available in ${domain.daysUntilAvailable} days.` : ''}`
+                            : 'Nameservers must be verified before setup.'}
+                        </TooltipContent>
+                      </Tooltip>
+                    )
                   )}
                   {isProvisioning && (
                     <Loader2 className="h-4 w-4 animate-spin text-blue-500" />
@@ -474,6 +581,9 @@ export function DomainsNeedingSetupTable({
                     </Tooltip>
                   )}
                 </TableCell>
+                <TableCell className="w-20 text-center">
+                  {getAgeBadge(domain)}
+                </TableCell>
                 <TableCell className="w-[90px] text-center">
                   <Badge variant="outline" className="text-xs capitalize">
                     <Server className="h-3 w-3 mr-1" />
@@ -496,6 +606,12 @@ export function DomainsNeedingSetupTable({
       {/* Summary */}
       <div className="flex gap-4 text-sm text-muted-foreground">
         <span>{purchasedDomains.length} awaiting setup</span>
+        {eligibleDomains.length > 0 && (
+          <span className="text-green-600">{eligibleDomains.length} eligible</span>
+        )}
+        {tooYoungDomains.length > 0 && (
+          <span className="text-amber-600">{tooYoungDomains.length} too young (&lt;30 days)</span>
+        )}
         {provisioningDomains.length > 0 && (
           <span className="text-blue-600">{provisioningDomains.length} provisioning</span>
         )}

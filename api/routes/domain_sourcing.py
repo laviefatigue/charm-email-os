@@ -339,10 +339,11 @@ async def purchase_domains(request: DomainPurchaseRequest):
                         domain_id = existing["id"]
                         logger.info(f"Domain {domain_name} already exists with id {domain_id}")
                     else:
-                        new_domain = await fetch_one(
-                            "INSERT INTO domains (workspace_id, domain_name) VALUES ($1, $2) RETURNING id",
-                            workspace_id, domain_name
-                        )
+                        new_domain = await fetch_one("""
+                            INSERT INTO domains (workspace_id, domain_name, registration_date, available_for_setup_at)
+                            VALUES ($1, $2, NOW(), NOW() + INTERVAL '30 days')
+                            RETURNING id
+                        """, workspace_id, domain_name)
                         domain_id = new_domain["id"]
                         logger.info(f"Created domain record for {domain_name} with id {domain_id}")
                     created_domain_ids.append(str(domain_id))
@@ -1663,12 +1664,15 @@ async def purchase_single_domain(domain_id: UUID, provider: Optional[str] = None
 
             # Update domain status to purchased with nameserver tracking
             # nameservers_updated_at is set only if NS were successfully configured
+            # registration_date and available_for_setup_at track the 30-day setup requirement
             await execute("""
                 UPDATE domains
                 SET approval_status = 'purchased',
                     cached_price = $1,
                     selected_provider = $2,
                     purchased_at = NOW(),
+                    registration_date = NOW(),
+                    available_for_setup_at = NOW() + INTERVAL '30 days',
                     nameservers_updated_at = CASE WHEN $3 THEN NOW() ELSE NULL END,
                     nameserver_status = $4,
                     updated_at = NOW()
