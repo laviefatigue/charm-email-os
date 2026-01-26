@@ -11,6 +11,7 @@ import asyncio
 import httpx
 import logging
 import os
+from datetime import datetime
 from decimal import Decimal
 from typing import Optional
 from pydantic import BaseModel
@@ -35,6 +36,15 @@ class PurchaseResult(BaseModel):
     domain: str
     success: bool
     order_id: Optional[str] = None
+    error: Optional[str] = None
+
+
+class DomainInfoResult(BaseModel):
+    """Result from getting domain info (WHOIS data)."""
+    domain: str
+    success: bool
+    creation_date: Optional[datetime] = None  # Actual WHOIS creation date
+    expiration_date: Optional[datetime] = None
     error: Optional[str] = None
 
 
@@ -393,3 +403,77 @@ class PorkbunService:
         except Exception as e:
             logger.error(f"Porkbun pricing error: {e}")
             return {}
+
+    async def get_domain_info(self, domain: str) -> DomainInfoResult:
+        """
+        Get domain information including actual WHOIS creation date.
+
+        Porkbun API: POST /domain/info/{domain}
+
+        Args:
+            domain: Domain name to query
+
+        Returns:
+            DomainInfoResult with creation_date from registrar
+        """
+        try:
+            response = await self.client.post(
+                f"{self.base_url}/domain/info/{domain}",
+                json=self._auth_payload(),
+            )
+            response.raise_for_status()
+            data = response.json()
+
+            logger.info(f"Porkbun domain_info response for {domain}: {data}")
+
+            if data.get("status") == "SUCCESS":
+                resp = data.get("response", {})
+
+                # Parse creation date - Porkbun returns createDate in format "YYYY-MM-DD HH:MM:SS"
+                creation_date = None
+                create_date_str = resp.get("createDate")
+                if create_date_str:
+                    try:
+                        # Try ISO format first
+                        creation_date = datetime.fromisoformat(create_date_str.replace(" ", "T"))
+                    except ValueError:
+                        try:
+                            # Fallback to common format
+                            creation_date = datetime.strptime(create_date_str, "%Y-%m-%d %H:%M:%S")
+                        except ValueError:
+                            logger.warning(f"Could not parse Porkbun createDate: {create_date_str}")
+
+                # Parse expiration date
+                expiration_date = None
+                expire_date_str = resp.get("expireDate")
+                if expire_date_str:
+                    try:
+                        expiration_date = datetime.fromisoformat(expire_date_str.replace(" ", "T"))
+                    except ValueError:
+                        try:
+                            expiration_date = datetime.strptime(expire_date_str, "%Y-%m-%d %H:%M:%S")
+                        except ValueError:
+                            logger.warning(f"Could not parse Porkbun expireDate: {expire_date_str}")
+
+                return DomainInfoResult(
+                    domain=domain,
+                    success=True,
+                    creation_date=creation_date,
+                    expiration_date=expiration_date,
+                )
+            else:
+                error_msg = data.get("message", "Unknown error")
+                logger.warning(f"Porkbun domain_info failed for {domain}: {error_msg}")
+                return DomainInfoResult(
+                    domain=domain,
+                    success=False,
+                    error=error_msg,
+                )
+
+        except Exception as e:
+            logger.error(f"Porkbun domain_info error for {domain}: {e}")
+            return DomainInfoResult(
+                domain=domain,
+                success=False,
+                error=str(e),
+            )

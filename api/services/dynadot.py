@@ -12,6 +12,7 @@ import logging
 import os
 import re
 import xml.etree.ElementTree as ET
+from datetime import datetime
 from decimal import Decimal
 from typing import Optional
 from pydantic import BaseModel
@@ -64,6 +65,15 @@ class PurchaseResult(BaseModel):
     domain: str
     success: bool
     order_id: Optional[str] = None
+    error: Optional[str] = None
+
+
+class DomainInfoResult(BaseModel):
+    """Result from getting domain info (WHOIS data)."""
+    domain: str
+    success: bool
+    creation_date: Optional[datetime] = None  # Actual WHOIS creation date
+    expiration_date: Optional[datetime] = None
     error: Optional[str] = None
 
 
@@ -646,3 +656,108 @@ class DynadotService:
         except Exception as e:
             logger.error(f"Dynadot get_ns error for {domain}: {e}")
             return None
+
+    async def get_domain_info(self, domain: str) -> DomainInfoResult:
+        """
+        Get domain information including actual WHOIS creation date.
+
+        Dynadot API: GET ?command=domain_info&domain={domain}
+
+        Args:
+            domain: Domain name to query
+
+        Returns:
+            DomainInfoResult with creation_date from registrar
+        """
+        try:
+            response = await self.client.get(
+                self.base_url,
+                params={
+                    "key": self.api_key,
+                    "command": "domain_info",
+                    "domain": domain,
+                },
+            )
+            response.raise_for_status()
+
+            logger.info(f"Dynadot domain_info response for {domain}: {response.text[:500]}")
+
+            # Parse XML response
+            root = ET.fromstring(response.text)
+
+            # Check for error response
+            error_elem = root.find('.//Error')
+            if error_elem is not None and error_elem.text:
+                return DomainInfoResult(
+                    domain=domain,
+                    success=False,
+                    error=error_elem.text,
+                )
+
+            # Look for creation date in various possible element paths
+            creation_date = None
+            date_paths = [
+                './/CreateDate',
+                './/Creation',
+                './/RegistrationDate',
+                './/DomainInfoContent/Domain/CreateDate',
+                './/Domain/CreateDate',
+            ]
+
+            for path in date_paths:
+                date_elem = root.find(path)
+                if date_elem is not None and date_elem.text:
+                    date_str = date_elem.text.strip()
+                    try:
+                        # Dynadot typically returns dates in ISO format or Unix timestamp
+                        if date_str.isdigit():
+                            # Unix timestamp in milliseconds
+                            creation_date = datetime.fromtimestamp(int(date_str) / 1000)
+                        else:
+                            # Try ISO format
+                            creation_date = datetime.fromisoformat(date_str.replace("Z", "+00:00"))
+                    except ValueError:
+                        try:
+                            # Try common date formats
+                            for fmt in ["%Y-%m-%d", "%Y-%m-%d %H:%M:%S", "%d-%m-%Y"]:
+                                try:
+                                    creation_date = datetime.strptime(date_str, fmt)
+                                    break
+                                except ValueError:
+                                    continue
+                        except Exception:
+                            logger.warning(f"Could not parse Dynadot date: {date_str}")
+                    if creation_date:
+                        break
+
+            # Look for expiration date
+            expiration_date = None
+            expire_paths = ['.//Expiration', './/ExpireDate', './/ExpirationDate']
+            for path in expire_paths:
+                date_elem = root.find(path)
+                if date_elem is not None and date_elem.text:
+                    date_str = date_elem.text.strip()
+                    try:
+                        if date_str.isdigit():
+                            expiration_date = datetime.fromtimestamp(int(date_str) / 1000)
+                        else:
+                            expiration_date = datetime.fromisoformat(date_str.replace("Z", "+00:00"))
+                    except ValueError:
+                        pass
+                    if expiration_date:
+                        break
+
+            return DomainInfoResult(
+                domain=domain,
+                success=True,
+                creation_date=creation_date,
+                expiration_date=expiration_date,
+            )
+
+        except Exception as e:
+            logger.error(f"Dynadot domain_info error for {domain}: {e}")
+            return DomainInfoResult(
+                domain=domain,
+                success=False,
+                error=str(e),
+            )

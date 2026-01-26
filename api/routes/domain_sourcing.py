@@ -329,6 +329,21 @@ async def purchase_domains(request: DomainPurchaseRequest):
                 )
 
             if purchase_result.get("success"):
+                # Fetch actual WHOIS registration date from registrar
+                registration_date = None
+                try:
+                    if registrar_name == "dynadot":
+                        service = DynadotService()
+                    else:
+                        service = PorkbunService()
+                    domain_info = await service.get_domain_info(domain_name)
+                    await service.close()
+                    if domain_info.success and domain_info.creation_date:
+                        registration_date = domain_info.creation_date
+                        logger.info(f"Got actual registration date for {domain_name}: {registration_date}")
+                except Exception as info_error:
+                    logger.warning(f"Error fetching domain info for {domain_name}: {info_error}")
+
                 # Create domain record in database
                 try:
                     existing = await fetch_one(
@@ -338,12 +353,25 @@ async def purchase_domains(request: DomainPurchaseRequest):
                     if existing:
                         domain_id = existing["id"]
                         logger.info(f"Domain {domain_name} already exists with id {domain_id}")
+                        # Update with registration date if we have it
+                        if registration_date:
+                            await execute("""
+                                UPDATE domains SET registration_date = $1, available_for_setup_at = $1 + INTERVAL '30 days', updated_at = NOW()
+                                WHERE id = $2
+                            """, registration_date, domain_id)
                     else:
-                        new_domain = await fetch_one("""
-                            INSERT INTO domains (workspace_id, domain_name, registration_date, available_for_setup_at)
-                            VALUES ($1, $2, NOW(), NOW() + INTERVAL '30 days')
-                            RETURNING id
-                        """, workspace_id, domain_name)
+                        if registration_date:
+                            new_domain = await fetch_one("""
+                                INSERT INTO domains (workspace_id, domain_name, registration_date, available_for_setup_at)
+                                VALUES ($1, $2, $3, $3 + INTERVAL '30 days')
+                                RETURNING id
+                            """, workspace_id, domain_name, registration_date)
+                        else:
+                            new_domain = await fetch_one("""
+                                INSERT INTO domains (workspace_id, domain_name, registration_date, available_for_setup_at)
+                                VALUES ($1, $2, NOW(), NOW() + INTERVAL '30 days')
+                                RETURNING id
+                            """, workspace_id, domain_name)
                         domain_id = new_domain["id"]
                         logger.info(f"Created domain record for {domain_name} with id {domain_id}")
                     created_domain_ids.append(str(domain_id))
@@ -1662,22 +1690,54 @@ async def purchase_single_domain(domain_id: UUID, provider: Optional[str] = None
                 ns_status = "failed"
                 logger.error(f"Error setting nameservers for {domain['domain_name']}: {ns_error}")
 
+            # Get actual WHOIS registration date from registrar
+            # This is the TRUE domain creation date, not when we purchased it
+            registration_date = None
+            try:
+                logger.info(f"Fetching actual registration date for {domain['domain_name']} from {registrar_name}")
+                domain_info = await registrar.get_domain_info(domain["domain_name"])
+                if domain_info.success and domain_info.creation_date:
+                    registration_date = domain_info.creation_date
+                    logger.info(f"Got actual registration date for {domain['domain_name']}: {registration_date}")
+                else:
+                    logger.warning(f"Could not get registration date for {domain['domain_name']}, using NOW() as fallback")
+            except Exception as info_error:
+                logger.warning(f"Error fetching domain info for {domain['domain_name']}: {info_error}, using NOW() as fallback")
+
             # Update domain status to purchased with nameserver tracking
             # nameservers_updated_at is set only if NS were successfully configured
-            # registration_date and available_for_setup_at track the 30-day setup requirement
-            await execute("""
-                UPDATE domains
-                SET approval_status = 'purchased',
-                    cached_price = $1,
-                    selected_provider = $2,
-                    purchased_at = NOW(),
-                    registration_date = NOW(),
-                    available_for_setup_at = NOW() + INTERVAL '30 days',
-                    nameservers_updated_at = CASE WHEN $3 THEN NOW() ELSE NULL END,
-                    nameserver_status = $4,
-                    updated_at = NOW()
-                WHERE id = $5
-            """, float(price), registrar_name, ns_success, ns_status, domain_id)
+            # registration_date uses actual WHOIS creation date if available, else NOW()
+            # available_for_setup_at is 30 days after registration_date
+            if registration_date:
+                # Use actual WHOIS creation date
+                await execute("""
+                    UPDATE domains
+                    SET approval_status = 'purchased',
+                        cached_price = $1,
+                        selected_provider = $2,
+                        purchased_at = NOW(),
+                        registration_date = $3,
+                        available_for_setup_at = $3 + INTERVAL '30 days',
+                        nameservers_updated_at = CASE WHEN $4 THEN NOW() ELSE NULL END,
+                        nameserver_status = $5,
+                        updated_at = NOW()
+                    WHERE id = $6
+                """, float(price), registrar_name, registration_date, ns_success, ns_status, domain_id)
+            else:
+                # Fallback to NOW() if we couldn't fetch the actual date
+                await execute("""
+                    UPDATE domains
+                    SET approval_status = 'purchased',
+                        cached_price = $1,
+                        selected_provider = $2,
+                        purchased_at = NOW(),
+                        registration_date = NOW(),
+                        available_for_setup_at = NOW() + INTERVAL '30 days',
+                        nameservers_updated_at = CASE WHEN $3 THEN NOW() ELSE NULL END,
+                        nameserver_status = $4,
+                        updated_at = NOW()
+                    WHERE id = $5
+                """, float(price), registrar_name, ns_success, ns_status, domain_id)
 
             logger.info(f"Successfully purchased {domain['domain_name']} - NS status: {ns_status}")
 
