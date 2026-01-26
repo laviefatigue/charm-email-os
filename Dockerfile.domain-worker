@@ -12,10 +12,17 @@
 # IMPORTANT: Runs as non-root user 'claude' because Claude Code's
 # --dangerously-skip-permissions flag cannot be used with root privileges.
 #
-# One-time OAuth setup (after deployment):
-#   docker exec -it <container_id> bash
-#   claude /login
-#   # Follow browser OAuth flow, then exit
+# Authentication Setup (see docs/claude-docker-auth.md for full guide):
+#
+#   RECOMMENDED: Long-lived token (never expires)
+#     docker exec -it <container_id> bash
+#     claude setup-token
+#     # Save token to .credentials.json (see docs)
+#
+#   ALTERNATIVE: OAuth (expires ~30 days)
+#     docker exec -it <container_id> bash
+#     claude /login
+#     # Follow browser OAuth flow, then exit
 #
 # Usage:
 #   docker build -t charm-domain-worker -f Dockerfile.domain-worker .

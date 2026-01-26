@@ -1,12 +1,13 @@
-# Charm Email OS - Strategy Worker (Persistent Daemon)
+# Charm Email OS - Spintax Worker (Persistent Daemon)
 #
 # This is a PERSISTENT CONTAINER that runs continuously, polling the database
-# for pending strategy generation jobs and spawning Claude Code for each.
+# for pending spintax processing jobs and spawning Claude Code for each.
 #
-# Key differences from Dockerfile.strategy-ai (batch container):
+# Key features:
 # - Uses CMD (not ENTRYPOINT) - daemon process, not batch job
 # - Has HEALTHCHECK - worker should stay running
 # - OAuth credentials persist via volume mount and can auto-refresh
+# - Applies spintax and liquid syntax to approved campaign sequences
 #
 # IMPORTANT: Runs as non-root user 'claude' because Claude Code's
 # --dangerously-skip-permissions flag cannot be used with root privileges.
@@ -24,13 +25,13 @@
 #     # Follow browser OAuth flow, then exit
 #
 # Usage:
-#   docker build -t charm-strategy-worker -f Dockerfile.strategy-worker .
+#   docker build -t charm-spintax-worker -f Dockerfile.spintax-worker .
 #   docker run -d \
 #     -e POSTGRES_HOST=... -e POSTGRES_PORT=... \
 #     -e POSTGRES_DB=... -e POSTGRES_USER=... -e POSTGRES_PASSWORD=... \
 #     -v /var/claude-credentials:/home/claude/.claude \
 #     --restart unless-stopped \
-#     charm-strategy-worker
+#     charm-spintax-worker
 
 FROM debian:bookworm-slim
 
@@ -79,17 +80,17 @@ COPY requirements-mcp.txt /app/
 # Install Python MCP dependencies
 RUN pip3 install --break-system-packages --no-cache-dir -r requirements-mcp.txt
 
-# Copy MCP server code
-COPY strategy_mcp/ /app/strategy_mcp/
+# Copy MCP server code (spintax_mcp)
+COPY spintax_mcp/ /app/spintax_mcp/
 
 # Copy MCP configuration
-COPY strategy_mcp_config.json /app/
+COPY spintax_mcp_config.json /app/
 
 # Copy Claude skill (embedded in prompt by worker)
 COPY .claude/ /app/.claude/
 
 # Copy the persistent worker script
-COPY strategy_worker.py /app/
+COPY spintax_worker.py /app/
 
 # Make app directory accessible to claude user
 RUN chown -R claude:claude /app
@@ -116,14 +117,14 @@ USER claude
 # Health check: verify the worker process is running
 # The worker should stay alive indefinitely, polling for jobs
 HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
-    CMD pgrep -f "python3.*strategy_worker.py" || exit 1
+    CMD pgrep -f "python3.*spintax_worker.py" || exit 1
 
 # Run the persistent worker (daemon process)
 # Unlike batch container, this stays running and polls for jobs
-CMD ["python3", "/app/strategy_worker.py"]
+CMD ["python3", "/app/spintax_worker.py"]
 
 # Labels for documentation
-LABEL org.opencontainers.image.title="Charm Strategy Worker"
-LABEL org.opencontainers.image.description="Persistent daemon container for strategy generation with Claude Code"
+LABEL org.opencontainers.image.title="Charm Spintax Worker"
+LABEL org.opencontainers.image.description="Persistent daemon container for spintax processing with Claude Code"
 LABEL org.opencontainers.image.vendor="Charm Email OS"
 LABEL org.opencontainers.image.version="1.0.0"
