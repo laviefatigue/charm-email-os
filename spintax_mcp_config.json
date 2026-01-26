@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "spintax-processor": {
+      "command": "python3",
+      "args": ["/app/spintax_mcp/server.py"]
+    }
+  }
+}
