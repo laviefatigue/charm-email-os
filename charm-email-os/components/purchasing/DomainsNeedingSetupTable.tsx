@@ -562,7 +562,7 @@ export function DomainsNeedingSetupTable({
                           >
                             <Checkbox
                               checked={false}
-                              className="border-amber-400 opacity-70 hover:opacity-100 cursor-pointer"
+                              className="border-amber-400 opacity-70 hover:opacity-100 cursor-pointer pointer-events-none"
                               disabled
                             />
                           </button>
