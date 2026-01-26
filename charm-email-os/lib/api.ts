@@ -938,6 +938,61 @@ export const domainSourcingApi = {
     );
     return toCamelCase<PurchaseSingleResponse>(response);
   },
+
+  /**
+   * Bulk check prices for multiple domains from both registrars.
+   * Stores results in price history and updates cached prices.
+   */
+  async checkPricesBulk(params: { clientId?: string; domainIds?: string[] }): Promise<{
+    results: Array<{
+      domainId: string;
+      domainName: string;
+      porkbunAvailable?: boolean;
+      porkbunPrice?: string;
+      dynadotAvailable?: boolean;
+      dynadotPrice?: string;
+      bestPrice?: string;
+      bestProvider?: string;
+      error?: string;
+    }>;
+    checkedCount: number;
+    availableCount: number;
+    errorCount: number;
+  }> {
+    const response = await fetchApi<Record<string, unknown>>(
+      '/api/domain-sourcing/check-prices-bulk',
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          client_id: params.clientId,
+          domain_ids: params.domainIds,
+        }),
+      }
+    );
+    return toCamelCase(response);
+  },
+
+  /**
+   * Get price history for a domain.
+   */
+  async getPriceHistory(domainId: string, limit = 30): Promise<{
+    domainId: string;
+    history: Array<{
+      porkbunPrice?: string;
+      porkbunAvailable?: boolean;
+      dynadotPrice?: string;
+      dynadotAvailable?: boolean;
+      bestPrice?: string;
+      bestProvider?: string;
+      checkedAt?: string;
+    }>;
+    count: number;
+  }> {
+    const response = await fetchApi<Record<string, unknown>>(
+      `/api/domain-sourcing/price-history/${domainId}?limit=${limit}`
+    );
+    return toCamelCase(response);
+  },
 };
 
 // ===== INBOX API =====

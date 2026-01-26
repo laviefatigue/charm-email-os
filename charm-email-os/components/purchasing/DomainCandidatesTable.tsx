@@ -49,6 +49,8 @@ export function DomainCandidatesTable({
   const [selectedDomains, setSelectedDomains] = useState<Set<string>>(new Set());
   // Track bulk purchase loading
   const [isBulkPurchasing, setIsBulkPurchasing] = useState(false);
+  // Track bulk price check loading
+  const [isBulkCheckingPrices, setIsBulkCheckingPrices] = useState(false);
 
   const setDomainState = useCallback((domainId: string, state: ActionState) => {
     setActionStates((prev) => ({ ...prev, [domainId]: state }));
@@ -138,6 +140,53 @@ export function DomainCandidatesTable({
       setDomainState(domainId, { loading: false, error: errorMsg });
     }
   }, [setDomainState]);
+
+  // Bulk check all approved domains
+  const handleCheckAllPrices = useCallback(async () => {
+    // Get all approved domains that need price check
+    const approvedDomains = domains.filter(d => d.status === 'approved' && !prices[d.id]);
+    if (approvedDomains.length === 0) {
+      toast.info('All approved domains already have prices checked');
+      return;
+    }
+
+    setIsBulkCheckingPrices(true);
+
+    try {
+      const result = await domainSourcingApi.checkPricesBulk({ clientId });
+
+      // Update prices state with results
+      const newPrices: typeof prices = {};
+      for (const item of result.results) {
+        if (!item.error) {
+          newPrices[item.domainId] = {
+            price: item.bestPrice || 'N/A',
+            available: (item.porkbunAvailable || item.dynadotAvailable) ?? false,
+            porkbun: item.porkbunPrice !== undefined ? {
+              price: item.porkbunPrice ?? null,
+              available: item.porkbunAvailable ?? false,
+            } : undefined,
+            dynadot: item.dynadotPrice !== undefined ? {
+              price: item.dynadotPrice ?? null,
+              available: item.dynadotAvailable ?? false,
+            } : undefined,
+            bestProvider: item.bestProvider,
+          };
+        }
+      }
+      setPrices(prev => ({ ...prev, ...newPrices }));
+
+      toast.success(
+        `Checked ${result.checkedCount} domains. ${result.availableCount} available.${result.errorCount > 0 ? ` ${result.errorCount} errors.` : ''}`
+      );
+      onDomainUpdate?.();
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : 'Bulk price check failed';
+      toast.error(errorMsg);
+    } finally {
+      setIsBulkCheckingPrices(false);
+    }
+  }, [domains, prices, clientId, onDomainUpdate]);
 
   const handlePurchase = useCallback(async (domainId: string) => {
     setDomainState(domainId, { loading: true, error: null });
@@ -365,8 +414,36 @@ export function DomainCandidatesTable({
     );
   }
 
+  // Count domains that need price check
+  const domainsNeedingPriceCheck = useMemo(() => {
+    return domains.filter(d => d.status === 'approved' && !prices[d.id]).length;
+  }, [domains, prices]);
+
   return (
     <div className="space-y-4">
+      {/* Check All Prices Bar */}
+      {domainsNeedingPriceCheck > 0 && (
+        <div className="flex items-center justify-between p-3 bg-blue-50 rounded-lg border border-blue-200">
+          <span className="text-sm text-blue-700">
+            {domainsNeedingPriceCheck} approved domains need price check
+          </span>
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={isBulkCheckingPrices}
+            className="border-blue-300 text-blue-700 hover:bg-blue-100"
+            onClick={handleCheckAllPrices}
+          >
+            {isBulkCheckingPrices ? (
+              <Loader2 className="h-4 w-4 mr-1 animate-spin" />
+            ) : (
+              <DollarSign className="h-4 w-4 mr-1" />
+            )}
+            Check All Prices
+          </Button>
+        </div>
+      )}
+
       {/* Bulk Purchase Bar */}
       {qualifiedDomains.length > 0 && (
         <div className="flex items-center justify-between p-3 bg-green-50 rounded-lg border border-green-200">

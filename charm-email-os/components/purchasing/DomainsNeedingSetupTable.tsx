@@ -17,7 +17,15 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from '@/components/ui/tooltip';
-import { Loader2, Settings, Server, Clock, CheckCircle2, AlertCircle, RefreshCw, ShieldCheck, ShieldAlert, ShieldQuestion, Wrench, Calendar } from 'lucide-react';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
+import { Loader2, Settings, Server, Clock, CheckCircle2, AlertCircle, RefreshCw, ShieldCheck, ShieldAlert, ShieldQuestion, Wrench, Calendar, AlertTriangle } from 'lucide-react';
 import type { Domain, NameserverStatus } from '@/lib/types';
 import { isDnsReady, hoursUntilDnsReady, isDomainAgeEligible } from '@/lib/types';
 import { toast } from 'sonner';
@@ -40,6 +48,12 @@ export function DomainsNeedingSetupTable({
   const [selectedDomains, setSelectedDomains] = useState<Set<string>>(new Set());
   const [isVerifying, setIsVerifying] = useState(false);
   const [isFixingNs, setIsFixingNs] = useState(false);
+
+  // Admin override confirmation dialog state
+  const [overrideDialogOpen, setOverrideDialogOpen] = useState(false);
+  const [pendingOverrideDomain, setPendingOverrideDomain] = useState<Domain | null>(null);
+  // Track domains that have been force-selected (admin override)
+  const [forceSelectedDomains, setForceSelectedDomains] = useState<Set<string>>(new Set());
 
   // Filter only purchased domains (not provisioning)
   const purchasedDomains = useMemo(() =>
@@ -84,6 +98,29 @@ export function DomainsNeedingSetupTable({
       }
       return next;
     });
+  }, []);
+
+  // Handle clicking on a young domain checkbox - show override confirmation
+  const handleYoungDomainClick = useCallback((domain: Domain) => {
+    setPendingOverrideDomain(domain);
+    setOverrideDialogOpen(true);
+  }, []);
+
+  // Confirm the admin override - add domain to force-selected and selected sets
+  const handleConfirmOverride = useCallback(() => {
+    if (pendingOverrideDomain) {
+      setForceSelectedDomains(prev => new Set(prev).add(pendingOverrideDomain.id));
+      setSelectedDomains(prev => new Set(prev).add(pendingOverrideDomain.id));
+      toast.warning(`Admin override: ${pendingOverrideDomain.domainName || pendingOverrideDomain.domain} selected despite being ${pendingOverrideDomain.domainAgeDays ?? 0} days old`);
+    }
+    setOverrideDialogOpen(false);
+    setPendingOverrideDomain(null);
+  }, [pendingOverrideDomain]);
+
+  // Cancel the override
+  const handleCancelOverride = useCallback(() => {
+    setOverrideDialogOpen(false);
+    setPendingOverrideDomain(null);
   }, []);
 
   const handleSetupClick = useCallback(() => {
@@ -505,21 +542,47 @@ export function DomainsNeedingSetupTable({
               >
                 <TableCell className="w-[40px]">
                   {isPurchased && (
-                    domain.isSetupEligible ? (
+                    domain.isSetupEligible || forceSelectedDomains.has(domain.id) ? (
+                      // Eligible domain OR force-selected (admin override)
                       <Checkbox
                         checked={isSelected}
                         onCheckedChange={() => handleToggleSelect(domain.id)}
                         disabled={isSettingUp}
+                        className={forceSelectedDomains.has(domain.id) ? 'border-amber-500' : ''}
                       />
+                    ) : !isDomainAgeEligible(domain) ? (
+                      // Young domain - show clickable checkbox with warning style
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <button
+                            type="button"
+                            onClick={() => handleYoungDomainClick(domain)}
+                            disabled={isSettingUp}
+                            className="inline-flex items-center justify-center"
+                          >
+                            <Checkbox
+                              checked={false}
+                              className="border-amber-400 opacity-70 hover:opacity-100 cursor-pointer"
+                              disabled
+                            />
+                          </button>
+                        </TooltipTrigger>
+                        <TooltipContent>
+                          <div className="flex items-center gap-1">
+                            <AlertTriangle className="h-3 w-3 text-amber-500" />
+                            Domain is only {domain.domainAgeDays ?? 0} days old.
+                          </div>
+                          Click to override (admin only).
+                        </TooltipContent>
+                      </Tooltip>
                     ) : (
+                      // NS not verified - truly disabled
                       <Tooltip>
                         <TooltipTrigger>
                           <Checkbox disabled checked={false} className="opacity-50" />
                         </TooltipTrigger>
                         <TooltipContent>
-                          {!isDomainAgeEligible(domain)
-                            ? `Domain must be 30+ days old for setup. ${domain.daysUntilAvailable ? `Available in ${domain.daysUntilAvailable} days.` : ''}`
-                            : 'Nameservers must be verified before setup.'}
+                          Nameservers must be verified before setup.
                         </TooltipContent>
                       </Tooltip>
                     )
@@ -612,10 +675,57 @@ export function DomainsNeedingSetupTable({
         {tooYoungDomains.length > 0 && (
           <span className="text-amber-600">{tooYoungDomains.length} too young (&lt;30 days)</span>
         )}
+        {forceSelectedDomains.size > 0 && (
+          <span className="text-amber-500">{forceSelectedDomains.size} override</span>
+        )}
         {provisioningDomains.length > 0 && (
           <span className="text-blue-600">{provisioningDomains.length} provisioning</span>
         )}
       </div>
+
+      {/* Admin Override Confirmation Dialog */}
+      <Dialog open={overrideDialogOpen} onOpenChange={setOverrideDialogOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <AlertTriangle className="h-5 w-5 text-amber-500" />
+              Domain Age Warning
+            </DialogTitle>
+            <DialogDescription asChild>
+              <div className="space-y-3 pt-2">
+                <p>
+                  <strong>{pendingOverrideDomain?.domainName || pendingOverrideDomain?.domain}</strong> is only{' '}
+                  <strong className="text-amber-600">{pendingOverrideDomain?.domainAgeDays ?? 0} days old</strong>.
+                </p>
+                <p>
+                  Setting up inboxes on domains younger than 30 days may negatively affect email deliverability.
+                  ESPs often flag new domains as potential spam sources.
+                </p>
+                <div className="bg-amber-50 border border-amber-200 rounded-md p-3 text-amber-800 text-sm">
+                  <strong>Recommendation:</strong> Wait until{' '}
+                  {pendingOverrideDomain?.availableForSetupAt
+                    ? new Date(pendingOverrideDomain.availableForSetupAt).toLocaleDateString()
+                    : `${pendingOverrideDomain?.daysUntilAvailable ?? 30} more days`}{' '}
+                  for optimal deliverability.
+                </div>
+              </div>
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter className="gap-2 sm:gap-0">
+            <Button variant="outline" onClick={handleCancelOverride}>
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={handleConfirmOverride}
+              className="bg-amber-600 hover:bg-amber-700"
+            >
+              <AlertTriangle className="h-4 w-4 mr-1" />
+              Proceed Anyway
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

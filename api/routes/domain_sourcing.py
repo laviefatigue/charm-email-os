@@ -2398,3 +2398,238 @@ async def set_nameservers(request: SetNameserversRequest):
         failed_count=failed_count,
         verified_count=verified_count,
     )
+
+
+# =============================================================================
+# BULK PRICE CHECKING
+# =============================================================================
+
+class BulkPriceCheckRequest(BaseModel):
+    """Request to check prices for multiple domains."""
+    client_id: Optional[UUID] = None  # If provided, check all pending/approved domains for this client
+    domain_ids: Optional[list[UUID]] = None  # Or specify exact domain IDs
+
+
+class BulkPriceCheckResult(BaseModel):
+    """Result for a single domain price check."""
+    domain_id: str
+    domain_name: str
+    porkbun_available: Optional[bool] = None
+    porkbun_price: Optional[str] = None
+    dynadot_available: Optional[bool] = None
+    dynadot_price: Optional[str] = None
+    best_price: Optional[str] = None
+    best_provider: Optional[str] = None
+    error: Optional[str] = None
+
+
+class BulkPriceCheckResponse(BaseModel):
+    """Response from bulk price check."""
+    results: list[BulkPriceCheckResult]
+    checked_count: int
+    available_count: int
+    error_count: int
+
+
+@router.post("/check-prices-bulk", response_model=BulkPriceCheckResponse)
+async def check_prices_bulk(request: BulkPriceCheckRequest):
+    """
+    Check prices for multiple domains from both Porkbun and Dynadot.
+
+    This endpoint:
+    1. Checks availability and pricing from both registrars
+    2. Stores results in domain_price_history table
+    3. Updates cached_price in domains table
+
+    Args:
+        client_id: Check all pending/approved domains for this client
+        domain_ids: Or specify exact domain IDs to check
+
+    Returns:
+        Price information for each domain
+    """
+    # Get domains to check
+    if request.domain_ids:
+        domains = await fetch_all("""
+            SELECT id, domain_name, workspace_id, approval_status
+            FROM domains
+            WHERE id = ANY($1)
+        """, request.domain_ids)
+    elif request.client_id:
+        # Get workspace_id from client
+        client = await fetch_one("SELECT workspace_id FROM clients WHERE id = $1", request.client_id)
+        if not client or not client["workspace_id"]:
+            raise HTTPException(status_code=404, detail="Client not found or has no workspace")
+
+        # Get all pending/approved domains for this client
+        domains = await fetch_all("""
+            SELECT id, domain_name, workspace_id, approval_status
+            FROM domains
+            WHERE workspace_id = $1
+            AND approval_status IN ('pending', 'approved')
+        """, client["workspace_id"])
+    else:
+        raise HTTPException(status_code=400, detail="Provide either client_id or domain_ids")
+
+    if not domains:
+        return BulkPriceCheckResponse(
+            results=[],
+            checked_count=0,
+            available_count=0,
+            error_count=0,
+        )
+
+    porkbun = PorkbunService()
+    dynadot = DynadotService()
+
+    results = []
+    checked_count = 0
+    available_count = 0
+    error_count = 0
+
+    try:
+        for domain in domains:
+            domain_id = domain["id"]
+            domain_name = domain["domain_name"]
+
+            try:
+                # Check both providers concurrently
+                import asyncio
+                porkbun_result, dynadot_result = await asyncio.gather(
+                    porkbun.check_availability(domain_name),
+                    dynadot.check_availability(domain_name),
+                    return_exceptions=True
+                )
+
+                # Process Porkbun result
+                porkbun_available = None
+                porkbun_price = None
+                if not isinstance(porkbun_result, Exception):
+                    porkbun_available = porkbun_result.available
+                    if porkbun_result.available and porkbun_result.price:
+                        porkbun_price = float(porkbun_result.price)
+
+                # Process Dynadot result
+                dynadot_available = None
+                dynadot_price = None
+                if not isinstance(dynadot_result, Exception):
+                    dynadot_available = dynadot_result.available
+                    if dynadot_result.available and dynadot_result.price:
+                        dynadot_price = float(dynadot_result.price)
+
+                # Determine best price and provider
+                best_price = None
+                best_provider = None
+                is_available = porkbun_available or dynadot_available
+
+                if porkbun_price and dynadot_price:
+                    if porkbun_price <= dynadot_price:
+                        best_price = porkbun_price
+                        best_provider = "porkbun"
+                    else:
+                        best_price = dynadot_price
+                        best_provider = "dynadot"
+                elif porkbun_price:
+                    best_price = porkbun_price
+                    best_provider = "porkbun"
+                elif dynadot_price:
+                    best_price = dynadot_price
+                    best_provider = "dynadot"
+
+                # Save to price history table
+                await execute("""
+                    INSERT INTO domain_price_history
+                    (domain_id, porkbun_price, porkbun_available, dynadot_price, dynadot_available, best_price, best_provider)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7)
+                """, domain_id, porkbun_price, porkbun_available, dynadot_price, dynadot_available, best_price, best_provider)
+
+                # Update cached price in domains table
+                await execute("""
+                    UPDATE domains
+                    SET porkbun_price = $1,
+                        porkbun_available = $2,
+                        dynadot_price = $3,
+                        dynadot_available = $4,
+                        cached_price = $5,
+                        selected_provider = $6,
+                        price_checked_at = NOW()
+                    WHERE id = $7
+                """, porkbun_price, porkbun_available, dynadot_price, dynadot_available, best_price, best_provider, domain_id)
+
+                checked_count += 1
+                if is_available:
+                    available_count += 1
+
+                results.append(BulkPriceCheckResult(
+                    domain_id=str(domain_id),
+                    domain_name=domain_name,
+                    porkbun_available=porkbun_available,
+                    porkbun_price=str(porkbun_price) if porkbun_price else None,
+                    dynadot_available=dynadot_available,
+                    dynadot_price=str(dynadot_price) if dynadot_price else None,
+                    best_price=str(best_price) if best_price else None,
+                    best_provider=best_provider,
+                ))
+
+            except Exception as e:
+                error_count += 1
+                results.append(BulkPriceCheckResult(
+                    domain_id=str(domain_id),
+                    domain_name=domain_name,
+                    error=str(e),
+                ))
+
+            # Rate limiting - brief delay between checks
+            await asyncio.sleep(0.5)
+
+    finally:
+        await porkbun.close()
+        await dynadot.close()
+
+    return BulkPriceCheckResponse(
+        results=results,
+        checked_count=checked_count,
+        available_count=available_count,
+        error_count=error_count,
+    )
+
+
+@router.get("/price-history/{domain_id}")
+async def get_price_history(domain_id: UUID, limit: int = 30):
+    """
+    Get price history for a single domain.
+
+    Returns the last N price checks for the domain, useful for
+    charting price trends over time.
+    """
+    history = await fetch_all("""
+        SELECT
+            porkbun_price,
+            porkbun_available,
+            dynadot_price,
+            dynadot_available,
+            best_price,
+            best_provider,
+            checked_at
+        FROM domain_price_history
+        WHERE domain_id = $1
+        ORDER BY checked_at DESC
+        LIMIT $2
+    """, domain_id, limit)
+
+    return {
+        "domain_id": str(domain_id),
+        "history": [
+            {
+                "porkbun_price": str(h["porkbun_price"]) if h["porkbun_price"] else None,
+                "porkbun_available": h["porkbun_available"],
+                "dynadot_price": str(h["dynadot_price"]) if h["dynadot_price"] else None,
+                "dynadot_available": h["dynadot_available"],
+                "best_price": str(h["best_price"]) if h["best_price"] else None,
+                "best_provider": h["best_provider"],
+                "checked_at": h["checked_at"].isoformat() if h["checked_at"] else None,
+            }
+            for h in history
+        ],
+        "count": len(history),
+    }
