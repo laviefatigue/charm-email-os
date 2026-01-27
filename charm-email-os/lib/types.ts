@@ -118,7 +118,8 @@ export type DomainStatus =
   | 'pending'      // Generated, waiting for approval
   | 'pending_approval'  // Legacy alias for pending
   | 'approved'    // Approved, ready to purchase
-  | 'rejected'    // Denied, won't purchase
+  | 'rejected'    // Legacy: denied, won't purchase
+  | 'denied'      // Auto-denied (unavailable) or manually denied
   | 'purchasing'  // Legacy: purchase in progress
   | 'purchased'   // Domain bought, no inboxes yet
   | 'provisioning' // Inboxes being created in Hypertide
@@ -146,6 +147,12 @@ export interface Domain {
   purchasedAt?: Date;  // When domain was purchased
   nameserversUpdatedAt?: Date;  // When nameservers were set to DNSimple (for Hypertide readiness)
   selectedProvider?: 'porkbun' | 'dynadot';  // Which registrar owns this domain
+  // Price checking fields (from bulk price check)
+  cachedPrice?: number;           // Best price from last check
+  porkbunPrice?: number;          // Porkbun price from last check
+  porkbunAvailable?: boolean;     // Whether available on Porkbun
+  dynadotPrice?: number;          // Dynadot price from last check
+  dynadotAvailable?: boolean;     // Whether available on Dynadot
   // Nameserver verification (can we confirm NS at registrar matches DNSimple?)
   nameserverStatus?: NameserverStatus;  // pending, verified, propagating, mismatch, failed
   nameserverVerifiedAt?: Date;  // When verification was last run

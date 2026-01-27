@@ -2514,17 +2514,21 @@ async def check_prices_bulk(request: BulkPriceCheckRequest):
                 # Process Porkbun result
                 porkbun_available = None
                 porkbun_price = None
-                if not isinstance(porkbun_result, Exception):
+                if isinstance(porkbun_result, Exception):
+                    logger.error(f"Porkbun API error for {domain_name}: {porkbun_result}")
+                else:
                     porkbun_available = porkbun_result.available
-                    if porkbun_result.available and porkbun_result.price:
+                    if porkbun_result.available and porkbun_result.price is not None:
                         porkbun_price = float(porkbun_result.price)
 
                 # Process Dynadot result
                 dynadot_available = None
                 dynadot_price = None
-                if not isinstance(dynadot_result, Exception):
+                if isinstance(dynadot_result, Exception):
+                    logger.error(f"Dynadot API error for {domain_name}: {dynadot_result}")
+                else:
                     dynadot_available = dynadot_result.available
-                    if dynadot_result.available and dynadot_result.price:
+                    if dynadot_result.available and dynadot_result.price is not None:
                         dynadot_price = float(dynadot_result.price)
 
                 # Determine best price and provider
@@ -2571,10 +2575,11 @@ async def check_prices_bulk(request: BulkPriceCheckRequest):
                     available_count += 1
                 else:
                     # Auto-deny unavailable domains (already taken)
+                    # Include both pending and approved domains
                     await execute("""
                         UPDATE domains
                         SET approval_status = 'denied'
-                        WHERE id = $1 AND approval_status = 'pending'
+                        WHERE id = $1 AND approval_status IN ('pending', 'approved')
                     """, domain_id)
                     logger.info(f"Auto-denied unavailable domain: {domain_name}")
 

@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useCallback, useMemo } from 'react';
+import { useState, useCallback, useMemo, useEffect } from 'react';
 import {
   Table,
   TableBody,
@@ -55,6 +55,45 @@ export function DomainCandidatesTable({
   const setDomainState = useCallback((domainId: string, state: ActionState) => {
     setActionStates((prev) => ({ ...prev, [domainId]: state }));
   }, []);
+
+  // Hydrate prices from cached database values on mount
+  // This ensures sorting works correctly with existing price data
+  useEffect(() => {
+    const initialPrices: Record<string, {
+      price: string;
+      available: boolean;
+      porkbun?: { price: string | null; available: boolean };
+      dynadot?: { price: string | null; available: boolean };
+      bestProvider?: string;
+    }> = {};
+
+    domains.forEach((d) => {
+      // Skip if we already have a price for this domain (from manual check)
+      if (prices[d.id]) return;
+
+      // Check if domain has cached price data from DB
+      const hasPriceData = d.cachedPrice || d.porkbunPrice || d.dynadotPrice;
+      if (hasPriceData) {
+        initialPrices[d.id] = {
+          price: d.cachedPrice ? String(d.cachedPrice) : '',
+          available: d.porkbunAvailable || d.dynadotAvailable || false,
+          porkbun: {
+            available: d.porkbunAvailable ?? false,
+            price: d.porkbunPrice ? String(d.porkbunPrice) : null,
+          },
+          dynadot: {
+            available: d.dynadotAvailable ?? false,
+            price: d.dynadotPrice ? String(d.dynadotPrice) : null,
+          },
+          bestProvider: d.selectedProvider || undefined,
+        };
+      }
+    });
+
+    if (Object.keys(initialPrices).length > 0) {
+      setPrices((prev) => ({ ...initialPrices, ...prev }));
+    }
+  }, [domains]);
 
   // Filter out purchased domains (they belong in DomainsNeedingSetupTable)
   // Only show: pending, approved, rejected/denied
