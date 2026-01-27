@@ -71,7 +71,7 @@ def get_next_domain_to_check() -> Optional[dict]:
     Get the next domain that needs a price check.
 
     Priority:
-    1. Domains never checked (porkbun_price IS NULL AND dynadot_price IS NULL)
+    1. Domains missing Porkbun price (porkbun_price IS NULL)
     2. Domains with stale prices (last_price_check > STALE_HOURS ago)
 
     Only checks domains in pending/approved status (not purchased/denied).
@@ -82,21 +82,21 @@ def get_next_domain_to_check() -> Optional[dict]:
 
         stale_threshold = datetime.utcnow() - timedelta(hours=STALE_HOURS)
 
-        # Get domain needing check - prioritize never-checked, then stale
+        # Get domain needing check - prioritize missing Porkbun price, then stale
         cur.execute("""
             SELECT id, domain_name, workspace_id
             FROM domains
             WHERE approval_status IN ('pending', 'approved', 'pending_approval')
             AND (
-                -- Never checked
-                (porkbun_price IS NULL AND dynadot_price IS NULL AND last_price_check IS NULL)
+                -- Missing Porkbun price (primary target - Porkbun is rate-limited)
+                porkbun_price IS NULL
                 OR
                 -- Stale check (older than threshold)
                 (last_price_check IS NOT NULL AND last_price_check < %s)
             )
             ORDER BY
-                -- Never checked first
-                CASE WHEN last_price_check IS NULL THEN 0 ELSE 1 END,
+                -- Missing Porkbun price first
+                CASE WHEN porkbun_price IS NULL THEN 0 ELSE 1 END,
                 -- Then oldest checks first
                 last_price_check ASC NULLS FIRST
             LIMIT 1
