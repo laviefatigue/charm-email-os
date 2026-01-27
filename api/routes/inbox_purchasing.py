@@ -9,6 +9,7 @@ Provides endpoints for:
 """
 
 from fastapi import APIRouter, HTTPException, BackgroundTasks
+from pydantic import BaseModel, Field
 from typing import Optional
 import logging
 import sys
