@@ -10,13 +10,6 @@ import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
-import {
   Table,
   TableBody,
   TableCell,
@@ -254,7 +247,7 @@ export function SenderNamesTab({ clientId, client, onSave }: SenderNamesTabProps
                 Sender Names
               </CardTitle>
               <CardDescription>
-                Each name generates {provider === 'entra' ? '52' : '10'} unique email prefix variations for inbox creation
+                Each name generates 52 unique email prefix variations for inbox creation
               </CardDescription>
             </div>
             <div className="flex items-center gap-2">
@@ -268,33 +261,6 @@ export function SenderNamesTab({ clientId, client, onSave }: SenderNamesTabProps
           </div>
         </CardHeader>
         <CardContent className="space-y-6">
-          {/* Provider selection (applies to all names) */}
-          <div className="flex items-center gap-4 p-4 bg-muted/50 rounded-lg">
-            <Label className="text-sm font-medium">Provider:</Label>
-            <Select value={provider} onValueChange={(v) => setProvider(v as 'entra' | 'google')}>
-              <SelectTrigger className="w-[200px]">
-                <SelectValue placeholder="Select provider" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="entra">
-                  <div className="flex items-center gap-2">
-                    <span>Microsoft Entra</span>
-                    <Badge variant="secondary" className="ml-1 text-xs">52/name</Badge>
-                  </div>
-                </SelectItem>
-                <SelectItem value="google">
-                  <div className="flex items-center gap-2">
-                    <span>Google Workspace</span>
-                    <Badge variant="secondary" className="ml-1 text-xs">10/name</Badge>
-                  </div>
-                </SelectItem>
-              </SelectContent>
-            </Select>
-            <span className="text-sm text-muted-foreground">
-              {provider === 'entra' ? 'Generates 52 prefixes per name' : 'Generates 10 prefixes per name'}
-            </span>
-          </div>
-
           {/* Names Accordion */}
           {senderNames.length > 0 ? (
             <Accordion
