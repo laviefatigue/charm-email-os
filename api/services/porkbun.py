@@ -210,7 +210,12 @@ class PorkbunService:
                 )
 
         except httpx.HTTPStatusError as e:
-            logger.error(f"Porkbun HTTP error for {domain}: {e}")
+            # Log the response body for debugging 400/other errors
+            try:
+                error_body = e.response.text
+                logger.error(f"Porkbun HTTP error for {domain}: {e}, response body: {error_body[:500]}")
+            except Exception:
+                logger.error(f"Porkbun HTTP error for {domain}: {e}")
             return DomainCheckResult(
                 domain=domain,
                 available=False,
