@@ -224,3 +224,74 @@ class PurchaseCompleteResponse(BaseModel):
 
     # Next steps
     next_steps: list[str] = Field(default_factory=list)
+
+
+# =============================================================================
+# V2 Models - Enhanced Flow with Domain Grouping
+# =============================================================================
+
+class OrderGroup(BaseModel):
+    """
+    A group of domains to be provisioned together as one Hypertide order.
+
+    Hypertide requires fixed domain counts per order:
+    - Entra: Exactly 2 domains per order
+    - Google: Exactly 5 domains per order
+    """
+    order_type: InboxProviderType = Field(..., description="'entra' or 'google'")
+    domain_ids: list[UUID] = Field(..., description="Domain IDs in this order group")
+    domain_names: list[str] = Field(default_factory=list, description="Domain names (populated by API)")
+    sender_name_id: str = Field(..., description="ID of sender name to use for this group")
+
+    def validate_domain_count(self) -> tuple[bool, str]:
+        """Validate that domain count matches Hypertide requirements."""
+        expected = 2 if self.order_type == InboxProviderType.ENTRA else 5
+        actual = len(self.domain_ids)
+        if actual != expected:
+            return False, f"{self.order_type.value} requires exactly {expected} domains, got {actual}"
+        return True, "OK"
+
+
+class ExecutePurchaseV2Request(BaseModel):
+    """
+    V2 request for executing inbox purchase with domain grouping.
+
+    This enforces Hypertide's fixed domain requirements:
+    - Each Entra order must have exactly 2 domains
+    - Each Google order must have exactly 5 domains
+
+    Prefixes are automatically converted to InboxConfigs:
+    - Entra: Top 50 prefixes become InboxConfigs
+    - Google: Top 3 prefixes become InboxConfigs
+    """
+    client_id: UUID
+    client_name: str
+    forwarding_domain: str = Field(..., description="Client's main domain for grouping")
+
+    # Order groups - each group becomes one Hypertide order
+    order_groups: list[OrderGroup] = Field(..., description="Domain groups, each becoming one order")
+
+    # Override for young domains (< 30 days)
+    override_age_check: bool = Field(default=False, description="Allow domains younger than 30 days")
+
+    # EmailBison credentials (for connecting inboxes after purchase)
+    bison_username: Optional[str] = None
+    bison_password: Optional[str] = None
+    bison_workspace: Optional[str] = None
+    bison_url: str = Field(default="https://send.hirecharm.com")
+
+    # Payment
+    use_saved_payment: bool = Field(default=True, description="Use saved Stripe payment method")
+
+
+class ExecutePurchaseV2Summary(BaseModel):
+    """Summary of what will be purchased."""
+    total_orders: int
+    entra_orders: int
+    google_orders: int
+    total_domains: int
+    total_inboxes: int
+    entra_inboxes: int
+    google_inboxes: int
+    estimated_monthly_cost: float
+    domain_breakdown: list[dict] = Field(default_factory=list)
