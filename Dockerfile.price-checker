@@ -1,0 +1,73 @@
+# Charm Email OS - Price Checker Worker
+#
+# Lightweight worker that continuously checks domain prices from
+# Porkbun and Dynadot, respecting rate limits.
+#
+# Features:
+# - Checks one domain every 12 seconds (Porkbun limit: 1/10s)
+# - Auto-denies domains unavailable on both registrars
+# - Re-checks stale prices after 24 hours
+#
+# Usage:
+#   docker build -t charm-price-checker -f Dockerfile.price-checker .
+#   docker run -d \
+#     -e POSTGRES_HOST=... -e POSTGRES_PORT=... \
+#     -e POSTGRES_DB=... -e POSTGRES_USER=... -e POSTGRES_PASSWORD=... \
+#     -e PORKBUN_API_KEY=... -e PORKBUN_API_SECRET=... \
+#     -e DYNADOT_API_KEY=... \
+#     --restart unless-stopped \
+#     charm-price-checker
+
+FROM python:3.11-slim
+
+# Prevent interactive prompts
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install minimal system dependencies
+RUN apt-get update && apt-get install -y \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set up working directory
+WORKDIR /app
+
+# Copy requirements first (for layer caching)
+COPY requirements-price-checker.txt /app/
+
+# Install Python dependencies
+RUN pip install --no-cache-dir -r requirements-price-checker.txt
+
+# Copy the API services (for Porkbun/Dynadot clients)
+COPY api/services/ /app/api/services/
+
+# Copy the worker script
+COPY price_checker_worker.py /app/
+
+# Environment variables for database connection
+ENV POSTGRES_HOST=""
+ENV POSTGRES_PORT="5432"
+ENV POSTGRES_DB="postgres"
+ENV POSTGRES_USER=""
+ENV POSTGRES_PASSWORD=""
+
+# API credentials
+ENV PORKBUN_API_KEY=""
+ENV PORKBUN_API_SECRET=""
+ENV DYNADOT_API_KEY=""
+
+# Worker configuration
+ENV CHECK_INTERVAL="12"
+ENV STALE_HOURS="24"
+
+# Health check: verify worker process is running
+HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
+    CMD pgrep -f "python.*price_checker_worker.py" || exit 1
+
+# Run the worker
+CMD ["python", "/app/price_checker_worker.py"]
+
+# Labels
+LABEL org.opencontainers.image.title="Charm Price Checker"
+LABEL org.opencontainers.image.description="Continuous domain price checker with rate limit handling"
+LABEL org.opencontainers.image.vendor="Charm Email OS"
+LABEL org.opencontainers.image.version="1.0.0"

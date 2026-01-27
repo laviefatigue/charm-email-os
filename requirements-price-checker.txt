@@ -1,0 +1,11 @@
+# Price Checker Worker Dependencies
+# Minimal set for checking domain prices
+
+# HTTP Client (for Porkbun/Dynadot APIs)
+httpx==0.28.1
+
+# Data Validation (for service models)
+pydantic==2.10.4
+
+# Database (sync driver for simple worker)
+psycopg2-binary==2.9.9
