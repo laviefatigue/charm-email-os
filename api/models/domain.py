@@ -12,7 +12,8 @@ DomainStatus = Literal[
     "pending",           # Generated, waiting for approval
     "pending_approval",  # Alias for pending
     "approved",          # Approved, ready to purchase
-    "rejected",          # Denied, won't purchase
+    "rejected",          # Legacy: denied, won't purchase
+    "denied",            # Auto-denied (unavailable) or manually denied
     "purchasing",        # Purchase in progress
     "purchased",         # Domain bought, no inboxes yet
     "provisioning",      # Inboxes being created in Hypertide
@@ -38,6 +39,7 @@ class DomainCreate(DomainBase):
 
 
 RegistrarProvider = Literal["porkbun", "dynadot"]
+InfrastructureType = Literal["entra", "google"]
 
 
 class Domain(BaseModel):
@@ -83,6 +85,10 @@ class Domain(BaseModel):
     dead_at: Optional[datetime] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
+
+    # Infrastructure type (Entra or Google) - set when inboxes are provisioned
+    infrastructure_type: Optional[InfrastructureType] = None  # entra or google
+    infrastructure_set_at: Optional[datetime] = None  # When infrastructure was assigned
 
     # Inbox counts from this domain
     inbox_count: int = 0
