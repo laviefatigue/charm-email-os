@@ -139,6 +139,11 @@ async def list_domains(
             d.current_nameservers,
             d.registration_date,
             d.available_for_setup_at,
+            d.porkbun_price,
+            d.porkbun_available,
+            d.dynadot_price,
+            d.dynadot_available,
+            d.cached_price,
             COALESCE(
                 (SELECT COUNT(*) FROM sender_accounts sa
                  WHERE SPLIT_PART(sa.email_address, '@', 2) = d.domain_name
@@ -223,6 +228,11 @@ async def get_domain(domain_id: UUID):
             d.current_nameservers,
             d.registration_date,
             d.available_for_setup_at,
+            d.porkbun_price,
+            d.porkbun_available,
+            d.dynadot_price,
+            d.dynadot_available,
+            d.cached_price,
             COALESCE(
                 (SELECT COUNT(*) FROM sender_accounts sa
                  WHERE SPLIT_PART(sa.email_address, '@', 2) = d.domain_name

@@ -74,6 +74,13 @@ class Domain(BaseModel):
     registration_date: Optional[datetime] = None  # When domain was first registered (from WHOIS/registrar)
     available_for_setup_at: Optional[datetime] = None  # registration_date + 30 days
 
+    # Pricing from registrar checks (saved for fast loading)
+    porkbun_price: Optional[float] = None
+    porkbun_available: Optional[bool] = None
+    dynadot_price: Optional[float] = None
+    dynadot_available: Optional[bool] = None
+    cached_price: Optional[float] = None  # Best price between providers
+
     # Computed domain age fields (populated by API)
     domain_age_days: Optional[int] = None  # Days since registration
     days_until_available: Optional[int] = None  # Days until 30-day threshold (0 if ready/exempt)
