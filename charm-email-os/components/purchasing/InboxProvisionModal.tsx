@@ -44,6 +44,7 @@ interface InboxProvisionModalProps {
   clientId: string;
   clientName: string;
   selectedDomainIds: string[];
+  hasAgeOverride?: boolean;  // True if any selected domain was force-selected (admin override for <30 day age)
   onSuccess: () => void;
 }
 
@@ -53,6 +54,7 @@ export function InboxProvisionModal({
   clientId,
   clientName,
   selectedDomainIds,
+  hasAgeOverride = false,
   onSuccess,
 }: InboxProvisionModalProps) {
   const [preview, setPreview] = useState<SmartOrderPreview | null>(null);
@@ -104,7 +106,7 @@ export function InboxProvisionModal({
         clientId,
         domainIds: selectedDomainIds,
         providerType,
-        overrideAgeCheck: false,
+        overrideAgeCheck: hasAgeOverride,
         customPurchase,
       });
 

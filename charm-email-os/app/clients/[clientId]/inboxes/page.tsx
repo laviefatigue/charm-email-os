@@ -93,6 +93,7 @@ export default function InboxesPage() {
   const [activeTab, setActiveTab] = useState<string>('inventory');
   const [showInboxPurchaseWizard, setShowInboxPurchaseWizard] = useState(false);
   const [selectedDomainsForSetup, setSelectedDomainsForSetup] = useState<string[]>([]);
+  const [hasAgeOverride, setHasAgeOverride] = useState(false);
   const [canGenerateInfo, setCanGenerateInfo] = useState<CanGenerateResponse | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
   const [subscription, setSubscription] = useState<SubscriptionWithUsage | null>(null);
@@ -471,8 +472,9 @@ export default function InboxesPage() {
                   <CardContent>
                     <DomainsNeedingSetupTable
                       domains={purchasedNeedingSetup}
-                      onSetupClick={(selectedIds) => {
+                      onSetupClick={(selectedIds, override) => {
                         setSelectedDomainsForSetup(selectedIds);
+                        setHasAgeOverride(override);
                         setShowInboxPurchaseWizard(true);
                       }}
                       onDomainsChange={() => fetchDomainsByClient(clientId)}
@@ -600,15 +602,20 @@ export default function InboxesPage() {
             open={showInboxPurchaseWizard}
             onOpenChange={(open) => {
               setShowInboxPurchaseWizard(open);
-              if (!open) setSelectedDomainsForSetup([]);
+              if (!open) {
+                setSelectedDomainsForSetup([]);
+                setHasAgeOverride(false);
+              }
             }}
             clientId={clientId}
             clientName={client.name}
             selectedDomainIds={selectedDomainsForSetup}
+            hasAgeOverride={hasAgeOverride}
             onSuccess={() => {
               fetchDomainsByClient(clientId);
               fetchInboxesByClient(clientId);
               setSelectedDomainsForSetup([]);
+              setHasAgeOverride(false);
             }}
           />
         )}
