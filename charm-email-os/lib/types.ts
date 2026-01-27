@@ -859,6 +859,7 @@ export interface SmartOrderRequest {
   domainIds: string[];
   providerType?: InfrastructureType;
   overrideAgeCheck?: boolean;
+  customPurchase?: boolean; // Bypass package limits, only validate domain count
 }
 
 // Smart order response - job tracking

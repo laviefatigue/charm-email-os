@@ -20,6 +20,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
+import { Switch } from '@/components/ui/switch';
+import { Label } from '@/components/ui/label';
 import {
   Loader2,
   CheckCircle2,
@@ -30,6 +32,7 @@ import {
   Globe,
   Server,
   Package,
+  Zap,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { inboxProvisioningApi } from '@/lib/api';
@@ -56,14 +59,21 @@ export function InboxProvisionModal({
   const [isLoading, setIsLoading] = useState(false);
   const [isExecuting, setIsExecuting] = useState(false);
   const [providerType, setProviderType] = useState<InfrastructureType>('entra');
+  const [customPurchase, setCustomPurchase] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Load preview when modal opens or provider changes
+  // Calculate required domains for each provider
+  const requiredDomains = providerType === 'entra' ? 2 : 5;
+  const domainCount = selectedDomainIds.length;
+  const canCreateOrder = domainCount >= requiredDomains && domainCount % requiredDomains === 0;
+  const ordersFromDomains = Math.floor(domainCount / requiredDomains);
+
+  // Load preview when modal opens or settings change
   useEffect(() => {
     if (open && selectedDomainIds.length > 0) {
       loadPreview();
     }
-  }, [open, selectedDomainIds, providerType]);
+  }, [open, selectedDomainIds, providerType, customPurchase]);
 
   const loadPreview = async () => {
     setIsLoading(true);
@@ -72,7 +82,8 @@ export function InboxProvisionModal({
       const data = await inboxProvisioningApi.getSmartOrderPreview(
         clientId,
         selectedDomainIds,
-        providerType
+        providerType,
+        customPurchase
       );
       setPreview(data);
     } catch (err: unknown) {
@@ -94,6 +105,7 @@ export function InboxProvisionModal({
         domainIds: selectedDomainIds,
         providerType,
         overrideAgeCheck: false,
+        customPurchase,
       });
 
       toast.success(`Purchase started! Job ID: ${result.jobId}`);
@@ -198,6 +210,46 @@ export function InboxProvisionModal({
               </Select>
             </div>
 
+            {/* Custom Purchase Toggle */}
+            <div className="flex items-center justify-between rounded-lg border p-3 bg-muted/20">
+              <div className="space-y-0.5">
+                <div className="flex items-center gap-2">
+                  <Zap className="h-4 w-4 text-amber-500" />
+                  <Label htmlFor="custom-purchase" className="font-medium">
+                    Custom Purchase
+                  </Label>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  Bypass package limits. Requires {requiredDomains} domains per {providerType === 'entra' ? 'Entra' : 'Google'} order.
+                </p>
+              </div>
+              <Switch
+                id="custom-purchase"
+                checked={customPurchase}
+                onCheckedChange={setCustomPurchase}
+              />
+            </div>
+
+            {/* Domain count validation for custom purchase */}
+            {customPurchase && !canCreateOrder && (
+              <Alert variant="destructive">
+                <AlertTriangle className="h-4 w-4" />
+                <AlertTitle>Invalid domain count</AlertTitle>
+                <AlertDescription>
+                  {providerType === 'entra'
+                    ? `Entra requires exactly 2 domains per order. You have ${domainCount} selected.`
+                    : `Google requires exactly 5 domains per order. You have ${domainCount} selected.`
+                  }
+                  {domainCount > 0 && domainCount < requiredDomains && (
+                    <> Select {requiredDomains - domainCount} more domain{requiredDomains - domainCount > 1 ? 's' : ''}.</>
+                  )}
+                  {domainCount > requiredDomains && domainCount % requiredDomains !== 0 && (
+                    <> Select {requiredDomains - (domainCount % requiredDomains)} more or deselect {domainCount % requiredDomains} domain{(domainCount % requiredDomains) > 1 ? 's' : ''}.</>
+                  )}
+                </AlertDescription>
+              </Alert>
+            )}
+
             {/* Order summary */}
             <Card>
               <CardContent className="pt-4 space-y-3">
@@ -233,17 +285,26 @@ export function InboxProvisionModal({
 
             {/* Package usage */}
             <div className="flex items-center justify-between text-sm">
-              <span className="text-muted-foreground">Package Usage</span>
-              <span
-                className={
-                  preview.packageUsage.withinLimit
-                    ? 'text-green-600'
-                    : 'text-red-600 font-medium'
-                }
-              >
-                {preview.packageUsage.used} / {preview.packageUsage.available} orders used
-                {!preview.packageUsage.withinLimit && ' (limit exceeded)'}
+              <span className="text-muted-foreground">
+                {customPurchase ? 'Purchase Mode' : 'Package Usage'}
               </span>
+              {customPurchase ? (
+                <span className="text-amber-600 font-medium flex items-center gap-1">
+                  <Zap className="h-3 w-3" />
+                  Custom (no package)
+                </span>
+              ) : (
+                <span
+                  className={
+                    preview.packageUsage.withinLimit
+                      ? 'text-green-600'
+                      : 'text-red-600 font-medium'
+                  }
+                >
+                  {preview.packageUsage.used} / {preview.packageUsage.available} orders used
+                  {!preview.packageUsage.withinLimit && ' (limit exceeded)'}
+                </span>
+              )}
             </div>
 
             {/* Domain list */}
@@ -281,7 +342,11 @@ export function InboxProvisionModal({
           </Button>
           <Button
             onClick={handleExecute}
-            disabled={isLoading || isExecuting || !preview?.isValid}
+            disabled={
+              isLoading ||
+              isExecuting ||
+              (customPurchase ? !canCreateOrder : !preview?.isValid)
+            }
             className="bg-orange-600 hover:bg-orange-700"
           >
             {isExecuting ? (

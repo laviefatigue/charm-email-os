@@ -2474,14 +2474,16 @@ export const inboxProvisioningApi = {
   /**
    * Preview a smart order - auto-configures everything from database.
    * Returns all data needed for the confirmation modal.
+   * @param customPurchase - If true, bypasses package validation (only checks domain count)
    */
   async getSmartOrderPreview(
     clientId: string,
     domainIds: string[],
-    providerType: 'entra' | 'google' = 'entra'
+    providerType: 'entra' | 'google' = 'entra',
+    customPurchase: boolean = false
   ): Promise<SmartOrderPreview> {
     const response = await fetchApi<Record<string, unknown>>(
-      `/api/inbox-purchasing/smart-order/preview?client_id=${clientId}&domain_ids=${domainIds.join(',')}&provider_type=${providerType}`
+      `/api/inbox-purchasing/smart-order/preview?client_id=${clientId}&domain_ids=${domainIds.join(',')}&provider_type=${providerType}&custom_purchase=${customPurchase}`
     );
     return toCamelCase<SmartOrderPreview>(response);
   },
@@ -2489,6 +2491,7 @@ export const inboxProvisioningApi = {
   /**
    * Execute a smart order - one-click provisioning.
    * Auto-configures everything from database and executes Hypertide purchase.
+   * @param customPurchase - If true, bypasses package validation (only checks domain count)
    */
   async executeSmartOrder(request: SmartOrderRequest): Promise<SmartOrderResponse> {
     const response = await fetchApi<Record<string, unknown>>(
@@ -2500,6 +2503,7 @@ export const inboxProvisioningApi = {
           domain_ids: request.domainIds,
           provider_type: request.providerType ?? 'entra',
           override_age_check: request.overrideAgeCheck ?? false,
+          custom_purchase: request.customPurchase ?? false,
         }),
       }
     );

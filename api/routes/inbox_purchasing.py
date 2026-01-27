@@ -1050,6 +1050,7 @@ class SmartOrderRequest(BaseModel):
     domain_ids: list[UUID]
     provider_type: str = Field(default="entra", description="'entra' or 'google'")
     override_age_check: bool = Field(default=False, description="Allow domains younger than 30 days")
+    custom_purchase: bool = Field(default=False, description="Bypass package limits, only validate domain count")
 
 
 class SmartOrderPreview(BaseModel):
@@ -1082,7 +1083,8 @@ class SmartOrderPreview(BaseModel):
 async def preview_smart_order(
     client_id: UUID,
     domain_ids: str,  # Comma-separated UUIDs
-    provider_type: str = "entra"
+    provider_type: str = "entra",
+    custom_purchase: bool = False  # If True, bypasses package validation
 ):
     """
     Preview a smart order without executing.
@@ -1092,6 +1094,9 @@ async def preview_smart_order(
     - Sender name info
     - Order calculation (domains, inboxes, cost)
     - Package validation (subscription limits)
+
+    If custom_purchase=True, skips subscription validation and only validates
+    domain count (2 for Entra, 5 for Google).
     """
     import json
 
@@ -1158,47 +1163,53 @@ async def preview_smart_order(
 
     monthly_cost = order_count * 50.0
 
-    # Check subscription limits
-    subscription = await fetch_one(
-        """
-        SELECT entra_packages, google_packages
-        FROM client_subscriptions
-        WHERE client_id = $1 AND status = 'active'
-        """,
-        client_id
-    )
-
-    # Count already provisioned domains
-    provisioned = await fetch_one(
-        """
-        SELECT
-            COUNT(*) FILTER (WHERE infrastructure_type = 'entra') as entra_count,
-            COUNT(*) FILTER (WHERE infrastructure_type = 'google') as google_count
-        FROM domains
-        WHERE workspace_id = $1 AND infrastructure_type IS NOT NULL
-        """,
-        client.get("workspace_id")
-    )
-
-    # Calculate package usage
-    if subscription:
-        if provider_type == "entra":
-            available = subscription.get("entra_packages", 0)
-            # Each Entra order uses 2 domains, so current usage is domains / 2
-            used = (provisioned.get("entra_count", 0) or 0) // 2
-            within_limit = (used + order_count) <= available
-        else:
-            available = subscription.get("google_packages", 0)
-            used = (provisioned.get("google_count", 0) or 0) // 5
-            within_limit = (used + order_count) <= available
-
-        if not within_limit:
-            validation_errors.append(f"Exceeds package limit. Used: {used}, Available: {available}, Requested: {order_count}")
-    else:
+    # Check subscription limits (skip if custom_purchase)
+    if custom_purchase:
+        # Custom purchase mode: bypass package validation, only domain count matters
         available = 0
         used = 0
-        within_limit = False
-        validation_errors.append("No active subscription found for this client")
+        within_limit = True  # Always allow for custom purchases
+    else:
+        subscription = await fetch_one(
+            """
+            SELECT entra_packages, google_packages
+            FROM client_subscriptions
+            WHERE client_id = $1 AND status = 'active'
+            """,
+            client_id
+        )
+
+        # Count already provisioned domains
+        provisioned = await fetch_one(
+            """
+            SELECT
+                COUNT(*) FILTER (WHERE infrastructure_type = 'entra') as entra_count,
+                COUNT(*) FILTER (WHERE infrastructure_type = 'google') as google_count
+            FROM domains
+            WHERE workspace_id = $1 AND infrastructure_type IS NOT NULL
+            """,
+            client.get("workspace_id")
+        )
+
+        # Calculate package usage
+        if subscription:
+            if provider_type == "entra":
+                available = subscription.get("entra_packages", 0)
+                # Each Entra order uses 2 domains, so current usage is domains / 2
+                used = (provisioned.get("entra_count", 0) or 0) // 2
+                within_limit = (used + order_count) <= available
+            else:
+                available = subscription.get("google_packages", 0)
+                used = (provisioned.get("google_count", 0) or 0) // 5
+                within_limit = (used + order_count) <= available
+
+            if not within_limit:
+                validation_errors.append(f"Exceeds package limit. Used: {used}, Available: {available}, Requested: {order_count}")
+        else:
+            available = 0
+            used = 0
+            within_limit = False
+            validation_errors.append("No active subscription found for this client")
 
     # Check sender name availability
     if not pre_generated:
@@ -1246,7 +1257,8 @@ async def execute_smart_order(
     preview = await preview_smart_order(
         client_id=request.client_id,
         domain_ids=",".join(str(d) for d in request.domain_ids),
-        provider_type=request.provider_type
+        provider_type=request.provider_type,
+        custom_purchase=request.custom_purchase
     )
 
     if not preview.is_valid:
