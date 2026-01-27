@@ -358,6 +358,9 @@ async def _init_domain_columns() -> None:
         ("nameserver_status", "VARCHAR(20) DEFAULT 'pending'"),
         ("nameserver_verified_at", "TIMESTAMP"),
         ("current_nameservers", "TEXT[]"),  # Array of current NS from registrar
+        # Infrastructure type tracking (Entra or Google) - set when inboxes are provisioned
+        ("infrastructure_type", "VARCHAR(20)"),  # 'entra' or 'google'
+        ("infrastructure_set_at", "TIMESTAMP"),  # When infrastructure was assigned
     ]
 
     for col_name, col_def in columns_to_add:
