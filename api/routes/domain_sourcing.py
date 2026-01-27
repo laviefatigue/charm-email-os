@@ -1494,55 +1494,57 @@ async def check_domain_price(domain_id: UUID):
         # Process Porkbun result
         porkbun_info = None
         porkbun_price = None
-        if not isinstance(porkbun_result, Exception):
-            porkbun_info = ProviderPriceInfo(
-                available=porkbun_result.available,
-                price=str(porkbun_result.price) if porkbun_result.price else None,
-                renewal_price=str(porkbun_result.renewal_price) if porkbun_result.renewal_price else None,
-                error=porkbun_result.error,
-            )
-            if porkbun_result.available and porkbun_result.price:
-                porkbun_price = float(porkbun_result.price)
-        else:
+        if isinstance(porkbun_result, Exception):
+            logger.error(f"Porkbun API error for {domain['domain_name']}: {porkbun_result}")
             porkbun_info = ProviderPriceInfo(
                 available=False,
                 error=str(porkbun_result),
             )
+        else:
+            porkbun_info = ProviderPriceInfo(
+                available=porkbun_result.available,
+                price=str(porkbun_result.price) if porkbun_result.price is not None else None,
+                renewal_price=str(porkbun_result.renewal_price) if porkbun_result.renewal_price is not None else None,
+                error=porkbun_result.error,
+            )
+            if porkbun_result.available and porkbun_result.price is not None:
+                porkbun_price = float(porkbun_result.price)
 
         # Process Dynadot result
         dynadot_info = None
         dynadot_price = None
-        if not isinstance(dynadot_result, Exception):
-            dynadot_info = ProviderPriceInfo(
-                available=dynadot_result.available,
-                price=str(dynadot_result.price) if dynadot_result.price else None,
-                renewal_price=str(dynadot_result.renewal_price) if dynadot_result.renewal_price else None,
-                error=dynadot_result.error,
-            )
-            if dynadot_result.available and dynadot_result.price:
-                dynadot_price = float(dynadot_result.price)
-        else:
+        if isinstance(dynadot_result, Exception):
+            logger.error(f"Dynadot API error for {domain['domain_name']}: {dynadot_result}")
             dynadot_info = ProviderPriceInfo(
                 available=False,
                 error=str(dynadot_result),
             )
+        else:
+            dynadot_info = ProviderPriceInfo(
+                available=dynadot_result.available,
+                price=str(dynadot_result.price) if dynadot_result.price is not None else None,
+                renewal_price=str(dynadot_result.renewal_price) if dynadot_result.renewal_price is not None else None,
+                error=dynadot_result.error,
+            )
+            if dynadot_result.available and dynadot_result.price is not None:
+                dynadot_price = float(dynadot_result.price)
 
         # Determine best price and provider
         available = (porkbun_info and porkbun_info.available) or (dynadot_info and dynadot_info.available)
         best_price = None
         best_provider = None
 
-        if porkbun_price and dynadot_price:
+        if porkbun_price is not None and dynadot_price is not None:
             if porkbun_price <= dynadot_price:
                 best_price = porkbun_price
                 best_provider = "porkbun"
             else:
                 best_price = dynadot_price
                 best_provider = "dynadot"
-        elif porkbun_price:
+        elif porkbun_price is not None:
             best_price = porkbun_price
             best_provider = "porkbun"
-        elif dynadot_price:
+        elif dynadot_price is not None:
             best_price = dynadot_price
             best_provider = "dynadot"
 
@@ -2536,17 +2538,17 @@ async def check_prices_bulk(request: BulkPriceCheckRequest):
                 best_provider = None
                 is_available = porkbun_available or dynadot_available
 
-                if porkbun_price and dynadot_price:
+                if porkbun_price is not None and dynadot_price is not None:
                     if porkbun_price <= dynadot_price:
                         best_price = porkbun_price
                         best_provider = "porkbun"
                     else:
                         best_price = dynadot_price
                         best_provider = "dynadot"
-                elif porkbun_price:
+                elif porkbun_price is not None:
                     best_price = porkbun_price
                     best_provider = "porkbun"
-                elif dynadot_price:
+                elif dynadot_price is not None:
                     best_price = dynadot_price
                     best_provider = "dynadot"
 
@@ -2587,10 +2589,10 @@ async def check_prices_bulk(request: BulkPriceCheckRequest):
                     domain_id=str(domain_id),
                     domain_name=domain_name,
                     porkbun_available=porkbun_available,
-                    porkbun_price=str(porkbun_price) if porkbun_price else None,
+                    porkbun_price=str(porkbun_price) if porkbun_price is not None else None,
                     dynadot_available=dynadot_available,
-                    dynadot_price=str(dynadot_price) if dynadot_price else None,
-                    best_price=str(best_price) if best_price else None,
+                    dynadot_price=str(dynadot_price) if dynadot_price is not None else None,
+                    best_price=str(best_price) if best_price is not None else None,
                     best_provider=best_provider,
                 ))
 
