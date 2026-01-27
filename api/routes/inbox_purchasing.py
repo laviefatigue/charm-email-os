@@ -611,7 +611,7 @@ def _convert_prefixes_to_inbox_configs(
         prefixes: List of email prefixes
         first_name: Original first name (fallback for single-part prefixes)
         last_name: Original last name (fallback for single-part prefixes)
-        limit: Max configs to return (50 for Entra, 3 for Google)
+        limit: Max configs to return (10 for Entra, 3 for Google - Hypertide max 10)
     """
     configs = []
     for prefix in prefixes[:limit]:
@@ -888,8 +888,9 @@ async def _execute_purchase_v2_task(
             prefixes = [p.get("emailPrefix") for p in pre_generated if p.get("emailPrefix")]
 
             # Determine limit based on order type
-            # Hypertide: Entra = 50 inboxes/domain, Google = 3 inboxes/domain
-            limit = 50 if group.order_type == InboxProviderType.ENTRA else 3
+            # Hypertide accepts max 10 InboxConfigs per order
+            # Hypertide internally creates 50 inboxes/domain (Entra) or 3/domain (Google)
+            limit = 10 if group.order_type == InboxProviderType.ENTRA else 3
 
             # Get base name for fallback
             first_name = base_names[0].get("firstName", "Unknown") if base_names else "Unknown"
