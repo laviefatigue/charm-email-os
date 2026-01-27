@@ -21,7 +21,7 @@ import {
   DomainInboxTree,
   SenderNamesTab,
 } from '@/components/inboxes';
-import { InboxPurchaseWizard, DomainCandidatesTable, DomainsNeedingSetupTable } from '@/components/purchasing';
+import { DomainCandidatesTable, DomainsNeedingSetupTable, InboxProvisionModal } from '@/components/purchasing';
 import { useClientStore, useInfrastructureStore } from '@/lib/stores';
 import { domainSourcingApi, subscriptionApi, type CanGenerateResponse, type GenerateForClientResponse } from '@/lib/api';
 import type { Domain, Inbox, SubscriptionWithUsage } from '@/lib/types';
@@ -594,9 +594,9 @@ export default function InboxesPage() {
           onOpenChange={(open) => !open && setEditingInbox(null)}
         />
 
-        {/* Inbox Purchase Wizard */}
+        {/* Inbox Provision Modal (One-Click Smart Provisioning) */}
         {client && (
-          <InboxPurchaseWizard
+          <InboxProvisionModal
             open={showInboxPurchaseWizard}
             onOpenChange={(open) => {
               setShowInboxPurchaseWizard(open);
@@ -604,19 +604,8 @@ export default function InboxesPage() {
             }}
             clientId={clientId}
             clientName={client.name}
-            forwardingDomain={client.onboardingData?.primaryDomain || client.name.toLowerCase().replace(/\s+/g, '') + '.com'}
-            domains={purchasedNeedingSetup.map(d => ({
-              id: d.id,
-              domainName: d.domain || d.domainName || '',
-              status: d.status,
-              inboxCount: allInboxes.filter(i => i.domainId === d.id).length,
-            }))}
             selectedDomainIds={selectedDomainsForSetup}
-            onboardingData={client.onboardingData}
-            subscription={subscription}
-            onComplete={(totalInboxes) => {
-              toast.success(`Created ${totalInboxes} inboxes!`);
-              // Refresh domains and inboxes
+            onSuccess={() => {
               fetchDomainsByClient(clientId);
               fetchInboxesByClient(clientId);
               setSelectedDomainsForSetup([]);

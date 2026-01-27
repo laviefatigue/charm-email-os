@@ -39,6 +39,11 @@ from models.inbox_purchasing import (
     PurchaseCompleteResponse,
     OrderResultResponse,
     OrderStatus,
+    InboxProviderType,
+    # V2 models
+    ExecutePurchaseV2Request,
+    ExecutePurchaseV2Summary,
+    OrderGroup,
 )
 
 router = APIRouter()
@@ -583,3 +588,723 @@ async def list_purchase_jobs(
         ],
         "total": len(jobs),
     }
+
+
+# =============================================================================
+# V2 Endpoints - Enhanced Flow with Domain Grouping
+# =============================================================================
+
+def _convert_prefixes_to_inbox_configs(
+    prefixes: list[str],
+    first_name: str,
+    last_name: str,
+    limit: int
+) -> list[dict]:
+    """
+    Convert Charm prefixes to Hypertide InboxConfig format.
+
+    Prefixes like "chris.booth" → InboxConfig(first_name="chris", last_name="booth")
+    Prefixes like "chris" → InboxConfig(first_name="chris", last_name=<original_last_name>)
+
+    Args:
+        prefixes: List of email prefixes
+        first_name: Original first name (fallback for single-part prefixes)
+        last_name: Original last name (fallback for single-part prefixes)
+        limit: Max configs to return (50 for Entra, 3 for Google)
+    """
+    configs = []
+    for prefix in prefixes[:limit]:
+        if '.' in prefix:
+            parts = prefix.split('.', 1)
+            configs.append({
+                "first_name": parts[0],
+                "last_name": parts[1] if len(parts) > 1 else last_name,
+            })
+        else:
+            # Single name prefix like "chris" or "booth"
+            configs.append({
+                "first_name": prefix,
+                "last_name": last_name,
+            })
+    return configs
+
+
+@router.post("/execute-v2/preview", response_model=ExecutePurchaseV2Summary)
+async def preview_purchase_v2(request: ExecutePurchaseV2Request):
+    """
+    Preview a V2 purchase without executing.
+
+    Validates order groups and returns a summary of what would be purchased.
+    Use this to show users the breakdown before they confirm.
+    """
+    import json
+
+    # Validate each order group
+    errors = []
+    for i, group in enumerate(request.order_groups):
+        is_valid, msg = group.validate_domain_count()
+        if not is_valid:
+            errors.append(f"Order group {i + 1}: {msg}")
+
+    if errors:
+        raise HTTPException(status_code=400, detail={"errors": errors})
+
+    # Get client's sender names
+    client = await fetch_one(
+        "SELECT id, name, onboarding_data FROM clients WHERE id = $1",
+        request.client_id
+    )
+    if not client:
+        raise HTTPException(status_code=404, detail="Client not found")
+
+    onboarding_data = client.get("onboarding_data")
+    if isinstance(onboarding_data, str):
+        onboarding_data = json.loads(onboarding_data)
+
+    # Calculate totals
+    entra_orders = sum(1 for g in request.order_groups if g.order_type == InboxProviderType.ENTRA)
+    google_orders = sum(1 for g in request.order_groups if g.order_type == InboxProviderType.GOOGLE)
+
+    # Hypertide constraints:
+    # - Entra: 2 domains × 50 inboxes = 100 inboxes per order
+    # - Google: 5 domains × 3 inboxes = 15 inboxes per order
+    entra_inboxes = entra_orders * 100  # 2 domains × 50 inboxes
+    google_inboxes = google_orders * 15   # 5 domains × 3 inboxes
+    total_inboxes = entra_inboxes + google_inboxes
+
+    total_domains = sum(len(g.domain_ids) for g in request.order_groups)
+
+    # Fetch domain names for breakdown
+    domain_breakdown = []
+    for group in request.order_groups:
+        domain_rows = await fetch_all(
+            "SELECT id, domain_name FROM domains WHERE id = ANY($1)",
+            list(group.domain_ids)
+        )
+        domain_names = [d["domain_name"] for d in domain_rows]
+
+        inboxes_per_order = 100 if group.order_type == InboxProviderType.ENTRA else 15
+        domain_breakdown.append({
+            "order_type": group.order_type.value,
+            "domains": domain_names,
+            "sender_name_id": group.sender_name_id,
+            "inboxes": inboxes_per_order,
+        })
+
+    return ExecutePurchaseV2Summary(
+        total_orders=entra_orders + google_orders,
+        entra_orders=entra_orders,
+        google_orders=google_orders,
+        total_domains=total_domains,
+        total_inboxes=total_inboxes,
+        entra_inboxes=entra_inboxes,
+        google_inboxes=google_inboxes,
+        estimated_monthly_cost=(entra_orders + google_orders) * 50.0,
+        domain_breakdown=domain_breakdown,
+    )
+
+
+@router.post("/execute-v2", response_model=PurchaseJobResponse)
+async def execute_purchase_v2(
+    request: ExecutePurchaseV2Request,
+    background_tasks: BackgroundTasks
+):
+    """
+    Execute inbox purchase with domain grouping (V2).
+
+    This enforces Hypertide's fixed domain requirements:
+    - Each Entra order must have exactly 2 domains → 100 inboxes
+    - Each Google order must have exactly 5 domains → 15 inboxes
+
+    The flow:
+    1. Validates order groups (domain counts)
+    2. Fetches sender name prefixes for each group
+    3. Converts prefixes to InboxConfigs (50 for Entra, 3 for Google)
+    4. Executes Hypertide automation for each order
+    5. Marks domains with infrastructure_type after provisioning
+    """
+    import json
+
+    ht = _import_hypertide_modules()
+    if not ht:
+        raise HTTPException(
+            status_code=503,
+            detail="HyperTide automation module not available"
+        )
+
+    # Validate each order group
+    errors = []
+    for i, group in enumerate(request.order_groups):
+        is_valid, msg = group.validate_domain_count()
+        if not is_valid:
+            errors.append(f"Order group {i + 1}: {msg}")
+
+    if errors:
+        raise HTTPException(status_code=400, detail={"errors": errors})
+
+    # Get client info and sender names
+    client = await fetch_one(
+        "SELECT id, name, workspace_id, onboarding_data FROM clients WHERE id = $1",
+        request.client_id
+    )
+    if not client:
+        raise HTTPException(status_code=404, detail="Client not found")
+
+    if not client.get("workspace_id"):
+        raise HTTPException(status_code=400, detail="Client has no workspace linked")
+
+    onboarding_data = client.get("onboarding_data")
+    if isinstance(onboarding_data, str):
+        onboarding_data = json.loads(onboarding_data)
+
+    # Get sender name prefixes
+    base_names = onboarding_data.get("baseSenderNames", []) if onboarding_data else []
+    pre_generated = onboarding_data.get("preGeneratedSenderNames", []) if onboarding_data else []
+
+    if not base_names or not pre_generated:
+        raise HTTPException(
+            status_code=400,
+            detail="Client has no sender names configured. Set sender names first."
+        )
+
+    # Fetch all domain details
+    all_domain_ids = []
+    for group in request.order_groups:
+        all_domain_ids.extend(group.domain_ids)
+
+    domain_rows = await fetch_all(
+        """
+        SELECT id, domain_name, registration_date, purchased_at
+        FROM domains
+        WHERE id = ANY($1)
+        """,
+        all_domain_ids
+    )
+    domains_by_id = {d["id"]: d for d in domain_rows}
+
+    # Validate domain age unless override
+    if not request.override_age_check:
+        young_domains = []
+        for domain in domain_rows:
+            reg_date = domain.get("registration_date") or domain.get("purchased_at")
+            if reg_date:
+                age_days = (datetime.now(timezone.utc) - reg_date.replace(tzinfo=timezone.utc)).days
+                if age_days < 30:
+                    young_domains.append(f"{domain['domain_name']} ({age_days} days)")
+
+        if young_domains:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "Some domains are younger than 30 days",
+                    "young_domains": young_domains,
+                    "hint": "Set override_age_check=true to proceed anyway"
+                }
+            )
+
+    # Create job ID
+    job_id = str(uuid.uuid4())
+
+    # Calculate totals
+    entra_orders = sum(1 for g in request.order_groups if g.order_type == InboxProviderType.ENTRA)
+    google_orders = sum(1 for g in request.order_groups if g.order_type == InboxProviderType.GOOGLE)
+    total_inboxes = (entra_orders * 100) + (google_orders * 15)
+
+    # Store job info
+    _purchase_jobs[job_id] = {
+        "job_id": job_id,
+        "client_id": str(request.client_id),
+        "workspace_id": str(client["workspace_id"]),
+        "status": OrderStatus.PENDING,
+        "request": request.model_dump(mode="json"),
+        "breakdown": {
+            "entra_orders": entra_orders,
+            "google_orders": google_orders,
+            "total_orders": entra_orders + google_orders,
+            "total_inboxes": total_inboxes,
+        },
+        "started_at": datetime.now(timezone.utc),
+        "completed_at": None,
+        "results": [],
+        "errors": [],
+        "current_step": "Initializing",
+        "domains_by_id": {str(k): v for k, v in domains_by_id.items()},
+        "base_names": base_names,
+        "pre_generated": pre_generated,
+    }
+
+    # Start background task
+    background_tasks.add_task(
+        _execute_purchase_v2_task,
+        job_id,
+        request,
+        ht,
+    )
+
+    total_orders = entra_orders + google_orders
+    estimated_duration = total_orders * 120  # ~2 minutes per order
+
+    return PurchaseJobResponse(
+        job_id=job_id,
+        client_id=request.client_id,
+        status=OrderStatus.PENDING,
+        message=f"Purchase job started. {total_orders} order(s) to process. {total_inboxes} inboxes expected.",
+        estimated_duration_seconds=estimated_duration,
+    )
+
+
+async def _execute_purchase_v2_task(
+    job_id: str,
+    request: ExecutePurchaseV2Request,
+    ht: dict,
+):
+    """Background task to execute V2 HyperTide purchase with domain grouping."""
+    job = _purchase_jobs.get(job_id)
+    if not job:
+        return
+
+    try:
+        job["status"] = OrderStatus.EXECUTING
+        job["current_step"] = "Preparing order requests"
+
+        domains_by_id = job["domains_by_id"]
+        base_names = job["base_names"]
+        pre_generated = job["pre_generated"]
+
+        # Process each order group
+        all_results = []
+
+        for group_idx, group in enumerate(request.order_groups):
+            job["current_step"] = f"Processing order group {group_idx + 1}/{len(request.order_groups)}"
+
+            # Get domain names for this group
+            domain_names = [
+                domains_by_id[str(domain_id)]["domain_name"]
+                for domain_id in group.domain_ids
+            ]
+
+            # Get prefixes for this sender name
+            prefixes = [p.get("emailPrefix") for p in pre_generated if p.get("emailPrefix")]
+
+            # Determine limit based on order type
+            # Hypertide: Entra = 50 inboxes/domain, Google = 3 inboxes/domain
+            limit = 50 if group.order_type == InboxProviderType.ENTRA else 3
+
+            # Get base name for fallback
+            first_name = base_names[0].get("firstName", "Unknown") if base_names else "Unknown"
+            last_name = base_names[0].get("lastName", "User") if base_names else "User"
+
+            # Convert prefixes to InboxConfigs
+            inbox_configs = _convert_prefixes_to_inbox_configs(
+                prefixes, first_name, last_name, limit
+            )
+
+            # Build Hypertide InboxConfig objects
+            ht_inbox_configs = [
+                ht["InboxConfig"](
+                    first_name=cfg["first_name"],
+                    last_name=cfg["last_name"],
+                )
+                for cfg in inbox_configs
+            ]
+
+            # Build domain configs
+            domain_configs = [
+                ht["DomainConfig"](
+                    name=dn.split('.')[0],
+                    tld='.'.join(dn.split('.')[1:]) or 'com',
+                    use_hypertide_domain=False,  # We're providing our own domains
+                )
+                for dn in domain_names
+            ]
+
+            # Build Bison credentials if provided
+            bison_creds = None
+            if request.bison_username and request.bison_password:
+                bison_creds = ht["BisonCredentials"](
+                    username=request.bison_username,
+                    password=request.bison_password,
+                    workspace=request.bison_workspace or "Default",
+                    bison_url=request.bison_url,
+                )
+
+            # Calculate inboxes for this order
+            inboxes_per_domain = 50 if group.order_type == InboxProviderType.ENTRA else 3
+            expected_inboxes = len(domain_names) * inboxes_per_domain
+
+            job["current_step"] = f"Executing Hypertide order for {len(domain_names)} {group.order_type.value} domains"
+
+            try:
+                # Create order bundle for this group
+                order_type = ht["OrderType"].HYPERTIDE_ENTRA if group.order_type == InboxProviderType.ENTRA else ht["OrderType"].HYPERTIDE_GOOGLE
+
+                # Build request for this specific order
+                inbox_target = ht["InboxTarget"](
+                    entra_inboxes=expected_inboxes if group.order_type == InboxProviderType.ENTRA else 0,
+                    google_inboxes=expected_inboxes if group.order_type == InboxProviderType.GOOGLE else 0,
+                )
+
+                mixed_request = ht["MixedOrderRequest"](
+                    client_name=request.client_name,
+                    forwarding_domain=request.forwarding_domain,
+                    inbox_target=inbox_target,
+                    bison_credentials=bison_creds or ht["BisonCredentials"](
+                        username="placeholder@email.com",
+                        password="placeholder",
+                        workspace="Default",
+                    ),
+                    users=ht_inbox_configs,
+                    entra_domains=domain_configs if group.order_type == InboxProviderType.ENTRA else [],
+                    google_domains=domain_configs if group.order_type == InboxProviderType.GOOGLE else [],
+                    use_saved_payment=request.use_saved_payment,
+                )
+
+                # Execute purchase
+                result = await ht["purchase_mixed_order"](mixed_request)
+
+                # Record result
+                for order_result in result.order_results:
+                    all_results.append({
+                        "success": order_result.success,
+                        "order_type": group.order_type.value,
+                        "quantity": 1,
+                        "inboxes_created": order_result.total_inboxes,
+                        "domains_created": domain_names,
+                        "domain_ids": [str(d) for d in group.domain_ids],
+                        "order_id": order_result.order_id,
+                        "error": order_result.error_message,
+                    })
+
+            except Exception as order_error:
+                logger.error(f"Order group {group_idx + 1} failed: {order_error}")
+                all_results.append({
+                    "success": False,
+                    "order_type": group.order_type.value,
+                    "quantity": 1,
+                    "inboxes_created": 0,
+                    "domains_created": domain_names,
+                    "domain_ids": [str(d) for d in group.domain_ids],
+                    "error": str(order_error),
+                })
+
+        job["results"] = all_results
+        job["current_step"] = "Updating database records"
+
+        # Update domain infrastructure types
+        workspace_id = UUID(job["workspace_id"])
+        for result in all_results:
+            if result["success"]:
+                infra_type = result["order_type"]
+                domain_ids = [UUID(d) for d in result["domain_ids"]]
+
+                # Mark domains with infrastructure type
+                await execute(
+                    """
+                    UPDATE domains
+                    SET infrastructure_type = $1,
+                        infrastructure_set_at = NOW(),
+                        approval_status = 'active',
+                        updated_at = NOW()
+                    WHERE id = ANY($2)
+                    """,
+                    infra_type,
+                    domain_ids
+                )
+                logger.info(f"Marked {len(domain_ids)} domains as {infra_type}")
+
+        # Calculate final totals
+        successful_results = [r for r in all_results if r["success"]]
+        job["total_inboxes"] = sum(r["inboxes_created"] for r in successful_results)
+        job["total_monthly_capacity"] = job["total_inboxes"] * 50  # ~50 emails/inbox/month capacity
+
+        if all(r["success"] for r in all_results):
+            job["status"] = OrderStatus.COMPLETED
+            job["current_step"] = "Purchase completed successfully"
+        elif any(r["success"] for r in all_results):
+            job["status"] = OrderStatus.COMPLETED
+            job["current_step"] = "Purchase completed with some errors"
+            job["errors"] = [r["error"] for r in all_results if r.get("error")]
+        else:
+            job["status"] = OrderStatus.FAILED
+            job["current_step"] = "Purchase failed"
+            job["errors"] = [r["error"] for r in all_results if r.get("error")]
+
+        job["completed_at"] = datetime.now(timezone.utc)
+
+    except Exception as e:
+        logger.error(f"Purchase V2 task failed: {e}")
+        job["status"] = OrderStatus.FAILED
+        job["errors"].append(str(e))
+        job["current_step"] = f"Failed: {str(e)}"
+        job["completed_at"] = datetime.now(timezone.utc)
+
+
+# =============================================================================
+# Smart Order Endpoints - One-Click Provisioning
+# =============================================================================
+
+class SmartOrderRequest(BaseModel):
+    """Request for smart order - auto-configures everything from database."""
+    client_id: UUID
+    domain_ids: list[UUID]
+    provider_type: str = Field(default="entra", description="'entra' or 'google'")
+    override_age_check: bool = Field(default=False, description="Allow domains younger than 30 days")
+
+
+class SmartOrderPreview(BaseModel):
+    """Preview of what would be ordered - for confirmation modal."""
+    # Client info (auto-populated from database)
+    client_id: UUID
+    client_name: str
+    forwarding_domain: Optional[str]
+    emailbison_workspace_id: Optional[int]
+
+    # Sender name info
+    sender_name: dict  # {firstName, lastName, prefixCount}
+
+    # Order calculation
+    provider_type: str
+    domains: list[str]
+    order_count: int
+    inbox_count: int
+    monthly_cost: float
+
+    # Package validation
+    package_usage: dict  # {used, available, withinLimit}
+
+    # Validation
+    is_valid: bool
+    validation_errors: list[str] = Field(default_factory=list)
+
+
+@router.get("/smart-order/preview")
+async def preview_smart_order(
+    client_id: UUID,
+    domain_ids: str,  # Comma-separated UUIDs
+    provider_type: str = "entra"
+):
+    """
+    Preview a smart order without executing.
+
+    Returns all the data needed for the confirmation modal:
+    - Client info (auto-populated from database)
+    - Sender name info
+    - Order calculation (domains, inboxes, cost)
+    - Package validation (subscription limits)
+    """
+    import json
+
+    # Parse domain IDs
+    domain_id_list = [UUID(d.strip()) for d in domain_ids.split(",") if d.strip()]
+
+    if not domain_id_list:
+        raise HTTPException(status_code=400, detail="No domain IDs provided")
+
+    # Fetch client with workspace
+    client = await fetch_one(
+        """
+        SELECT c.id, c.name, c.onboarding_data, c.workspace_id,
+               w.emailbison_workspace_id
+        FROM clients c
+        LEFT JOIN workspaces w ON c.workspace_id = w.id
+        WHERE c.id = $1
+        """,
+        client_id
+    )
+    if not client:
+        raise HTTPException(status_code=404, detail="Client not found")
+
+    onboarding_data = client.get("onboarding_data")
+    if isinstance(onboarding_data, str):
+        onboarding_data = json.loads(onboarding_data)
+
+    # Get forwarding domain
+    forwarding_domain = onboarding_data.get("primaryDomain") if onboarding_data else None
+
+    # Get sender name info
+    base_names = onboarding_data.get("baseSenderNames", []) if onboarding_data else []
+    pre_generated = onboarding_data.get("preGeneratedSenderNames", []) if onboarding_data else []
+
+    sender_name = {
+        "firstName": base_names[0].get("firstName", "Unknown") if base_names else "Unknown",
+        "lastName": base_names[0].get("lastName", "User") if base_names else "User",
+        "prefixCount": len(pre_generated),
+    }
+
+    # Fetch domain names
+    domain_rows = await fetch_all(
+        "SELECT id, domain_name FROM domains WHERE id = ANY($1)",
+        domain_id_list
+    )
+    domain_names = [d["domain_name"] for d in domain_rows]
+
+    # Validate domain count
+    validation_errors = []
+    domain_count = len(domain_id_list)
+
+    if provider_type == "entra":
+        required = 2
+        if domain_count % required != 0:
+            validation_errors.append(f"Entra requires {required} domains per order. You have {domain_count} domains.")
+        order_count = domain_count // required
+        inbox_count = order_count * 100  # 2 domains × 50 inboxes
+    else:
+        required = 5
+        if domain_count % required != 0:
+            validation_errors.append(f"Google requires {required} domains per order. You have {domain_count} domains.")
+        order_count = domain_count // required
+        inbox_count = order_count * 15  # 5 domains × 3 inboxes
+
+    monthly_cost = order_count * 50.0
+
+    # Check subscription limits
+    subscription = await fetch_one(
+        """
+        SELECT entra_packages, google_packages
+        FROM client_subscriptions
+        WHERE client_id = $1 AND status = 'active'
+        """,
+        client_id
+    )
+
+    # Count already provisioned domains
+    provisioned = await fetch_one(
+        """
+        SELECT
+            COUNT(*) FILTER (WHERE infrastructure_type = 'entra') as entra_count,
+            COUNT(*) FILTER (WHERE infrastructure_type = 'google') as google_count
+        FROM domains
+        WHERE workspace_id = $1 AND infrastructure_type IS NOT NULL
+        """,
+        client.get("workspace_id")
+    )
+
+    # Calculate package usage
+    if subscription:
+        if provider_type == "entra":
+            available = subscription.get("entra_packages", 0)
+            # Each Entra order uses 2 domains, so current usage is domains / 2
+            used = (provisioned.get("entra_count", 0) or 0) // 2
+            within_limit = (used + order_count) <= available
+        else:
+            available = subscription.get("google_packages", 0)
+            used = (provisioned.get("google_count", 0) or 0) // 5
+            within_limit = (used + order_count) <= available
+
+        if not within_limit:
+            validation_errors.append(f"Exceeds package limit. Used: {used}, Available: {available}, Requested: {order_count}")
+    else:
+        available = 0
+        used = 0
+        within_limit = False
+        validation_errors.append("No active subscription found for this client")
+
+    # Check sender name availability
+    if not pre_generated:
+        validation_errors.append("No sender names configured. Set up sender names first.")
+
+    return SmartOrderPreview(
+        client_id=client_id,
+        client_name=client.get("name", "Unknown"),
+        forwarding_domain=forwarding_domain,
+        emailbison_workspace_id=client.get("emailbison_workspace_id"),
+        sender_name=sender_name,
+        provider_type=provider_type,
+        domains=domain_names,
+        order_count=order_count,
+        inbox_count=inbox_count,
+        monthly_cost=monthly_cost,
+        package_usage={
+            "used": used,
+            "available": available,
+            "withinLimit": within_limit,
+        },
+        is_valid=len(validation_errors) == 0,
+        validation_errors=validation_errors,
+    )
+
+
+@router.post("/smart-order")
+async def execute_smart_order(
+    request: SmartOrderRequest,
+    background_tasks: BackgroundTasks
+):
+    """
+    Execute a smart order - auto-configures everything from database.
+
+    This is the simplified one-click provisioning flow:
+    1. Fetches all needed data from database (client, sender names, workspace)
+    2. Validates domain count and subscription limits
+    3. Builds Hypertide order request automatically
+    4. Executes via Hypertide automation
+    5. Updates domains with infrastructure_type on success
+    """
+    import json
+
+    # First, get the preview to validate
+    preview = await preview_smart_order(
+        client_id=request.client_id,
+        domain_ids=",".join(str(d) for d in request.domain_ids),
+        provider_type=request.provider_type
+    )
+
+    if not preview.is_valid:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": "Validation failed",
+                "errors": preview.validation_errors
+            }
+        )
+
+    # Fetch full client data
+    client = await fetch_one(
+        """
+        SELECT c.id, c.name, c.onboarding_data, c.workspace_id,
+               w.emailbison_workspace_id
+        FROM clients c
+        LEFT JOIN workspaces w ON c.workspace_id = w.id
+        WHERE c.id = $1
+        """,
+        request.client_id
+    )
+
+    onboarding_data = client.get("onboarding_data")
+    if isinstance(onboarding_data, str):
+        onboarding_data = json.loads(onboarding_data)
+
+    # Build order groups
+    base_names = onboarding_data.get("baseSenderNames", [])
+    pre_generated = onboarding_data.get("preGeneratedSenderNames", [])
+
+    # Calculate order groups
+    domain_ids = request.domain_ids
+    if request.provider_type == "entra":
+        domains_per_order = 2
+    else:
+        domains_per_order = 5
+
+    order_groups = []
+    for i in range(0, len(domain_ids), domains_per_order):
+        group_domains = domain_ids[i:i + domains_per_order]
+        if len(group_domains) == domains_per_order:
+            order_groups.append(OrderGroup(
+                order_type=InboxProviderType(request.provider_type),
+                domain_ids=group_domains,
+                domain_names=[],  # Will be populated by execute-v2
+                sender_name_id="name-0",  # Use primary sender name
+            ))
+
+    # Build V2 request
+    v2_request = ExecutePurchaseV2Request(
+        client_id=request.client_id,
+        client_name=client.get("name", "Unknown"),
+        forwarding_domain=onboarding_data.get("primaryDomain", ""),
+        order_groups=order_groups,
+        override_age_check=request.override_age_check,
+        bison_workspace=str(client.get("emailbison_workspace_id", "")),
+        use_saved_payment=True,
+    )
+
+    # Use existing V2 execute endpoint logic
+    return await execute_purchase_v2(v2_request, background_tasks)

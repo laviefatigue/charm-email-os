@@ -157,6 +157,9 @@ export interface Domain {
   daysUntilAvailable?: number;  // Computed: days until 30-day threshold (0 if ready/exempt)
   isSetupEligible?: boolean;  // Computed: (30+ days old OR exempt) AND NS verified
   isAgeExempt?: boolean;  // True if status is 'legacy' or 'active' (bypasses 30-day check)
+  // Infrastructure type (Entra or Google) - set when inboxes are provisioned
+  infrastructureType?: 'entra' | 'google';  // Which provider inboxes use
+  infrastructureSetAt?: Date;  // When infrastructure was assigned
   // Health monitoring fields (from OwnRBL domain_check_summary)
   healthState?: 'live' | 'flagged' | 'dead' | 'healthy' | 'warning' | 'critical' | 'unknown';
   latestHealthScore?: number;  // OwnRBL
@@ -673,4 +676,196 @@ export interface SubscriptionChange {
   reason?: string;
   changedBy?: string;
   createdAt: Date;
+}
+
+
+// ===== INBOX PROVISIONING V2 TYPES =====
+
+// Infrastructure provider type
+export type InfrastructureType = 'entra' | 'google';
+
+// Hypertide order constraints (FIXED - cannot be changed)
+export const HYPERTIDE_CONSTRAINTS = {
+  entra: {
+    domainsPerOrder: 2,
+    inboxesPerDomain: 50,
+    inboxesPerOrder: 100,
+    prefixLimit: 50,  // How many prefixes from our 52 to use
+  },
+  google: {
+    domainsPerOrder: 5,
+    inboxesPerDomain: 3,
+    inboxesPerOrder: 15,
+    prefixLimit: 3,   // How many prefixes from our 10 to use
+  },
+} as const;
+
+// Sender name for provisioning (with prefix counts)
+export interface SenderNameForProvisioning {
+  id: string;
+  firstName: string;
+  lastName: string;
+  isFounder: boolean;
+  prefixes: string[];           // All generated prefixes
+  totalPrefixCount: number;
+  entraPrefixCount: number;     // How many usable for Entra (50)
+  googlePrefixCount: number;    // How many usable for Google (3)
+  entraPrefixes: string[];      // Top 50 prefixes for Entra
+  googlePrefixes: string[];     // Top 3 prefixes for Google
+  provider: string;             // Provider used to generate
+  createdAt?: string;
+}
+
+// Response from sender-names-for-provisioning endpoint
+export interface SenderNamesForProvisioningResponse {
+  clientId: string;
+  clientName: string;
+  senderNames: SenderNameForProvisioning[];
+  totalNames: number;
+  hypertideConstraints: {
+    entra: {
+      domainsPerOrder: number;
+      inboxesPerDomain: number;
+      inboxesPerOrder: number;
+    };
+    google: {
+      domainsPerOrder: number;
+      inboxesPerDomain: number;
+      inboxesPerOrder: number;
+    };
+  };
+}
+
+// Order group for V2 provisioning (groups domains for one Hypertide order)
+export interface OrderGroup {
+  orderType: InfrastructureType;
+  domainIds: string[];
+  domainNames: string[];       // Populated for display
+  senderNameId: string;        // Which sender name to use
+}
+
+// V2 purchase request
+export interface ExecutePurchaseV2Request {
+  clientId: string;
+  clientName: string;
+  forwardingDomain: string;
+  orderGroups: OrderGroup[];
+  overrideAgeCheck?: boolean;
+  bisonUsername?: string;
+  bisonPassword?: string;
+  bisonWorkspace?: string;
+  bisonUrl?: string;
+  useSavedPayment?: boolean;
+}
+
+// V2 purchase preview/summary
+export interface ExecutePurchaseV2Summary {
+  totalOrders: number;
+  entraOrders: number;
+  googleOrders: number;
+  totalDomains: number;
+  totalInboxes: number;
+  entraInboxes: number;
+  googleInboxes: number;
+  estimatedMonthlyCost: number;
+  domainBreakdown: {
+    orderType: InfrastructureType;
+    domains: string[];
+    senderNameId: string;
+    inboxes: number;
+  }[];
+}
+
+// Helper: Calculate total inboxes for a set of order groups
+export function calculateTotalInboxes(groups: OrderGroup[]): number {
+  return groups.reduce((sum, group) => {
+    const constraint = HYPERTIDE_CONSTRAINTS[group.orderType];
+    return sum + constraint.inboxesPerOrder;
+  }, 0);
+}
+
+// Helper: Validate order group has correct domain count
+export function validateOrderGroup(group: OrderGroup): { valid: boolean; message: string } {
+  const constraint = HYPERTIDE_CONSTRAINTS[group.orderType];
+  const expected = constraint.domainsPerOrder;
+  const actual = group.domainIds.length;
+
+  if (actual !== expected) {
+    return {
+      valid: false,
+      message: `${group.orderType} requires exactly ${expected} domains, got ${actual}`,
+    };
+  }
+
+  return { valid: true, message: 'OK' };
+}
+
+// Helper: Check if domains can form valid order groups
+export function canFormValidGroups(
+  domainCount: number,
+  orderType: InfrastructureType
+): { canForm: boolean; completeGroups: number; remaining: number } {
+  const required = HYPERTIDE_CONSTRAINTS[orderType].domainsPerOrder;
+  const completeGroups = Math.floor(domainCount / required);
+  const remaining = domainCount % required;
+
+  return {
+    canForm: completeGroups > 0 || remaining === 0,
+    completeGroups,
+    remaining,
+  };
+}
+
+
+// ===== SMART ORDER TYPES (One-Click Provisioning) =====
+
+// Smart order preview - auto-populated from database
+export interface SmartOrderPreview {
+  // Client info (auto-populated)
+  clientId: string;
+  clientName: string;
+  forwardingDomain?: string;
+  emailbisonWorkspaceId?: number;
+
+  // Sender name info
+  senderName: {
+    firstName: string;
+    lastName: string;
+    prefixCount: number;
+  };
+
+  // Order calculation
+  providerType: InfrastructureType;
+  domains: string[];
+  orderCount: number;
+  inboxCount: number;
+  monthlyCost: number;
+
+  // Package validation
+  packageUsage: {
+    used: number;
+    available: number;
+    withinLimit: boolean;
+  };
+
+  // Validation
+  isValid: boolean;
+  validationErrors: string[];
+}
+
+// Smart order request - minimal input required
+export interface SmartOrderRequest {
+  clientId: string;
+  domainIds: string[];
+  providerType?: InfrastructureType;
+  overrideAgeCheck?: boolean;
+}
+
+// Smart order response - job tracking
+export interface SmartOrderResponse {
+  jobId: string;
+  clientId: string;
+  status: string;
+  message: string;
+  estimatedDurationSeconds: number;
 }

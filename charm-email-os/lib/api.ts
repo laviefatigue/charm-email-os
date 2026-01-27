@@ -21,6 +21,14 @@ import type {
   BaseName,
   SenderNameVariation,
   VariationPattern,
+  SenderNamesForProvisioningResponse,
+  ExecutePurchaseV2Request,
+  ExecutePurchaseV2Summary,
+  OrderGroup,
+  InfrastructureType,
+  SmartOrderPreview,
+  SmartOrderRequest,
+  SmartOrderResponse,
 } from './types';
 
 // API base URL - use environment variable or default to deployed API
@@ -2306,6 +2314,199 @@ export const subscriptionApi = {
   },
 };
 
+// ===== INBOX PROVISIONING API (V2) =====
+
+export const inboxProvisioningApi = {
+  /**
+   * Get sender names formatted for inbox provisioning.
+   * Returns names with full prefix lists and Hypertide constraint metadata.
+   */
+  async getSenderNamesForProvisioning(clientId: string): Promise<SenderNamesForProvisioningResponse> {
+    const response = await fetchApi<Record<string, unknown>>(
+      `/api/clients/${clientId}/sender-names-for-provisioning`
+    );
+    return toCamelCase<SenderNamesForProvisioningResponse>(response);
+  },
+
+  /**
+   * Preview a V2 purchase without executing.
+   * Validates order groups and returns breakdown of what would be purchased.
+   */
+  async previewPurchase(request: ExecutePurchaseV2Request): Promise<ExecutePurchaseV2Summary> {
+    const response = await fetchApi<Record<string, unknown>>(
+      '/api/inbox-purchasing/execute-v2/preview',
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          client_id: request.clientId,
+          client_name: request.clientName,
+          forwarding_domain: request.forwardingDomain,
+          order_groups: request.orderGroups.map((g: OrderGroup) => ({
+            order_type: g.orderType,
+            domain_ids: g.domainIds,
+            domain_names: g.domainNames,
+            sender_name_id: g.senderNameId,
+          })),
+          override_age_check: request.overrideAgeCheck ?? false,
+          bison_username: request.bisonUsername,
+          bison_password: request.bisonPassword,
+          bison_workspace: request.bisonWorkspace,
+          bison_url: request.bisonUrl,
+          use_saved_payment: request.useSavedPayment ?? true,
+        }),
+      }
+    );
+    return toCamelCase<ExecutePurchaseV2Summary>(response);
+  },
+
+  /**
+   * Execute inbox purchase with domain grouping (V2).
+   * Enforces Hypertide's fixed domain requirements and converts prefixes to InboxConfigs.
+   */
+  async executePurchase(request: ExecutePurchaseV2Request): Promise<{
+    jobId: string;
+    clientId: string;
+    status: string;
+    message: string;
+    estimatedDurationSeconds: number;
+  }> {
+    const response = await fetchApi<Record<string, unknown>>(
+      '/api/inbox-purchasing/execute-v2',
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          client_id: request.clientId,
+          client_name: request.clientName,
+          forwarding_domain: request.forwardingDomain,
+          order_groups: request.orderGroups.map((g: OrderGroup) => ({
+            order_type: g.orderType,
+            domain_ids: g.domainIds,
+            domain_names: g.domainNames,
+            sender_name_id: g.senderNameId,
+          })),
+          override_age_check: request.overrideAgeCheck ?? false,
+          bison_username: request.bisonUsername,
+          bison_password: request.bisonPassword,
+          bison_workspace: request.bisonWorkspace,
+          bison_url: request.bisonUrl,
+          use_saved_payment: request.useSavedPayment ?? true,
+        }),
+      }
+    );
+    return toCamelCase<{
+      jobId: string;
+      clientId: string;
+      status: string;
+      message: string;
+      estimatedDurationSeconds: number;
+    }>(response);
+  },
+
+  /**
+   * Get status of a purchase job (works for both V1 and V2).
+   */
+  async getJobStatus(jobId: string): Promise<{
+    jobId: string;
+    clientId: string;
+    status: string;
+    currentStep?: string;
+    ordersCompleted: number;
+    ordersTotal: number;
+    totalInboxes: number;
+    startedAt?: string;
+    completedAt?: string;
+    errors: string[];
+  }> {
+    const response = await fetchApi<Record<string, unknown>>(
+      `/api/inbox-purchasing/status/${jobId}`
+    );
+    return toCamelCase<{
+      jobId: string;
+      clientId: string;
+      status: string;
+      currentStep?: string;
+      ordersCompleted: number;
+      ordersTotal: number;
+      totalInboxes: number;
+      startedAt?: string;
+      completedAt?: string;
+      errors: string[];
+    }>(response);
+  },
+
+  /**
+   * List purchase jobs, optionally filtered by client or status.
+   */
+  async listJobs(params?: { clientId?: string; status?: string }): Promise<{
+    jobs: Array<{
+      jobId: string;
+      clientId: string;
+      status: string;
+      currentStep?: string;
+      startedAt?: string;
+      completedAt?: string;
+    }>;
+    total: number;
+  }> {
+    const searchParams = new URLSearchParams();
+    if (params?.clientId) searchParams.set('client_id', params.clientId);
+    if (params?.status) searchParams.set('status', params.status);
+
+    const query = searchParams.toString();
+    const response = await fetchApi<Record<string, unknown>>(
+      `/api/inbox-purchasing/jobs${query ? `?${query}` : ''}`
+    );
+    return toCamelCase<{
+      jobs: Array<{
+        jobId: string;
+        clientId: string;
+        status: string;
+        currentStep?: string;
+        startedAt?: string;
+        completedAt?: string;
+      }>;
+      total: number;
+    }>(response);
+  },
+
+  // ===== SMART ORDER METHODS (One-Click Provisioning) =====
+
+  /**
+   * Preview a smart order - auto-configures everything from database.
+   * Returns all data needed for the confirmation modal.
+   */
+  async getSmartOrderPreview(
+    clientId: string,
+    domainIds: string[],
+    providerType: 'entra' | 'google' = 'entra'
+  ): Promise<SmartOrderPreview> {
+    const response = await fetchApi<Record<string, unknown>>(
+      `/api/inbox-purchasing/smart-order/preview?client_id=${clientId}&domain_ids=${domainIds.join(',')}&provider_type=${providerType}`
+    );
+    return toCamelCase<SmartOrderPreview>(response);
+  },
+
+  /**
+   * Execute a smart order - one-click provisioning.
+   * Auto-configures everything from database and executes Hypertide purchase.
+   */
+  async executeSmartOrder(request: SmartOrderRequest): Promise<SmartOrderResponse> {
+    const response = await fetchApi<Record<string, unknown>>(
+      '/api/inbox-purchasing/smart-order',
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          client_id: request.clientId,
+          domain_ids: request.domainIds,
+          provider_type: request.providerType ?? 'entra',
+          override_age_check: request.overrideAgeCheck ?? false,
+        }),
+      }
+    );
+    return toCamelCase<SmartOrderResponse>(response);
+  },
+};
+
 // ===== COMBINED API EXPORT =====
 
 export const api = {
@@ -2314,6 +2515,7 @@ export const api = {
   domains: domainApi,
   domainSourcing: domainSourcingApi,
   inboxes: inboxApi,
+  inboxProvisioning: inboxProvisioningApi,
   campaigns: campaignApi,
   leads: leadApi,
   health: healthApi,

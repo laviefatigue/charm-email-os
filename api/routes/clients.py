@@ -1049,6 +1049,110 @@ async def get_sender_name_config(client_id: UUID):
     }
 
 
+@router.get("/{client_id}/sender-names-for-provisioning")
+async def get_sender_names_for_provisioning(client_id: UUID):
+    """
+    Get sender names formatted for inbox provisioning.
+
+    Returns sender names with full prefix lists and metadata needed for
+    the Hypertide order flow. Each sender name includes:
+    - Base name (first/last)
+    - All prefixes generated for that name
+    - Counts for Entra (50 usable) and Google (3 usable)
+
+    Also returns:
+    - forwardingDomain: Client's primary domain for Hypertide configuration
+    - emailbisonWorkspaceId: Workspace ID for inbox upload
+
+    These prefixes become InboxConfigs sent to Hypertide:
+    - Entra: Uses top 50 prefixes (out of 52 generated)
+    - Google: Uses top 3 prefixes (out of 10 generated)
+    """
+    # Fetch client with workspace join to get EmailBison ID
+    client = await fetch_one(
+        """
+        SELECT c.id, c.name, c.onboarding_data, c.workspace_id,
+               w.emailbison_workspace_id, w.workspace_name
+        FROM clients c
+        LEFT JOIN workspaces w ON c.workspace_id = w.id
+        WHERE c.id = $1
+        """,
+        client_id
+    )
+    if not client:
+        raise HTTPException(status_code=404, detail="Client not found")
+
+    onboarding_data = client.get("onboarding_data")
+    if isinstance(onboarding_data, str):
+        onboarding_data = json.loads(onboarding_data)
+
+    sender_names = []
+
+    if onboarding_data:
+        base_names = onboarding_data.get("baseSenderNames", [])
+        pre_generated = onboarding_data.get("preGeneratedSenderNames", [])
+        provider = onboarding_data.get("senderNamePreferences", {}).get("provider", "entra")
+
+        # Group prefixes by base name
+        # For now, we assume one base name = one set of prefixes
+        for i, base_name in enumerate(base_names):
+            first_name = base_name.get("firstName", "")
+            last_name = base_name.get("lastName", "")
+            is_founder = base_name.get("isFounder", i == 0)
+
+            # Get all prefixes for this base name
+            prefixes = [p.get("emailPrefix") for p in pre_generated if p.get("emailPrefix")]
+
+            # Calculate usable counts for each provider
+            # Hypertide constraints:
+            # - Entra: 50 inboxes per domain (use top 50 prefixes)
+            # - Google: 3 inboxes per domain (use top 3 prefixes)
+            entra_prefixes = prefixes[:50]  # Top 50 for Entra
+            google_prefixes = prefixes[:3]   # Top 3 for Google
+
+            sender_names.append({
+                "id": f"name-{i}",
+                "firstName": first_name,
+                "lastName": last_name,
+                "isFounder": is_founder,
+                "prefixes": prefixes,
+                "totalPrefixCount": len(prefixes),
+                "entraPrefixCount": len(entra_prefixes),
+                "googlePrefixCount": len(google_prefixes),
+                "entraPrefixes": entra_prefixes,
+                "googlePrefixes": google_prefixes,
+                "provider": provider,
+                "createdAt": base_name.get("createdAt"),
+            })
+
+    # Extract forwarding domain from onboarding data
+    forwarding_domain = None
+    if onboarding_data:
+        forwarding_domain = onboarding_data.get("primaryDomain")
+
+    return {
+        "clientId": str(client_id),
+        "clientName": client.get("name"),
+        "forwardingDomain": forwarding_domain,
+        "emailbisonWorkspaceId": client.get("emailbison_workspace_id"),
+        "workspaceId": str(client.get("workspace_id")) if client.get("workspace_id") else None,
+        "senderNames": sender_names,
+        "totalNames": len(sender_names),
+        "hypertideConstraints": {
+            "entra": {
+                "domainsPerOrder": 2,
+                "inboxesPerDomain": 50,
+                "inboxesPerOrder": 100,
+            },
+            "google": {
+                "domainsPerOrder": 5,
+                "inboxesPerDomain": 3,
+                "inboxesPerOrder": 15,
+            }
+        }
+    }
+
+
 @router.post("/{client_id}/set-sender-name")
 async def set_sender_name(client_id: UUID, request: SetBaseNameRequest):
     """
