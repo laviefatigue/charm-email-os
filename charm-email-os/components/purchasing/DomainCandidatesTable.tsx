@@ -56,16 +56,69 @@ export function DomainCandidatesTable({
     setActionStates((prev) => ({ ...prev, [domainId]: state }));
   }, []);
 
+  // Filter out purchased domains (they belong in DomainsNeedingSetupTable)
+  // Only show: pending, approved, rejected/denied
+  const filteredDomains = useMemo(() => {
+    return domains.filter(d =>
+      d.status === 'pending' ||
+      d.status === 'pending_approval' ||
+      d.status === 'approved' ||
+      d.status === 'rejected' ||
+      d.status === 'denied'
+    );
+  }, [domains]);
+
+  // Sort domains: price ascending (cheapest first), denied/rejected at bottom
+  const sortedDomains = useMemo(() => {
+    return [...filteredDomains].sort((a, b) => {
+      // Denied/rejected domains always at bottom
+      const aIsDenied = a.status === 'rejected' || a.status === 'denied';
+      const bIsDenied = b.status === 'rejected' || b.status === 'denied';
+
+      if (aIsDenied && !bIsDenied) return 1;
+      if (bIsDenied && !aIsDenied) return -1;
+
+      // Both denied - sort alphabetically
+      if (aIsDenied && bIsDenied) {
+        const aName = a.domainName || a.domain || '';
+        const bName = b.domainName || b.domain || '';
+        return aName.localeCompare(bName);
+      }
+
+      // For non-denied: sort by price (cheapest first)
+      // Use cached price from DB, or local price state
+      const priceInfoA = prices[a.id];
+      const priceInfoB = prices[b.id];
+
+      const priceA = priceInfoA?.price ? parseFloat(priceInfoA.price) :
+                     (a.cachedPrice ? parseFloat(String(a.cachedPrice)) : Infinity);
+      const priceB = priceInfoB?.price ? parseFloat(priceInfoB.price) :
+                     (b.cachedPrice ? parseFloat(String(b.cachedPrice)) : Infinity);
+
+      if (priceA !== priceB) return priceA - priceB;
+
+      // Same price - sort alphabetically
+      const aName = a.domainName || a.domain || '';
+      const bName = b.domainName || b.domain || '';
+      return aName.localeCompare(bName);
+    });
+  }, [filteredDomains, prices]);
+
+  // Count domains that need price check (use filtered domains)
+  const domainsNeedingPriceCheck = useMemo(() => {
+    return filteredDomains.filter(d => d.status === 'approved' && !prices[d.id]).length;
+  }, [filteredDomains, prices]);
+
   // Get domains that qualify for purchase (approved, available, under threshold)
   const qualifiedDomains = useMemo(() => {
-    return domains.filter((d) => {
+    return filteredDomains.filter((d) => {
       if (d.status !== 'approved') return false;
       const priceInfo = prices[d.id];
       if (!priceInfo || !priceInfo.available) return false;
       const priceNum = parseFloat(priceInfo.price);
       return !isNaN(priceNum) && priceNum <= PRICE_THRESHOLD;
     });
-  }, [domains, prices]);
+  }, [filteredDomains, prices]);
 
   // Get selected domains that are actually qualified
   const selectedQualified = useMemo(() => {
@@ -143,8 +196,8 @@ export function DomainCandidatesTable({
 
   // Bulk check all approved domains
   const handleCheckAllPrices = useCallback(async () => {
-    // Get all approved domains that need price check
-    const approvedDomains = domains.filter(d => d.status === 'approved' && !prices[d.id]);
+    // Get all approved domains that need price check (use filteredDomains)
+    const approvedDomains = filteredDomains.filter(d => d.status === 'approved' && !prices[d.id]);
     if (approvedDomains.length === 0) {
       toast.info('All approved domains already have prices checked');
       return;
@@ -186,7 +239,7 @@ export function DomainCandidatesTable({
     } finally {
       setIsBulkCheckingPrices(false);
     }
-  }, [domains, prices, clientId, onDomainUpdate]);
+  }, [filteredDomains, prices, clientId, onDomainUpdate]);
 
   const handlePurchase = useCallback(async (domainId: string) => {
     setDomainState(domainId, { loading: true, error: null });
@@ -406,7 +459,7 @@ export function DomainCandidatesTable({
     return !isNaN(priceNum) && priceNum <= PRICE_THRESHOLD;
   };
 
-  if (domains.length === 0) {
+  if (sortedDomains.length === 0) {
     return (
       <div className="text-center py-8 text-muted-foreground">
         No domain candidates. Generate some to get started.
@@ -414,18 +467,13 @@ export function DomainCandidatesTable({
     );
   }
 
-  // Count domains that need price check
-  const domainsNeedingPriceCheck = useMemo(() => {
-    return domains.filter(d => d.status === 'approved' && !prices[d.id]).length;
-  }, [domains, prices]);
-
   return (
     <div className="space-y-4">
-      {/* Check All Prices Bar */}
+      {/* Refresh Prices Bar */}
       {domainsNeedingPriceCheck > 0 && (
         <div className="flex items-center justify-between p-3 bg-blue-50 rounded-lg border border-blue-200">
           <span className="text-sm text-blue-700">
-            {domainsNeedingPriceCheck} approved domains need price check
+            {domainsNeedingPriceCheck} approved domains available for purchase
           </span>
           <Button
             size="sm"
@@ -437,9 +485,9 @@ export function DomainCandidatesTable({
             {isBulkCheckingPrices ? (
               <Loader2 className="h-4 w-4 mr-1 animate-spin" />
             ) : (
-              <DollarSign className="h-4 w-4 mr-1" />
+              <RefreshCw className="h-4 w-4 mr-1" />
             )}
-            Check All Prices
+            Refresh Prices
           </Button>
         </div>
       )}
@@ -485,7 +533,7 @@ export function DomainCandidatesTable({
           </TableRow>
         </TableHeader>
         <TableBody>
-          {domains.map((domain) => {
+          {sortedDomains.map((domain) => {
             const domainName = domain.domainName || domain.domain || '';
             const parts = domainName.split('.');
             const tld = parts.length > 1 ? `.${parts[parts.length - 1]}` : '';
