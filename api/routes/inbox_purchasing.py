@@ -1595,14 +1595,14 @@ async def execute_smart_order(
             order_count,
             request.override_age_check,
             request.custom_purchase,
-            os.getenv("HYPERTIDE_EMAIL", ""),
+            os.getenv("HYPERTIDE_EMAIL", "chris@hirecharm.com"),
             os.getenv("HYPERTIDE_PASSWORD", ""),
             client.get("name", "Unknown"),
             onboarding_data.get("primaryDomain", "") if onboarding_data else "",
-            os.getenv("BISON_USERNAME", "elliott@hirecharm.com"),
-            os.getenv("BISON_PASSWORD", ""),
+            "elliott@hirecharm.com",
+            "bbZM9eFTDkEHzF%P7ii6EBy%",
             client.get("workspace_name") or "Charm",
-            os.getenv("BISON_URL", "https://spellcast.hirecharm.com"),
+            "https://spellcast.hirecharm.com",
             json.dumps(sender_names_json),
         )
 
