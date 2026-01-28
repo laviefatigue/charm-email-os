@@ -1602,7 +1602,7 @@ async def execute_smart_order(
             os.getenv("BISON_USERNAME", "elliott@hirecharm.com"),
             os.getenv("BISON_PASSWORD", ""),
             client.get("workspace_name") or "Charm",
-            "https://send.hirecharm.com",
+            os.getenv("BISON_URL", "https://spellcast.hirecharm.com"),
             json.dumps(sender_names_json),
         )
 

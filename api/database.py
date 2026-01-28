@@ -533,7 +533,7 @@ async def _init_purchase_jobs_table() -> None:
         ("bison_username", "TEXT"),
         ("bison_password", "TEXT"),
         ("bison_workspace_name", "TEXT"),
-        ("bison_url", "TEXT DEFAULT 'https://send.hirecharm.com'"),
+        ("bison_url", "TEXT DEFAULT 'https://spellcast.hirecharm.com'"),
         ("sender_names", "JSONB"),
         ("use_saved_payment", "BOOLEAN DEFAULT TRUE"),
         ("order_count", "INTEGER DEFAULT 1"),
