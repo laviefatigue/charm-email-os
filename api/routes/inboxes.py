@@ -116,7 +116,10 @@ async def list_inboxes(
             NULL as first_name,
             NULL as last_name,
             sa.display_name,
-            COALESCE(sa.status, 'active') as status,
+            CASE
+                WHEN sa.status IN ('pending', 'warmup', 'active', 'paused', 'dead') THEN sa.status
+                ELSE 'active'
+            END as status,
             COALESCE(sa.inbox_state, 'live') as inbox_state,
             NULL as esp_type,
             COALESCE(ws.warmup_enabled, false) as warmup_enabled,
@@ -186,7 +189,10 @@ async def get_inbox(inbox_id: UUID):
             NULL as first_name,
             NULL as last_name,
             sa.display_name,
-            COALESCE(sa.status, 'active') as status,
+            CASE
+                WHEN sa.status IN ('pending', 'warmup', 'active', 'paused', 'dead') THEN sa.status
+                ELSE 'active'
+            END as status,
             COALESCE(sa.inbox_state, 'live') as inbox_state,
             NULL as esp_type,
             COALESCE(ws.warmup_enabled, false) as warmup_enabled,
