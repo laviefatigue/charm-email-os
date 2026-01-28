@@ -12,6 +12,7 @@ import logging
 
 from config import settings
 import database
+from hypertide_session import init_hypertide_session
 
 # Configure logging
 logging.basicConfig(
@@ -28,6 +29,12 @@ async def lifespan(app: FastAPI):
     logger.info("Starting Charm Email OS API...")
     logger.info(f"Database config: host={settings.POSTGRES_HOST}, port={settings.POSTGRES_PORT}, db={settings.POSTGRES_DB}")
     logger.info(f"CORS origins: {settings.CORS_ORIGINS}")
+
+    # Initialize Hypertide session from environment variable
+    if init_hypertide_session():
+        logger.info("Hypertide session initialized from environment")
+    else:
+        logger.debug("No Hypertide session to initialize")
 
     try:
         await database.create_pool()
