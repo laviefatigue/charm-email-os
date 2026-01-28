@@ -1,0 +1,414 @@
+'use client';
+
+import { useState, useEffect, useCallback } from 'react';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '@/components/ui/table';
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from '@/components/ui/tooltip';
+import {
+  RefreshCw,
+  CheckCircle2,
+  XCircle,
+  Clock,
+  Loader2,
+  RotateCcw,
+  Eye,
+  Server,
+  Mail,
+  AlertTriangle,
+} from 'lucide-react';
+import { toast } from 'sonner';
+import { inboxProvisioningApi } from '@/lib/api';
+import { formatDistanceToNow, format } from 'date-fns';
+
+interface PurchaseJob {
+  jobId: string;
+  clientId: string;
+  status: 'pending' | 'executing' | 'completed' | 'failed' | 'superseded' | 'cancelled';
+  currentStep?: string;
+  providerType: string;
+  domainNames: string[];
+  entraOrders: number;
+  googleOrders: number;
+  ordersCompleted: number;
+  ordersTotal: number;
+  totalInboxes: number;
+  monthlyCost: number;
+  createdAt: string;
+  startedAt?: string;
+  completedAt?: string;
+  errors?: string[];
+}
+
+interface PurchaseJobsTableProps {
+  clientId: string;
+  onJobRetried?: () => void;
+}
+
+export function PurchaseJobsTable({ clientId, onJobRetried }: PurchaseJobsTableProps) {
+  const [jobs, setJobs] = useState<PurchaseJob[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [retryingJobId, setRetryingJobId] = useState<string | null>(null);
+  const [expandedJobId, setExpandedJobId] = useState<string | null>(null);
+
+  const fetchJobs = useCallback(async () => {
+    try {
+      const data = await inboxProvisioningApi.listJobs({ clientId });
+      // Map snake_case to camelCase
+      const mappedJobs: PurchaseJob[] = data.jobs.map((j: Record<string, unknown>) => ({
+        jobId: j.job_id as string,
+        clientId: j.client_id as string,
+        status: j.status as PurchaseJob['status'],
+        currentStep: j.current_step as string | undefined,
+        providerType: j.provider_type as string,
+        domainNames: (j.domain_names as string[]) || [],
+        entraOrders: j.entra_orders as number,
+        googleOrders: j.google_orders as number,
+        ordersCompleted: j.orders_completed as number,
+        ordersTotal: j.orders_total as number,
+        totalInboxes: j.total_inboxes as number,
+        monthlyCost: j.monthly_cost as number,
+        createdAt: j.created_at as string,
+        startedAt: j.started_at as string | undefined,
+        completedAt: j.completed_at as string | undefined,
+        errors: (j.errors as string[]) || [],
+      }));
+      setJobs(mappedJobs);
+    } catch (err) {
+      console.error('Failed to load job history:', err);
+      toast.error('Failed to load job history');
+    } finally {
+      setIsLoading(false);
+    }
+  }, [clientId]);
+
+  useEffect(() => {
+    fetchJobs();
+    // Poll for updates every 10 seconds if any jobs are pending/executing
+    const interval = setInterval(() => {
+      const hasActiveJobs = jobs.some(
+        (j) => j.status === 'pending' || j.status === 'executing'
+      );
+      if (hasActiveJobs) {
+        fetchJobs();
+      }
+    }, 10000);
+    return () => clearInterval(interval);
+  }, [fetchJobs, jobs]);
+
+  const handleRetry = async (jobId: string) => {
+    setRetryingJobId(jobId);
+    try {
+      await inboxProvisioningApi.retryJob(jobId);
+      toast.success('Job retry started');
+      fetchJobs();
+      onJobRetried?.();
+    } catch (err) {
+      console.error('Failed to retry job:', err);
+      toast.error('Failed to retry job');
+    } finally {
+      setRetryingJobId(null);
+    }
+  };
+
+  const getStatusBadge = (status: string) => {
+    switch (status) {
+      case 'pending':
+        return (
+          <Badge variant="outline" className="gap-1">
+            <Clock className="h-3 w-3" />
+            Pending
+          </Badge>
+        );
+      case 'executing':
+        return (
+          <Badge className="bg-blue-100 text-blue-800 gap-1">
+            <Loader2 className="h-3 w-3 animate-spin" />
+            Running
+          </Badge>
+        );
+      case 'completed':
+        return (
+          <Badge className="bg-green-100 text-green-800 gap-1">
+            <CheckCircle2 className="h-3 w-3" />
+            Completed
+          </Badge>
+        );
+      case 'failed':
+        return (
+          <Badge variant="destructive" className="gap-1">
+            <XCircle className="h-3 w-3" />
+            Failed
+          </Badge>
+        );
+      case 'superseded':
+        return (
+          <Badge variant="secondary" className="gap-1">
+            <RotateCcw className="h-3 w-3" />
+            Superseded
+          </Badge>
+        );
+      case 'cancelled':
+        return (
+          <Badge variant="secondary" className="gap-1">
+            <XCircle className="h-3 w-3" />
+            Cancelled
+          </Badge>
+        );
+      default:
+        return <Badge>{status}</Badge>;
+    }
+  };
+
+  const getProviderBadge = (providerType: string) => {
+    if (providerType === 'entra' || providerType === 'mixed') {
+      return (
+        <Badge variant="outline" className="gap-1 bg-blue-50">
+          <Server className="h-3 w-3 text-blue-600" />
+          {providerType === 'mixed' ? 'Mixed' : 'Entra'}
+        </Badge>
+      );
+    } else if (providerType === 'google') {
+      return (
+        <Badge variant="outline" className="gap-1 bg-red-50">
+          <Mail className="h-3 w-3 text-red-600" />
+          Google
+        </Badge>
+      );
+    }
+    return <Badge variant="outline">{providerType || 'Unknown'}</Badge>;
+  };
+
+  const formatDuration = (job: PurchaseJob) => {
+    if (job.completedAt && job.startedAt) {
+      const start = new Date(job.startedAt).getTime();
+      const end = new Date(job.completedAt).getTime();
+      const seconds = Math.round((end - start) / 1000);
+      if (seconds < 60) return `${seconds}s`;
+      const minutes = Math.floor(seconds / 60);
+      const remainingSeconds = seconds % 60;
+      return `${minutes}m ${remainingSeconds}s`;
+    }
+    if (job.status === 'executing') {
+      return <Loader2 className="h-4 w-4 animate-spin" />;
+    }
+    return '-';
+  };
+
+  return (
+    <Card>
+      <CardHeader className="flex flex-row items-center justify-between pb-2">
+        <div>
+          <CardTitle className="text-lg">Purchase Job History</CardTitle>
+          <CardDescription>
+            Track inbox provisioning jobs and retry failed purchases
+          </CardDescription>
+        </div>
+        <Button variant="outline" size="sm" onClick={fetchJobs} disabled={isLoading}>
+          <RefreshCw className={`h-4 w-4 mr-2 ${isLoading ? 'animate-spin' : ''}`} />
+          Refresh
+        </Button>
+      </CardHeader>
+      <CardContent>
+        {isLoading && jobs.length === 0 ? (
+          <div className="flex justify-center py-8">
+            <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+          </div>
+        ) : jobs.length === 0 ? (
+          <div className="text-center py-8 text-muted-foreground">
+            <Mail className="h-12 w-12 mx-auto mb-4 opacity-50" />
+            <p>No purchase jobs yet.</p>
+            <p className="text-sm">
+              Use the &quot;Setup Inboxes&quot; button to provision new inboxes.
+            </p>
+          </div>
+        ) : (
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Status</TableHead>
+                <TableHead>Provider</TableHead>
+                <TableHead>Domains</TableHead>
+                <TableHead>Inboxes</TableHead>
+                <TableHead>Created</TableHead>
+                <TableHead>Duration</TableHead>
+                <TableHead className="text-right">Actions</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {jobs.map((job) => (
+                <>
+                  <TableRow
+                    key={job.jobId}
+                    className={expandedJobId === job.jobId ? 'border-b-0' : ''}
+                  >
+                    <TableCell>{getStatusBadge(job.status)}</TableCell>
+                    <TableCell>{getProviderBadge(job.providerType)}</TableCell>
+                    <TableCell>
+                      <TooltipProvider>
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <span className="cursor-help">
+                              {job.domainNames?.length || 0} domain(s)
+                            </span>
+                          </TooltipTrigger>
+                          <TooltipContent>
+                            <div className="max-w-xs">
+                              {job.domainNames?.length > 0
+                                ? job.domainNames.slice(0, 5).join(', ') +
+                                  (job.domainNames.length > 5
+                                    ? ` +${job.domainNames.length - 5} more`
+                                    : '')
+                                : 'No domains'}
+                            </div>
+                          </TooltipContent>
+                        </Tooltip>
+                      </TooltipProvider>
+                    </TableCell>
+                    <TableCell>
+                      <div className="flex items-center gap-1">
+                        <Mail className="h-3 w-3 text-muted-foreground" />
+                        {job.totalInboxes || '-'}
+                      </div>
+                    </TableCell>
+                    <TableCell>
+                      <TooltipProvider>
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <span className="cursor-help text-sm">
+                              {job.createdAt
+                                ? formatDistanceToNow(new Date(job.createdAt), {
+                                    addSuffix: true,
+                                  })
+                                : '-'}
+                            </span>
+                          </TooltipTrigger>
+                          <TooltipContent>
+                            {job.createdAt
+                              ? format(new Date(job.createdAt), 'PPpp')
+                              : 'Unknown'}
+                          </TooltipContent>
+                        </Tooltip>
+                      </TooltipProvider>
+                    </TableCell>
+                    <TableCell>{formatDuration(job)}</TableCell>
+                    <TableCell className="text-right">
+                      <div className="flex justify-end gap-1">
+                        {job.status === 'failed' && (
+                          <TooltipProvider>
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  onClick={() => handleRetry(job.jobId)}
+                                  disabled={retryingJobId === job.jobId}
+                                >
+                                  {retryingJobId === job.jobId ? (
+                                    <Loader2 className="h-4 w-4 animate-spin" />
+                                  ) : (
+                                    <RotateCcw className="h-4 w-4" />
+                                  )}
+                                </Button>
+                              </TooltipTrigger>
+                              <TooltipContent>Retry this job</TooltipContent>
+                            </Tooltip>
+                          </TooltipProvider>
+                        )}
+                        <TooltipProvider>
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={() =>
+                                  setExpandedJobId(
+                                    expandedJobId === job.jobId ? null : job.jobId
+                                  )
+                                }
+                              >
+                                <Eye className="h-4 w-4" />
+                              </Button>
+                            </TooltipTrigger>
+                            <TooltipContent>View details</TooltipContent>
+                          </Tooltip>
+                        </TooltipProvider>
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                  {/* Expanded details row */}
+                  {expandedJobId === job.jobId && (
+                    <TableRow key={`${job.jobId}-details`}>
+                      <TableCell colSpan={7} className="bg-muted/50 p-4">
+                        <div className="space-y-3 text-sm">
+                          {job.currentStep && (
+                            <div>
+                              <span className="font-medium">Current Step:</span>{' '}
+                              {job.currentStep}
+                            </div>
+                          )}
+                          <div className="grid grid-cols-2 gap-4">
+                            <div>
+                              <span className="font-medium">Orders:</span>{' '}
+                              {job.ordersCompleted}/{job.ordersTotal} completed
+                            </div>
+                            <div>
+                              <span className="font-medium">Cost:</span> $
+                              {job.monthlyCost?.toFixed(2) || '0.00'}/mo
+                            </div>
+                          </div>
+                          {job.domainNames && job.domainNames.length > 0 && (
+                            <div>
+                              <span className="font-medium">Domains:</span>
+                              <div className="flex flex-wrap gap-1 mt-1">
+                                {job.domainNames.map((domain) => (
+                                  <Badge
+                                    key={domain}
+                                    variant="outline"
+                                    className="text-xs"
+                                  >
+                                    {domain}
+                                  </Badge>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                          {job.errors && job.errors.length > 0 && (
+                            <div className="bg-red-50 border border-red-200 rounded p-3">
+                              <div className="flex items-center gap-2 text-red-700 font-medium mb-2">
+                                <AlertTriangle className="h-4 w-4" />
+                                Errors
+                              </div>
+                              <ul className="list-disc list-inside text-red-600 text-xs space-y-1">
+                                {job.errors.map((error, idx) => (
+                                  <li key={idx}>{error}</li>
+                                ))}
+                              </ul>
+                            </div>
+                          )}
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  )}
+                </>
+              ))}
+            </TableBody>
+          </Table>
+        )}
+      </CardContent>
+    </Card>
+  );
+}

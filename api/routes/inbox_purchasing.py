@@ -50,8 +50,164 @@ from models.inbox_purchasing import (
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
-# In-memory job storage (in production, use Redis or database)
-_purchase_jobs: dict[str, dict] = {}
+# =============================================================================
+# Database Job Storage Helpers
+# =============================================================================
+
+
+async def _create_job_in_db(
+    job_id: str,
+    client_id: UUID,
+    workspace_id: Optional[UUID],
+    provider_type: str,
+    domain_ids: list[UUID],
+    domain_names: list[str],
+    breakdown: dict,
+    request_data: dict,
+    override_age_check: bool = False,
+    custom_purchase: bool = False,
+) -> str:
+    """Create a job record in the database."""
+    await execute(
+        """
+        INSERT INTO inbox_purchase_jobs (
+            id, client_id, workspace_id, status, provider_type,
+            domain_ids, domain_names, entra_orders, google_orders,
+            orders_total, total_inboxes, monthly_cost,
+            request_data, override_age_check, custom_purchase,
+            created_at
+        ) VALUES (
+            $1, $2, $3, 'pending', $4,
+            $5, $6, $7, $8,
+            $9, $10, $11,
+            $12, $13, $14,
+            NOW()
+        )
+        """,
+        UUID(job_id),
+        client_id,
+        workspace_id,
+        provider_type,
+        domain_ids,
+        domain_names,
+        breakdown.get("entra_orders", 0),
+        breakdown.get("google_orders", 0),
+        breakdown.get("total_orders", 0),
+        breakdown.get("total_inboxes", 0),
+        float(breakdown.get("total_orders", 0) * 50),
+        request_data,
+        override_age_check,
+        custom_purchase,
+    )
+    return job_id
+
+
+async def _update_job_status(
+    job_id: str,
+    status: str,
+    current_step: Optional[str] = None,
+    orders_completed: Optional[int] = None,
+    total_inboxes: Optional[int] = None,
+    results: Optional[list] = None,
+    errors: Optional[list[str]] = None,
+) -> None:
+    """Update job status in the database."""
+    import json
+
+    updates = ["status = $2"]
+    params: list = [UUID(job_id), status]
+
+    if current_step is not None:
+        updates.append(f"current_step = ${len(params) + 1}")
+        params.append(current_step)
+
+    if orders_completed is not None:
+        updates.append(f"orders_completed = ${len(params) + 1}")
+        params.append(orders_completed)
+
+    if total_inboxes is not None:
+        updates.append(f"total_inboxes = ${len(params) + 1}")
+        params.append(total_inboxes)
+
+    if results is not None:
+        updates.append(f"results = ${len(params) + 1}")
+        params.append(json.dumps(results))
+
+    if errors is not None:
+        updates.append(f"errors = ${len(params) + 1}")
+        params.append(errors)
+
+    # Update timestamps based on status
+    if status == "executing":
+        updates.append("started_at = NOW()")
+    if status in ("completed", "failed"):
+        updates.append("completed_at = NOW()")
+
+    await execute(
+        f"UPDATE inbox_purchase_jobs SET {', '.join(updates)} WHERE id = $1",
+        *params
+    )
+
+
+async def _get_job_from_db(job_id: str) -> Optional[dict]:
+    """Fetch a job from the database."""
+    import json
+
+    job = await fetch_one(
+        """
+        SELECT id, client_id, workspace_id, status, current_step,
+               provider_type, domain_ids, domain_names,
+               entra_orders, google_orders, orders_completed, orders_total,
+               total_inboxes, monthly_cost,
+               created_at, started_at, completed_at,
+               results, errors, request_data,
+               override_age_check, custom_purchase
+        FROM inbox_purchase_jobs
+        WHERE id = $1
+        """,
+        UUID(job_id)
+    )
+
+    if not job:
+        return None
+
+    # Parse JSONB fields
+    results = job.get("results")
+    if results and isinstance(results, str):
+        results = json.loads(results)
+
+    request_data = job.get("request_data")
+    if request_data and isinstance(request_data, str):
+        request_data = json.loads(request_data)
+
+    return {
+        "job_id": str(job["id"]),
+        "client_id": str(job["client_id"]),
+        "workspace_id": str(job["workspace_id"]) if job.get("workspace_id") else None,
+        "status": job["status"],
+        "current_step": job.get("current_step"),
+        "provider_type": job.get("provider_type"),
+        "domain_ids": [str(d) for d in (job.get("domain_ids") or [])],
+        "domain_names": job.get("domain_names") or [],
+        "breakdown": {
+            "entra_orders": job.get("entra_orders", 0),
+            "google_orders": job.get("google_orders", 0),
+            "total_orders": job.get("orders_total", 0),
+            "total_inboxes": job.get("total_inboxes", 0),
+        },
+        "orders_completed": job.get("orders_completed", 0),
+        "orders_total": job.get("orders_total", 0),
+        "total_inboxes": job.get("total_inboxes", 0),
+        "monthly_cost": float(job.get("monthly_cost", 0)),
+        "started_at": job.get("started_at"),
+        "completed_at": job.get("completed_at"),
+        "created_at": job.get("created_at"),
+        "results": results or [],
+        "errors": job.get("errors") or [],
+        "request_data": request_data,
+        "override_age_check": job.get("override_age_check", False),
+        "custom_purchase": job.get("custom_purchase", False),
+    }
 
 
 def _import_hypertide_modules():
@@ -273,24 +429,36 @@ async def execute_purchase(
     )
     breakdown = ht["calculate_optimal_orders"](target)
 
-    # Store job info
-    _purchase_jobs[job_id] = {
-        "job_id": job_id,
-        "client_id": str(request.client_id),
-        "status": OrderStatus.PENDING,
-        "request": request.model_dump(),
-        "breakdown": {
+    # Get client workspace
+    client = await fetch_one(
+        "SELECT workspace_id FROM clients WHERE id = $1",
+        request.client_id
+    )
+    workspace_id = client.get("workspace_id") if client else None
+
+    # Build domain names list
+    domain_names = []
+    for d in (request.entra_domains or []):
+        domain_names.append(d.domain_name)
+    for d in (request.google_domains or []):
+        domain_names.append(d.domain_name)
+
+    # Store job in database
+    await _create_job_in_db(
+        job_id=job_id,
+        client_id=request.client_id,
+        workspace_id=workspace_id,
+        provider_type="mixed" if breakdown.is_mixed else ("entra" if breakdown.has_entra else "google"),
+        domain_ids=[],  # V1 doesn't track domain IDs
+        domain_names=domain_names,
+        breakdown={
             "entra_orders": breakdown.entra_orders,
             "google_orders": breakdown.google_orders,
             "total_orders": breakdown.entra_orders + breakdown.google_orders,
             "total_inboxes": breakdown.total_inboxes,
         },
-        "started_at": datetime.now(timezone.utc),
-        "completed_at": None,
-        "results": [],
-        "errors": [],
-        "current_step": "Initializing",
-    }
+        request_data=request.model_dump(mode="json"),
+    )
 
     # Start background task
     background_tasks.add_task(
@@ -318,13 +486,8 @@ async def _execute_purchase_task(
     ht: dict,
 ):
     """Background task to execute HyperTide purchase."""
-    job = _purchase_jobs.get(job_id)
-    if not job:
-        return
-
     try:
-        job["status"] = OrderStatus.EXECUTING
-        job["current_step"] = "Preparing order request"
+        await _update_job_status(job_id, "executing", "Preparing order request")
 
         # Build inbox configs
         inbox_configs = [
@@ -365,7 +528,7 @@ async def _execute_purchase_task(
             )
 
         # Build mixed order request
-        job["current_step"] = "Creating HyperTide order request"
+        await _update_job_status(job_id, "executing", "Creating HyperTide order request")
 
         mixed_request = ht["MixedOrderRequest"](
             client_name=request.client_name,
@@ -386,12 +549,12 @@ async def _execute_purchase_task(
         )
 
         # Execute purchase
-        job["current_step"] = "Executing HyperTide purchase automation"
+        await _update_job_status(job_id, "executing", "Executing HyperTide purchase automation")
 
         result = await ht["purchase_mixed_order"](mixed_request)
 
         # Process results
-        job["current_step"] = "Processing results"
+        await _update_job_status(job_id, "executing", "Processing results")
 
         order_results = []
         for order_result in result.order_results:
@@ -405,50 +568,44 @@ async def _execute_purchase_task(
                 "error": order_result.error_message,
             })
 
-        job["results"] = order_results
-        job["total_inboxes"] = result.total_inboxes
-        job["total_monthly_capacity"] = result.total_monthly_capacity
-
         if result.success:
-            job["status"] = OrderStatus.COMPLETED
-            job["current_step"] = "Saving inboxes to database"
-            
+            await _update_job_status(job_id, "executing", "Saving inboxes to database")
+
             # Save inboxes to database
             try:
                 client = await fetch_one(
                     "SELECT workspace_id FROM clients WHERE id = $1",
-                    UUID(job["client_id"])
+                    request.client_id
                 )
                 if client and client["workspace_id"]:
                     workspace_id = client["workspace_id"]
                     created_count = 0
-                    
+
                     for order_result in result.order_results:
                         if order_result.success:
                             # Get the domains from this order result
                             domains = order_result.domains_created or []
                             inboxes = request.inbox_names
-                            
+
                             # Create inbox records for each domain and name combination
                             for domain in domains:
                                 for name in inboxes[:order_result.total_inboxes // len(domains) if domains else 0]:
                                     email = f"{name.first_name.lower()}.{name.last_name.lower()}@{domain}"
-                                    
+
                                     # Check if exists
                                     existing = await fetch_one(
                                         "SELECT id FROM sender_accounts WHERE workspace_id = $1 AND email_address = $2",
                                         workspace_id, email
                                     )
-                                    
+
                                     if not existing:
                                         await execute(
                                             "INSERT INTO sender_accounts (workspace_id, email_address, inbox_state) VALUES ($1, $2, 'live')",
                                             workspace_id, email
                                         )
                                         created_count += 1
-                    
+
                     logger.info(f"Created {created_count} inbox records in database")
-                    job["db_records_created"] = created_count
 
                     # Update domain status to 'active' for provisioned domains
                     domains_provisioned = []
@@ -470,25 +627,31 @@ async def _execute_purchase_task(
                             domains_provisioned
                         )
                         logger.info(f"Updated {len(domains_provisioned)} domain(s) to 'active' status")
-                        job["domains_activated"] = domains_provisioned
             except Exception as db_error:
                 logger.error(f"Failed to save inboxes to database: {db_error}")
-                job["db_error"] = str(db_error)
-            
-            job["current_step"] = "Purchase completed successfully"
-        else:
-            job["status"] = OrderStatus.FAILED
-            job["errors"] = result.errors
-            job["current_step"] = "Purchase completed with errors"
 
-        job["completed_at"] = datetime.now(timezone.utc)
+            # Mark job as completed
+            await _update_job_status(
+                job_id, "completed", "Purchase completed successfully",
+                orders_completed=len([r for r in order_results if r["success"]]),
+                total_inboxes=result.total_inboxes,
+                results=order_results,
+            )
+        else:
+            # Mark job as failed
+            await _update_job_status(
+                job_id, "failed", "Purchase completed with errors",
+                orders_completed=len([r for r in order_results if r["success"]]),
+                results=order_results,
+                errors=result.errors,
+            )
 
     except Exception as e:
         logger.error(f"Purchase task failed: {e}")
-        job["status"] = OrderStatus.FAILED
-        job["errors"].append(str(e))
-        job["current_step"] = f"Failed: {str(e)}"
-        job["completed_at"] = datetime.now(timezone.utc)
+        await _update_job_status(
+            job_id, "failed", f"Failed: {str(e)}",
+            errors=[str(e)],
+        )
 
 
 @router.get("/status/{job_id}", response_model=PurchaseStatusResponse)
@@ -498,7 +661,7 @@ async def get_purchase_status(job_id: str):
 
     Poll this endpoint to track progress of a purchase initiated via /execute.
     """
-    job = _purchase_jobs.get(job_id)
+    job = await _get_job_from_db(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Purchase job not found")
 
@@ -509,7 +672,7 @@ async def get_purchase_status(job_id: str):
             OrderResultResponse(
                 success=r["success"],
                 order_type=r["order_type"],
-                quantity=r["quantity"],
+                quantity=r.get("quantity", 1),
                 inboxes_created=r.get("inboxes_created", 0),
                 domains_created=r.get("domains_created", []),
                 order_id=r.get("order_id"),
@@ -525,11 +688,11 @@ async def get_purchase_status(job_id: str):
         client_id=uuid.UUID(job["client_id"]),
         status=job["status"],
         current_step=job.get("current_step"),
-        orders_completed=len([r for r in job.get("results", []) if r.get("success")]),
+        orders_completed=job.get("orders_completed", 0),
         orders_total=breakdown.get("total_orders", 0),
         results=results,
         total_inboxes=job.get("total_inboxes", 0),
-        total_monthly_capacity=job.get("total_monthly_capacity", 0),
+        total_monthly_capacity=job.get("total_inboxes", 0) * 50,
         started_at=job.get("started_at"),
         completed_at=job.get("completed_at"),
         errors=job.get("errors", []),
@@ -542,53 +705,135 @@ async def cancel_purchase_job(job_id: str):
     Cancel or clean up a purchase job.
 
     Note: Cannot cancel in-progress HyperTide automation.
-    This only removes the job from tracking.
+    This marks the job as cancelled but does not delete it from history.
     """
-    if job_id not in _purchase_jobs:
+    job = await _get_job_from_db(job_id)
+    if not job:
         raise HTTPException(status_code=404, detail="Purchase job not found")
 
-    job = _purchase_jobs[job_id]
-
-    if job["status"] == OrderStatus.EXECUTING:
+    if job["status"] == "executing":
         return {
             "message": "Cannot cancel in-progress purchase. HyperTide automation must complete.",
             "status": job["status"],
         }
 
-    del _purchase_jobs[job_id]
-    return {"message": "Purchase job removed", "job_id": job_id}
+    # Mark as cancelled instead of deleting (preserve history)
+    await _update_job_status(job_id, "cancelled", "Cancelled by user")
+    return {"message": "Purchase job cancelled", "job_id": job_id}
 
 
 @router.get("/jobs")
 async def list_purchase_jobs(
     client_id: Optional[str] = None,
-    status: Optional[OrderStatus] = None,
+    status: Optional[str] = None,
+    limit: int = 50,
+    offset: int = 0,
 ):
     """
-    List purchase jobs, optionally filtered by client or status.
+    List purchase jobs from database, optionally filtered by client or status.
     """
-    jobs = list(_purchase_jobs.values())
+    conditions = []
+    params: list = []
 
     if client_id:
-        jobs = [j for j in jobs if j["client_id"] == client_id]
+        conditions.append(f"client_id = ${len(params) + 1}")
+        params.append(UUID(client_id))
 
     if status:
-        jobs = [j for j in jobs if j["status"] == status]
+        conditions.append(f"status = ${len(params) + 1}")
+        params.append(status)
+
+    where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+
+    jobs = await fetch_all(
+        f"""
+        SELECT id, client_id, status, current_step, provider_type,
+               domain_names, entra_orders, google_orders, orders_completed, orders_total,
+               total_inboxes, monthly_cost,
+               created_at, started_at, completed_at, errors
+        FROM inbox_purchase_jobs
+        {where_clause}
+        ORDER BY created_at DESC
+        LIMIT ${len(params) + 1} OFFSET ${len(params) + 2}
+        """,
+        *params, limit, offset
+    )
+
+    total_result = await fetch_one(
+        f"SELECT COUNT(*) as count FROM inbox_purchase_jobs {where_clause}",
+        *params
+    )
 
     return {
         "jobs": [
             {
-                "job_id": j["job_id"],
-                "client_id": j["client_id"],
+                "job_id": str(j["id"]),
+                "client_id": str(j["client_id"]),
                 "status": j["status"],
                 "current_step": j.get("current_step"),
-                "started_at": j.get("started_at"),
-                "completed_at": j.get("completed_at"),
+                "provider_type": j.get("provider_type"),
+                "domain_names": j.get("domain_names") or [],
+                "entra_orders": j.get("entra_orders", 0),
+                "google_orders": j.get("google_orders", 0),
+                "orders_completed": j.get("orders_completed", 0),
+                "orders_total": j.get("orders_total", 0),
+                "total_inboxes": j.get("total_inboxes", 0),
+                "monthly_cost": float(j.get("monthly_cost", 0) or 0),
+                "created_at": j.get("created_at").isoformat() if j.get("created_at") else None,
+                "started_at": j.get("started_at").isoformat() if j.get("started_at") else None,
+                "completed_at": j.get("completed_at").isoformat() if j.get("completed_at") else None,
+                "errors": j.get("errors") or [],
             }
             for j in jobs
         ],
-        "total": len(jobs),
+        "total": total_result["count"] if total_result else 0,
     }
+
+
+@router.post("/jobs/{job_id}/retry")
+async def retry_failed_job(job_id: str, background_tasks: BackgroundTasks):
+    """
+    Retry a failed purchase job using stored request data.
+
+    Creates a new job with the same parameters and marks the old job as superseded.
+    """
+    import json
+
+    job = await _get_job_from_db(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    if job["status"] not in ("failed",):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Can only retry failed jobs. Current status: {job['status']}"
+        )
+
+    if not job.get("request_data"):
+        raise HTTPException(
+            status_code=400,
+            detail="Job has no stored request data for retry"
+        )
+
+    # Mark old job as superseded
+    await _update_job_status(job_id, "superseded", "Superseded by retry")
+
+    # Create and execute new job with the same request
+    request_data = job["request_data"]
+
+    # Determine which type of request this was and re-execute
+    if "order_groups" in request_data:
+        # V2 request
+        new_request = ExecutePurchaseV2Request(**request_data)
+        return await execute_purchase_v2(new_request, background_tasks)
+    elif "domain_ids" in request_data:
+        # Smart order request
+        new_request = SmartOrderRequest(**request_data)
+        return await execute_smart_order(new_request, background_tasks)
+    else:
+        # V1 request
+        new_request = ExecutePurchaseRequest(**request_data)
+        return await execute_purchase(new_request, background_tasks)
 
 
 # =============================================================================
@@ -811,35 +1056,40 @@ async def execute_purchase_v2(
     google_orders = sum(1 for g in request.order_groups if g.order_type == InboxProviderType.GOOGLE)
     total_inboxes = (entra_orders * 100) + (google_orders * 15)
 
-    # Store job info
-    _purchase_jobs[job_id] = {
-        "job_id": job_id,
-        "client_id": str(request.client_id),
-        "workspace_id": str(client["workspace_id"]),
-        "status": OrderStatus.PENDING,
-        "request": request.model_dump(mode="json"),
-        "breakdown": {
+    # Get domain names for storage
+    domain_names = [d["domain_name"] for d in domain_rows]
+
+    # Determine provider type
+    provider_type = "mixed" if entra_orders > 0 and google_orders > 0 else ("entra" if entra_orders > 0 else "google")
+
+    # Store job in database
+    await _create_job_in_db(
+        job_id=job_id,
+        client_id=request.client_id,
+        workspace_id=client["workspace_id"],
+        provider_type=provider_type,
+        domain_ids=all_domain_ids,
+        domain_names=domain_names,
+        breakdown={
             "entra_orders": entra_orders,
             "google_orders": google_orders,
             "total_orders": entra_orders + google_orders,
             "total_inboxes": total_inboxes,
         },
-        "started_at": datetime.now(timezone.utc),
-        "completed_at": None,
-        "results": [],
-        "errors": [],
-        "current_step": "Initializing",
-        "domains_by_id": {str(k): v for k, v in domains_by_id.items()},
-        "base_names": base_names,
-        "pre_generated": pre_generated,
-    }
+        request_data=request.model_dump(mode="json"),
+        override_age_check=request.override_age_check,
+    )
 
-    # Start background task
+    # Start background task - pass necessary data directly instead of storing in-memory
     background_tasks.add_task(
         _execute_purchase_v2_task,
         job_id,
         request,
         ht,
+        {str(k): v for k, v in domains_by_id.items()},
+        base_names,
+        pre_generated,
+        str(client["workspace_id"]),
     )
 
     total_orders = entra_orders + google_orders
@@ -858,25 +1108,21 @@ async def _execute_purchase_v2_task(
     job_id: str,
     request: ExecutePurchaseV2Request,
     ht: dict,
+    domains_by_id: dict,
+    base_names: list,
+    pre_generated: list,
+    workspace_id_str: str,
 ):
     """Background task to execute V2 HyperTide purchase with domain grouping."""
-    job = _purchase_jobs.get(job_id)
-    if not job:
-        return
-
     try:
-        job["status"] = OrderStatus.EXECUTING
-        job["current_step"] = "Preparing order requests"
-
-        domains_by_id = job["domains_by_id"]
-        base_names = job["base_names"]
-        pre_generated = job["pre_generated"]
+        await _update_job_status(job_id, "executing", "Preparing order requests")
 
         # Process each order group
         all_results = []
+        total_groups = len(request.order_groups)
 
         for group_idx, group in enumerate(request.order_groups):
-            job["current_step"] = f"Processing order group {group_idx + 1}/{len(request.order_groups)}"
+            await _update_job_status(job_id, "executing", f"Processing order group {group_idx + 1}/{total_groups}")
 
             # Get domain names for this group
             domain_names = [
@@ -934,7 +1180,7 @@ async def _execute_purchase_v2_task(
             inboxes_per_domain = 50 if group.order_type == InboxProviderType.ENTRA else 3
             expected_inboxes = len(domain_names) * inboxes_per_domain
 
-            job["current_step"] = f"Executing Hypertide order for {len(domain_names)} {group.order_type.value} domains"
+            await _update_job_status(job_id, "executing", f"Executing Hypertide order for {len(domain_names)} {group.order_type.value} domains")
 
             try:
                 # Create order bundle for this group
@@ -989,15 +1235,14 @@ async def _execute_purchase_v2_task(
                     "error": str(order_error),
                 })
 
-        job["results"] = all_results
-        job["current_step"] = "Updating database records"
+        await _update_job_status(job_id, "executing", "Updating database records")
 
         # Update domain infrastructure types
-        workspace_id = UUID(job["workspace_id"])
+        workspace_id = UUID(workspace_id_str)
         for result in all_results:
             if result["success"]:
                 infra_type = result["order_type"]
-                domain_ids = [UUID(d) for d in result["domain_ids"]]
+                domain_ids_to_update = [UUID(d) for d in result["domain_ids"]]
 
                 # Mark domains with infrastructure type
                 await execute(
@@ -1010,35 +1255,44 @@ async def _execute_purchase_v2_task(
                     WHERE id = ANY($2)
                     """,
                     infra_type,
-                    domain_ids
+                    domain_ids_to_update
                 )
-                logger.info(f"Marked {len(domain_ids)} domains as {infra_type}")
+                logger.info(f"Marked {len(domain_ids_to_update)} domains as {infra_type}")
 
         # Calculate final totals
         successful_results = [r for r in all_results if r["success"]]
-        job["total_inboxes"] = sum(r["inboxes_created"] for r in successful_results)
-        job["total_monthly_capacity"] = job["total_inboxes"] * 50  # ~50 emails/inbox/month capacity
+        total_inboxes = sum(r["inboxes_created"] for r in successful_results)
+        orders_completed = len(successful_results)
 
         if all(r["success"] for r in all_results):
-            job["status"] = OrderStatus.COMPLETED
-            job["current_step"] = "Purchase completed successfully"
+            await _update_job_status(
+                job_id, "completed", "Purchase completed successfully",
+                orders_completed=orders_completed,
+                total_inboxes=total_inboxes,
+                results=all_results,
+            )
         elif any(r["success"] for r in all_results):
-            job["status"] = OrderStatus.COMPLETED
-            job["current_step"] = "Purchase completed with some errors"
-            job["errors"] = [r["error"] for r in all_results if r.get("error")]
+            await _update_job_status(
+                job_id, "completed", "Purchase completed with some errors",
+                orders_completed=orders_completed,
+                total_inboxes=total_inboxes,
+                results=all_results,
+                errors=[r["error"] for r in all_results if r.get("error")],
+            )
         else:
-            job["status"] = OrderStatus.FAILED
-            job["current_step"] = "Purchase failed"
-            job["errors"] = [r["error"] for r in all_results if r.get("error")]
-
-        job["completed_at"] = datetime.now(timezone.utc)
+            await _update_job_status(
+                job_id, "failed", "Purchase failed",
+                orders_completed=0,
+                results=all_results,
+                errors=[r["error"] for r in all_results if r.get("error")],
+            )
 
     except Exception as e:
         logger.error(f"Purchase V2 task failed: {e}")
-        job["status"] = OrderStatus.FAILED
-        job["errors"].append(str(e))
-        job["current_step"] = f"Failed: {str(e)}"
-        job["completed_at"] = datetime.now(timezone.utc)
+        await _update_job_status(
+            job_id, "failed", f"Failed: {str(e)}",
+            errors=[str(e)],
+        )
 
 
 # =============================================================================

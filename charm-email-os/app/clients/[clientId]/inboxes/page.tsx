@@ -2,7 +2,7 @@
 
 import { useState, useMemo, useEffect, useCallback } from 'react';
 import { useParams } from 'next/navigation';
-import { Plus, Globe, Mail, Info, Sparkles, AlertTriangle, CheckCheck, Loader2, AlertCircle, ShoppingCart, Package, Users } from 'lucide-react';
+import { Plus, Globe, Mail, Info, Sparkles, AlertTriangle, CheckCheck, Loader2, AlertCircle, ShoppingCart, Package, Users, History } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
@@ -21,7 +21,7 @@ import {
   DomainInboxTree,
   SenderNamesTab,
 } from '@/components/inboxes';
-import { DomainCandidatesTable, DomainsNeedingSetupTable, InboxProvisionModal } from '@/components/purchasing';
+import { DomainCandidatesTable, DomainsNeedingSetupTable, InboxProvisionModal, PurchaseJobsTable } from '@/components/purchasing';
 import { useClientStore, useInfrastructureStore } from '@/lib/stores';
 import { domainSourcingApi, subscriptionApi, type CanGenerateResponse, type GenerateForClientResponse } from '@/lib/api';
 import type { Domain, Inbox, SubscriptionWithUsage } from '@/lib/types';
@@ -281,6 +281,10 @@ export default function InboxesPage() {
             <TabsTrigger value="names" className="flex items-center gap-2">
               <Users className="h-4 w-4" />
               Names
+            </TabsTrigger>
+            <TabsTrigger value="jobs" className="flex items-center gap-2">
+              <History className="h-4 w-4" />
+              Jobs
             </TabsTrigger>
           </TabsList>
 
@@ -566,6 +570,17 @@ export default function InboxesPage() {
               onSave={() => {
                 // Refresh client data after saving names
                 fetchClients();
+              }}
+            />
+          </TabsContent>
+
+          {/* Jobs Tab - Purchase Job History */}
+          <TabsContent value="jobs">
+            <PurchaseJobsTable
+              clientId={clientId}
+              onJobRetried={() => {
+                // Refresh domains after a job is retried
+                fetchDomainsByClient(clientId);
               }}
             />
           </TabsContent>

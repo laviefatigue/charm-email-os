@@ -2509,6 +2509,18 @@ export const inboxProvisioningApi = {
     );
     return toCamelCase<SmartOrderResponse>(response);
   },
+
+  /**
+   * Retry a failed purchase job.
+   * Creates a new job with the same parameters and marks the old job as superseded.
+   */
+  async retryJob(jobId: string): Promise<SmartOrderResponse> {
+    const response = await fetchApi<Record<string, unknown>>(
+      `/api/inbox-purchasing/jobs/${jobId}/retry`,
+      { method: 'POST' }
+    );
+    return toCamelCase<SmartOrderResponse>(response);
+  },
 };
 
 // ===== COMBINED API EXPORT =====
