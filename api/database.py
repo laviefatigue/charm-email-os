@@ -481,3 +481,45 @@ async def _init_subscription_tables() -> None:
         logger.info("Subscription changes table ready")
     except Exception as e:
         logger.warning(f"Subscription changes table note: {e}")
+
+    # Initialize inbox purchase jobs table (Feature 11)
+    await _init_purchase_jobs_table()
+
+
+async def _init_purchase_jobs_table() -> None:
+    """Initialize inbox purchase jobs table for job persistence and retry capability"""
+
+    create_jobs_table = """
+        CREATE TABLE IF NOT EXISTS inbox_purchase_jobs (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            client_id UUID NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
+            workspace_id UUID REFERENCES workspaces(id),
+            status VARCHAR(50) DEFAULT 'pending',
+            current_step TEXT,
+            provider_type VARCHAR(20),
+            domain_ids UUID[],
+            domain_names TEXT[],
+            entra_orders INTEGER DEFAULT 0,
+            google_orders INTEGER DEFAULT 0,
+            orders_completed INTEGER DEFAULT 0,
+            orders_total INTEGER DEFAULT 0,
+            total_inboxes INTEGER DEFAULT 0,
+            monthly_cost DECIMAL(10,2),
+            created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+            started_at TIMESTAMP WITH TIME ZONE,
+            completed_at TIMESTAMP WITH TIME ZONE,
+            results JSONB,
+            errors TEXT[],
+            request_data JSONB,
+            override_age_check BOOLEAN DEFAULT FALSE,
+            custom_purchase BOOLEAN DEFAULT FALSE
+        );
+        CREATE INDEX IF NOT EXISTS idx_purchase_jobs_client ON inbox_purchase_jobs(client_id, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_purchase_jobs_status ON inbox_purchase_jobs(status);
+        CREATE INDEX IF NOT EXISTS idx_purchase_jobs_retry ON inbox_purchase_jobs(status) WHERE status = 'failed';
+    """
+    try:
+        await execute(create_jobs_table)
+        logger.info("Inbox purchase jobs table ready")
+    except Exception as e:
+        logger.warning(f"Inbox purchase jobs table note: {e}")
