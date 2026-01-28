@@ -1,0 +1,154 @@
+# Charm Email OS - Purchase Worker (Persistent Daemon)
+#
+# This is a PERSISTENT CONTAINER that runs continuously, polling the database
+# for pending purchase jobs (worker_mode='worker') and spawning Claude Code
+# to execute each purchase via Playwright browser automation on Hypertide.
+#
+# Based on Dockerfile.strategy-worker with Playwright/Chromium additions.
+#
+# IMPORTANT: Runs as non-root user 'claude' because Claude Code's
+# --dangerously-skip-permissions flag cannot be used with root privileges.
+#
+# Authentication Setup (see docs/claude-docker-auth.md for full guide):
+#
+#   RECOMMENDED: Long-lived token (never expires)
+#     docker exec -it <container_id> bash
+#     claude setup-token
+#     # Save token to .credentials.json (see docs)
+#
+#   ALTERNATIVE: OAuth (expires ~30 days)
+#     docker exec -it <container_id> bash
+#     claude /login
+#     # Follow browser OAuth flow, then exit
+#
+# Usage:
+#   docker build -t charm-purchase-worker -f Dockerfile.purchase-worker .
+#   docker run -d \
+#     -e POSTGRES_HOST=... -e POSTGRES_PORT=... \
+#     -e POSTGRES_DB=... -e POSTGRES_USER=... -e POSTGRES_PASSWORD=... \
+#     -v /var/claude-credentials-purchase:/home/claude/.claude \
+#     --shm-size=256m \
+#     --restart unless-stopped \
+#     charm-purchase-worker
+
+FROM debian:bookworm-slim
+
+# Prevent interactive prompts during package installation
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install system dependencies + Chromium dependencies for Playwright
+RUN apt-get update && apt-get install -y \
+    curl \
+    ca-certificates \
+    git \
+    python3 \
+    python3-pip \
+    python3-venv \
+    nodejs \
+    npm \
+    sudo \
+    procps \
+    # Chromium/Playwright dependencies
+    libnss3 \
+    libatk1.0-0 \
+    libatk-bridge2.0-0 \
+    libcups2 \
+    libdrm2 \
+    libxkbcommon0 \
+    libxcomposite1 \
+    libxdamage1 \
+    libxfixes3 \
+    libxrandr2 \
+    libgbm1 \
+    libpango-1.0-0 \
+    libcairo2 \
+    libasound2 \
+    libatspi2.0-0 \
+    libwayland-client0 \
+    fonts-liberation \
+    fonts-noto-color-emoji \
+    xdg-utils \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create non-root user 'claude' for running Claude Code
+# --dangerously-skip-permissions cannot be used with root privileges
+RUN useradd -m -s /bin/bash claude && \
+    mkdir -p /home/claude/.claude && \
+    chown -R claude:claude /home/claude
+
+# Switch to claude user for Claude Code installation
+USER claude
+WORKDIR /home/claude
+
+# Install Claude Code CLI as non-root user
+RUN curl -fsSL https://claude.ai/install.sh | bash
+
+# Add Claude to PATH for the claude user
+ENV PATH="/home/claude/.local/bin:${PATH}"
+
+# Switch back to root for system-level operations
+USER root
+
+# Set up working directory
+WORKDIR /app
+
+# Copy MCP server requirements first (for layer caching)
+COPY requirements-purchase-mcp.txt /app/
+
+# Install Python MCP + Playwright dependencies
+RUN pip3 install --break-system-packages --no-cache-dir -r requirements-purchase-mcp.txt
+
+# Install Playwright Chromium browser (as claude user for correct permissions)
+USER claude
+RUN python3 -m playwright install chromium
+USER root
+
+# Copy MCP server code
+COPY purchase_mcp/ /app/purchase_mcp/
+
+# Copy MCP configuration
+COPY purchase_mcp_config.json /app/
+
+# Copy Claude skill (embedded in prompt by worker)
+COPY .claude/ /app/.claude/
+
+# Copy the persistent worker script
+COPY purchase_worker.py /app/
+
+# Make app directory accessible to claude user
+RUN chown -R claude:claude /app
+
+# Volume mount point for Claude credentials
+# Mount host credentials to /home/claude/.claude (not /root/.claude)
+# OAuth tokens persist here and can auto-refresh
+VOLUME /home/claude/.claude
+
+# Environment variables for database connection
+ENV POSTGRES_HOST=""
+ENV POSTGRES_PORT="5432"
+ENV POSTGRES_DB="postgres"
+ENV POSTGRES_USER=""
+ENV POSTGRES_PASSWORD=""
+
+# Worker configuration
+ENV POLL_INTERVAL="10"
+ENV CLAUDE_ACCOUNT=""
+ENV JOB_TIMEOUT="600"
+
+# Switch to non-root user for execution
+USER claude
+
+# Health check: verify the worker process is running
+# The worker should stay alive indefinitely, polling for jobs
+HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
+    CMD pgrep -f "python3.*purchase_worker.py" || exit 1
+
+# Run the persistent worker (daemon process)
+# Unlike batch container, this stays running and polls for jobs
+CMD ["python3", "/app/purchase_worker.py"]
+
+# Labels for documentation
+LABEL org.opencontainers.image.title="Charm Purchase Worker"
+LABEL org.opencontainers.image.description="Persistent daemon container for Hypertide inbox purchase with Claude Code + Playwright"
+LABEL org.opencontainers.image.vendor="Charm Email OS"
+LABEL org.opencontainers.image.version="1.0.0"

@@ -1306,6 +1306,7 @@ class SmartOrderRequest(BaseModel):
     provider_type: str = Field(default="entra", description="'entra' or 'google'")
     override_age_check: bool = Field(default=False, description="Allow domains younger than 30 days")
     custom_purchase: bool = Field(default=False, description="Bypass package limits, only validate domain count")
+    use_worker: bool = Field(default=False, description="Use AI worker container instead of in-process Playwright")
 
 
 class SmartOrderPreview(BaseModel):
@@ -1529,7 +1530,7 @@ async def execute_smart_order(
     client = await fetch_one(
         """
         SELECT c.id, c.name, c.onboarding_data, c.workspace_id,
-               w.emailbison_workspace_id
+               w.emailbison_workspace_id, w.workspace_name
         FROM clients c
         LEFT JOIN workspaces w ON c.workspace_id = w.id
         WHERE c.id = $1
@@ -1540,6 +1541,80 @@ async def execute_smart_order(
     onboarding_data = client.get("onboarding_data")
     if isinstance(onboarding_data, str):
         onboarding_data = json.loads(onboarding_data)
+
+    # --- Worker Mode: Create self-contained job for AI purchase worker ---
+    if request.use_worker:
+        import os
+
+        # Resolve domain names
+        domain_names = []
+        for did in request.domain_ids:
+            domain = await fetch_one("SELECT domain_name FROM domains WHERE id = $1", did)
+            if domain:
+                domain_names.append(domain["domain_name"])
+
+        # Resolve sender names from onboarding data
+        pre_generated = onboarding_data.get("preGeneratedSenderNames", []) if onboarding_data else []
+        sender_names_json = pre_generated[:10] if pre_generated else []
+
+        # Calculate order count
+        domains_per_order = 2 if request.provider_type == "entra" else 5
+        order_count = len(request.domain_ids) // domains_per_order
+
+        # Create self-contained worker job
+        job_id = str(uuid.uuid4())
+        await execute(
+            """
+            INSERT INTO inbox_purchase_jobs (
+                id, client_id, workspace_id, status, provider_type,
+                domain_ids, domain_names, orders_total, order_count,
+                override_age_check, custom_purchase,
+                worker_mode, hypertide_email, hypertide_password,
+                company_name, forwarding_domain,
+                bison_username, bison_password, bison_workspace_name, bison_url,
+                sender_names, use_saved_payment,
+                created_at
+            ) VALUES (
+                $1, $2, $3, 'pending', $4,
+                $5, $6, $7, $8,
+                $9, $10,
+                'worker', $11, $12,
+                $13, $14,
+                $15, $16, $17, $18,
+                $19, TRUE,
+                NOW()
+            )
+            """,
+            UUID(job_id),
+            request.client_id,
+            client.get("workspace_id"),
+            request.provider_type,
+            request.domain_ids,
+            domain_names,
+            order_count,
+            order_count,
+            request.override_age_check,
+            request.custom_purchase,
+            os.getenv("HYPERTIDE_EMAIL", ""),
+            os.getenv("HYPERTIDE_PASSWORD", ""),
+            client.get("name", "Unknown"),
+            onboarding_data.get("primaryDomain", "") if onboarding_data else "",
+            os.getenv("BISON_USERNAME", "elliott@hirecharm.com"),
+            os.getenv("BISON_PASSWORD", ""),
+            client.get("workspace_name") or "Charm",
+            "https://send.hirecharm.com",
+            json.dumps(sender_names_json),
+        )
+
+        return PurchaseJobResponse(
+            job_id=job_id,
+            client_id=request.client_id,
+            status=OrderStatus.PENDING,
+            message=f"Purchase job queued for AI worker. {order_count} order(s), {len(domain_names)} domains.",
+            estimated_duration_seconds=order_count * 180,
+        )
+
+    # --- Existing V2 Path (in-process Playwright) ---
 
     # Build order groups
     base_names = onboarding_data.get("baseSenderNames", [])

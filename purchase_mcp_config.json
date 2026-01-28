@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "purchase-executor": {
+      "command": "python3",
+      "args": ["/app/purchase_mcp/server.py"]
+    }
+  }
+}

@@ -523,3 +523,63 @@ async def _init_purchase_jobs_table() -> None:
         logger.info("Inbox purchase jobs table ready")
     except Exception as e:
         logger.warning(f"Inbox purchase jobs table note: {e}")
+
+    # Add purchase worker columns (for AI container-based purchasing)
+    worker_columns = [
+        ("hypertide_email", "TEXT"),
+        ("hypertide_password", "TEXT"),
+        ("company_name", "TEXT"),
+        ("forwarding_domain", "TEXT"),
+        ("bison_username", "TEXT"),
+        ("bison_password", "TEXT"),
+        ("bison_workspace_name", "TEXT"),
+        ("bison_url", "TEXT DEFAULT 'https://send.hirecharm.com'"),
+        ("sender_names", "JSONB"),
+        ("use_saved_payment", "BOOLEAN DEFAULT TRUE"),
+        ("order_count", "INTEGER DEFAULT 1"),
+        ("worker_mode", "VARCHAR(20) DEFAULT 'api'"),
+        ("hypertide_order_id", "TEXT"),
+    ]
+
+    for col_name, col_def in worker_columns:
+        check_col = f"""
+            SELECT EXISTS (
+                SELECT FROM information_schema.columns
+                WHERE table_name = 'inbox_purchase_jobs' AND column_name = '{col_name}'
+            ) as col_exists;
+        """
+        col_result = await fetch_one(check_col)
+        if col_result and not col_result.get("col_exists", False):
+            try:
+                await execute(f"ALTER TABLE inbox_purchase_jobs ADD COLUMN {col_name} {col_def}")
+                logger.info(f"Added column {col_name} to inbox_purchase_jobs table")
+            except Exception as e:
+                logger.warning(f"Failed to add column {col_name} to inbox_purchase_jobs: {e}")
+
+    # Create partial index for worker job polling
+    try:
+        await execute("""
+            CREATE INDEX IF NOT EXISTS idx_purchase_jobs_worker_pending
+            ON inbox_purchase_jobs(status, worker_mode)
+            WHERE status = 'pending' AND worker_mode = 'worker'
+        """)
+    except Exception as e:
+        logger.warning(f"Worker pending index note: {e}")
+
+    # Create purchase_job_steps audit table
+    create_steps_table = """
+        CREATE TABLE IF NOT EXISTS purchase_job_steps (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            job_id UUID NOT NULL REFERENCES inbox_purchase_jobs(id) ON DELETE CASCADE,
+            step_name TEXT NOT NULL,
+            screenshot_base64 TEXT,
+            notes TEXT,
+            created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_purchase_steps_job ON purchase_job_steps(job_id, created_at);
+    """
+    try:
+        await execute(create_steps_table)
+        logger.info("Purchase job steps audit table ready")
+    except Exception as e:
+        logger.warning(f"Purchase job steps table note: {e}")
