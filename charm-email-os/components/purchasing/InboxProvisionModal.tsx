@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   Dialog,
   DialogContent,
@@ -22,6 +22,7 @@ import {
 } from '@/components/ui/select';
 import { Switch } from '@/components/ui/switch';
 import { Label } from '@/components/ui/label';
+import { Progress } from '@/components/ui/progress';
 import {
   Loader2,
   CheckCircle2,
@@ -33,10 +34,27 @@ import {
   Server,
   Package,
   Zap,
+  XCircle,
+  RefreshCw,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { inboxProvisioningApi } from '@/lib/api';
 import type { SmartOrderPreview, InfrastructureType } from '@/lib/types';
+
+// Job status types
+type JobStatus = 'pending' | 'executing' | 'completed' | 'failed';
+
+interface JobState {
+  jobId: string;
+  status: JobStatus;
+  currentStep?: string;
+  ordersCompleted: number;
+  ordersTotal: number;
+  totalInboxes: number;
+  errors: string[];
+  startedAt?: string;
+  completedAt?: string;
+}
 
 interface InboxProvisionModalProps {
   open: boolean;
@@ -64,18 +82,48 @@ export function InboxProvisionModal({
   const [customPurchase, setCustomPurchase] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Job tracking state
+  const [jobState, setJobState] = useState<JobState | null>(null);
+  const [isPolling, setIsPolling] = useState(false);
+  const pollingRef = useRef<NodeJS.Timeout | null>(null);
+
   // Calculate required domains for each provider
   const requiredDomains = providerType === 'entra' ? 2 : 5;
   const domainCount = selectedDomainIds.length;
   const canCreateOrder = domainCount >= requiredDomains && domainCount % requiredDomains === 0;
-  const ordersFromDomains = Math.floor(domainCount / requiredDomains);
+
+  // Cleanup polling on unmount or modal close
+  useEffect(() => {
+    return () => {
+      if (pollingRef.current) {
+        clearInterval(pollingRef.current);
+        pollingRef.current = null;
+      }
+    };
+  }, []);
+
+  // Reset state when modal closes
+  useEffect(() => {
+    if (!open) {
+      // Small delay to let the close animation finish
+      setTimeout(() => {
+        setJobState(null);
+        setIsPolling(false);
+        setError(null);
+        if (pollingRef.current) {
+          clearInterval(pollingRef.current);
+          pollingRef.current = null;
+        }
+      }, 300);
+    }
+  }, [open]);
 
   // Load preview when modal opens or settings change
   useEffect(() => {
-    if (open && selectedDomainIds.length > 0) {
+    if (open && selectedDomainIds.length > 0 && !jobState) {
       loadPreview();
     }
-  }, [open, selectedDomainIds, providerType, customPurchase]);
+  }, [open, selectedDomainIds, providerType, customPurchase, jobState]);
 
   const loadPreview = async () => {
     setIsLoading(true);
@@ -97,10 +145,63 @@ export function InboxProvisionModal({
     }
   };
 
+  // Poll for job status
+  const pollJobStatus = useCallback(async (jobId: string) => {
+    try {
+      const status = await inboxProvisioningApi.getJobStatus(jobId);
+
+      setJobState({
+        jobId: status.jobId,
+        status: status.status as JobStatus,
+        currentStep: status.currentStep,
+        ordersCompleted: status.ordersCompleted,
+        ordersTotal: status.ordersTotal,
+        totalInboxes: status.totalInboxes,
+        errors: status.errors || [],
+        startedAt: status.startedAt,
+        completedAt: status.completedAt,
+      });
+
+      // Stop polling if job is complete or failed
+      if (status.status === 'completed' || status.status === 'failed') {
+        setIsPolling(false);
+        if (pollingRef.current) {
+          clearInterval(pollingRef.current);
+          pollingRef.current = null;
+        }
+
+        if (status.status === 'completed') {
+          toast.success(`Successfully provisioned ${status.totalInboxes} inboxes!`);
+          onSuccess();
+        } else {
+          toast.error('Purchase failed. See details below.');
+        }
+      }
+    } catch (err) {
+      console.error('Failed to poll job status:', err);
+      // Don't stop polling on error, might be transient
+    }
+  }, [onSuccess]);
+
+  // Start polling for a job
+  const startPolling = useCallback((jobId: string) => {
+    setIsPolling(true);
+
+    // Initial poll
+    pollJobStatus(jobId);
+
+    // Poll every 3 seconds
+    pollingRef.current = setInterval(() => {
+      pollJobStatus(jobId);
+    }, 3000);
+  }, [pollJobStatus]);
+
   const handleExecute = async () => {
     if (!preview || !preview.isValid) return;
 
     setIsExecuting(true);
+    setError(null);
+
     try {
       const result = await inboxProvisioningApi.executeSmartOrder({
         clientId,
@@ -110,14 +211,39 @@ export function InboxProvisionModal({
         customPurchase,
       });
 
-      toast.success(`Purchase started! Job ID: ${result.jobId}`);
-      onSuccess();
-      onOpenChange(false);
+      // Initialize job state
+      setJobState({
+        jobId: result.jobId,
+        status: 'pending',
+        currentStep: 'Starting purchase...',
+        ordersCompleted: 0,
+        ordersTotal: preview.orderCount,
+        totalInboxes: 0,
+        errors: [],
+      });
+
+      // Start polling for status
+      startPolling(result.jobId);
+
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'Failed to execute order';
+      setError(message);
       toast.error(message);
     } finally {
       setIsExecuting(false);
+    }
+  };
+
+  const handleRetry = () => {
+    setJobState(null);
+    setError(null);
+    loadPreview();
+  };
+
+  const handleClose = () => {
+    // Only allow closing if not executing
+    if (!isExecuting && !isPolling) {
+      onOpenChange(false);
     }
   };
 
@@ -129,20 +255,154 @@ export function InboxProvisionModal({
     );
   };
 
+  const getStatusIcon = (status: JobStatus) => {
+    switch (status) {
+      case 'pending':
+      case 'executing':
+        return <Loader2 className="h-5 w-5 animate-spin text-blue-500" />;
+      case 'completed':
+        return <CheckCircle2 className="h-5 w-5 text-green-500" />;
+      case 'failed':
+        return <XCircle className="h-5 w-5 text-red-500" />;
+    }
+  };
+
+  const getStatusColor = (status: JobStatus) => {
+    switch (status) {
+      case 'pending':
+        return 'bg-yellow-100 text-yellow-800';
+      case 'executing':
+        return 'bg-blue-100 text-blue-800';
+      case 'completed':
+        return 'bg-green-100 text-green-800';
+      case 'failed':
+        return 'bg-red-100 text-red-800';
+    }
+  };
+
+  // Render job progress view
+  const renderJobProgress = () => {
+    if (!jobState) return null;
+
+    const progress = jobState.ordersTotal > 0
+      ? (jobState.ordersCompleted / jobState.ordersTotal) * 100
+      : 0;
+
+    return (
+      <div className="space-y-4">
+        {/* Status header */}
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            {getStatusIcon(jobState.status)}
+            <span className="font-medium">
+              {jobState.status === 'pending' && 'Preparing...'}
+              {jobState.status === 'executing' && 'Processing...'}
+              {jobState.status === 'completed' && 'Complete!'}
+              {jobState.status === 'failed' && 'Failed'}
+            </span>
+          </div>
+          <Badge className={getStatusColor(jobState.status)}>
+            {jobState.status}
+          </Badge>
+        </div>
+
+        {/* Progress bar */}
+        {(jobState.status === 'pending' || jobState.status === 'executing') && (
+          <div className="space-y-2">
+            <Progress value={progress} className="h-2" />
+            <div className="flex justify-between text-xs text-muted-foreground">
+              <span>{jobState.ordersCompleted} / {jobState.ordersTotal} orders</span>
+              <span>{Math.round(progress)}%</span>
+            </div>
+          </div>
+        )}
+
+        {/* Current step */}
+        {jobState.currentStep && (
+          <div className="rounded-lg border bg-muted/30 p-3">
+            <div className="flex items-center gap-2 text-sm">
+              {(jobState.status === 'pending' || jobState.status === 'executing') && (
+                <Loader2 className="h-3 w-3 animate-spin" />
+              )}
+              <span className="text-muted-foreground">{jobState.currentStep}</span>
+            </div>
+          </div>
+        )}
+
+        {/* Success details */}
+        {jobState.status === 'completed' && (
+          <Card className="border-green-200 bg-green-50">
+            <CardContent className="pt-4 space-y-3">
+              <div className="flex items-center gap-2 text-green-700">
+                <CheckCircle2 className="h-5 w-5" />
+                <span className="font-medium">Purchase Successful!</span>
+              </div>
+              <div className="grid grid-cols-2 gap-2 text-sm">
+                <div>
+                  <span className="text-muted-foreground">Inboxes Created:</span>
+                  <span className="ml-2 font-bold text-green-700">{jobState.totalInboxes}</span>
+                </div>
+                <div>
+                  <span className="text-muted-foreground">Orders:</span>
+                  <span className="ml-2 font-medium">{jobState.ordersCompleted}</span>
+                </div>
+              </div>
+              {jobState.completedAt && (
+                <div className="text-xs text-muted-foreground">
+                  Completed at: {new Date(jobState.completedAt).toLocaleString()}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        )}
+
+        {/* Failure details */}
+        {jobState.status === 'failed' && (
+          <Alert variant="destructive">
+            <XCircle className="h-4 w-4" />
+            <AlertTitle>Purchase Failed</AlertTitle>
+            <AlertDescription>
+              {jobState.errors.length > 0 ? (
+                <ul className="list-disc list-inside mt-2 space-y-1">
+                  {jobState.errors.map((err, i) => (
+                    <li key={i} className="text-sm">{err}</li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="mt-2">An unknown error occurred. Please try again.</p>
+              )}
+            </AlertDescription>
+          </Alert>
+        )}
+
+        {/* Job ID for reference */}
+        <div className="text-xs text-muted-foreground">
+          Job ID: <code className="bg-muted px-1 rounded">{jobState.jobId}</code>
+        </div>
+      </div>
+    );
+  };
+
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={handleClose}>
       <DialogContent className="sm:max-w-[500px]">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <Server className="h-5 w-5" />
-            Provision Inboxes for {clientName}
+            {jobState ? 'Purchase Progress' : `Provision Inboxes for ${clientName}`}
           </DialogTitle>
           <DialogDescription>
-            Configure inbox provisioning via Hypertide
+            {jobState
+              ? 'Tracking Hypertide automation progress'
+              : 'Configure inbox provisioning via Hypertide'
+            }
           </DialogDescription>
         </DialogHeader>
 
-        {isLoading ? (
+        {/* Show job progress if we have a job */}
+        {jobState ? (
+          renderJobProgress()
+        ) : isLoading ? (
           <div className="flex items-center justify-center py-8">
             <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
           </div>
@@ -339,30 +599,59 @@ export function InboxProvisionModal({
         ) : null}
 
         <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)}>
-            Cancel
-          </Button>
-          <Button
-            onClick={handleExecute}
-            disabled={
-              isLoading ||
-              isExecuting ||
-              (customPurchase ? !canCreateOrder : !preview?.isValid)
-            }
-            className="bg-orange-600 hover:bg-orange-700"
-          >
-            {isExecuting ? (
+          {jobState ? (
+            // Job in progress or complete - show appropriate buttons
+            jobState.status === 'completed' ? (
+              <Button onClick={() => onOpenChange(false)}>
+                <CheckCircle2 className="h-4 w-4 mr-2" />
+                Done
+              </Button>
+            ) : jobState.status === 'failed' ? (
               <>
-                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                Processing...
+                <Button variant="outline" onClick={() => onOpenChange(false)}>
+                  Close
+                </Button>
+                <Button onClick={handleRetry}>
+                  <RefreshCw className="h-4 w-4 mr-2" />
+                  Try Again
+                </Button>
               </>
             ) : (
-              <>
-                <Server className="h-4 w-4 mr-2" />
-                Confirm Purchase - ${preview?.monthlyCost ?? 0}/mo
-              </>
-            )}
-          </Button>
+              // Still executing - show cancel warning
+              <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                <Loader2 className="h-4 w-4 animate-spin" />
+                Please wait while the purchase completes...
+              </div>
+            )
+          ) : (
+            // Preview mode - show cancel and execute buttons
+            <>
+              <Button variant="outline" onClick={() => onOpenChange(false)}>
+                Cancel
+              </Button>
+              <Button
+                onClick={handleExecute}
+                disabled={
+                  isLoading ||
+                  isExecuting ||
+                  (customPurchase ? !canCreateOrder : !preview?.isValid)
+                }
+                className="bg-orange-600 hover:bg-orange-700"
+              >
+                {isExecuting ? (
+                  <>
+                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                    Starting...
+                  </>
+                ) : (
+                  <>
+                    <Server className="h-4 w-4 mr-2" />
+                    Confirm Purchase - ${preview?.monthlyCost ?? 0}/mo
+                  </>
+                )}
+              </Button>
+            </>
+          )}
         </DialogFooter>
       </DialogContent>
     </Dialog>
