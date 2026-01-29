@@ -142,6 +142,9 @@ ENV JOB_TIMEOUT="600"
 # Running headed mode with a virtual display solves this.
 ENV DISPLAY=:99
 
+# Pre-create X11 socket directory (Xvfb needs this, can't create as non-root)
+RUN mkdir -p /tmp/.X11-unix && chmod 1777 /tmp/.X11-unix
+
 # Create startup script that launches Xvfb then the worker
 RUN printf '#!/bin/bash\nXvfb :99 -screen 0 1280x900x24 -nolisten tcp &\nsleep 1\nexec python3 /app/purchase_worker.py\n' > /app/start.sh && \
     chmod +x /app/start.sh
