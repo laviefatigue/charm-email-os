@@ -63,18 +63,9 @@ async def _ensure_browser():
             "--disable-setuid-sandbox",
             "--disable-dev-shm-usage",
             "--disable-gpu",
-            "--disable-blink-features=AutomationControlled",
-            "--window-size=1280,900",
         ]
     )
-    _page = await _browser.new_page(
-        viewport={"width": 1280, "height": 900},
-        user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-    )
-    # Remove webdriver flag to avoid detection
-    await _page.add_init_script("""
-        Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-    """)
+    _page = await _browser.new_page(viewport={"width": 1280, "height": 900})
     return _page
 
 
@@ -279,33 +270,54 @@ async def call_tool(name: str, arguments: dict):
         url = arguments["url"]
         try:
             page = await _ensure_browser()
-            # Use 'load' event - waits for HTML + all resources (JS/CSS) to finish loading
-            # networkidle can hang on SPAs with websockets; domcontentloaded fires too early
+            # Capture console errors for debugging
+            console_errors = []
+            page.on("console", lambda msg: console_errors.append(f"{msg.type}: {msg.text}") if msg.type in ("error", "warning") else None)
+
+            # Use 'load' event with long timeout for slow SPA
             await page.goto(url, wait_until="load", timeout=60000)
-            # Give SPA extra time to hydrate/render after JS loads
-            await asyncio.sleep(3)
-            # Try to wait for meaningful content to appear
+
+            # Give SPA generous time to hydrate/render in Docker (slow environment)
+            # Hypertide SPA takes ~10s in regular Chrome, may take longer in Docker
+            await asyncio.sleep(5)
+
+            # Try to wait for meaningful content with extended timeout
             try:
                 await page.wait_for_function(
                     "() => document.body && document.body.innerText.trim().length > 20",
-                    timeout=15000
+                    timeout=30000
                 )
             except Exception:
-                # If no text content, wait more and try again
+                # Still no content after 30s - try networkidle as last resort
+                try:
+                    await page.wait_for_load_state("networkidle", timeout=15000)
+                except Exception:
+                    pass
                 await asyncio.sleep(5)
+
             screenshot = await _take_screenshot()
             info = await _get_page_info()
-            # Include body text length for debugging
+
+            # Capture debugging info
             try:
                 body_text = await page.inner_text("body")
                 body_len = len(body_text.strip())
             except Exception:
+                body_text = ""
                 body_len = -1
+            try:
+                html_snippet = await page.evaluate("() => document.documentElement.outerHTML.substring(0, 2000)")
+            except Exception:
+                html_snippet = ""
+
             result = {
                 "status": "ok",
                 "url": info["url"],
                 "title": info["title"],
                 "body_text_length": body_len,
+                "body_text_preview": (body_text.strip()[:500] if body_text else ""),
+                "html_snippet": html_snippet,
+                "console_errors": console_errors[:10],
                 "screenshot_base64": screenshot
             }
             return [TextContent(type="text", text=json.dumps(result))]
