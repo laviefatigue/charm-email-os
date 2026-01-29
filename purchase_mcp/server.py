@@ -64,7 +64,6 @@ async def _ensure_browser():
             "--disable-dev-shm-usage",
             "--disable-gpu",
             "--disable-blink-features=AutomationControlled",
-            "--disable-features=VizDisplayCompositor",
             "--window-size=1280,900",
         ]
     )
@@ -280,24 +279,33 @@ async def call_tool(name: str, arguments: dict):
         url = arguments["url"]
         try:
             page = await _ensure_browser()
-            # Use domcontentloaded first (faster), then wait for body content
-            # SPAs often don't reach networkidle due to long-polling/websockets
-            await page.goto(url, wait_until="domcontentloaded", timeout=30000)
-            # Give SPA time to hydrate/render
+            # Use 'load' event - waits for HTML + all resources (JS/CSS) to finish loading
+            # networkidle can hang on SPAs with websockets; domcontentloaded fires too early
+            await page.goto(url, wait_until="load", timeout=60000)
+            # Give SPA extra time to hydrate/render after JS loads
+            await asyncio.sleep(3)
+            # Try to wait for meaningful content to appear
             try:
                 await page.wait_for_function(
-                    "() => document.body && document.body.innerText.trim().length > 50",
+                    "() => document.body && document.body.innerText.trim().length > 20",
                     timeout=15000
                 )
             except Exception:
-                # Fallback: just wait a few seconds if body content check fails
+                # If no text content, wait more and try again
                 await asyncio.sleep(5)
             screenshot = await _take_screenshot()
             info = await _get_page_info()
+            # Include body text length for debugging
+            try:
+                body_text = await page.inner_text("body")
+                body_len = len(body_text.strip())
+            except Exception:
+                body_len = -1
             result = {
                 "status": "ok",
                 "url": info["url"],
                 "title": info["title"],
+                "body_text_length": body_len,
                 "screenshot_base64": screenshot
             }
             return [TextContent(type="text", text=json.dumps(result))]
