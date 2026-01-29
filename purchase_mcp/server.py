@@ -66,6 +66,25 @@ async def _ensure_browser():
         ]
     )
     _page = await _browser.new_page(viewport={"width": 1280, "height": 900})
+
+    # Intercept pre-auth API requests that block SPA rendering on the login page.
+    # Hypertide SPA calls /api/orders during init; in Docker this hangs 2+ min
+    # (ERR_CONNECTION_TIMED_OUT) blocking the login form from rendering.
+    # Only abort pre-login prefetch calls; route is removed after login.
+    _page._login_complete_flag = False
+
+    async def _handle_route(route):
+        if _page._login_complete_flag:
+            await route.continue_()
+            return
+        url = route.request.url
+        # Before login: quickly fail non-auth API calls to unblock SPA render
+        if not any(p in url for p in ["/auth", "/login", "/signin", "/session"]):
+            await route.abort("connectionrefused")
+        else:
+            await route.continue_()
+
+    await _page.route("**/api/**", _handle_route)
     return _page
 
 
@@ -270,6 +289,15 @@ async def call_tool(name: str, arguments: dict):
         url = arguments["url"]
         try:
             page = await _ensure_browser()
+
+            # If navigating away from signin, disable the pre-auth API blocking
+            if hasattr(page, '_login_complete_flag') and "/signin" not in url and "/login" not in url:
+                page._login_complete_flag = True
+                try:
+                    await page.unroute("**/api/**")
+                except Exception:
+                    pass
+
             # Capture console errors for debugging
             console_errors = []
             page.on("console", lambda msg: console_errors.append(f"{msg.type}: {msg.text}") if msg.type in ("error", "warning") else None)
@@ -351,7 +379,18 @@ async def call_tool(name: str, arguments: dict):
                 await page.click(selector, timeout=10000)
 
             # Wait a moment for any navigation/animation
-            await asyncio.sleep(1)
+            await asyncio.sleep(2)
+
+            # Check if we navigated away from signin (login completed)
+            current_url = page.url
+            if hasattr(page, '_login_complete_flag') and not page._login_complete_flag:
+                if "/signin" not in current_url and "/login" not in current_url:
+                    page._login_complete_flag = True
+                    try:
+                        await page.unroute("**/api/**")
+                    except Exception:
+                        pass
+
             screenshot = await _take_screenshot()
             info = await _get_page_info()
             return [TextContent(type="text", text=json.dumps({
