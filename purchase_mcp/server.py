@@ -56,8 +56,11 @@ async def _ensure_browser():
     from playwright.async_api import async_playwright
 
     _playwright = await async_playwright().start()
+    # Use headed mode with Xvfb virtual display for reliable SPA rendering.
+    # Headless Chromium fails to render some SPAs (like Hypertide).
+    # The Dockerfile installs xvfb and the worker launches with DISPLAY=:99.
     _browser = await _playwright.chromium.launch(
-        headless=True,
+        headless=False,
         args=[
             "--no-sandbox",
             "--disable-setuid-sandbox",

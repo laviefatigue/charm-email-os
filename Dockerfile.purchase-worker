@@ -68,6 +68,8 @@ RUN apt-get update && apt-get install -y \
     fonts-liberation \
     fonts-noto-color-emoji \
     xdg-utils \
+    # Xvfb virtual display for headed Chromium (headless mode fails on some SPAs)
+    xvfb \
     && rm -rf /var/lib/apt/lists/*
 
 # Create non-root user 'claude' for running Claude Code
@@ -135,6 +137,15 @@ ENV POLL_INTERVAL="10"
 ENV CLAUDE_ACCOUNT=""
 ENV JOB_TIMEOUT="600"
 
+# Xvfb virtual display for headed Chromium
+# Headless Chromium fails to render some SPAs (like Hypertide).
+# Running headed mode with a virtual display solves this.
+ENV DISPLAY=:99
+
+# Create startup script that launches Xvfb then the worker
+RUN printf '#!/bin/bash\nXvfb :99 -screen 0 1280x900x24 -nolisten tcp &\nsleep 1\nexec python3 /app/purchase_worker.py\n' > /app/start.sh && \
+    chmod +x /app/start.sh
+
 # Switch to non-root user for execution
 USER claude
 
@@ -143,9 +154,8 @@ USER claude
 HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
     CMD pgrep -f "python3.*purchase_worker.py" || exit 1
 
-# Run the persistent worker (daemon process)
-# Unlike batch container, this stays running and polls for jobs
-CMD ["python3", "/app/purchase_worker.py"]
+# Run Xvfb + worker via startup script
+CMD ["/app/start.sh"]
 
 # Labels for documentation
 LABEL org.opencontainers.image.title="Charm Purchase Worker"
