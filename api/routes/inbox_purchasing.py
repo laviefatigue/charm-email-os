@@ -1306,7 +1306,7 @@ class SmartOrderRequest(BaseModel):
     provider_type: str = Field(default="entra", description="'entra' or 'google'")
     override_age_check: bool = Field(default=False, description="Allow domains younger than 30 days")
     custom_purchase: bool = Field(default=False, description="Bypass package limits, only validate domain count")
-    use_worker: bool = Field(default=False, description="Use AI worker container instead of in-process Playwright")
+    use_worker: bool = Field(default=True, description="Use AI worker container instead of in-process Playwright")
 
 
 class SmartOrderPreview(BaseModel):

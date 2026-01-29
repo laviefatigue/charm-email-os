@@ -69,25 +69,6 @@ async def _ensure_browser():
         ]
     )
     _page = await _browser.new_page(viewport={"width": 1280, "height": 900})
-
-    # Intercept pre-auth API requests that block SPA rendering on the login page.
-    # Hypertide SPA calls /api/orders during init; in Docker this hangs 2+ min
-    # (ERR_CONNECTION_TIMED_OUT) blocking the login form from rendering.
-    # Only abort pre-login prefetch calls; route is removed after login.
-    _page._login_complete_flag = False
-
-    async def _handle_route(route):
-        if _page._login_complete_flag:
-            await route.continue_()
-            return
-        url = route.request.url
-        # Before login: quickly fail non-auth API calls to unblock SPA render
-        if not any(p in url for p in ["/auth", "/login", "/signin", "/session"]):
-            await route.abort("connectionrefused")
-        else:
-            await route.continue_()
-
-    await _page.route("**/api/**", _handle_route)
     return _page
 
 
@@ -123,7 +104,7 @@ async def list_tools():
         # --- Browser Tools ---
         Tool(
             name="navigate",
-            description="Navigate to a URL. Waits for page to load (networkidle). Returns screenshot + current URL.",
+            description="Navigate to a URL. Waits for DOM content and interactive elements. Returns screenshot + current URL.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -293,62 +274,32 @@ async def call_tool(name: str, arguments: dict):
         try:
             page = await _ensure_browser()
 
-            # If navigating away from signin, disable the pre-auth API blocking
-            if hasattr(page, '_login_complete_flag') and "/signin" not in url and "/login" not in url:
-                page._login_complete_flag = True
-                try:
-                    await page.unroute("**/api/**")
-                except Exception:
-                    pass
+            # Use domcontentloaded - don't wait for network requests to finish.
+            # Hypertide's backend API (backend.hypertide.io) is unreachable from Docker,
+            # so "load" and "networkidle" hang indefinitely. domcontentloaded fires once
+            # the HTML is parsed and React can hydrate, matching the proven pattern
+            # from HypertideClient in Hypertide/automation/src/.
+            await page.goto(url, wait_until="domcontentloaded", timeout=60000)
 
-            # Capture console errors for debugging
-            console_errors = []
-            page.on("console", lambda msg: console_errors.append(f"{msg.type}: {msg.text}") if msg.type in ("error", "warning") else None)
-
-            # Use 'load' event with long timeout for slow SPA
-            await page.goto(url, wait_until="load", timeout=60000)
-
-            # Give SPA generous time to hydrate/render in Docker (slow environment)
-            # Hypertide SPA takes ~10s in regular Chrome, may take longer in Docker
-            await asyncio.sleep(5)
-
-            # Try to wait for meaningful content with extended timeout
+            # Wait for meaningful content (form elements, buttons, etc.)
             try:
-                await page.wait_for_function(
-                    "() => document.body && document.body.innerText.trim().length > 20",
-                    timeout=30000
+                await page.wait_for_selector(
+                    "input, button, form, [role='main']",
+                    timeout=15000
                 )
             except Exception:
-                # Still no content after 30s - try networkidle as last resort
-                try:
-                    await page.wait_for_load_state("networkidle", timeout=15000)
-                except Exception:
-                    pass
-                await asyncio.sleep(5)
+                pass
+
+            # Brief pause for React hydration
+            await asyncio.sleep(2)
 
             screenshot = await _take_screenshot()
             info = await _get_page_info()
-
-            # Capture debugging info
-            try:
-                body_text = await page.inner_text("body")
-                body_len = len(body_text.strip())
-            except Exception:
-                body_text = ""
-                body_len = -1
-            try:
-                html_snippet = await page.evaluate("() => document.documentElement.outerHTML.substring(0, 2000)")
-            except Exception:
-                html_snippet = ""
 
             result = {
                 "status": "ok",
                 "url": info["url"],
                 "title": info["title"],
-                "body_text_length": body_len,
-                "body_text_preview": (body_text.strip()[:500] if body_text else ""),
-                "html_snippet": html_snippet,
-                "console_errors": console_errors[:10],
                 "screenshot_base64": screenshot
             }
             return [TextContent(type="text", text=json.dumps(result))]
@@ -383,16 +334,6 @@ async def call_tool(name: str, arguments: dict):
 
             # Wait a moment for any navigation/animation
             await asyncio.sleep(2)
-
-            # Check if we navigated away from signin (login completed)
-            current_url = page.url
-            if hasattr(page, '_login_complete_flag') and not page._login_complete_flag:
-                if "/signin" not in current_url and "/login" not in current_url:
-                    page._login_complete_flag = True
-                    try:
-                        await page.unroute("**/api/**")
-                    except Exception:
-                        pass
 
             screenshot = await _take_screenshot()
             info = await _get_page_info()
