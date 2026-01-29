@@ -63,9 +63,19 @@ async def _ensure_browser():
             "--disable-setuid-sandbox",
             "--disable-dev-shm-usage",
             "--disable-gpu",
+            "--disable-blink-features=AutomationControlled",
+            "--disable-features=VizDisplayCompositor",
+            "--window-size=1280,900",
         ]
     )
-    _page = await _browser.new_page(viewport={"width": 1280, "height": 900})
+    _page = await _browser.new_page(
+        viewport={"width": 1280, "height": 900},
+        user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    )
+    # Remove webdriver flag to avoid detection
+    await _page.add_init_script("""
+        Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+    """)
     return _page
 
 
@@ -270,7 +280,18 @@ async def call_tool(name: str, arguments: dict):
         url = arguments["url"]
         try:
             page = await _ensure_browser()
-            await page.goto(url, wait_until="networkidle", timeout=30000)
+            # Use domcontentloaded first (faster), then wait for body content
+            # SPAs often don't reach networkidle due to long-polling/websockets
+            await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            # Give SPA time to hydrate/render
+            try:
+                await page.wait_for_function(
+                    "() => document.body && document.body.innerText.trim().length > 50",
+                    timeout=15000
+                )
+            except Exception:
+                # Fallback: just wait a few seconds if body content check fails
+                await asyncio.sleep(5)
             screenshot = await _take_screenshot()
             info = await _get_page_info()
             result = {
