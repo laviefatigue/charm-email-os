@@ -77,3 +77,28 @@ class QuantityError(ValidationError):
 class ConfigurationError(HypertideError):
     """Configuration is invalid or missing."""
     pass
+
+
+class HypertideUnavailableError(HypertideError):
+    """Hypertide site is not accessible."""
+
+    def __init__(self, url: str, reason: str = ""):
+        self.url = url
+        self.reason = reason
+        msg = f"Hypertide site unavailable at {url}"
+        if reason:
+            msg += f": {reason}"
+        super().__init__(msg)
+
+
+class RetryExhaustedError(HypertideError):
+    """All retry attempts failed."""
+
+    def __init__(self, operation: str, attempts: int, last_error: Exception):
+        self.operation = operation
+        self.attempts = attempts
+        self.last_error = last_error
+        super().__init__(
+            f"Operation '{operation}' failed after {attempts} attempts. "
+            f"Last error: {last_error}"
+        )

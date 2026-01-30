@@ -848,6 +848,23 @@ def _build_sequence_response(s: dict, job_round: int = 1) -> CampaignSequenceRes
             word_count=email.get("word_count"),
         ))
 
+    # Parse spintaxed_sequence_data JSONB into spintaxed email list
+    spintaxed_data = s.get("spintaxed_sequence_data") or []
+    spintaxed_emails = None
+    if spintaxed_data:
+        spintaxed_emails = []
+        for email in spintaxed_data:
+            spintaxed_emails.append(SequenceEmail(
+                position=email.get("position", 1),
+                wait_days=email.get("wait_days", 0),
+                subject_line=email.get("subject_line"),
+                email_body=email.get("email_body", ""),
+                thread_reply=email.get("thread_reply", False),
+                strategy=email.get("strategy"),
+                value_prop=email.get("value_prop"),
+                word_count=email.get("word_count"),
+            ))
+
     return CampaignSequenceResponse(
         id=s["id"],
         job_id=s["job_id"],
@@ -859,6 +876,7 @@ def _build_sequence_response(s: dict, job_round: int = 1) -> CampaignSequenceRes
         score=s.get("score"),
         value_prop_rotation=s.get("value_prop_rotation"),
         emails=emails,
+        spintaxed_emails=spintaxed_emails,
         used_variables=s.get("used_variables"),
         missing_variables=s.get("missing_variables"),
         rationale=s.get("rationale"),

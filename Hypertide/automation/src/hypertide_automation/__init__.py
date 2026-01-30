@@ -40,8 +40,19 @@ from .purchase import (
     purchase_mixed_order,
 )
 from .config import HypertideConfig, StripeConfig, set_config, get_config
+from .exceptions import (
+    HypertideError,
+    AuthenticationError,
+    SessionExpiredError,
+    NavigationError,
+    OrderError,
+    PaymentError,
+    PaymentTimeoutError,
+    HypertideUnavailableError,
+    RetryExhaustedError,
+)
 
-__version__ = "0.2.0"  # Bumped for mixed order support
+__version__ = "0.3.0"  # Bumped for reliability improvements
 __all__ = [
     # Client
     "HypertideClient",
@@ -78,4 +89,14 @@ __all__ = [
     "StripeConfig",
     "set_config",
     "get_config",
+    # Exceptions
+    "HypertideError",
+    "AuthenticationError",
+    "SessionExpiredError",
+    "NavigationError",
+    "OrderError",
+    "PaymentError",
+    "PaymentTimeoutError",
+    "HypertideUnavailableError",
+    "RetryExhaustedError",
 ]

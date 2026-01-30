@@ -1,33 +1,34 @@
-# Charm Email OS - Strategy Worker (Persistent Daemon)
+# Charm Email OS - Domain Worker (Persistent Daemon)
 #
-# This compose file deploys the strategy worker as a persistent daemon
-# that polls for pending strategy generation jobs.
+# This compose file deploys the domain worker as a persistent daemon
+# that polls for pending domain generation jobs.
 #
 # For Coolify deployment:
 # - Create new application with docker-compose
 # - Set environment variables in Coolify UI
 # - Deploy - container will keep running
 #
-# Authentication Setup (see docs/claude-docker-auth.md for full guide):
+# Authentication Setup (see docs/claude-docker-auth.md for details):
 #   Option 1: Long-lived token (RECOMMENDED - never expires)
-#     docker exec -it charm-strategy-worker bash
+#     docker exec -it charm-domain-worker bash
 #     claude setup-token
 #     # Save the token to .credentials.json (see docs)
 #
 #   Option 2: OAuth (expires ~30 days)
-#     docker exec -it charm-strategy-worker bash
+#     docker exec -it charm-domain-worker bash
 #     claude /login
 #     # Follow browser OAuth flow, then exit
 #
 # For local testing:
-#   docker compose -f docker-compose.strategy-worker.yml up -d
+#   docker compose -f docker-compose.domain-worker.yml up -d
 
 services:
-  strategy-worker:
+  domain-worker:
     build:
       context: .
-      dockerfile: Dockerfile.strategy-worker
-    container_name: charm-strategy-worker
+      dockerfile: Dockerfile.domain-worker
+    image: charm-domain-worker:latest
+    container_name: charm-domain-worker
     restart: unless-stopped
     environment:
       # Database connection (set these in Coolify)
@@ -46,10 +47,11 @@ services:
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
     volumes:
       # Persist OAuth credentials between container restarts
-      # Using named volume for better portability and sharing between workers
+      # For local: mkdir -p /var/claude-credentials
+      # For shared auth: use same volume as strategy-worker
       - charm-claude-credentials:/home/claude/.claude
     healthcheck:
-      test: ["CMD", "pgrep", "-f", "python3.*strategy_worker.py"]
+      test: ["CMD", "pgrep", "-f", "python3.*domain_generator_worker.py"]
       interval: 30s
       timeout: 10s
       retries: 3

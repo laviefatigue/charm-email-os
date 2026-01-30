@@ -161,6 +161,7 @@ class CampaignSequenceResponse(BaseModel):
     score: Optional[int] = None
     value_prop_rotation: Optional[List[str]] = None
     emails: List[SequenceEmail]
+    spintaxed_emails: Optional[List[SequenceEmail]] = None  # Populated after spintax processing
     used_variables: Optional[List[str]] = None
     missing_variables: Optional[List[str]] = None
     rationale: Optional[str] = None

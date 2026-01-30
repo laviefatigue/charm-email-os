@@ -14,13 +14,18 @@ Environment variables:
     POSTGRES_HOST, POSTGRES_PORT, POSTGRES_DB, POSTGRES_USER, POSTGRES_PASSWORD
     POLL_INTERVAL (default: 5 seconds)
     CLAUDE_ACCOUNT (default: ClaudeCodeMax - which Claude Code profile to use)
+    OAUTH_CHECK_INTERVAL (default: 3600 - seconds between OAuth health checks)
+    ALERT_WEBHOOK_URL (optional - webhook URL for OAuth expiry alerts)
 """
 import os
 import sys
 import time
 import subprocess
 import logging
+import json
 from datetime import datetime
+from urllib.request import Request, urlopen
+from urllib.error import URLError
 import psycopg2
 from psycopg2.extras import RealDictCursor
 
@@ -42,9 +47,16 @@ DB_CONFIG = {
 
 POLL_INTERVAL = int(os.getenv("POLL_INTERVAL", "5"))
 CLAUDE_ACCOUNT = os.getenv("CLAUDE_ACCOUNT", "ClaudeCodeMax")
+OAUTH_CHECK_INTERVAL = int(os.getenv("OAUTH_CHECK_INTERVAL", "3600"))  # 1 hour default
+ALERT_WEBHOOK_URL = os.getenv("ALERT_WEBHOOK_URL", "")  # Optional webhook for alerts
 
 # Path to this project (for MCP config)
 PROJECT_PATH = os.path.dirname(os.path.abspath(__file__))
+
+# Track OAuth state
+_last_oauth_check = 0
+_oauth_valid = True
+_alert_sent = False
 
 # Skill file path - skill content is embedded in prompt because -p mode doesn't auto-load skills
 SKILL_FILE = os.path.join(PROJECT_PATH, ".claude", "skills", "generate-strategy.md")
@@ -65,6 +77,129 @@ def load_skill_content() -> str:
     except Exception as e:
         logger.error(f"Failed to load skill file: {e}")
         raise
+
+
+def send_alert(title: str, message: str, level: str = "error"):
+    """Send alert via webhook (Discord/Slack compatible).
+
+    Args:
+        title: Alert title
+        message: Alert message body
+        level: Alert level (error, warning, info)
+    """
+    global _alert_sent
+
+    if not ALERT_WEBHOOK_URL:
+        logger.warning(f"ALERT (no webhook configured): {title} - {message}")
+        return
+
+    # Prevent duplicate alerts
+    if _alert_sent and level == "error":
+        logger.info("Alert already sent, skipping duplicate")
+        return
+
+    color_map = {"error": 15158332, "warning": 16776960, "info": 3447003}  # Discord colors
+
+    # Discord webhook format (also works with many Slack webhooks)
+    payload = {
+        "embeds": [{
+            "title": f"🚨 {title}" if level == "error" else f"⚠️ {title}" if level == "warning" else f"ℹ️ {title}",
+            "description": message,
+            "color": color_map.get(level, 3447003),
+            "timestamp": datetime.utcnow().isoformat(),
+            "footer": {"text": "Strategy Worker"}
+        }]
+    }
+
+    try:
+        req = Request(
+            ALERT_WEBHOOK_URL,
+            data=json.dumps(payload).encode('utf-8'),
+            headers={"Content-Type": "application/json"}
+        )
+        urlopen(req, timeout=10)
+        logger.info(f"Alert sent: {title}")
+        if level == "error":
+            _alert_sent = True
+    except URLError as e:
+        logger.error(f"Failed to send alert: {e}")
+
+
+def check_oauth_health(force: bool = False) -> bool:
+    """Check if Claude Code OAuth token is valid.
+
+    Args:
+        force: If True, bypass the interval check and always verify
+
+    Returns:
+        True if OAuth is valid, False if expired/invalid
+    """
+    global _last_oauth_check, _oauth_valid, _alert_sent
+
+    current_time = time.time()
+
+    # Skip check if we checked recently (unless forced)
+    if not force and (current_time - _last_oauth_check) < OAUTH_CHECK_INTERVAL:
+        return _oauth_valid
+
+    _last_oauth_check = current_time
+
+    logger.info("Checking Claude Code OAuth health...")
+
+    # Build command to test auth - use a simple prompt that requires auth
+    cmd = ["claude", "-p", "Say 'OK' and nothing else", "--max-turns", "1"]
+
+    if CLAUDE_ACCOUNT and CLAUDE_ACCOUNT != "default":
+        cmd.extend(["--profile", CLAUDE_ACCOUNT])
+
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            cwd=PROJECT_PATH
+        )
+
+        output = (result.stdout or "") + (result.stderr or "")
+
+        # Check for auth errors
+        if result.returncode != 0 or "401" in output or "OAuth" in output or "authentication" in output.lower():
+            logger.error("OAuth token is EXPIRED or INVALID")
+            logger.error(f"Output: {output[:500]}")
+            _oauth_valid = False
+
+            # Send alert
+            send_alert(
+                "Claude OAuth Token Expired",
+                f"The OAuth token for Claude Code has expired.\n\n"
+                f"**To fix:**\n"
+                f"```\ndocker exec -it charm-strategy-test bash\nclaude /login\n```\n\n"
+                f"Worker will pause until re-authenticated.",
+                level="error"
+            )
+            return False
+
+        logger.info("OAuth token is valid ✓")
+
+        # Send recovery notification if we were previously invalid
+        if not _oauth_valid and _alert_sent:
+            send_alert(
+                "Claude OAuth Token Restored",
+                "OAuth has been successfully re-authenticated.\n\nWorker resuming normal operation.",
+                level="info"
+            )
+
+        _oauth_valid = True
+        _alert_sent = False  # Reset alert flag on success
+        return True
+
+    except subprocess.TimeoutExpired:
+        logger.warning("OAuth check timed out - assuming valid")
+        return _oauth_valid  # Return last known state
+    except Exception as e:
+        logger.error(f"OAuth check failed: {e}")
+        return _oauth_valid
 
 
 def get_db():
@@ -251,7 +386,7 @@ Execute these steps:
 7. Call complete_job with the job_id"""
 
     else:
-        # Initial job - generate 3 variants
+        # Initial job - generate 4-email sequence
         prompt = f"""You are executing a cold email strategy generation task. Follow these instructions exactly:
 
 {skill_content}
@@ -273,9 +408,9 @@ NOW EXECUTE THE TASK WITH THESE PARAMETERS:
 Execute all steps:
 1. Call get_client_context with the client_id
 2. Call get_feedback_summary with the client_id
-3. Generate 3 email variants based on the context
-4. QA score each variant
-5. Call save_campaign_variant for each variant
+3. Generate a complete 4-email sequence following the skill instructions
+4. QA score the sequence
+5. Call save_campaign_sequence with the full sequence (not save_campaign_variant)
 6. Call complete_job with the job_id"""
 
     cmd = [
@@ -314,13 +449,37 @@ Execute all steps:
             error_msg = result.stderr or result.stdout or "Unknown error"
             logger.error(f"Claude Code failed: {error_msg}")
 
-            # Check for authentication errors - may need manual re-auth
+            # Check for authentication errors - trigger OAuth check and alert
             if "401" in error_msg or "authentication" in error_msg.lower() or "OAuth" in error_msg:
                 logger.warning("=" * 60)
                 logger.warning("AUTHENTICATION ERROR DETECTED")
                 logger.warning("OAuth token may have expired. Re-authenticate with:")
-                logger.warning("  docker exec -it <container_id> claude /login")
+                logger.warning("  docker exec -it charm-strategy-test bash")
+                logger.warning("  claude /login")
                 logger.warning("=" * 60)
+
+                # Force OAuth check which will send alert
+                check_oauth_health(force=True)
+
+                # Mark job for retry by setting back to pending (not failed)
+                conn = get_db()
+                cur = conn.cursor()
+                try:
+                    cur.execute("""
+                        UPDATE strategy_generation_jobs
+                        SET status = 'pending', started_at = NULL,
+                            error_message = 'OAuth expired - awaiting re-authentication'
+                        WHERE id = %s
+                    """, (job_id,))
+                    conn.commit()
+                    logger.info(f"Job {job_id} returned to pending queue for retry after re-auth")
+                except Exception as e:
+                    logger.error(f"Failed to reset job status: {e}")
+                    conn.rollback()
+                finally:
+                    cur.close()
+                    conn.close()
+                return  # Don't mark as failed, let it retry
 
             mark_job_failed(job_id, error_msg[:500])
         else:
@@ -346,10 +505,20 @@ def run_worker():
 
     OAuth credentials persist via volume mount, and Claude Code can auto-refresh
     access tokens using the refresh token (valid ~30 days).
+
+    OAuth Health Monitoring:
+    - Checks OAuth validity on startup (fails fast if expired)
+    - Re-checks periodically based on OAUTH_CHECK_INTERVAL
+    - Sends webhook alerts when OAuth expires
+    - Pauses job processing until re-authenticated
     """
+    global _oauth_valid
+
     logger.info("Strategy Generation Worker starting...")
     logger.info(f"Database: {DB_CONFIG['host']}:{DB_CONFIG['port']}/{DB_CONFIG['database']}")
     logger.info(f"Poll interval: {POLL_INTERVAL} seconds")
+    logger.info(f"OAuth check interval: {OAUTH_CHECK_INTERVAL} seconds")
+    logger.info(f"Alert webhook: {'configured' if ALERT_WEBHOOK_URL else 'not configured'}")
     logger.info(f"Claude account: {CLAUDE_ACCOUNT}")
     logger.info(f"Skill file: {SKILL_FILE}")
 
@@ -365,10 +534,26 @@ def run_worker():
     # Ensure tables exist
     ensure_tables()
 
+    # Check OAuth on startup
+    logger.info("Verifying Claude Code OAuth...")
+    if not check_oauth_health(force=True):
+        logger.error("=" * 60)
+        logger.error("STARTUP BLOCKED: OAuth token is expired!")
+        logger.error("Run: docker exec -it charm-strategy-test bash && claude /login")
+        logger.error("Worker will wait for valid OAuth before processing jobs...")
+        logger.error("=" * 60)
+
     logger.info("Worker ready - polling for jobs...")
 
     while True:
         try:
+            # Periodic OAuth health check
+            if not check_oauth_health():
+                # OAuth invalid - wait and retry check
+                logger.warning("OAuth invalid - pausing job processing for 60 seconds...")
+                time.sleep(60)
+                continue
+
             # Get next pending job
             job = get_pending_job()
 

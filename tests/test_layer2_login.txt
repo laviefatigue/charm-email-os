@@ -1,0 +1,10 @@
+Use the purchase-executor MCP tools to test the Hypertide login flow:
+
+1. Call navigate with url "https://app2.hypertide.io/signin"
+2. Call fill with selector 'input[type="email"]' and value "chris@hirecharm.com"
+3. Call fill with selector 'input[type="password"]' and value "l$97t73M"
+4. Call click with selector "text=Sign In"
+5. Wait a moment, then call screenshot
+6. Call get_page_text and report what you see
+
+IMPORTANT: After step 6, STOP. Do NOT click any other buttons. Do NOT navigate anywhere else. Just report whether login succeeded (are you on a dashboard page with "Place New Order"?) or failed (still on signin page).

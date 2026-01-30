@@ -22,16 +22,25 @@ class HypertideConfig(BaseModel):
     choose_plan_url: str = Field(default="https://app2.hypertide.io/choose-plan")
 
     # Authentication
-    # Note: Hypertide uses OAuth/magic link - we'll use persistent browser context
+    # Hypertide uses email/password authentication
     auth_email: Optional[str] = Field(default=None)
+    auth_password: Optional[str] = Field(default=None)
     session_storage_path: Path = Field(
         default=Path("~/.hypertide/session").expanduser()
     )
 
+    # Auto-login settings
+    login_timeout: int = Field(default=30000, description="Timeout for login form submission")
+
     # Browser settings
     headless: bool = Field(default=False, description="Run browser in headless mode")
     slow_mo: int = Field(default=100, description="Slow down operations by ms (for debugging)")
-    timeout: int = Field(default=30000, description="Default timeout in ms")
+    timeout: int = Field(default=60000, description="Default timeout in ms (increased for Docker)")
+
+    # Per-operation timeouts (ms)
+    navigation_timeout: int = Field(default=90000, description="Timeout for page navigation")
+    element_timeout: int = Field(default=30000, description="Timeout for element interactions")
+    auth_check_timeout: int = Field(default=45000, description="Timeout for auth verification")
 
     # Screenshots
     screenshot_on_error: bool = Field(default=True)
@@ -39,16 +48,24 @@ class HypertideConfig(BaseModel):
 
     # Retry settings
     max_retries: int = Field(default=3)
-    retry_delay: int = Field(default=2000, description="Delay between retries in ms")
+    retry_delay: int = Field(default=3000, description="Initial delay between retries in ms")
+    retry_backoff: float = Field(default=1.5, description="Exponential backoff multiplier")
 
     @classmethod
     def from_env(cls) -> "HypertideConfig":
         """Load configuration from environment variables."""
         return cls(
             auth_email=os.getenv("HYPERTIDE_EMAIL"),
+            auth_password=os.getenv("HYPERTIDE_PASSWORD"),
             headless=os.getenv("HYPERTIDE_HEADLESS", "false").lower() == "true",
             slow_mo=int(os.getenv("HYPERTIDE_SLOW_MO", "100")),
-            timeout=int(os.getenv("HYPERTIDE_TIMEOUT", "30000")),
+            timeout=int(os.getenv("HYPERTIDE_TIMEOUT", "60000")),
+            navigation_timeout=int(os.getenv("HYPERTIDE_NAVIGATION_TIMEOUT", "90000")),
+            element_timeout=int(os.getenv("HYPERTIDE_ELEMENT_TIMEOUT", "30000")),
+            auth_check_timeout=int(os.getenv("HYPERTIDE_AUTH_CHECK_TIMEOUT", "45000")),
+            login_timeout=int(os.getenv("HYPERTIDE_LOGIN_TIMEOUT", "30000")),
+            max_retries=int(os.getenv("HYPERTIDE_MAX_RETRIES", "3")),
+            retry_delay=int(os.getenv("HYPERTIDE_RETRY_DELAY", "3000")),
         )
 
 

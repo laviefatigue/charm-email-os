@@ -1,7 +1,7 @@
-# Charm Email OS - Strategy Worker (Persistent Daemon)
+# Charm Email OS - Spintax Worker (Persistent Daemon)
 #
-# This compose file deploys the strategy worker as a persistent daemon
-# that polls for pending strategy generation jobs.
+# This compose file deploys the spintax worker as a persistent daemon
+# that polls for pending spintax processing jobs.
 #
 # For Coolify deployment:
 # - Create new application with docker-compose
@@ -10,24 +10,25 @@
 #
 # Authentication Setup (see docs/claude-docker-auth.md for full guide):
 #   Option 1: Long-lived token (RECOMMENDED - never expires)
-#     docker exec -it charm-strategy-worker bash
+#     docker exec -it charm-spintax-worker bash
 #     claude setup-token
 #     # Save the token to .credentials.json (see docs)
 #
 #   Option 2: OAuth (expires ~30 days)
-#     docker exec -it charm-strategy-worker bash
+#     docker exec -it charm-spintax-worker bash
 #     claude /login
 #     # Follow browser OAuth flow, then exit
 #
 # For local testing:
-#   docker compose -f docker-compose.strategy-worker.yml up -d
+#   docker compose -f docker-compose.spintax-worker.yml up -d
 
 services:
-  strategy-worker:
+  spintax-worker:
     build:
       context: .
-      dockerfile: Dockerfile.strategy-worker
-    container_name: charm-strategy-worker
+      dockerfile: Dockerfile.spintax-worker
+    image: charm-spintax-worker:latest
+    container_name: charm-spintax-worker
     restart: unless-stopped
     environment:
       # Database connection (set these in Coolify)
@@ -49,7 +50,7 @@ services:
       # Using named volume for better portability and sharing between workers
       - charm-claude-credentials:/home/claude/.claude
     healthcheck:
-      test: ["CMD", "pgrep", "-f", "python3.*strategy_worker.py"]
+      test: ["CMD", "pgrep", "-f", "python3.*spintax_worker.py"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -62,7 +63,8 @@ services:
 
 volumes:
   charm-claude-credentials:
-    # Named volume for credential persistence
-    # This can be shared across strategy-worker and domain-worker
+    external: true
+    # Use the same named volume as strategy-worker and domain-worker
+    # This shares OAuth credentials across all workers
 
 # Note: No ports exposed - this is a background worker, not a web service
