@@ -361,6 +361,9 @@ async def _init_domain_columns() -> None:
         # Infrastructure type tracking (Entra or Google) - set when inboxes are provisioned
         ("infrastructure_type", "VARCHAR(20)"),  # 'entra' or 'google'
         ("infrastructure_set_at", "TIMESTAMP"),  # When infrastructure was assigned
+        # Purchase job locking (domain reserved by active purchase job)
+        ("purchase_job_id", "UUID"),
+        ("purchase_job_status", "TEXT"),
     ]
 
     for col_name, col_def in columns_to_add:
