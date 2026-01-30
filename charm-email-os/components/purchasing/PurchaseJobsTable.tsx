@@ -71,26 +71,13 @@ export function PurchaseJobsTable({ clientId, onJobRetried }: PurchaseJobsTableP
   const fetchJobs = useCallback(async () => {
     try {
       const data = await inboxProvisioningApi.listJobs({ clientId });
-      // Map snake_case to camelCase
-      const mappedJobs: PurchaseJob[] = data.jobs.map((j: Record<string, unknown>) => ({
-        jobId: j.job_id as string,
-        clientId: j.client_id as string,
-        status: j.status as PurchaseJob['status'],
-        currentStep: j.current_step as string | undefined,
-        providerType: j.provider_type as string,
-        domainNames: (j.domain_names as string[]) || [],
-        entraOrders: j.entra_orders as number,
-        googleOrders: j.google_orders as number,
-        ordersCompleted: j.orders_completed as number,
-        ordersTotal: j.orders_total as number,
-        totalInboxes: j.total_inboxes as number,
-        monthlyCost: j.monthly_cost as number,
-        createdAt: j.created_at as string,
-        startedAt: j.started_at as string | undefined,
-        completedAt: j.completed_at as string | undefined,
-        errors: (j.errors as string[]) || [],
+      // listJobs() already returns camelCase via toCamelCase() in the API client
+      const jobs = (data.jobs as unknown as PurchaseJob[]).map((j) => ({
+        ...j,
+        domainNames: j.domainNames || [],
+        errors: j.errors || [],
       }));
-      setJobs(mappedJobs);
+      setJobs(jobs);
     } catch (err) {
       console.error('Failed to load job history:', err);
       toast.error('Failed to load job history');
