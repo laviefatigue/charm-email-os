@@ -1,7 +1,7 @@
 ---
 title: Purchase Worker Architecture
 created: 2026-01-29
-updated: 2026-01-29
+updated: 2026-01-30
 tags: [architecture, purchase, worker, mcp, browser-automation, hypertide]
 ---
 
@@ -192,6 +192,43 @@ Hypertide Form: "Step 2) Connect Your Email Automation Tool"
 ```
 
 **Safety:** If the exact workspace name is NOT found in the dropdown, the job fails immediately to prevent cross-contamination.
+
+## Domain Locking
+
+When a purchase job is created via `POST /api/inbox-purchasing/smart-order`, selected domains are locked to prevent concurrent job conflicts:
+
+```sql
+UPDATE domains
+SET purchase_job_id = $1, purchase_job_status = 'pending'
+WHERE id = ANY($2)
+```
+
+### Lock Conflict Detection
+
+Before creating a job, `_check_domain_lock_conflicts()` queries for domains already locked to another active job. If conflicts are found, the request returns 409 Conflict.
+
+### Lock Release
+
+Locks are released by `_release_domain_locks()`:
+
+```sql
+UPDATE domains
+SET purchase_job_id = NULL, purchase_job_status = NULL
+WHERE purchase_job_id = $1
+```
+
+This happens when:
+- Job is **cancelled** (`DELETE /api/inbox-purchasing/jobs/{job_id}`)
+- Job **completes** successfully
+- Job **fails** (on retry, domains remain locked to the same job)
+
+### Frontend Cancel Flow
+
+1. User clicks trash icon on a failed/pending job in the Jobs tab
+2. Frontend calls `inboxProvisioningApi.cancelJob(jobId)` → `DELETE /jobs/{job_id}`
+3. API calls `_release_domain_locks(job_id)` → unlocks domains
+4. API calls `_update_job_status(job_id, 'cancelled', 'Cancelled by user')`
+5. Frontend refreshes job list and parent domain data
 
 ## Safety and Rate Limiting
 

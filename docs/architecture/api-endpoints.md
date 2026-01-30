@@ -1,7 +1,7 @@
 ---
 title: API Endpoints
 created: 2026-01-16
-updated: 2026-01-16
+updated: 2026-01-30
 tags: [architecture, api, endpoints]
 ---
 
@@ -271,6 +271,79 @@ REST API documentation for Charm Email OS (FastAPI).
 | POST | `/api/strategy/suggestions/{suggestion_id}/approve` | Approve suggestion | - |
 | POST | `/api/strategy/suggestions/{suggestion_id}/deny` | Deny suggestion | - |
 | POST | `/api/strategy/suggestions/{suggestion_id}/revision` | Request revision | `{ instruction }` |
+
+## Inbox Purchasing Routes
+
+`/api/inbox-purchasing`
+
+### Order Execution
+
+| Method | Path | Purpose | Request Body |
+|--------|------|---------|--------------|
+| POST | `/api/inbox-purchasing/smart-order` | Create purchase job with optimal order calculation | `{ client_id, domain_ids, provider_type?, override_age_check?, custom_purchase? }` |
+| POST | `/api/inbox-purchasing/calculate` | Calculate order breakdown from inbox targets | `{ client_id, domain_ids, provider_type }` |
+| POST | `/api/inbox-purchasing/generate-names` | Generate random first/last name combinations | `{ count }` |
+
+### Job Management
+
+| Method | Path | Purpose | Request Body |
+|--------|------|---------|--------------|
+| GET | `/api/inbox-purchasing/jobs` | List purchase jobs | Query: `client_id`, `status`, `limit`, `offset` |
+| GET | `/api/inbox-purchasing/jobs/{job_id}` | Get single job details | - |
+| POST | `/api/inbox-purchasing/jobs/{job_id}/retry` | Retry a failed job | - |
+| DELETE | `/api/inbox-purchasing/jobs/{job_id}` | Cancel job & release domain locks | - |
+
+### Domain Setup
+
+| Method | Path | Purpose | Request Body |
+|--------|------|---------|--------------|
+| GET | `/api/inbox-purchasing/domains-needing-setup/{client_id}` | Get purchased domains awaiting inbox setup | - |
+| POST | `/api/inbox-purchasing/verify-nameservers` | Check nameserver propagation for domains | `{ domain_ids }` |
+
+### Response: Purchase Job
+
+```json
+{
+  "jobId": "uuid",
+  "clientId": "uuid",
+  "status": "pending|processing|executing|completed|failed|cancelled",
+  "currentStep": "string",
+  "providerType": "entra|google|mixed",
+  "domainIds": ["uuid"],
+  "domainNames": ["example.com"],
+  "breakdown": {
+    "entraOrders": 0,
+    "googleOrders": 0,
+    "totalOrders": 0,
+    "totalInboxes": 0
+  },
+  "ordersCompleted": 0,
+  "ordersTotal": 0,
+  "totalInboxes": 0,
+  "monthlyCost": 0.0,
+  "startedAt": "2026-01-30T...",
+  "completedAt": null,
+  "createdAt": "2026-01-30T...",
+  "results": [],
+  "errors": [],
+  "overrideAgeCheck": false,
+  "customPurchase": false
+}
+```
+
+### Cancel Job (DELETE)
+
+Cancels a purchase job and releases domain locks. Cannot cancel jobs with status `executing` (active HyperTide automation).
+
+**Response:**
+```json
+{
+  "message": "Purchase job cancelled",
+  "job_id": "uuid"
+}
+```
+
+**Domain Locking:** When a purchase job is created, domains are locked via `purchase_job_id` and `purchase_job_status` columns on the `domains` table. This prevents the same domain from being included in multiple concurrent jobs. Cancelling a job sets both columns to NULL, unlocking the domains for future jobs.
 
 ## Error Responses
 

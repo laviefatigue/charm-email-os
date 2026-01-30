@@ -1,7 +1,7 @@
 ---
 title: Database Schema
 created: 2026-01-16
-updated: 2026-01-16
+updated: 2026-01-30
 tags: [database, schema, postgresql]
 ---
 
@@ -92,6 +92,13 @@ CREATE INDEX idx_domains_status ON domains(approval_status);
 | legitimacy_score | FLOAT | 0-1 score from AI |
 | approval_status | VARCHAR(20) | `pending`, `approved`, `denied` |
 | reviewed_at | TIMESTAMP | When reviewed |
+| domain_state | VARCHAR(50) | Lifecycle status (see [[../concepts/domain-lifecycle]]) |
+| purchased_at | TIMESTAMP | When domain was purchased from registrar |
+| selected_provider | VARCHAR(50) | Registrar used: `porkbun`, `dynadot` |
+| nameserver_status | VARCHAR(50) | NS propagation status |
+| infrastructure_type | VARCHAR(50) | `entra`, `google`, or NULL |
+| purchase_job_id | UUID | FK to `inbox_purchase_jobs.id` — locks domain to a purchase job |
+| purchase_job_status | VARCHAR(50) | Lock status: `pending`, `processing`, `executing`, or NULL |
 | created_at | TIMESTAMP | Record creation time |
 
 ### sender_accounts
@@ -237,7 +244,70 @@ CREATE INDEX idx_personas_submission ON client_personas(submission_id);
 | aha_moment | TEXT | When they "got it" |
 | objections | TEXT | Common objections |
 
-## Job Tables
+## Purchase Job Tables
+
+### inbox_purchase_jobs
+
+Queue for inbox provisioning purchase jobs executed by the purchase worker.
+
+```sql
+CREATE TABLE inbox_purchase_jobs (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    client_id UUID NOT NULL REFERENCES clients(id),
+    workspace_id UUID REFERENCES workspaces(id),
+    status VARCHAR(50) DEFAULT 'pending',
+    current_step TEXT,
+    provider_type VARCHAR(50),
+    domain_ids UUID[],
+    domain_names TEXT[],
+    entra_orders INTEGER DEFAULT 0,
+    google_orders INTEGER DEFAULT 0,
+    orders_total INTEGER DEFAULT 0,
+    orders_completed INTEGER DEFAULT 0,
+    total_inboxes INTEGER DEFAULT 0,
+    monthly_cost NUMERIC,
+    request_data JSONB,
+    results JSONB,
+    errors JSONB,
+    override_age_check BOOLEAN DEFAULT FALSE,
+    custom_purchase BOOLEAN DEFAULT FALSE,
+    started_at TIMESTAMP,
+    completed_at TIMESTAMP,
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE INDEX idx_purchase_jobs_status ON inbox_purchase_jobs(status);
+CREATE INDEX idx_purchase_jobs_client ON inbox_purchase_jobs(client_id);
+```
+
+| Status | Description |
+|--------|-------------|
+| pending | Waiting for worker to pick up |
+| processing | Worker is preparing the job |
+| executing | HyperTide automation running |
+| completed | Successfully finished |
+| failed | Error occurred |
+| cancelled | Cancelled by user, domain locks released |
+
+### purchase_job_steps
+
+Audit trail for each step of a purchase job execution.
+
+```sql
+CREATE TABLE purchase_job_steps (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    job_id UUID NOT NULL REFERENCES inbox_purchase_jobs(id),
+    step_name TEXT NOT NULL,
+    screenshot_base64 TEXT,
+    notes TEXT,
+    created_at TIMESTAMP DEFAULT NOW(),
+    UNIQUE(job_id, step_name)
+);
+
+CREATE INDEX idx_job_steps_job ON purchase_job_steps(job_id);
+```
+
+## Generation Job Tables
 
 ### domain_generation_jobs
 

@@ -1,7 +1,7 @@
 ---
 title: Domain Lifecycle
 created: 2026-01-22
-updated: 2026-01-22
+updated: 2026-01-30
 tags: [concept, domain, infrastructure]
 ---
 
@@ -102,6 +102,35 @@ const purchasedNeedingSetup = domains.filter(d =>
   ['purchased', 'provisioning'].includes(d.status)
 );
 ```
+
+## Purchase Job Locking
+
+Independently of the domain status flow, domains can be **locked** to a purchase job via two columns:
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `purchase_job_id` | UUID | FK to `inbox_purchase_jobs.id`, set when domain is included in a purchase job |
+| `purchase_job_status` | VARCHAR | Lock status: `pending`, `processing`, `executing`, or NULL (unlocked) |
+
+### Lock vs Status
+
+Domain locking is **orthogonal** to the domain lifecycle status. A domain with status `purchased` (needs inbox setup) can be:
+- **Unlocked** (`purchase_job_id = NULL`) — available for selection
+- **Locked** (`purchase_job_id = <job_uuid>`) — included in an active job, cannot be selected for another
+
+### Lock Release
+
+Locks are released (both columns set to NULL) when:
+1. The purchase job **completes** successfully
+2. The purchase job **fails** and is not retried
+3. The purchase job is **cancelled** via `DELETE /api/inbox-purchasing/jobs/{job_id}`
+
+### UI Indicators
+
+In the "Step 2: Setup Inboxes" table:
+- Locked domains show an amber **"Queued"** badge
+- Their checkboxes are **disabled**
+- A summary line shows the count of locked domains
 
 ## Type Definitions
 
