@@ -93,6 +93,10 @@ class Domain(BaseModel):
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 
+    # Purchase job locking (domain reserved by active purchase job)
+    purchase_job_id: Optional[UUID] = None  # Job locking this domain
+    purchase_job_status: Optional[str] = None  # Cached job status (pending/executing/failed/completed)
+
     # Infrastructure type (Entra or Google) - set when inboxes are provisioned
     infrastructure_type: Optional[InfrastructureType] = None  # entra or google
     infrastructure_set_at: Optional[datetime] = None  # When infrastructure was assigned

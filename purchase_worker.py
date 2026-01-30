@@ -58,6 +58,7 @@ CLAUDE_ACCOUNT = os.getenv("CLAUDE_ACCOUNT", "ClaudeCodeMax")
 OAUTH_CHECK_INTERVAL = int(os.getenv("OAUTH_CHECK_INTERVAL", "3600"))
 ALERT_WEBHOOK_URL = os.getenv("ALERT_WEBHOOK_URL", "")
 JOB_TIMEOUT = int(os.getenv("JOB_TIMEOUT", "600"))  # 10 minutes
+JOB_COOLDOWN = int(os.getenv("JOB_COOLDOWN", "30"))  # seconds between jobs (avoid hammering Hypertide)
 
 # Path to this project (for MCP config)
 PROJECT_PATH = os.path.dirname(os.path.abspath(__file__))
@@ -224,6 +225,20 @@ def ensure_tables():
             try:
                 cur.execute(f"""
                     ALTER TABLE inbox_purchase_jobs
+                    ADD COLUMN IF NOT EXISTS {col_name} {col_def}
+                """)
+            except Exception:
+                pass  # Column already exists
+
+        # Add purchase lock columns to domains table
+        domain_lock_columns = [
+            ("purchase_job_id", "UUID REFERENCES inbox_purchase_jobs(id)"),
+            ("purchase_job_status", "TEXT"),
+        ]
+        for col_name, col_def in domain_lock_columns:
+            try:
+                cur.execute(f"""
+                    ALTER TABLE domains
                     ADD COLUMN IF NOT EXISTS {col_name} {col_def}
                 """)
             except Exception:
@@ -567,6 +582,7 @@ def run_worker():
     logger.info(f"Database: {DB_CONFIG['host']}:{DB_CONFIG['port']}/{DB_CONFIG['database']}")
     logger.info(f"Poll interval: {POLL_INTERVAL} seconds")
     logger.info(f"Job timeout: {JOB_TIMEOUT} seconds")
+    logger.info(f"Job cooldown: {JOB_COOLDOWN} seconds")
     logger.info(f"OAuth check interval: {OAUTH_CHECK_INTERVAL} seconds")
     logger.info(f"Alert webhook: {'configured' if ALERT_WEBHOOK_URL else 'not configured'}")
     logger.info(f"Claude account: {CLAUDE_ACCOUNT}")
@@ -608,6 +624,10 @@ def run_worker():
 
             if job:
                 process_job(job, skill_content)
+                # Cooldown between jobs to avoid hammering Hypertide
+                if JOB_COOLDOWN > 0:
+                    logger.info(f"Job cooldown: waiting {JOB_COOLDOWN}s before next poll...")
+                    time.sleep(JOB_COOLDOWN)
             else:
                 time.sleep(POLL_INTERVAL)
 

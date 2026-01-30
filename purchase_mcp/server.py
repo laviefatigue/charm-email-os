@@ -723,6 +723,13 @@ async def call_tool(name: str, arguments: dict):
                         WHERE id = %s
                     """, (infra_type, str(domain_id)))
 
+            # Release domain locks — domains are now provisioned
+            cur.execute("""
+                UPDATE domains
+                SET purchase_job_id = NULL, purchase_job_status = NULL
+                WHERE purchase_job_id = %s
+            """, (job_id,))
+
             # Log completion step
             screenshot_b64 = await _take_screenshot()
             cur.execute("""
@@ -767,6 +774,12 @@ async def call_tool(name: str, arguments: dict):
                 SET errors = COALESCE(errors, ARRAY[]::TEXT[]) || ARRAY[%s]
                 WHERE id = %s
             """, (error, job_id))
+
+            # Update domain lock status to 'failed' (keep lock so domains stay reserved for retry)
+            cur.execute("""
+                UPDATE domains SET purchase_job_status = 'failed'
+                WHERE purchase_job_id = %s
+            """, (job_id,))
 
             # Log failure step with screenshot
             cur.execute("""

@@ -25,12 +25,18 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
-import { Loader2, Settings, Server, Clock, CheckCircle2, AlertCircle, RefreshCw, ShieldCheck, ShieldAlert, ShieldQuestion, Wrench, Calendar, AlertTriangle, Cloud, Mail } from 'lucide-react';
+import { Loader2, Settings, Server, Clock, CheckCircle2, AlertCircle, RefreshCw, ShieldCheck, ShieldAlert, ShieldQuestion, Wrench, Calendar, AlertTriangle, Cloud, Mail, Lock } from 'lucide-react';
 import type { Domain, NameserverStatus } from '@/lib/types';
 import { isDnsReady, hoursUntilDnsReady, isDomainAgeEligible } from '@/lib/types';
 import { toast } from 'sonner';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000/api/v1';
+
+// Check if domain is locked by an active/failed purchase job
+function isDomainLocked(domain: Domain): boolean {
+  if (!domain.purchaseJobId || !domain.purchaseJobStatus) return false;
+  return ['pending', 'executing', 'failed'].includes(domain.purchaseJobStatus);
+}
 
 interface DomainsNeedingSetupTableProps {
   domains: Domain[];
@@ -61,9 +67,9 @@ export function DomainsNeedingSetupTable({
     [domains]
   );
 
-  // Domains eligible for setup (30+ days old OR exempt, AND has verified NS)
+  // Domains eligible for setup (30+ days old OR exempt, AND has verified NS, AND not locked by purchase job)
   const eligibleDomains = useMemo(() =>
-    purchasedDomains.filter(d => d.isSetupEligible === true),
+    purchasedDomains.filter(d => d.isSetupEligible === true && !isDomainLocked(d)),
     [purchasedDomains]
   );
 
@@ -421,6 +427,60 @@ export function DomainsNeedingSetupTable({
     );
   };
 
+  // Get purchase lock badge (domain locked by an active purchase job)
+  const getPurchaseLockBadge = (domain: Domain) => {
+    if (!domain.purchaseJobId || !domain.purchaseJobStatus) return null;
+    const status = domain.purchaseJobStatus;
+    if (status === 'completed' || status === null) return null;
+
+    switch (status) {
+      case 'pending':
+        return (
+          <Tooltip>
+            <TooltipTrigger>
+              <Badge variant="outline" className="text-amber-600 border-amber-600">
+                <Lock className="h-3 w-3 mr-1" />
+                Queued
+              </Badge>
+            </TooltipTrigger>
+            <TooltipContent>
+              Locked by purchase job (queued). See Jobs tab to manage.
+            </TooltipContent>
+          </Tooltip>
+        );
+      case 'executing':
+        return (
+          <Tooltip>
+            <TooltipTrigger>
+              <Badge variant="outline" className="text-blue-600 border-blue-600">
+                <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+                In Purchase
+              </Badge>
+            </TooltipTrigger>
+            <TooltipContent>
+              Purchase in progress. See Jobs tab for live status.
+            </TooltipContent>
+          </Tooltip>
+        );
+      case 'failed':
+        return (
+          <Tooltip>
+            <TooltipTrigger>
+              <Badge variant="outline" className="text-red-600 border-red-600">
+                <Lock className="h-3 w-3 mr-1" />
+                Failed
+              </Badge>
+            </TooltipTrigger>
+            <TooltipContent>
+              Purchase failed. Go to Jobs tab to retry or cancel.
+            </TooltipContent>
+          </Tooltip>
+        );
+      default:
+        return null;
+    }
+  };
+
   const getStatusBadge = (status: string) => {
     switch (status) {
       case 'purchased':
@@ -545,7 +605,17 @@ export function DomainsNeedingSetupTable({
               >
                 <TableCell className="w-[40px]">
                   {isPurchased && (
-                    domain.isSetupEligible || forceSelectedDomains.has(domain.id) ? (
+                    isDomainLocked(domain) ? (
+                      // Domain locked by an active purchase job - disabled
+                      <Tooltip>
+                        <TooltipTrigger>
+                          <Checkbox disabled checked={false} className="opacity-50" />
+                        </TooltipTrigger>
+                        <TooltipContent>
+                          Locked by a purchase job. See Jobs tab to retry or cancel.
+                        </TooltipContent>
+                      </Tooltip>
+                    ) : domain.isSetupEligible || forceSelectedDomains.has(domain.id) ? (
                       // Eligible domain OR force-selected (admin override)
                       <Checkbox
                         checked={isSelected}
@@ -594,7 +664,12 @@ export function DomainsNeedingSetupTable({
                     <Loader2 className="h-4 w-4 animate-spin text-blue-500" />
                   )}
                 </TableCell>
-                <TableCell className="w-[200px] font-medium">{domainName}</TableCell>
+                <TableCell className="w-[200px] font-medium">
+                  <div className="flex items-center gap-2">
+                    {domainName}
+                    {getPurchaseLockBadge(domain)}
+                  </div>
+                </TableCell>
                 <TableCell className="w-[60px] text-center">
                   <Badge variant="secondary">{tld}</Badge>
                 </TableCell>
@@ -715,6 +790,9 @@ export function DomainsNeedingSetupTable({
         )}
         {tooYoungDomains.length > 0 && (
           <span className="text-amber-600">{tooYoungDomains.length} too young (&lt;30 days)</span>
+        )}
+        {purchasedDomains.filter(isDomainLocked).length > 0 && (
+          <span className="text-orange-600">{purchasedDomains.filter(isDomainLocked).length} locked (purchase job)</span>
         )}
         {forceSelectedDomains.size > 0 && (
           <span className="text-amber-500">{forceSelectedDomains.size} override</span>

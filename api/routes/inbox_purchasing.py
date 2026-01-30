@@ -102,6 +102,50 @@ async def _create_job_in_db(
     return job_id
 
 
+async def _lock_domains_for_job(job_id: str, domain_ids: list) -> list[dict]:
+    """Lock domains for a purchase job. Returns list of conflicts if any domains are already locked."""
+    conflicts = []
+    for did in domain_ids:
+        row = await fetch_one(
+            """SELECT d.id, d.domain_name, d.purchase_job_id, d.purchase_job_status
+               FROM domains d WHERE d.id = $1""",
+            did
+        )
+        if row and row.get("purchase_job_id") and row.get("purchase_job_status") not in ("completed", "cancelled", None):
+            conflicts.append({
+                "domain_id": str(row["id"]),
+                "domain_name": row.get("domain_name", ""),
+                "locked_by_job": str(row["purchase_job_id"]),
+                "job_status": row.get("purchase_job_status"),
+            })
+
+    if conflicts:
+        return conflicts
+
+    # No conflicts — lock all domains
+    await execute(
+        "UPDATE domains SET purchase_job_id = $1, purchase_job_status = 'pending' WHERE id = ANY($2)",
+        UUID(job_id), [UUID(str(d)) for d in domain_ids]
+    )
+    return []
+
+
+async def _release_domain_locks(job_id: str) -> None:
+    """Release all domain locks held by a job."""
+    await execute(
+        "UPDATE domains SET purchase_job_id = NULL, purchase_job_status = NULL WHERE purchase_job_id = $1",
+        UUID(job_id)
+    )
+
+
+async def _transfer_domain_locks(old_job_id: str, new_job_id: str) -> None:
+    """Transfer domain locks from an old job to a new one (used on retry)."""
+    await execute(
+        "UPDATE domains SET purchase_job_id = $1, purchase_job_status = 'pending' WHERE purchase_job_id = $2",
+        UUID(new_job_id), UUID(old_job_id)
+    )
+
+
 async def _update_job_status(
     job_id: str,
     status: str,
@@ -147,6 +191,16 @@ async def _update_job_status(
         f"UPDATE inbox_purchase_jobs SET {', '.join(updates)} WHERE id = $1",
         *params
     )
+
+    # Sync purchase_job_status on locked domains
+    await execute(
+        "UPDATE domains SET purchase_job_status = $1 WHERE purchase_job_id = $2",
+        status, UUID(job_id)
+    )
+
+    # On completion, release domain locks (domains now have infrastructure_type set)
+    if status == "completed":
+        await _release_domain_locks(job_id)
 
 
 async def _get_job_from_db(job_id: str) -> Optional[dict]:
@@ -717,7 +771,8 @@ async def cancel_purchase_job(job_id: str):
             "status": job["status"],
         }
 
-    # Mark as cancelled instead of deleting (preserve history)
+    # Release domain locks and mark as cancelled (preserve history)
+    await _release_domain_locks(job_id)
     await _update_job_status(job_id, "cancelled", "Cancelled by user")
     return {"message": "Purchase job cancelled", "job_id": job_id}
 
@@ -814,6 +869,10 @@ async def retry_failed_job(job_id: str, background_tasks: BackgroundTasks):
             status_code=400,
             detail="Job has no stored request data for retry"
         )
+
+    # Release domain locks from old job before marking superseded
+    # (the new job will re-acquire locks via execute_smart_order)
+    await _release_domain_locks(job_id)
 
     # Mark old job as superseded
     await _update_job_status(job_id, "superseded", "Superseded by retry")
@@ -1562,8 +1621,19 @@ async def execute_smart_order(
         domains_per_order = 2 if request.provider_type == "entra" else 5
         order_count = len(request.domain_ids) // domains_per_order
 
-        # Create worker job (job-specific data only — credentials come from ENV)
+        # Lock domains for this job (prevent concurrent purchases on same domains)
         job_id = str(uuid.uuid4())
+        lock_conflicts = await _lock_domains_for_job(job_id, request.domain_ids)
+        if lock_conflicts:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "Some domains are locked by existing purchase jobs",
+                    "locked_domains": lock_conflicts,
+                }
+            )
+
+        # Create worker job (job-specific data only — credentials come from ENV)
         await execute(
             """
             INSERT INTO inbox_purchase_jobs (

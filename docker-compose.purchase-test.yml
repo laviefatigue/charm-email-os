@@ -17,6 +17,7 @@ services:
       - POLL_INTERVAL=5
       - CLAUDE_ACCOUNT=
       - JOB_TIMEOUT=300
+      - JOB_COOLDOWN=5
       - HYPERTIDE_EMAIL=${HYPERTIDE_EMAIL:-chris@hirecharm.com}
       - HYPERTIDE_PASSWORD=${HYPERTIDE_PASSWORD}
       - BISON_USERNAME=${BISON_USERNAME:-elliott@hirecharm.com}

@@ -167,6 +167,9 @@ export interface Domain {
   // Infrastructure type (Entra or Google) - set when inboxes are provisioned
   infrastructureType?: 'entra' | 'google';  // Which provider inboxes use
   infrastructureSetAt?: Date;  // When infrastructure was assigned
+  // Purchase job locking (domain reserved by active purchase job)
+  purchaseJobId?: string;
+  purchaseJobStatus?: 'pending' | 'executing' | 'failed' | 'completed' | null;
   // Health monitoring fields (from OwnRBL domain_check_summary)
   healthState?: 'live' | 'flagged' | 'dead' | 'healthy' | 'warning' | 'critical' | 'unknown';
   latestHealthScore?: number;  // OwnRBL

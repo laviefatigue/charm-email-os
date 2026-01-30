@@ -136,6 +136,7 @@ ENV POSTGRES_PASSWORD=""
 ENV POLL_INTERVAL="10"
 ENV CLAUDE_ACCOUNT=""
 ENV JOB_TIMEOUT="600"
+ENV JOB_COOLDOWN="30"
 
 # Global credentials (injected by MCP server into get_purchase_job response)
 ENV HYPERTIDE_EMAIL=""
