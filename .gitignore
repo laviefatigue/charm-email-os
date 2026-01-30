@@ -4,6 +4,7 @@ __pycache__/
 *.pyo
 .env
 .env.local
+.env.test
 venv/
 .venv/
 
@@ -29,3 +30,22 @@ Thumbs.db
 
 # Logs
 *.log
+
+# Debug screenshots (allow only Next.js asset dirs)
+*.png
+!public/**/*.png
+!app/**/*.png
+!charm-email-os/public/**/*.png
+!charm-email-os/app/**/*.png
+
+# Credentials (kept locally, never committed)
+.claude-creds/
+claude-credentials-local/
+
+# Backups & test output
+backups/
+test-screenshots/
+tests/output/
+
+# CSV exports
+*.csv
