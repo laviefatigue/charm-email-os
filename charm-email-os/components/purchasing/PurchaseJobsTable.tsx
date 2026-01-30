@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, Fragment } from 'react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
@@ -252,7 +252,8 @@ export function PurchaseJobsTable({ clientId, onJobRetried }: PurchaseJobsTableP
             </p>
           </div>
         ) : (
-          <Table>
+          <div className="overflow-x-auto">
+          <Table className="table-fixed w-full">
             <TableHeader>
               <TableRow>
                 <TableHead>Status</TableHead>
@@ -266,9 +267,8 @@ export function PurchaseJobsTable({ clientId, onJobRetried }: PurchaseJobsTableP
             </TableHeader>
             <TableBody>
               {jobs.map((job) => (
-                <>
+                <Fragment key={job.jobId}>
                   <TableRow
-                    key={job.jobId}
                     className={expandedJobId === job.jobId ? 'border-b-0' : ''}
                   >
                     <TableCell>{getStatusBadge(job.status)}</TableCell>
@@ -390,8 +390,8 @@ export function PurchaseJobsTable({ clientId, onJobRetried }: PurchaseJobsTableP
                   {/* Expanded details row */}
                   {expandedJobId === job.jobId && (
                     <TableRow key={`${job.jobId}-details`}>
-                      <TableCell colSpan={7} className="bg-muted/50 p-4">
-                        <div className="space-y-3 text-sm">
+                      <TableCell colSpan={7} className="bg-muted/50 p-4 max-w-0">
+                        <div className="space-y-3 text-sm wrap-break-word overflow-hidden">
                           {job.currentStep && (
                             <div>
                               <span className="font-medium">Current Step:</span>{' '}
@@ -430,7 +430,7 @@ export function PurchaseJobsTable({ clientId, onJobRetried }: PurchaseJobsTableP
                                 <AlertTriangle className="h-4 w-4" />
                                 Errors
                               </div>
-                              <ul className="list-disc list-inside text-red-600 text-xs space-y-1">
+                              <ul className="list-disc list-inside text-red-600 text-xs space-y-1 wrap-break-word">
                                 {job.errors.map((error, idx) => (
                                   <li key={idx}>{error}</li>
                                 ))}
@@ -441,10 +441,11 @@ export function PurchaseJobsTable({ clientId, onJobRetried }: PurchaseJobsTableP
                       </TableCell>
                     </TableRow>
                   )}
-                </>
+                </Fragment>
               ))}
             </TableBody>
           </Table>
+          </div>
         )}
       </CardContent>
     </Card>
