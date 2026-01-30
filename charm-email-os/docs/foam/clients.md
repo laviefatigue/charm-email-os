@@ -138,6 +138,22 @@ From names `["Alex", "Sam"]` generates:
 - `alex.smith@mail-techflow.io`
 - `sam.johnson@mail-techflow.io`
 
+## Connection to Lead Refinery
+
+Client onboarding data drives the [[lead-refinery]] pipeline. When a campaign needs leads, ICP criteria extracted from onboarding flow into the DuckDB query:
+
+| Onboarding Field | Lead Refinery Use |
+|-----------------|-------------------|
+| Industry | DuckDB `WHERE industry MATCHES` filter |
+| Target titles (from personas) | DuckDB title matching |
+| Company size | DuckDB `WHERE company_size >=` filter |
+| Geography (from personas) | DuckDB location filter |
+| Buying signals | Lead prioritization scoring |
+
+Each client's campaigns consume leads from the shared 75.4M reservoir, tracked by `client_contract_id` in DuckDB to prevent cross-client lead recycling.
+
+See [[system-integration]] for the full platform data flow.
+
 ## Related
 
 - [[onboarding-form]] - External comprehensive onboarding form
@@ -145,6 +161,8 @@ From names `["Alex", "Sam"]` generates:
 - [[campaigns]] - Client campaigns
 - [[campaign-ideas]] - AI-generated campaign ideas
 - [[health-monitoring]] - Client health
+- [[system-integration]] - Platform-wide integration map
+- [[lead-refinery]] - Lead verification pipeline driven by client ICP
 
 ---
 Tags: #clients #entities #onboarding

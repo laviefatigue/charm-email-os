@@ -145,16 +145,30 @@ Pending → Review → Approve/Edit/Reject
 Approved Idea → Create Campaign → Draft Campaign
 ```
 
-### 4. Add Leads
+### 4. Fill Leads
+
+Leads come from two sources:
 
 ```
-Draft Campaign → Upload CSV → Leads Added
+Option A: CSV Upload
+  Draft Campaign → Upload CSV → Leads Added
+
+Option B: Lead Refinery (automated)
+  Draft Campaign → Extract ICP from strategy goals
+    → Query DuckDB reservoir (75.4M leads)
+    → Validate through [[lead-refinery-gates|Gates 0-3]]
+    → Push verified leads into EmailBison campaign
 ```
+
+The [[lead-refinery]] connects campaign strategy to the lead reservoir. ICP criteria from [[clients|client onboarding]] (industry, titles, company size, geography) drive the DuckDB query. See [[lead-tam-map]] for the full closed-loop flow where campaign performance feeds back to improve future pulls.
 
 ### 5. Execute
 
 ```
 Draft → Run → Active → Progress → Completed
+                         ↓
+              Performance data syncs back
+              to [[lead-dispositions]] in DuckDB
 ```
 
 ## Components
@@ -199,6 +213,11 @@ Draft → Run → Active → Progress → Completed
 - [[leads]] - Lead management
 - [[clients]] - Parent entity
 - [[strategy]] - Workflow details
+- [[lead-refinery]] - Automated lead filling from 75.4M reservoir
+- [[lead-tam-map]] - Performance data flows back to build TAM map
+- [[lead-dispositions]] - Lead state tracking post-campaign
+- [[system-integration]] - How Charm OS, Lead Refinery, and EmailBison connect
+- [[infrastructure]] - Sending domains and inboxes
 
 ---
 Tags: #campaigns #strategy #outbound

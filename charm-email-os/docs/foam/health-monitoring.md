@@ -258,12 +258,25 @@ type HealthAlertType =
   | 'list_contaminated';
 ```
 
+## Connection to Lead Refinery
+
+Bounce data from EmailBison feeds back through [[lead-dispositions]] to update the DuckDB reservoir:
+
+- **Hard bounces** → Lead marked `bounced`, email permanently suppressed
+- **Spam complaints** → Kill trigger on inbox, lead flagged
+- **High bounce campaigns** → List contamination detection, campaign quarantined
+
+This creates a feedback loop: bad leads damage [[infrastructure]], health monitoring catches it, and the [[lead-refinery]] learns which leads to avoid. See [[system-integration]] for the full flow.
+
 ## Related
 
 - [[infrastructure]] - Domains and inboxes
 - [[campaigns]] - Campaign health
 - [[kill-triggers]] - Detailed trigger docs
 - [[data-models]] - Full type definitions
+- [[lead-dispositions]] - Bounce/unsubscribe dispositions
+- [[lead-refinery]] - Lead quality affects inbox health
+- [[system-integration]] - Platform-wide integration map
 
 ---
 Tags: #health #monitoring #deliverability

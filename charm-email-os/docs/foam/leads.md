@@ -175,6 +175,8 @@ For demo purposes, `simulateCampaignProgress(campaignId)` simulates:
 ## Related
 
 - [[campaigns]] - Parent entity
+- [[lead-dispositions]] - Disposition state machine, cooldowns, and TAM tracking
+- [[lead-refinery]] - Verification pipeline that validates leads before campaigns
 - [[health-monitoring]] - Bounce impact on health
 - [[data-models]] - Full type definitions
 

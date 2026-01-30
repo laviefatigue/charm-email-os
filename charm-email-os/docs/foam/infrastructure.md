@@ -1,6 +1,6 @@
 # Infrastructure
 
-Email sending infrastructure: [[domains]] and [[inboxes]].
+Email sending infrastructure: [[domains]], [[inboxes]], and [[sender-names]].
 
 ## Overview
 
@@ -8,8 +8,37 @@ Each [[clients|client]] has email infrastructure for outbound campaigns:
 
 ```
 Client
+├── Sender Names (base names → variations)
 └── Domains (multiple)
     └── Inboxes (multiple per domain)
+```
+
+## Infrastructure Provisioning Flow
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│ 1. DOMAIN DISCOVERY                                             │
+│    • Campaign docs submission → extract domain ideas            │
+│    • Manual generation via domain sourcing tools                │
+│    Status: pending → approved → purchased                       │
+├─────────────────────────────────────────────────────────────────┤
+│ 2. NAME CONFIGURATION                                           │
+│    • Add base names (seeds): "Chris Booth"                      │
+│    • Generate variations: chris.booth, c.booth, cbooth...       │
+│    • Save approved variations to client profile                 │
+│    See: [[sender-names]]                                        │
+├─────────────────────────────────────────────────────────────────┤
+│ 3. NS VERIFICATION                                              │
+│    • Verify nameservers point to DNSimple                       │
+│    • Fix NS if needed (24-48hr propagation)                     │
+│    See: ns-verification.md                                      │
+├─────────────────────────────────────────────────────────────────┤
+│ 4. INBOX SETUP                                                  │
+│    • Select purchased domains ready for setup                   │
+│    • Load configured sender names                               │
+│    • Automate Hypertide provisioning                            │
+│    Status: purchased → provisioning → active                    │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
 ## Domains
@@ -18,11 +47,15 @@ Client
 
 ```typescript
 type DomainStatus =
-  | 'pending_approval'  // Awaiting review
+  | 'pending'           // Generated, awaiting approval
+  | 'pending_approval'  // Awaiting review (legacy)
   | 'approved'          // Ready to purchase
   | 'rejected'          // Declined
-  | 'purchasing'        // Being acquired
+  | 'purchased'         // Domain bought, needs inbox setup
+  | 'propagating'       // NS set, waiting for DNS propagation
+  | 'provisioning'      // Inboxes being created in Hypertide
   | 'active'            // Live and sending
+  | 'legacy'            // Pre-existing infrastructure (needs audit)
   | 'warming';          // In warmup phase
 
 interface Domain {
@@ -160,12 +193,30 @@ Names: Smith, Johnson, Williams, Brown, Davis
 Format: {firstName}.{lastName}@{domain}
 ```
 
+## Connection to EmailBison & Lead Refinery
+
+Infrastructure provisioned in Charm OS becomes the sending layer in EmailBison:
+
+```
+Charm OS Inbox (provisioned)
+    → emailbisonAccountId (sender account in EmailBison)
+    → Used by campaigns loaded with [[lead-refinery]] verified leads
+    → [[health-monitoring]] tracks bounce rates back from EmailBison
+```
+
+When the [[lead-refinery]] pushes verified leads into an EmailBison campaign, those leads are sent from the inboxes provisioned here. Bounce and complaint data flows back through [[health-monitoring]] to trigger domain/inbox kill decisions.
+
+See [[system-integration]] for the full platform data flow.
+
 ## Related
 
 - [[clients]] - Parent entity
+- [[sender-names]] - Name configuration and variations
 - [[health-monitoring]] - Health tracking
 - [[domains]] - Domain details
 - [[inboxes]] - Inbox details
+- [[system-integration]] - Platform-wide integration map
+- [[lead-refinery]] - Leads sent through this infrastructure
 
 ---
-Tags: #infrastructure #domains #inboxes
+Tags: #infrastructure #domains #inboxes #sender-names
