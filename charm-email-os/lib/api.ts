@@ -2521,6 +2521,17 @@ export const inboxProvisioningApi = {
     );
     return toCamelCase<SmartOrderResponse>(response);
   },
+
+  /**
+   * Cancel a purchase job and unlock its domains.
+   * Cannot cancel jobs that are currently executing.
+   */
+  async cancelJob(jobId: string): Promise<{ message: string; jobId: string }> {
+    return fetchApi<{ message: string; jobId: string }>(
+      `/api/inbox-purchasing/jobs/${jobId}`,
+      { method: 'DELETE' }
+    );
+  },
 };
 
 // ===== COMBINED API EXPORT =====

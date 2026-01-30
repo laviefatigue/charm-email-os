@@ -29,6 +29,7 @@ import {
   Server,
   Mail,
   AlertTriangle,
+  Trash2,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { inboxProvisioningApi } from '@/lib/api';
@@ -62,6 +63,7 @@ export function PurchaseJobsTable({ clientId, onJobRetried }: PurchaseJobsTableP
   const [jobs, setJobs] = useState<PurchaseJob[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [retryingJobId, setRetryingJobId] = useState<string | null>(null);
+  const [cancellingJobId, setCancellingJobId] = useState<string | null>(null);
   const [expandedJobId, setExpandedJobId] = useState<string | null>(null);
 
   const fetchJobs = useCallback(async () => {
@@ -123,6 +125,20 @@ export function PurchaseJobsTable({ clientId, onJobRetried }: PurchaseJobsTableP
       setRetryingJobId(null);
     }
   };
+
+  const handleCancel = useCallback(async (jobId: string) => {
+    try {
+      setCancellingJobId(jobId);
+      await inboxProvisioningApi.cancelJob(jobId);
+      toast.success('Job cancelled, domains unlocked');
+      fetchJobs();
+      onJobRetried?.();
+    } catch (err: any) {
+      toast.error(err.message || 'Failed to cancel job');
+    } finally {
+      setCancellingJobId(null);
+    }
+  }, [fetchJobs, onJobRetried]);
 
   const getStatusBadge = (status: string) => {
     switch (status) {
@@ -307,6 +323,28 @@ export function PurchaseJobsTable({ clientId, onJobRetried }: PurchaseJobsTableP
                     <TableCell>{formatDuration(job)}</TableCell>
                     <TableCell className="text-right">
                       <div className="flex justify-end gap-1">
+                        {(job.status === 'failed' || job.status === 'pending') && (
+                          <TooltipProvider>
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  onClick={() => handleCancel(job.jobId)}
+                                  disabled={cancellingJobId === job.jobId}
+                                  className="text-red-600 hover:text-red-700 hover:bg-red-50"
+                                >
+                                  {cancellingJobId === job.jobId ? (
+                                    <Loader2 className="h-4 w-4 animate-spin" />
+                                  ) : (
+                                    <Trash2 className="h-4 w-4" />
+                                  )}
+                                </Button>
+                              </TooltipTrigger>
+                              <TooltipContent>Cancel job &amp; unlock domains</TooltipContent>
+                            </Tooltip>
+                          </TooltipProvider>
+                        )}
                         {job.status === 'failed' && (
                           <TooltipProvider>
                             <Tooltip>

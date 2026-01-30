@@ -376,6 +376,37 @@ export default function InboxesPage() {
           {/* Purchase New Tab */}
           <TabsContent value="purchase">
             <div className="space-y-6">
+              {/* Domain Pipeline Summary */}
+              <Card>
+                <CardHeader className="pb-3">
+                  <CardTitle className="text-base">Domain Pipeline Summary</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
+                    <div className="text-center p-3 bg-yellow-50 rounded-lg">
+                      <div className="text-2xl font-bold text-yellow-700">{pendingDomainsCount}</div>
+                      <div className="text-xs text-yellow-600">Pending Approval</div>
+                    </div>
+                    <div className="text-center p-3 bg-blue-50 rounded-lg">
+                      <div className="text-2xl font-bold text-blue-700">{approvedDomainsCount}</div>
+                      <div className="text-xs text-blue-600">Ready to Purchase</div>
+                    </div>
+                    <div className="text-center p-3 bg-orange-50 rounded-lg">
+                      <div className="text-2xl font-bold text-orange-700">{purchasedNeedingSetup.length}</div>
+                      <div className="text-xs text-orange-600">Needs Inbox Setup</div>
+                    </div>
+                    <div className="text-center p-3 bg-green-50 rounded-lg">
+                      <div className="text-2xl font-bold text-green-700">{inventoryDomains.length}</div>
+                      <div className="text-xs text-green-600">Active Inventory</div>
+                    </div>
+                    <div className="text-center p-3 bg-muted rounded-lg">
+                      <div className="text-2xl font-bold">{allInboxes.length}</div>
+                      <div className="text-xs text-muted-foreground">Total Inboxes</div>
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+
               {/* Status Summary */}
               <div className="flex items-center gap-4 flex-wrap">
                 {pendingDomainsCount > 0 && (
@@ -487,78 +518,7 @@ export default function InboxesPage() {
                 </Card>
               )}
 
-              {/* Inbox Purchasing Card - Only show when we have purchased domains */}
-              {approvedDomains.length > 0 && (
-                <Card>
-                  <CardHeader>
-                    <CardTitle className="flex items-center gap-2">
-                      <Mail className="h-5 w-5" />
-                      Step 2: Purchase Inboxes
-                    </CardTitle>
-                    <CardDescription>
-                      Generate inbox names and purchase from HyperTide (Entra or Google)
-                    </CardDescription>
-                  </CardHeader>
-                  <CardContent>
-                    <div className="space-y-4">
-                      <div className="text-sm text-muted-foreground">
-                        <ul className="space-y-2">
-                          <li className="flex items-center gap-2">
-                            <div className="h-1.5 w-1.5 rounded-full bg-primary" />
-                            Entra: 104 inboxes/order (2 domains × 52 inboxes)
-                          </li>
-                          <li className="flex items-center gap-2">
-                            <div className="h-1.5 w-1.5 rounded-full bg-primary" />
-                            Google: 15 inboxes/order (5 domains × 3 inboxes)
-                          </li>
-                          <li className="flex items-center gap-2">
-                            <div className="h-1.5 w-1.5 rounded-full bg-primary" />
-                            Automatic EmailBison integration
-                          </li>
-                        </ul>
-                      </div>
-                      <Button
-                        className="w-full"
-                        onClick={() => setShowInboxPurchaseWizard(true)}
-                      >
-                        <ShoppingCart className="h-4 w-4 mr-2" />
-                        Purchase Inboxes
-                      </Button>
-                    </div>
-                  </CardContent>
-                </Card>
-              )}
 
-              {/* Summary Stats */}
-              <Card>
-                <CardHeader className="pb-3">
-                  <CardTitle className="text-base">Domain Pipeline Summary</CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
-                    <div className="text-center p-3 bg-yellow-50 rounded-lg">
-                      <div className="text-2xl font-bold text-yellow-700">{pendingDomainsCount}</div>
-                      <div className="text-xs text-yellow-600">Pending Approval</div>
-                    </div>
-                    <div className="text-center p-3 bg-blue-50 rounded-lg">
-                      <div className="text-2xl font-bold text-blue-700">{approvedDomainsCount}</div>
-                      <div className="text-xs text-blue-600">Ready to Purchase</div>
-                    </div>
-                    <div className="text-center p-3 bg-orange-50 rounded-lg">
-                      <div className="text-2xl font-bold text-orange-700">{purchasedNeedingSetup.length}</div>
-                      <div className="text-xs text-orange-600">Needs Inbox Setup</div>
-                    </div>
-                    <div className="text-center p-3 bg-green-50 rounded-lg">
-                      <div className="text-2xl font-bold text-green-700">{inventoryDomains.length}</div>
-                      <div className="text-xs text-green-600">Active Inventory</div>
-                    </div>
-                    <div className="text-center p-3 bg-muted rounded-lg">
-                      <div className="text-2xl font-bold">{allInboxes.length}</div>
-                      <div className="text-xs text-muted-foreground">Total Inboxes</div>
-                    </div>
-                  </div>
-                </CardContent>
-              </Card>
             </div>
           </TabsContent>
 
