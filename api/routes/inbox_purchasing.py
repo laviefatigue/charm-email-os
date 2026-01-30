@@ -102,8 +102,8 @@ async def _create_job_in_db(
     return job_id
 
 
-async def _lock_domains_for_job(job_id: str, domain_ids: list) -> list[dict]:
-    """Lock domains for a purchase job. Returns list of conflicts if any domains are already locked."""
+async def _check_domain_lock_conflicts(domain_ids: list) -> list[dict]:
+    """Check if any domains are already locked by an active job. Read-only."""
     conflicts = []
     for did in domain_ids:
         row = await fetch_one(
@@ -118,16 +118,15 @@ async def _lock_domains_for_job(job_id: str, domain_ids: list) -> list[dict]:
                 "locked_by_job": str(row["purchase_job_id"]),
                 "job_status": row.get("purchase_job_status"),
             })
+    return conflicts
 
-    if conflicts:
-        return conflicts
 
-    # No conflicts — lock all domains
+async def _lock_domains_for_job(job_id: str, domain_ids: list) -> None:
+    """Lock domains for a purchase job. Job must already exist in inbox_purchase_jobs (FK constraint)."""
     await execute(
         "UPDATE domains SET purchase_job_id = $1, purchase_job_status = 'pending' WHERE id = ANY($2)",
         UUID(job_id), [UUID(str(d)) for d in domain_ids]
     )
-    return []
 
 
 async def _release_domain_locks(job_id: str) -> None:
@@ -1621,9 +1620,8 @@ async def execute_smart_order(
         domains_per_order = 2 if request.provider_type == "entra" else 5
         order_count = len(request.domain_ids) // domains_per_order
 
-        # Lock domains for this job (prevent concurrent purchases on same domains)
-        job_id = str(uuid.uuid4())
-        lock_conflicts = await _lock_domains_for_job(job_id, request.domain_ids)
+        # Check for domain lock conflicts before creating the job (read-only check)
+        lock_conflicts = await _check_domain_lock_conflicts(request.domain_ids)
         if lock_conflicts:
             raise HTTPException(
                 status_code=409,
@@ -1633,7 +1631,8 @@ async def execute_smart_order(
                 }
             )
 
-        # Create worker job (job-specific data only — credentials come from ENV)
+        # Create worker job FIRST (must exist before locking domains due to FK constraint)
+        job_id = str(uuid.uuid4())
         await execute(
             """
             INSERT INTO inbox_purchase_jobs (
@@ -1669,6 +1668,9 @@ async def execute_smart_order(
             client.get("workspace_name") or "Charm",
             json.dumps(sender_names_json),
         )
+
+        # Lock domains for this job (FK constraint satisfied — job now exists)
+        await _lock_domains_for_job(job_id, request.domain_ids)
 
         return PurchaseJobResponse(
             job_id=job_id,
