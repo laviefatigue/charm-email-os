@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback, Fragment } from 'react';
+import { useState, useEffect, useCallback, useRef, Fragment } from 'react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
@@ -65,6 +65,8 @@ export function PurchaseJobsTable({ clientId, onJobRetried }: PurchaseJobsTableP
   const [retryingJobId, setRetryingJobId] = useState<string | null>(null);
   const [cancellingJobId, setCancellingJobId] = useState<string | null>(null);
   const [expandedJobId, setExpandedJobId] = useState<string | null>(null);
+  const jobsRef = useRef(jobs);
+  jobsRef.current = jobs;
 
   const fetchJobs = useCallback(async () => {
     try {
@@ -101,7 +103,7 @@ export function PurchaseJobsTable({ clientId, onJobRetried }: PurchaseJobsTableP
     fetchJobs();
     // Poll for updates every 10 seconds if any jobs are pending/executing
     const interval = setInterval(() => {
-      const hasActiveJobs = jobs.some(
+      const hasActiveJobs = jobsRef.current.some(
         (j) => j.status === 'pending' || j.status === 'executing'
       );
       if (hasActiveJobs) {
@@ -109,7 +111,7 @@ export function PurchaseJobsTable({ clientId, onJobRetried }: PurchaseJobsTableP
       }
     }, 10000);
     return () => clearInterval(interval);
-  }, [fetchJobs, jobs]);
+  }, [fetchJobs]);
 
   const handleRetry = async (jobId: string) => {
     setRetryingJobId(jobId);
@@ -391,7 +393,7 @@ export function PurchaseJobsTable({ clientId, onJobRetried }: PurchaseJobsTableP
                   {expandedJobId === job.jobId && (
                     <TableRow key={`${job.jobId}-details`}>
                       <TableCell colSpan={7} className="bg-muted/50 p-4 max-w-0">
-                        <div className="space-y-3 text-sm wrap-break-word overflow-hidden">
+                        <div className="space-y-3 text-sm whitespace-normal wrap-break-word overflow-hidden">
                           {job.currentStep && (
                             <div>
                               <span className="font-medium">Current Step:</span>{' '}
