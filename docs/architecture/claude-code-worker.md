@@ -349,8 +349,45 @@ OAuth credentials persist in the Docker named volume `charm-claude-credentials`:
 2. Complete OAuth in browser
 3. Reset failed jobs to pending
 
+## Purchase Worker (Hypertide Browser Automation)
+
+**Status:** Testing (2026-01-29)
+
+The purchase worker follows the same Claude Code + MCP pattern but adds **Playwright browser automation** for navigating the Hypertide web UI (which has no API). See [[purchase-worker]] for full architecture documentation.
+
+### Key Differences from Domain/Strategy Workers
+
+| Aspect | Domain/Strategy Workers | Purchase Worker |
+|--------|------------------------|-----------------|
+| Output method | Database writes (suggestions) | Browser automation (form filling) |
+| MCP tools | DB-only (get_context, save_suggestion) | DB + Browser (navigate, click, fill, screenshot) |
+| External service | None | Hypertide (app2.hypertide.io) |
+| Credentials | None (uses DB context) | ENV vars (Hypertide, Bison, Stripe) |
+| Audit trail | Job status only | Screenshot at every step |
+| Container extras | Standard | Xvfb + Chromium + Playwright |
+| Deployment target | Local Docker Desktop | Coolify (production) |
+
+### Files
+
+| File | Purpose | Status |
+|------|---------|--------|
+| `purchase_worker.py` | Main worker daemon | Working |
+| `purchase_mcp/server.py` | MCP tools server (browser + DB) | Working |
+| `purchase_mcp_config.json` | MCP server configuration | Working |
+| `.claude/skills/execute-purchase.md` | 14-step purchase skill | Working |
+| `Dockerfile.purchase-worker` | Docker image (Debian + Claude + Playwright + Xvfb) | Working |
+| `docker-compose.purchase-worker.yml` | Coolify production compose | Working |
+| `docker-compose.purchase-test.yml` | Local testing compose | Working |
+
+### Deployment
+
+- **Local testing:** `docker-compose.purchase-test.yml` with step-by-step control (`--stop-after-step N`)
+- **Production:** Coolify application `xo4o4wcco0scgs8gskggw00k` — see [[../deployment/purchase-worker-coolify]]
+
 ## Related
 
+- [[purchase-worker]] - Purchase worker architecture (full documentation)
+- [[../deployment/purchase-worker-coolify]] - Purchase worker Coolify deployment
 - [[../deployment/local-docker]] - Local Docker setup and authentication
 - [[../features/strategy-generation]] - Strategy generation feature details
 - [[data-flow]] - How data moves through system

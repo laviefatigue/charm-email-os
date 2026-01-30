@@ -137,6 +137,18 @@ ENV POLL_INTERVAL="10"
 ENV CLAUDE_ACCOUNT=""
 ENV JOB_TIMEOUT="600"
 
+# Global credentials (injected by MCP server into get_purchase_job response)
+ENV HYPERTIDE_EMAIL=""
+ENV HYPERTIDE_PASSWORD=""
+ENV BISON_USERNAME=""
+ENV BISON_PASSWORD=""
+ENV BISON_URL="https://spellcast.hirecharm.com"
+ENV EMAILBISON_API_KEY=""
+ENV STRIPE_CARD_NUMBER=""
+ENV STRIPE_CARD_EXP=""
+ENV STRIPE_CARD_CVC=""
+ENV STRIPE_CARD_ZIP=""
+
 # Xvfb virtual display for headed Chromium
 # Headless Chromium fails to render some SPAs (like Hypertide).
 # Running headed mode with a virtual display solves this.

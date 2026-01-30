@@ -18,6 +18,16 @@ services:
       - CLAUDE_ACCOUNT=${CLAUDE_ACCOUNT:-}
       - JOB_TIMEOUT=${JOB_TIMEOUT:-600}
       - ALERT_WEBHOOK_URL=${ALERT_WEBHOOK_URL:-}
+      - HYPERTIDE_EMAIL=${HYPERTIDE_EMAIL}
+      - HYPERTIDE_PASSWORD=${HYPERTIDE_PASSWORD}
+      - BISON_USERNAME=${BISON_USERNAME}
+      - BISON_PASSWORD=${BISON_PASSWORD}
+      - BISON_URL=${BISON_URL:-https://spellcast.hirecharm.com}
+      - EMAILBISON_API_KEY=${EMAILBISON_API_KEY}
+      - STRIPE_CARD_NUMBER=${STRIPE_CARD_NUMBER:-}
+      - STRIPE_CARD_EXP=${STRIPE_CARD_EXP:-}
+      - STRIPE_CARD_CVC=${STRIPE_CARD_CVC:-}
+      - STRIPE_CARD_ZIP=${STRIPE_CARD_ZIP:-}
     volumes:
       - claude-credentials-purchase:/home/claude/.claude
     healthcheck:

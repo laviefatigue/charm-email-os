@@ -9,7 +9,7 @@
     "username": "your-bison-user@email.com",
     "password": "your-bison-password",
     "workspace": "Acme Workspace",
-    "bison_url": "https://send.hirecharm.com"
+    "bison_url": "https://spellcast.hirecharm.com"
   },
   "users": [
     {"first_name": "alex", "last_name": "morgan"},

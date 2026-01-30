@@ -31,11 +31,26 @@ Outbound email campaigns created from [[campaign-ideas]] through the [[strategy]
 ### [[leads]]
 Contact records managed per campaign with status tracking and CSV upload support.
 
+### [[lead-dispositions]]
+Lead state machine with cooldown logic, company-level suppression, TAM tracking, and pull logic for campaign fills.
+
+### [[lead-refinery]]
+JIT lead verification pipeline for manufacturing verified cold email lists. Processes 75.4M leads through cost-efficient waterfall validation.
+
+### [[lead-tam-map]]
+AI-ARK enrichment data flows back to the database, building a living TAM map. Every pipeline run makes future contracts cheaper and data fresher.
+
 ### [[health-monitoring]]
 Comprehensive system for tracking inbox/domain health, kill triggers, and ESP reputation.
 
 ### [[strategy-ai-container]]
 Purpose-built Docker container for autonomous email strategy generation using Claude Code on VPS.
+
+### [[purchase-worker]]
+Autonomous browser automation for purchasing email inboxes on Hypertide using Claude Code + Playwright. Navigates the Hypertide web UI, selects EmailBison workspaces, and completes orders without human intervention. Deployed on Coolify.
+
+### [[system-integration]]
+How Charm Email OS, the Lead Refinery pipeline, and EmailBison execution engine connect as a unified outbound platform. End-to-end data flows, system responsibilities, and integration points.
 
 ## Tech Stack
 
@@ -61,6 +76,7 @@ Open http://localhost:3000 to access the application.
 
 - [[glossary]] - Term definitions
 - [[workflows]] - Common user workflows
+- [[system-integration]] - Platform integration map
 
 ---
 Tags: #overview #index

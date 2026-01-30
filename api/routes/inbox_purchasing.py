@@ -1543,9 +1543,10 @@ async def execute_smart_order(
         onboarding_data = json.loads(onboarding_data)
 
     # --- Worker Mode: Create self-contained job for AI purchase worker ---
+    # Global credentials (Hypertide login, Bison login, API key, Stripe) come from
+    # ENV vars on the worker container — injected by MCP server's get_purchase_job().
+    # Only job-specific data is stored in the DB row.
     if request.use_worker:
-        import os
-
         # Resolve domain names
         domain_names = []
         for did in request.domain_ids:
@@ -1561,7 +1562,7 @@ async def execute_smart_order(
         domains_per_order = 2 if request.provider_type == "entra" else 5
         order_count = len(request.domain_ids) // domains_per_order
 
-        # Create self-contained worker job
+        # Create worker job (job-specific data only — credentials come from ENV)
         job_id = str(uuid.uuid4())
         await execute(
             """
@@ -1569,9 +1570,8 @@ async def execute_smart_order(
                 id, client_id, workspace_id, status, provider_type,
                 domain_ids, domain_names, orders_total, order_count,
                 override_age_check, custom_purchase,
-                worker_mode, hypertide_email, hypertide_password,
-                company_name, forwarding_domain,
-                bison_username, bison_password, bison_workspace_name, bison_url,
+                worker_mode, company_name, forwarding_domain,
+                bison_workspace_name,
                 sender_names, use_saved_payment,
                 created_at
             ) VALUES (
@@ -1579,9 +1579,8 @@ async def execute_smart_order(
                 $5, $6, $7, $8,
                 $9, $10,
                 'worker', $11, $12,
-                $13, $14,
-                $15, $16, $17, $18,
-                $19, TRUE,
+                $13,
+                $14, TRUE,
                 NOW()
             )
             """,
@@ -1595,14 +1594,9 @@ async def execute_smart_order(
             order_count,
             request.override_age_check,
             request.custom_purchase,
-            os.getenv("HYPERTIDE_EMAIL", "chris@hirecharm.com"),
-            os.getenv("HYPERTIDE_PASSWORD", ""),
             client.get("name", "Unknown"),
             onboarding_data.get("primaryDomain", "") if onboarding_data else "",
-            "elliott@hirecharm.com",
-            "bbZM9eFTDkEHzF%P7ii6EBy%",
             client.get("workspace_name") or "Charm",
-            "https://spellcast.hirecharm.com",
             json.dumps(sender_names_json),
         )
 

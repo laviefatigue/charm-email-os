@@ -1,0 +1,28 @@
+version: "3.8"
+
+services:
+  purchase-worker-test:
+    build:
+      context: .
+      dockerfile: Dockerfile.purchase-worker
+    container_name: charm-purchase-worker-test
+    restart: "no"
+    shm_size: 256m
+    environment:
+      - POSTGRES_HOST=31.97.142.123
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=postgres
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-ZEN3hMv6UpA0hfd8OcAUSiJWgpY33q5V}
+      - POLL_INTERVAL=5
+      - CLAUDE_ACCOUNT=
+      - JOB_TIMEOUT=300
+      - HYPERTIDE_EMAIL=${HYPERTIDE_EMAIL:-chris@hirecharm.com}
+      - HYPERTIDE_PASSWORD=${HYPERTIDE_PASSWORD}
+      - BISON_USERNAME=${BISON_USERNAME:-elliott@hirecharm.com}
+      - BISON_PASSWORD=${BISON_PASSWORD:-bbZM9eFTDkEHzF%P7ii6EBy%}
+      - BISON_URL=${BISON_URL:-https://spellcast.hirecharm.com}
+      - EMAILBISON_API_KEY=${EMAILBISON_API_KEY:-17|MJ4B2ye4YyzawJFcQKxNJlIFGmyafaEQuZodYCV6d1ef7cbb}
+    volumes:
+      - ./claude-credentials-local:/home/claude/.claude
+      - ./test-output:/app/test-output

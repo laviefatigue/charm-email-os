@@ -8,7 +8,14 @@ The worker runs autonomously - Claude Code has full permission to call MCP tools
 (browser + database) without human approval during execution.
 
 Usage:
+    # Normal daemon mode (polls for jobs):
     python purchase_worker.py
+
+    # Single job mode (process one job and exit):
+    python purchase_worker.py --single-job <JOB_ID>
+
+    # Stop after a specific skill step (for testing):
+    python purchase_worker.py --single-job <JOB_ID> --stop-after-step 2
 
 Environment variables:
     POSTGRES_HOST, POSTGRES_PORT, POSTGRES_DB, POSTGRES_USER, POSTGRES_PASSWORD
@@ -204,7 +211,8 @@ def ensure_tables():
             ("bison_username", "TEXT"),
             ("bison_password", "TEXT"),
             ("bison_workspace_name", "TEXT"),
-            ("bison_url", "TEXT DEFAULT 'https://send.hirecharm.com'"),
+            ("bison_url", "TEXT DEFAULT 'https://spellcast.hirecharm.com'"),
+            ("bison_api_key", "TEXT"),
             ("sender_names", "JSONB"),
             ("use_saved_payment", "BOOLEAN DEFAULT TRUE"),
             ("order_count", "INTEGER DEFAULT 1"),
@@ -311,12 +319,14 @@ def mark_job_failed(job_id: str, error: str):
         conn.close()
 
 
-def process_job(job: dict, skill_content: str):
+def process_job(job: dict, skill_content: str, stop_after_step: int = None):
     """Process a purchase job by spawning Claude Code with browser automation.
 
     Args:
         job: Job dict with id, client_id, provider_type, domain_names, company_name
         skill_content: Pre-loaded skill instructions to embed in prompt
+        stop_after_step: If set, inject a stop instruction after this skill step (1-14).
+                         Used for testing to prevent accidental purchases.
     """
     job_id = str(job["id"])
     client_id = str(job["client_id"])
@@ -325,9 +335,33 @@ def process_job(job: dict, skill_content: str):
     domain_names = job.get("domain_names", [])
 
     logger.info(f"Processing purchase job {job_id} for {company_name} ({provider_type}, {len(domain_names)} domains)")
+    if stop_after_step:
+        logger.info(f"TEST MODE: Will stop after step {stop_after_step}")
 
     # Build prompt with embedded skill
-    prompt = f"""You are executing a Hypertide inbox purchase order. Follow these instructions exactly:
+    # If stop_after_step is set, place the STOP instruction at the TOP of the prompt
+    # so Claude sees it before reading any skill steps. This prevents overshoot.
+    stop_preamble = ""
+    if stop_after_step:
+        stop_preamble = f"""
+╔══════════════════════════════════════════════════════════════╗
+║  MANDATORY STOP RULE — READ THIS FIRST                      ║
+║                                                              ║
+║  This is a TEST RUN. You MUST stop after Step {stop_after_step:<2}             ║
+║  After completing Step {stop_after_step}, immediately call:               ║
+║    fail_job("{job_id}",                           ║
+║            "test_stopped_after_step_{stop_after_step}",                   ║
+║            "step_{stop_after_step}")                                      ║
+║                                                              ║
+║  Then STOP. Do NOT execute Step {stop_after_step + 1} or beyond.             ║
+║  Do NOT navigate to any new pages after Step {stop_after_step}.              ║
+║  Do NOT repeat any previous steps.                           ║
+║  Do NOT log in more than once.                               ║
+╚══════════════════════════════════════════════════════════════╝
+
+"""
+
+    prompt = f"""{stop_preamble}You are executing a Hypertide inbox purchase order. Follow these instructions exactly:
 
 {skill_content}
 
@@ -339,6 +373,17 @@ NOW EXECUTE THE PURCHASE WITH THESE PARAMETERS:
 Execute all steps starting from Step 1 (Load Job Data).
 Call get_purchase_job("{job_id}") first to get all the data you need.
 Then follow each step in order through to completion or failure.
+
+IMPORTANT TIMING RULES:
+- After clicking any button that triggers a page change, ALWAYS call wait_for_text() to verify the new page loaded before doing anything else.
+- NEVER navigate to a URL you are already on. If you are already on the dashboard, do NOT navigate to the signin page again.
+- Login to Hypertide exactly ONCE. If you see the dashboard, you are logged in — do not log in again.
+"""
+
+    # Also append stop reminder at the end for reinforcement
+    if stop_after_step:
+        prompt += f"""
+REMINDER: This is a TEST RUN. STOP after Step {stop_after_step}. Call fail_job() and STOP immediately.
 """
 
     cmd = [
@@ -347,6 +392,17 @@ Then follow each step in order through to completion or failure.
         "--dangerously-skip-permissions",
         "--mcp-config", os.path.join(PROJECT_PATH, "purchase_mcp_config.json"),
     ]
+
+    # Limit max turns to prevent runaway execution.
+    # Each skill step uses ~5-15 tool calls (navigate, fill, click, wait, screenshot, log_step, get_page_text).
+    # Complex steps (domain entry, bison config) need 15+ calls for form interaction.
+    if stop_after_step:
+        # For testing: ~15 turns per step + 15 for setup/teardown
+        max_turns = (stop_after_step * 15) + 15
+        cmd.extend(["--max-turns", str(max_turns)])
+    else:
+        # Full run: 14 steps * 15 turns = 210, round up to 225
+        cmd.extend(["--max-turns", "225"])
 
     if CLAUDE_ACCOUNT and CLAUDE_ACCOUNT != "default":
         cmd.extend(["--profile", CLAUDE_ACCOUNT])
@@ -419,6 +475,85 @@ Then follow each step in order through to completion or failure.
         mark_job_failed(job_id, str(e)[:500])
 
 
+def get_job_by_id(job_id: str) -> dict:
+    """Get a specific purchase job by ID (regardless of status).
+
+    Used by --single-job mode for testing.
+    """
+    conn = get_db()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+
+    try:
+        cur.execute("""
+            SELECT id, client_id, provider_type, domain_names, company_name
+            FROM inbox_purchase_jobs WHERE id = %s
+        """, (job_id,))
+        job = cur.fetchone()
+        if not job:
+            logger.error(f"Job {job_id} not found")
+            return None
+        return job
+    except Exception as e:
+        logger.error(f"Failed to get job {job_id}: {e}")
+        return None
+    finally:
+        cur.close()
+        conn.close()
+
+
+def run_single_job(job_id: str, stop_after_step: int = None):
+    """Process a single job by ID and exit.
+
+    Used for local testing. Does not poll or loop.
+
+    Args:
+        job_id: The UUID of the job to process
+        stop_after_step: If set, stop execution after this skill step (1-14)
+    """
+    logger.info(f"Single job mode: processing {job_id}")
+    if stop_after_step:
+        logger.info(f"Will stop after step {stop_after_step}")
+
+    # Load skill content
+    logger.info("Loading skill content...")
+    try:
+        skill_content = load_skill_content()
+        logger.info(f"Skill loaded ({len(skill_content)} chars)")
+    except Exception as e:
+        logger.error(f"Failed to load skill: {e}")
+        sys.exit(1)
+
+    # Ensure tables exist
+    ensure_tables()
+
+    # Get the job
+    job = get_job_by_id(job_id)
+    if not job:
+        logger.error(f"Job {job_id} not found in database")
+        sys.exit(1)
+
+    logger.info(f"Job found: {job['company_name']} ({job['provider_type']}, {len(job.get('domain_names', []))} domains)")
+
+    # Mark as processing
+    conn = get_db()
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+            UPDATE inbox_purchase_jobs
+            SET status = 'processing', started_at = NOW()
+            WHERE id = %s
+        """, (job_id,))
+        conn.commit()
+    finally:
+        cur.close()
+        conn.close()
+
+    # Process the job
+    process_job(job, skill_content, stop_after_step=stop_after_step)
+
+    logger.info(f"Single job {job_id} processing complete. Exiting.")
+
+
 def run_worker():
     """Main worker loop.
 
@@ -486,4 +621,29 @@ def run_worker():
 
 
 if __name__ == "__main__":
-    run_worker()
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="Purchase Worker - Hypertide Inbox Purchase Daemon"
+    )
+    parser.add_argument(
+        "--single-job",
+        type=str,
+        metavar="JOB_ID",
+        help="Process a single job by UUID and exit (no polling loop)"
+    )
+    parser.add_argument(
+        "--stop-after-step",
+        type=int,
+        metavar="N",
+        help="Stop execution after skill step N (1-14). For testing only."
+    )
+    args = parser.parse_args()
+
+    if args.stop_after_step and not args.single_job:
+        parser.error("--stop-after-step requires --single-job")
+
+    if args.single_job:
+        run_single_job(args.single_job, args.stop_after_step)
+    else:
+        run_worker()

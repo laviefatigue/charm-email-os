@@ -266,7 +266,7 @@ class BisonCredentials(BaseModel):
     password: str = Field(..., description="Bison password")
     workspace: str = Field(..., description="Bison workspace name")
     bison_url: str = Field(
-        default="https://send.hirecharm.com",
+        default="https://spellcast.hirecharm.com",
         description="Bison instance URL"
     )
 
@@ -288,7 +288,7 @@ class MixedOrderRequest(BaseModel):
                 username="user@email.com",
                 password="secret",
                 workspace="Acme Workspace",
-                bison_url="https://send.hirecharm.com"
+                bison_url="https://spellcast.hirecharm.com"
             ),
             users=[
                 InboxConfig(first_name="alex", last_name="morgan"),

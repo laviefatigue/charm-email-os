@@ -46,7 +46,7 @@ async def onboard_client_example():
             username="your-bison-user@email.com",
             password="your-bison-password",
             workspace="Acme Workspace",
-            bison_url="https://send.hirecharm.com"
+            bison_url="https://spellcast.hirecharm.com"
         ),
 
         # Inbox users (distributed evenly across all inboxes)
@@ -166,7 +166,7 @@ async def integration_with_project_record():
             username="your-bison-user@email.com",  # From your secrets
             password="your-bison-password",         # From your secrets
             workspace=project_record["bison_workspace"],
-            bison_url="https://send.hirecharm.com"
+            bison_url="https://spellcast.hirecharm.com"
         ),
         users=[
             InboxConfig(first_name=c["first"], last_name=c["last"])

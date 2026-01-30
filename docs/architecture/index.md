@@ -13,7 +13,8 @@ System architecture for Charm Email OS.
 
 - [[data-flow]] - How data moves through the system
 - [[api-endpoints]] - REST API documentation
-- [[claude-code-worker]] - AI worker architecture
+- [[claude-code-worker]] - AI worker architecture (domain + strategy generation)
+- [[purchase-worker]] - Purchase worker architecture (Hypertide browser automation)
 
 ## High-Level Architecture
 
@@ -50,6 +51,14 @@ System architecture for Charm Email OS.
 │  *_generation_jobs      │  │  Uses domain_mcp        │  │  Uses strategy_mcp      │
 │  strategy_suggestions   │  │  tools                  │  │  tools                  │
 └─────────────────────────┘  └─────────────────────────┘  └─────────────────────────┘
+
+               ┌─────────────────────────────────────────────────┐
+               │   Purchase Worker (Claude Code + Playwright)    │
+               │                                                 │
+               │  Polls inbox_purchase_jobs                      │
+               │  Browser automation on Hypertide                │
+               │  Uses purchase_mcp tools                        │
+               └─────────────────────────────────────────────────┘
 ```
 
 ## Key Design Decisions

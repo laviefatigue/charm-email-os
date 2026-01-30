@@ -9,11 +9,19 @@ This server gives Claude the ability to:
 
 Browser lifecycle: Chromium launches on first navigate() call.
 Browser closes when the MCP server process exits (end of Claude Code subprocess).
+
+Timing & rate limiting:
+- slow_mo=100ms on Playwright launch (paces all browser operations)
+- 3s minimum cooldown between navigate() calls
+- Navigation deduplication (skip if same URL already loaded)
+- 3s post-click wait with load state verification
+- All waits logged for debugging
 """
 import asyncio
 import base64
 import json
 import os
+import time
 import traceback
 from datetime import datetime
 from typing import Optional
@@ -40,6 +48,14 @@ _playwright = None
 _browser = None
 _page = None
 
+# Rate limiting state
+_last_navigate_time = 0.0      # Timestamp of last navigate() call
+_current_url = ""              # Currently loaded URL (for deduplication)
+NAVIGATE_COOLDOWN_SEC = 3.0    # Minimum seconds between navigate() calls
+
+# Login guard — prevents double login (wastes time + hammers Hypertide)
+_login_completed = False       # Set True after successful login (dashboard seen)
+
 
 def get_db():
     """Get database connection."""
@@ -61,6 +77,7 @@ async def _ensure_browser():
     # The Dockerfile installs xvfb and the worker launches with DISPLAY=:99.
     _browser = await _playwright.chromium.launch(
         headless=False,
+        slow_mo=100,  # 100ms between every Playwright action — prevents hammering
         args=[
             "--no-sandbox",
             "--disable-setuid-sandbox",
@@ -266,6 +283,7 @@ async def list_tools():
 @server.call_tool()
 async def call_tool(name: str, arguments: dict):
     """Handle tool calls."""
+    global _last_navigate_time, _current_url, _login_completed
 
     # --- Browser Tools ---
 
@@ -274,12 +292,45 @@ async def call_tool(name: str, arguments: dict):
         try:
             page = await _ensure_browser()
 
+            # --- Login guard: REFUSE to navigate to signin after login completed ---
+            if _login_completed and "signin" in url.lower():
+                screenshot = await _take_screenshot()
+                return [TextContent(type="text", text=json.dumps({
+                    "status": "blocked",
+                    "url": _current_url,
+                    "note": "LOGIN GUARD: You are already logged in. "
+                            "Navigating back to the signin page is FORBIDDEN. "
+                            "Continue from the current page. Do NOT log in again.",
+                    "screenshot_base64": screenshot
+                }))]
+
+            # --- Deduplication: skip if already on this URL ---
+            if _current_url and _current_url.rstrip("/") == url.rstrip("/"):
+                screenshot = await _take_screenshot()
+                info = await _get_page_info()
+                return [TextContent(type="text", text=json.dumps({
+                    "status": "ok",
+                    "url": info["url"],
+                    "title": info["title"],
+                    "note": "Already on this page — skipped redundant navigation",
+                    "screenshot_base64": screenshot
+                }))]
+
+            # --- Rate limiting: enforce cooldown between navigations ---
+            now = time.time()
+            elapsed = now - _last_navigate_time
+            if elapsed < NAVIGATE_COOLDOWN_SEC:
+                wait_time = NAVIGATE_COOLDOWN_SEC - elapsed
+                await asyncio.sleep(wait_time)
+
             # Use domcontentloaded - don't wait for network requests to finish.
             # Hypertide's backend API (backend.hypertide.io) is unreachable from Docker,
             # so "load" and "networkidle" hang indefinitely. domcontentloaded fires once
             # the HTML is parsed and React can hydrate, matching the proven pattern
             # from HypertideClient in Hypertide/automation/src/.
             await page.goto(url, wait_until="domcontentloaded", timeout=60000)
+            _last_navigate_time = time.time()
+            _current_url = url
 
             # Wait for meaningful content (form elements, buttons, etc.)
             try:
@@ -324,6 +375,7 @@ async def call_tool(name: str, arguments: dict):
         selector = arguments["selector"]
         try:
             page = await _ensure_browser()
+            url_before = page.url
 
             # Handle text= selectors via Playwright's built-in text matching
             if selector.startswith("text="):
@@ -332,8 +384,17 @@ async def call_tool(name: str, arguments: dict):
             else:
                 await page.click(selector, timeout=10000)
 
-            # Wait a moment for any navigation/animation
-            await asyncio.sleep(2)
+            # Wait for any navigation or animation triggered by the click
+            await asyncio.sleep(3)
+
+            # If the URL changed, a navigation happened — wait for DOM and update tracking
+            url_after = page.url
+            if url_after != url_before:
+                try:
+                    await page.wait_for_load_state("domcontentloaded", timeout=10000)
+                except Exception:
+                    pass
+                _current_url = url_after
 
             screenshot = await _take_screenshot()
             info = await _get_page_info()
@@ -341,6 +402,7 @@ async def call_tool(name: str, arguments: dict):
                 "status": "ok",
                 "clicked": selector,
                 "url": info["url"],
+                "navigated": url_after != url_before,
                 "screenshot_base64": screenshot
             }))]
         except Exception as e:
@@ -465,6 +527,11 @@ async def call_tool(name: str, arguments: dict):
         try:
             page = await _ensure_browser()
             await page.get_by_text(text).first.wait_for(state="visible", timeout=timeout_ms)
+
+            # --- Login tracking: mark login as done when dashboard text is found ---
+            if "place new order" in text.lower():
+                _login_completed = True
+
             screenshot = await _take_screenshot()
             return [TextContent(type="text", text=json.dumps({
                 "status": "found",
@@ -518,7 +585,27 @@ async def call_tool(name: str, arguments: dict):
             result.pop("domain_names_json", None)
             result.pop("domain_ids_json", None)
 
-            # Mask sensitive fields in log but include in response
+            # Inject global credentials from ENV (override DB values if set)
+            env_credentials = {
+                "hypertide_email": os.getenv("HYPERTIDE_EMAIL", ""),
+                "hypertide_password": os.getenv("HYPERTIDE_PASSWORD", ""),
+                "bison_username": os.getenv("BISON_USERNAME", ""),
+                "bison_password": os.getenv("BISON_PASSWORD", ""),
+                "bison_url": os.getenv("BISON_URL", "https://spellcast.hirecharm.com"),
+                "bison_api_key": os.getenv("EMAILBISON_API_KEY", ""),
+            }
+            for key, env_value in env_credentials.items():
+                if env_value:  # ENV set → use it; else keep DB value (backwards compat)
+                    result[key] = env_value
+
+            # Stripe card info from ENV (only if card number is set)
+            card_number = os.getenv("STRIPE_CARD_NUMBER", "")
+            if card_number:
+                result["stripe_card_number"] = card_number
+                result["stripe_card_exp"] = os.getenv("STRIPE_CARD_EXP", "")
+                result["stripe_card_cvc"] = os.getenv("STRIPE_CARD_CVC", "")
+                result["stripe_card_zip"] = os.getenv("STRIPE_CARD_ZIP", "")
+
             return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
 
         finally:
@@ -560,14 +647,29 @@ async def call_tool(name: str, arguments: dict):
         screenshot_b64 = arguments.get("screenshot_base64")
         notes = arguments.get("notes", "")
 
-        # Auto-capture screenshot if not provided
-        if not screenshot_b64:
-            screenshot_b64 = await _take_screenshot()
-
         conn = get_db()
         cur = conn.cursor()
 
         try:
+            # --- Step dedup: check DATABASE for existing step (survives process restarts) ---
+            cur.execute("""
+                SELECT COUNT(*) FROM purchase_job_steps
+                WHERE job_id = %s AND step_name = %s
+            """, (job_id, step_name))
+            existing_count = cur.fetchone()[0]
+
+            if existing_count > 0:
+                conn.close()
+                return [TextContent(type="text", text=(
+                    f"STEP ALREADY LOGGED: '{step_name}' was already recorded for job {job_id}. "
+                    f"Each step must be logged exactly once. "
+                    f"Do NOT repeat previous steps — continue forward to the next step."
+                ))]
+
+            # Auto-capture screenshot if not provided
+            if not screenshot_b64:
+                screenshot_b64 = await _take_screenshot()
+
             cur.execute("""
                 INSERT INTO purchase_job_steps (job_id, step_name, screenshot_base64, notes)
                 VALUES (%s, %s, %s, %s)
@@ -673,7 +775,16 @@ async def call_tool(name: str, arguments: dict):
             """, (job_id, f"FAILED: {step}", screenshot_b64, error))
 
             conn.commit()
-            return [TextContent(type="text", text=f"Job {job_id} marked as FAILED at step '{step}': {error}")]
+            return [TextContent(type="text", text=(
+                f"Job {job_id} marked as FAILED at step '{step}': {error}\n\n"
+                "╔════════════════════════════════════════════╗\n"
+                "║  JOB FAILED — STOP ALL EXECUTION NOW.     ║\n"
+                "║  Do NOT call any more tools.               ║\n"
+                "║  Do NOT navigate to any pages.             ║\n"
+                "║  Do NOT attempt to recover or retry.       ║\n"
+                "║  Your task is COMPLETE. Output your report.║\n"
+                "╚════════════════════════════════════════════╝"
+            ))]
 
         finally:
             cur.close()

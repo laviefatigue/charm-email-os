@@ -23,6 +23,7 @@ Self-hosted PaaS for deploying and managing Docker containers.
 |-------------|------|------|------------|--------|
 | charm-api | `ccssgc4gowsog04wck400o0w` | `http://ccssgc4gowsog04wck400o0w.31.97.142.123.sslip.io` | master | running |
 | charm-frontend | `jskswosswg80cg8wwk8g8kww` | `http://jskswosswg80cg8wwk8g8kww.31.97.142.123.sslip.io` | master | running |
+| charm-purchase-worker | `xo4o4wcco0scgs8gskggw00k` | (no FQDN — background daemon) | master | deploying |
 
 ## Deployment Process
 
@@ -51,6 +52,18 @@ mcp__coolify__get_application_logs(
 ```
 
 ## Environment Variables
+
+### charm-purchase-worker
+
+See [[../deployment/purchase-worker-coolify]] for full ENV var reference. Key groups:
+
+| Group | Variables |
+|-------|----------|
+| Database | `POSTGRES_HOST`, `POSTGRES_PORT`, `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD` |
+| Worker | `POLL_INTERVAL`, `JOB_TIMEOUT`, `CLAUDE_ACCOUNT`, `ALERT_WEBHOOK_URL` |
+| Hypertide | `HYPERTIDE_EMAIL`, `HYPERTIDE_PASSWORD` |
+| EmailBison | `BISON_USERNAME`, `BISON_PASSWORD`, `BISON_URL`, `EMAILBISON_API_KEY` |
+| Stripe | `STRIPE_CARD_NUMBER`, `STRIPE_CARD_EXP`, `STRIPE_CARD_CVC`, `STRIPE_CARD_ZIP` |
 
 ### charm-api
 | Variable | Purpose |

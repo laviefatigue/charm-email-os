@@ -118,7 +118,7 @@ async def onboard_client():
             username="user@email.com",
             password="secret",
             workspace="Acme Workspace",
-            bison_url="https://send.hirecharm.com"
+            bison_url="https://spellcast.hirecharm.com"
         ),
 
         # Inbox users

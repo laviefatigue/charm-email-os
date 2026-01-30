@@ -35,6 +35,8 @@ from .exceptions import (
     PaymentTimeoutError,
     DomainUnavailableError,
     ElementNotFoundError,
+    SessionExpiredError,
+    RetryExhaustedError,
 )
 from .config import StripeConfig
 
@@ -159,6 +161,12 @@ class PurchaseAutomation:
         """
         Execute the complete purchase flow.
 
+        Includes:
+        - Session validation before starting
+        - Login detection during flow (SessionExpiredError)
+        - Detailed error logging with screenshots
+        - Retry logic inherited from client navigation methods
+
         Args:
             request: The order configuration
 
@@ -173,20 +181,29 @@ class PurchaseAutomation:
         )
 
         try:
-            # Step 1: Navigate to choose plan
+            # Pre-flight: Validate session is ready for purchase
+            logger.info("Pre-flight: Validating session")
+            await self.client.validate_session_for_purchase()
+
+            # Step 1: Navigate to choose plan (already on page from validation)
             await self._step_choose_plan(request)
+            await self._check_session_during_flow("choose_plan")
 
             # Step 2: Select quantity
             await self._step_select_quantity(request)
+            await self._check_session_during_flow("select_quantity")
 
             # Step 3: Configure domains (if custom)
             await self._step_configure_domains(request)
+            await self._check_session_during_flow("configure_domains")
 
             # Step 4: Setup domain settings
             await self._step_setup_settings(request)
+            await self._check_session_during_flow("setup_settings")
 
             # Step 5: Review order
             await self._step_review_order(request)
+            await self._check_session_during_flow("review_order")
 
             # Step 6: Complete payment
             order_id = await self._step_checkout(request)
@@ -206,8 +223,38 @@ class PurchaseAutomation:
             logger.info("Purchase completed successfully", order_id=order_id)
             return result
 
+        except SessionExpiredError as e:
+            logger.error("Session expired during purchase", error=str(e))
+            screenshot = await self.client.screenshot_on_error(
+                f"session-expired-{request.client_name}-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+            )
+            return OrderResult(
+                success=False,
+                client_name=request.client_name,
+                forwarding_domain=request.forwarding_domain,
+                order_type=request.order_type,
+                quantity=request.quantity,
+                error_message=f"Session expired: {str(e)}. Re-authentication required.",
+                screenshot_path=str(screenshot) if screenshot else None,
+            )
+
+        except RetryExhaustedError as e:
+            logger.error("Retry exhausted during purchase", error=str(e))
+            screenshot = await self.client.screenshot_on_error(
+                f"retry-exhausted-{request.client_name}-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+            )
+            return OrderResult(
+                success=False,
+                client_name=request.client_name,
+                forwarding_domain=request.forwarding_domain,
+                order_type=request.order_type,
+                quantity=request.quantity,
+                error_message=f"Operation failed after retries: {str(e.last_error)}",
+                screenshot_path=str(screenshot) if screenshot else None,
+            )
+
         except Exception as e:
-            logger.error("Purchase failed", error=str(e))
+            logger.error("Purchase failed", error=str(e), error_type=type(e).__name__)
 
             # Take screenshot for debugging
             screenshot = await self.client.screenshot_on_error(
@@ -224,6 +271,21 @@ class PurchaseAutomation:
                 screenshot_path=str(screenshot) if screenshot else None,
             )
 
+    async def _check_session_during_flow(self, step_name: str) -> None:
+        """
+        Check if session is still valid during the purchase flow.
+
+        Args:
+            step_name: Name of the current step (for logging)
+
+        Raises:
+            SessionExpiredError: If redirected to login page
+        """
+        if self.client.is_on_login_page():
+            raise SessionExpiredError(
+                f"Session expired during purchase flow at step: {step_name}"
+            )
+
     # =========================================================================
     # Step Implementations
     # =========================================================================
@@ -232,7 +294,18 @@ class PurchaseAutomation:
         """Step 1: Navigate and select plan type."""
         logger.info("Step 1: Choosing plan")
 
-        await self.client.goto_choose_plan()
+        # Check if we're already on choose-plan (from session validation)
+        if "/choose-plan" not in self.page.url:
+            await self.client.goto_choose_plan()
+
+        # Wait for plan cards to be visible
+        try:
+            await self.page.wait_for_selector(
+                "text=Hypertide Entra, text=Hypertide Google",
+                timeout=self.client.config.element_timeout,
+            )
+        except PlaywrightTimeoutError:
+            logger.warning("Plan cards not found with expected text, proceeding anyway")
 
         # Click the appropriate plan card
         if request.order_type == OrderType.HYPERTIDE_ENTRA:
@@ -760,7 +833,7 @@ async def purchase_mixed_order(request: MixedOrderRequest) -> BundleResult:
                 username="user@email.com",
                 password="secret",
                 workspace="Acme Workspace",
-                bison_url="https://send.hirecharm.com"
+                bison_url="https://spellcast.hirecharm.com"
             ),
             users=[
                 InboxConfig(first_name="alex", last_name="morgan"),

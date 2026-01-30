@@ -14,6 +14,7 @@ Documentation for deploying Charm Email OS components.
 - [[local-docker]] - **Local Docker development** (recommended for testing)
 - [[ai-component]] - Charm Strategy AI container architecture and usage
 - [[strategy-worker-vps]] - Strategy worker deployment on VPS
+- [[purchase-worker-coolify]] - **Purchase worker Coolify deployment** (Hypertide browser automation)
 
 ## Status Tracking
 
@@ -58,25 +59,28 @@ See [[../infrastructure/index]] for infrastructure details:
 
 ### Coolify Applications
 
-| Application | Purpose | Status |
-|-------------|---------|--------|
-| charm-api | FastAPI backend | Running |
-| charm-frontend | Next.js frontend | Running |
-| charm-strategy-ai | AI strategy container | Built (not active - using local Docker) |
+| Application | UUID | Purpose | Status |
+|-------------|------|---------|--------|
+| charm-api | `ccssgc4gowsog04wck400o0w` | FastAPI backend | Running |
+| charm-frontend | `jskswosswg80cg8wwk8g8kww` | Next.js frontend | Running |
+| charm-purchase-worker | `xo4o4wcco0scgs8gskggw00k` | Hypertide purchase automation | Deploying |
+| charm-strategy-ai | - | AI strategy container | Built (not active - using local Docker) |
 
 ### Local Docker Components
 
 | Component | Container | Purpose |
 |-----------|-----------|---------|
 | Strategy Worker | `charm-strategy-test` | Polls DB, spawns Claude Code |
+| Purchase Worker (test) | `charm-purchase-worker-test` | Purchase testing with step-by-step control |
 | Claude Credentials | `charm-claude-credentials` volume | Persisted OAuth tokens |
 
 ## Deployment Workflow
 
 1. **Code changes** → Push to GitHub
-2. **Coolify** → Auto-deploys charm-api and charm-frontend
+2. **Coolify** → Auto-deploys charm-api, charm-frontend, and charm-purchase-worker
 3. **Strategy Worker** → Runs locally via Docker Desktop
-4. **Re-auth** → When OAuth expires, run `docker exec -it charm-strategy-test claude /login`
+4. **Purchase Worker** → Runs on Coolify (see [[purchase-worker-coolify]])
+5. **Re-auth** → When OAuth expires, run `docker exec -it <container> claude /login`
 
 ## Related
 
