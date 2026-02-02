@@ -268,7 +268,13 @@ async def list_tools():
                 "properties": {
                     "job_id": {"type": "string", "description": "The purchase job UUID"},
                     "error": {"type": "string", "description": "Error message describing what went wrong"},
-                    "step": {"type": "string", "description": "The step where the failure occurred"}
+                    "step": {"type": "string", "description": "The step where the failure occurred"},
+                    "error_type": {
+                        "type": "string",
+                        "description": "Failure category: payment, config, auth, timeout, system",
+                        "enum": ["payment", "config", "auth", "timeout", "system"],
+                        "default": "system"
+                    }
                 },
                 "required": ["job_id", "error"]
             }
@@ -751,6 +757,7 @@ async def call_tool(name: str, arguments: dict):
         job_id = arguments["job_id"]
         error = arguments["error"]
         step = arguments.get("step", "unknown")
+        error_type = arguments.get("error_type", "system")
 
         # Auto-capture final screenshot
         screenshot_b64 = await _take_screenshot()
@@ -763,10 +770,11 @@ async def call_tool(name: str, arguments: dict):
             cur.execute("""
                 UPDATE inbox_purchase_jobs
                 SET status = 'failed',
+                    error_type = %s,
                     current_step = %s,
                     completed_at = NOW()
                 WHERE id = %s
-            """, (step, job_id))
+            """, (error_type, step, job_id))
 
             # Append error to errors array
             cur.execute("""

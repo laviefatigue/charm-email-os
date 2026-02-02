@@ -207,6 +207,10 @@ class PurchaseStatusResponse(BaseModel):
 
     # Errors
     errors: list[str] = Field(default_factory=list)
+    error_type: Optional[str] = Field(
+        default=None,
+        description="Failure category: payment, config, auth, timeout, system, stale"
+    )
 
 
 class PurchaseCompleteResponse(BaseModel):

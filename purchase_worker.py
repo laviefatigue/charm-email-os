@@ -219,6 +219,7 @@ def ensure_tables():
             ("order_count", "INTEGER DEFAULT 1"),
             ("worker_mode", "VARCHAR(20) DEFAULT 'api'"),
             ("hypertide_order_id", "TEXT"),
+            ("error_type", "TEXT"),
         ]
 
         for col_name, col_def in worker_columns:
@@ -311,8 +312,49 @@ def get_pending_job():
         conn.close()
 
 
-def mark_job_failed(job_id: str, error: str):
-    """Mark a job as failed."""
+def cleanup_stale_jobs():
+    """On startup, fail any jobs stuck in 'processing' from a previous worker run.
+
+    If the worker crashed mid-job, those jobs are stuck in 'processing' forever.
+    This recovers them by marking as failed with error_type='stale'.
+    """
+    conn = get_db()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+    try:
+        cur.execute("""
+            UPDATE inbox_purchase_jobs
+            SET status = 'failed',
+                error_type = 'stale',
+                current_step = 'worker_crashed',
+                completed_at = NOW(),
+                errors = COALESCE(errors, ARRAY[]::TEXT[]) ||
+                    ARRAY['Worker restarted while job was processing. Last step: ' || COALESCE(current_step, 'unknown')]
+            WHERE status = 'processing'
+              AND worker_mode = 'worker'
+            RETURNING id, current_step
+        """)
+        stale_jobs = cur.fetchall()
+
+        for job in stale_jobs:
+            cur.execute("""
+                UPDATE domains SET purchase_job_status = 'failed'
+                WHERE purchase_job_id = %s
+            """, (str(job['id']),))
+            logger.warning(f"Recovered stale job {job['id']} (was at step: {job.get('current_step', 'unknown')})")
+
+        conn.commit()
+        if stale_jobs:
+            logger.info(f"Cleaned up {len(stale_jobs)} stale job(s) from previous run")
+    except Exception as e:
+        logger.error(f"Failed to clean up stale jobs: {e}")
+        conn.rollback()
+    finally:
+        cur.close()
+        conn.close()
+
+
+def mark_job_failed(job_id: str, error: str, error_type: str = "system"):
+    """Mark a job as failed with a categorized error type."""
     conn = get_db()
     cur = conn.cursor()
 
@@ -320,10 +362,11 @@ def mark_job_failed(job_id: str, error: str):
         cur.execute("""
             UPDATE inbox_purchase_jobs
             SET status = 'failed',
+                error_type = %s,
                 current_step = 'worker_error',
                 completed_at = NOW()
             WHERE id = %s
-        """, (job_id,))
+        """, (error_type, job_id))
 
         cur.execute("""
             UPDATE inbox_purchase_jobs
@@ -493,18 +536,27 @@ REMINDER: This is a TEST RUN. STOP after Step {stop_after_step}. Call fail_job()
                     conn.close()
                 return
 
-            mark_job_failed(job_id, error_msg[:500])
+            # Classify the error type from subprocess output
+            error_type = "system"
+            err_lower = error_msg.lower()
+            if any(kw in err_lower for kw in ("payment", "card", "declined", "insufficient", "stripe")):
+                error_type = "payment"
+            elif any(kw in err_lower for kw in ("workspace", "credential", "config", "bison")):
+                error_type = "config"
+            elif any(kw in err_lower for kw in ("login", "signin", "dashboard")):
+                error_type = "auth"
+            mark_job_failed(job_id, error_msg[:500], error_type)
         else:
             logger.info(f"Purchase job {job_id} completed")
             logger.info(f"Claude Code output: {result.stdout[:500] if result.stdout else '(empty)'}")
 
     except subprocess.TimeoutExpired:
         logger.error(f"Job {job_id} timed out after {JOB_TIMEOUT}s")
-        mark_job_failed(job_id, f"Purchase timed out after {JOB_TIMEOUT} seconds")
+        mark_job_failed(job_id, f"Purchase timed out after {JOB_TIMEOUT} seconds", "timeout")
 
     except Exception as e:
         logger.error(f"Job {job_id} failed with error: {e}")
-        mark_job_failed(job_id, str(e)[:500])
+        mark_job_failed(job_id, str(e)[:500], "system")
 
 
 def get_job_by_id(job_id: str) -> dict:
@@ -616,6 +668,9 @@ def run_worker():
 
     # Ensure tables exist
     ensure_tables()
+
+    # Recover any jobs stuck in 'processing' from a previous run
+    cleanup_stale_jobs()
 
     # Check OAuth on startup
     logger.info("Verifying Claude Code OAuth...")

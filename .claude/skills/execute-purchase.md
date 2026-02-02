@@ -77,7 +77,7 @@ Call: log_step(job_id, "login_success", notes="Successfully logged in to Hyperti
 
 **If login fails** (no "Place New Order" text found):
 ```
-Call: fail_job(job_id, "Login failed - could not reach dashboard", "login")
+Call: fail_job(job_id, "Login failed - could not reach dashboard", "login", "auth")
 ```
 STOP EXECUTION.
 
@@ -174,7 +174,7 @@ Call: wait_for_text(bison_workspace_name, timeout_ms=15000)
 
 Wait for the "Available Workspaces" list to populate. If the fetch fails or times out:
 ```
-Call: fail_job(job_id, "Failed to fetch workspaces from Bison API. Check API key and URL.", "bison_workspace_fetch")
+Call: fail_job(job_id, "Failed to fetch workspaces from Bison API. Check API key and URL.", "bison_workspace_fetch", "config")
 ```
 STOP EXECUTION.
 
@@ -185,7 +185,7 @@ Scroll through the "Available Workspaces" list and click on EXACTLY `bison_works
 **If the EXACT workspace name is NOT found in the list: FAIL IMMEDIATELY**
 
 ```
-Call: fail_job(job_id, "WORKSPACE NOT FOUND: '{bison_workspace_name}' not in dropdown. Failing to prevent cross-contamination.", "bison_workspace_selection")
+Call: fail_job(job_id, "WORKSPACE NOT FOUND: '{bison_workspace_name}' not in dropdown. Failing to prevent cross-contamination.", "bison_workspace_selection", "config")
 ```
 STOP EXECUTION.
 
@@ -278,7 +278,7 @@ Call: log_step(job_id, "checkout", notes="Proceeding with manual card entry")
 
 **If neither** `use_saved_payment` is true nor card fields are present:
 ```
-Call: fail_job(job_id, "No payment method available - set use_saved_payment or provide card ENV vars", "checkout")
+Call: fail_job(job_id, "No payment method available - set use_saved_payment or provide card ENV vars", "checkout", "payment")
 ```
 STOP EXECUTION.
 
@@ -313,8 +313,14 @@ At any step, if something unexpected happens:
 1. Take a screenshot: `screenshot()`
 2. Get page text: `get_page_text()`
 3. Log the failure: `log_step(job_id, "error_{step}", notes="Error: {description}")`
-4. Fail the job: `fail_job(job_id, "{error_description}", "{step_name}")`
-5. STOP EXECUTION - do not try to continue
+4. Classify the error and fail the job with the appropriate `error_type`:
+   - **"payment"** — Card declined, insufficient funds, Stripe error, checkout failure
+   - **"config"** — Wrong workspace, missing field, bad credentials, domain entry error
+   - **"auth"** — Login failed, session expired, could not reach dashboard
+   - **"timeout"** — Page didn't load, element not found after waiting, navigation timeout
+   - **"system"** — Browser crashed, unexpected page state, unknown error
+5. Fail the job: `fail_job(job_id, "{error_description}", "{step_name}", "{error_type}")`
+6. STOP EXECUTION - do not try to continue
 
 ## NAVIGATION TIPS
 

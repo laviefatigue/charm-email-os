@@ -542,6 +542,7 @@ async def _init_purchase_jobs_table() -> None:
         ("order_count", "INTEGER DEFAULT 1"),
         ("worker_mode", "VARCHAR(20) DEFAULT 'api'"),
         ("hypertide_order_id", "TEXT"),
+        ("error_type", "TEXT"),
     ]
 
     for col_name, col_def in worker_columns:

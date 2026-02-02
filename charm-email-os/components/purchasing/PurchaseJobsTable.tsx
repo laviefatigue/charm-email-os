@@ -30,6 +30,8 @@ import {
   Mail,
   AlertTriangle,
   Trash2,
+  CreditCard,
+  ShieldAlert,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { inboxProvisioningApi } from '@/lib/api';
@@ -38,7 +40,7 @@ import { formatDistanceToNow, format } from 'date-fns';
 interface PurchaseJob {
   jobId: string;
   clientId: string;
-  status: 'pending' | 'executing' | 'completed' | 'failed' | 'superseded' | 'cancelled';
+  status: 'pending' | 'executing' | 'processing' | 'completed' | 'failed' | 'superseded' | 'cancelled';
   currentStep?: string;
   providerType: string;
   domainNames: string[];
@@ -52,6 +54,7 @@ interface PurchaseJob {
   startedAt?: string;
   completedAt?: string;
   errors?: string[];
+  errorType?: 'payment' | 'config' | 'auth' | 'timeout' | 'system' | 'stale' | null;
 }
 
 interface PurchaseJobsTableProps {
@@ -91,7 +94,7 @@ export function PurchaseJobsTable({ clientId, onJobRetried }: PurchaseJobsTableP
     // Poll for updates every 10 seconds if any jobs are pending/executing
     const interval = setInterval(() => {
       const hasActiveJobs = jobsRef.current.some(
-        (j) => j.status === 'pending' || j.status === 'executing'
+        (j) => j.status === 'pending' || j.status === 'executing' || j.status === 'processing'
       );
       if (hasActiveJobs) {
         fetchJobs();
@@ -129,8 +132,62 @@ export function PurchaseJobsTable({ clientId, onJobRetried }: PurchaseJobsTableP
     }
   }, [fetchJobs, onJobRetried]);
 
-  const getStatusBadge = (status: string) => {
-    switch (status) {
+  const getFailureBadge = (errorType?: string | null) => {
+    switch (errorType) {
+      case 'payment':
+        return (
+          <Badge variant="destructive" className="gap-1">
+            <CreditCard className="h-3 w-3" />
+            Payment Failed
+          </Badge>
+        );
+      case 'config':
+        return (
+          <Badge className="bg-orange-100 text-orange-800 gap-1">
+            <AlertTriangle className="h-3 w-3" />
+            Config Error
+          </Badge>
+        );
+      case 'auth':
+        return (
+          <Badge className="bg-yellow-100 text-yellow-800 gap-1">
+            <ShieldAlert className="h-3 w-3" />
+            Auth Error
+          </Badge>
+        );
+      case 'timeout':
+        return (
+          <Badge variant="secondary" className="gap-1">
+            <Clock className="h-3 w-3" />
+            Timed Out
+          </Badge>
+        );
+      case 'stale':
+        return (
+          <Badge variant="secondary" className="gap-1">
+            <AlertTriangle className="h-3 w-3" />
+            Stale (Crashed)
+          </Badge>
+        );
+      case 'system':
+        return (
+          <Badge variant="destructive" className="gap-1">
+            <XCircle className="h-3 w-3" />
+            System Error
+          </Badge>
+        );
+      default:
+        return (
+          <Badge variant="destructive" className="gap-1">
+            <XCircle className="h-3 w-3" />
+            Failed
+          </Badge>
+        );
+    }
+  };
+
+  const getStatusBadge = (job: PurchaseJob) => {
+    switch (job.status) {
       case 'pending':
         return (
           <Badge variant="outline" className="gap-1">
@@ -139,6 +196,7 @@ export function PurchaseJobsTable({ clientId, onJobRetried }: PurchaseJobsTableP
           </Badge>
         );
       case 'executing':
+      case 'processing':
         return (
           <Badge className="bg-blue-100 text-blue-800 gap-1">
             <Loader2 className="h-3 w-3 animate-spin" />
@@ -153,12 +211,7 @@ export function PurchaseJobsTable({ clientId, onJobRetried }: PurchaseJobsTableP
           </Badge>
         );
       case 'failed':
-        return (
-          <Badge variant="destructive" className="gap-1">
-            <XCircle className="h-3 w-3" />
-            Failed
-          </Badge>
-        );
+        return getFailureBadge(job.errorType);
       case 'superseded':
         return (
           <Badge variant="secondary" className="gap-1">
@@ -174,7 +227,7 @@ export function PurchaseJobsTable({ clientId, onJobRetried }: PurchaseJobsTableP
           </Badge>
         );
       default:
-        return <Badge>{status}</Badge>;
+        return <Badge>{job.status}</Badge>;
     }
   };
 
@@ -207,7 +260,7 @@ export function PurchaseJobsTable({ clientId, onJobRetried }: PurchaseJobsTableP
       const remainingSeconds = seconds % 60;
       return `${minutes}m ${remainingSeconds}s`;
     }
-    if (job.status === 'executing') {
+    if (job.status === 'executing' || job.status === 'processing') {
       return <Loader2 className="h-4 w-4 animate-spin" />;
     }
     return '-';
@@ -260,7 +313,7 @@ export function PurchaseJobsTable({ clientId, onJobRetried }: PurchaseJobsTableP
                   <TableRow
                     className={expandedJobId === job.jobId ? 'border-b-0' : ''}
                   >
-                    <TableCell>{getStatusBadge(job.status)}</TableCell>
+                    <TableCell>{getStatusBadge(job)}</TableCell>
                     <TableCell>{getProviderBadge(job.providerType)}</TableCell>
                     <TableCell>
                       <TooltipProvider>

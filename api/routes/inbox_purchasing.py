@@ -153,6 +153,7 @@ async def _update_job_status(
     total_inboxes: Optional[int] = None,
     results: Optional[list] = None,
     errors: Optional[list[str]] = None,
+    error_type: Optional[str] = None,
 ) -> None:
     """Update job status in the database."""
     import json
@@ -179,6 +180,10 @@ async def _update_job_status(
     if errors is not None:
         updates.append(f"errors = ${len(params) + 1}")
         params.append(errors)
+
+    if error_type is not None:
+        updates.append(f"error_type = ${len(params) + 1}")
+        params.append(error_type)
 
     # Update timestamps based on status
     if status == "executing":
@@ -213,7 +218,7 @@ async def _get_job_from_db(job_id: str) -> Optional[dict]:
                entra_orders, google_orders, orders_completed, orders_total,
                total_inboxes, monthly_cost,
                created_at, started_at, completed_at,
-               results, errors, request_data,
+               results, errors, error_type, request_data,
                override_age_check, custom_purchase
         FROM inbox_purchase_jobs
         WHERE id = $1
@@ -749,6 +754,7 @@ async def get_purchase_status(job_id: str):
         started_at=job.get("started_at"),
         completed_at=job.get("completed_at"),
         errors=job.get("errors", []),
+        error_type=job.get("error_type"),
     )
 
 
@@ -804,7 +810,7 @@ async def list_purchase_jobs(
         SELECT id, client_id, status, current_step, provider_type,
                domain_names, entra_orders, google_orders, orders_completed, orders_total,
                total_inboxes, monthly_cost,
-               created_at, started_at, completed_at, errors
+               created_at, started_at, completed_at, errors, error_type
         FROM inbox_purchase_jobs
         {where_clause}
         ORDER BY created_at DESC
@@ -837,6 +843,7 @@ async def list_purchase_jobs(
                 "started_at": j.get("started_at").isoformat() if j.get("started_at") else None,
                 "completed_at": j.get("completed_at").isoformat() if j.get("completed_at") else None,
                 "errors": j.get("errors") or [],
+                "error_type": j.get("error_type"),
             }
             for j in jobs
         ],
