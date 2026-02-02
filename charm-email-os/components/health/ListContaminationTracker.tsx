@@ -59,8 +59,8 @@ export function ListContaminationTracker({ sources }: ListContaminationTrackerPr
         {sources.length === 0 ? (
           <div className="text-center py-8 text-muted-foreground">
             <ListX className="h-10 w-10 mx-auto mb-3 opacity-50" />
-            <p className="font-medium">No contamination detected</p>
-            <p className="text-sm mt-1">List quality looks healthy</p>
+            <p className="font-medium">List Quality Tracking</p>
+            <p className="text-sm mt-1">Lead import data with bounce status tracking not yet configured</p>
           </div>
         ) : (
           <div className="space-y-1">

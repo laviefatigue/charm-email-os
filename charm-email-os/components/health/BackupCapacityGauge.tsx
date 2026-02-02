@@ -65,7 +65,8 @@ export function BackupCapacityGauge({ capacity }: BackupCapacityGaugeProps) {
         <CardContent>
           <div className="text-center py-8 text-muted-foreground">
             <Database className="h-10 w-10 mx-auto mb-3 opacity-50" />
-            <p>Loading capacity data...</p>
+            <p className="font-medium">Backup Capacity Monitoring</p>
+            <p className="text-sm mt-1">No subscription configured for this client</p>
           </div>
         </CardContent>
       </Card>

@@ -150,3 +150,106 @@ class KillTriggerStats(BaseModel):
     at_risk_bounce_24h: int = 0
     at_risk_bounce_7d: int = 0
     at_risk_rbl: int = 0
+
+
+# ===== Full Dashboard Models =====
+
+class KillTriggerItem(BaseModel):
+    """Individual kill trigger detected on an inbox"""
+    id: str
+    inbox_id: UUID
+    inbox_email: str
+    domain_id: Optional[UUID] = None
+    domain_name: Optional[str] = None
+    type: str  # hard_bounces_24h, hard_bounce_rate_7d, bounce_rate_all_7d, fresh_inbox_hard_bounce
+    severity: str  # instant, confirming
+    value: float
+    threshold: float
+    detected_at: datetime
+
+
+class BackupTierStatus(BaseModel):
+    """Status for a single backup capacity tier"""
+    tier: str  # primary, hot_backup, warming_pipeline
+    label: str
+    count: int
+    target_count: int
+    percentage: float
+    status: str  # healthy, warning, critical
+
+
+class BackupCapacityResponse(BaseModel):
+    """Overall backup capacity across all tiers"""
+    primary: BackupTierStatus
+    hot_backup: BackupTierStatus
+    warming_pipeline: BackupTierStatus
+    total_capacity: int
+    active_capacity: int
+    backup_ratio: float
+    overall_status: str  # healthy, warning, critical
+
+
+class DomainGridItem(BaseModel):
+    """Domain health data for the domain grid"""
+    domain_id: UUID
+    domain: str
+    state: str  # live, flagged, dead
+    phase: str  # warming, ramping, establishing, peak, monitoring, rotation
+    overall_health_score: float
+    total_inboxes: int
+    live_inboxes: int
+    dead_inboxes: int
+    warming_inboxes: int = 0
+    age_in_days: int
+    days_until_rotation: int
+    gmail_reputation: Optional[str] = None
+    microsoft_reputation: Optional[str] = None
+    last_inbox_placement: Optional[float] = None
+    last_spam_placement: Optional[float] = None
+    created_at: datetime
+    last_health_check: Optional[datetime] = None
+
+
+class CampaignAttributionItem(BaseModel):
+    """Campaign health attribution data"""
+    campaign_id: UUID
+    campaign_name: str
+    state: str  # live, quarantined, dead
+    inboxes_killed_7d: int = 0
+    domains_affected: int = 0
+    total_sent: int
+    bounce_count: int
+    bounce_rate: float
+    complaint_count: int
+    complaint_rate: float
+    risk_level: str  # low, medium, high, critical
+
+
+class OverallSummaryResponse(BaseModel):
+    """Enhanced overall health summary for the dashboard"""
+    client_id: UUID
+    health_score: int
+    status: str  # healthy, warning, critical
+    status_message: str
+    total_domains: int
+    live_domains: int
+    flagged_domains: int
+    dead_domains: int
+    total_inboxes: int
+    live_inboxes: int
+    dead_inboxes: int
+    warming_inboxes: int
+    pending_kill_triggers: int
+    active_alerts: int
+    last_refresh: datetime
+
+
+class FullDashboardResponse(BaseModel):
+    """Composite response for the full health dashboard"""
+    overall_summary: OverallSummaryResponse
+    kill_triggers: list[KillTriggerItem]
+    backup_capacity: Optional[BackupCapacityResponse] = None
+    domain_grid: list[DomainGridItem]
+    campaign_attribution: list[CampaignAttributionItem]
+    contamination_sources: list = []
+    esp_summaries: list = []

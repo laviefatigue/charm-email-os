@@ -67,32 +67,32 @@ async def list_campaigns(
     """
     status_counts = await fetch_one(status_counts_query, *params[:param_idx-1] if params else [])
 
-    # Get campaigns - only use columns that definitely exist in emailbison_campaigns
+    # Get campaigns with actual metric columns
     query = f"""
         SELECT
             c.id,
             c.workspace_id,
             c.emailbison_campaign_id,
             c.campaign_name,
-            NULL as industry,
-            NULL as segment,
-            NULL as angle,
+            c.industry,
+            c.segment,
+            c.angle,
             COALESCE(c.campaign_status, 'active') as campaign_status,
-            0 as total_leads,
-            0 as total_leads_contacted,
-            0 as leads_capacity,
-            0 as emails_sent,
-            0 as unique_opens,
-            0 as unique_replies,
-            0 as bounced,
-            0 as unsubscribed,
-            0 as spam_complaints,
-            0.0 as reply_rate,
-            0.0 as open_rate,
-            0.0 as bounce_rate,
+            COALESCE(c.total_leads, 0) as total_leads,
+            COALESCE(c.total_leads_contacted, 0) as total_leads_contacted,
+            COALESCE(c.leads_capacity, 0) as leads_capacity,
+            COALESCE(c.emails_sent, 0) as emails_sent,
+            COALESCE(c.unique_opens, 0) as unique_opens,
+            COALESCE(c.unique_replies, 0) as unique_replies,
+            COALESCE(c.bounced, 0) as bounced,
+            COALESCE(c.unsubscribed, 0) as unsubscribed,
+            COALESCE(c.spam_complaints, 0) as spam_complaints,
+            COALESCE(c.reply_rate, 0) as reply_rate,
+            COALESCE(c.open_rate, 0) as open_rate,
+            COALESCE(c.bounce_rate, 0) as bounce_rate,
             c.created_at,
             c.updated_at,
-            NULL as last_snapshot_at
+            c.updated_at as last_snapshot_at
         FROM emailbison_campaigns c
         {where_clause}
         ORDER BY c.created_at DESC
@@ -131,25 +131,25 @@ async def get_campaign(campaign_id: UUID):
             c.workspace_id,
             c.emailbison_campaign_id,
             c.campaign_name,
-            NULL as industry,
-            NULL as segment,
-            NULL as angle,
+            c.industry,
+            c.segment,
+            c.angle,
             COALESCE(c.campaign_status, 'active') as campaign_status,
-            0 as total_leads,
-            0 as total_leads_contacted,
-            0 as leads_capacity,
-            0 as emails_sent,
-            0 as unique_opens,
-            0 as unique_replies,
-            0 as bounced,
-            0 as unsubscribed,
-            0 as spam_complaints,
-            0.0 as reply_rate,
-            0.0 as open_rate,
-            0.0 as bounce_rate,
+            COALESCE(c.total_leads, 0) as total_leads,
+            COALESCE(c.total_leads_contacted, 0) as total_leads_contacted,
+            COALESCE(c.leads_capacity, 0) as leads_capacity,
+            COALESCE(c.emails_sent, 0) as emails_sent,
+            COALESCE(c.unique_opens, 0) as unique_opens,
+            COALESCE(c.unique_replies, 0) as unique_replies,
+            COALESCE(c.bounced, 0) as bounced,
+            COALESCE(c.unsubscribed, 0) as unsubscribed,
+            COALESCE(c.spam_complaints, 0) as spam_complaints,
+            COALESCE(c.reply_rate, 0) as reply_rate,
+            COALESCE(c.open_rate, 0) as open_rate,
+            COALESCE(c.bounce_rate, 0) as bounce_rate,
             c.created_at,
             c.updated_at,
-            NULL as last_snapshot_at
+            c.updated_at as last_snapshot_at
         FROM emailbison_campaigns c
         WHERE c.id = $1
     """

@@ -238,8 +238,8 @@ export function ESPHealthSummary({ summaries }: ESPHealthSummaryProps) {
         {summaries.length === 0 ? (
           <div className="text-center py-8 text-muted-foreground">
             <Mail className="h-10 w-10 mx-auto mb-3 opacity-50" />
-            <p className="font-medium">No ESP data available</p>
-            <p className="text-sm mt-1">ESP metrics will appear when available</p>
+            <p className="font-medium">ESP Reputation Monitoring</p>
+            <p className="text-sm mt-1">Requires Gmail Postmaster Tools and Microsoft SNDS integration</p>
           </div>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">

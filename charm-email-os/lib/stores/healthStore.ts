@@ -116,36 +116,8 @@ export const useHealthStore = create<HealthStore>((set, get) => ({
 
   // Async API actions
   fetchHealthOverview: async (clientId) => {
-    set({ isLoading: true, error: null });
-    try {
-      const data = await api.health.getOverview(clientId);
-      // Map HealthOverview fields to OverallHealthSummary
-      set({
-        overallSummary: {
-          clientId: data.clientId,
-          healthScore: Math.round(100 - (data.deadInboxes / Math.max(data.totalInboxes, 1)) * 100),
-          status: data.deadInboxes > 5 ? 'critical' : data.deadInboxes > 0 ? 'warning' : 'healthy',
-          statusMessage: data.deadInboxes > 0
-            ? `${data.deadInboxes} dead inbox(es) detected`
-            : 'All inboxes healthy',
-          totalDomains: data.totalDomains,
-          liveDomains: data.cleanDomains,
-          flaggedDomains: data.flaggedDomains,
-          deadDomains: 0,
-          totalInboxes: data.totalInboxes,
-          liveInboxes: data.healthyInboxes,
-          deadInboxes: data.deadInboxes,
-          warmingInboxes: data.warningInboxes,
-          pendingKillTriggers: get().killTriggers.filter(t => t.actionTaken === 'pending').length,
-          activeAlerts: get().alerts.filter(a => !a.acknowledgedAt).length,
-          lastRefresh: new Date(),
-        },
-        isLoading: false,
-        lastRefresh: new Date(),
-      });
-    } catch (error) {
-      set({ error: (error as Error).message, isLoading: false });
-    }
+    // Delegate to refreshHealth which fetches everything
+    await get().refreshHealth(clientId);
   },
 
   fetchAlerts: async (clientId) => {
@@ -160,7 +132,7 @@ export const useHealthStore = create<HealthStore>((set, get) => ({
   },
 
   fetchKillTriggers: async (_clientId) => {
-    // api.health.getKillTriggers does not exist - use local state only
+    // Kill triggers are now fetched via refreshHealth / full-dashboard
     set({ isLoading: false });
   },
 
@@ -391,14 +363,127 @@ export const useHealthStore = create<HealthStore>((set, get) => ({
   getCampaignMetrics: (campaignId) =>
     get().campaignMetrics.find((m) => m.campaignId === campaignId),
 
-  // Refresh all health data
+  // Refresh all health data via composite endpoint
   refreshHealth: async (clientId) => {
+    if (!clientId) return;
     set({ isLoading: true, error: null });
     try {
-      if (clientId) {
-        await get().fetchHealthOverview(clientId);
-      }
-      set({ lastRefresh: new Date(), isLoading: false });
+      const data = await api.health.getFullDashboard(clientId);
+
+      // Map overall summary
+      const summary = data.overallSummary;
+      const overallSummary: OverallHealthSummary = {
+        clientId: summary.clientId,
+        healthScore: summary.healthScore,
+        status: summary.status as 'healthy' | 'warning' | 'critical',
+        statusMessage: summary.statusMessage,
+        totalDomains: summary.totalDomains,
+        liveDomains: summary.liveDomains,
+        flaggedDomains: summary.flaggedDomains,
+        deadDomains: summary.deadDomains,
+        totalInboxes: summary.totalInboxes,
+        liveInboxes: summary.liveInboxes,
+        deadInboxes: summary.deadInboxes,
+        warmingInboxes: summary.warmingInboxes,
+        pendingKillTriggers: summary.pendingKillTriggers,
+        activeAlerts: summary.activeAlerts,
+        lastRefresh: new Date(),
+      };
+
+      // Map kill triggers
+      const killTriggers: KillTrigger[] = (data.killTriggers || []).map((t) => ({
+        id: t.id,
+        inboxId: t.inboxId,
+        inboxEmail: t.inboxEmail,
+        domainId: t.domainId || '',
+        domainName: t.domainName || '',
+        type: t.type as KillTrigger['type'],
+        severity: t.severity as KillTrigger['severity'],
+        value: t.value,
+        threshold: t.threshold,
+        detectedAt: new Date(t.detectedAt),
+        actionTaken: 'pending' as const,
+      }));
+
+      // Map backup capacity
+      const backupCapacity: OverallBackupCapacity | null = data.backupCapacity ? {
+        primary: {
+          tier: 'primary' as const,
+          label: data.backupCapacity.primary.label,
+          count: data.backupCapacity.primary.count,
+          targetCount: data.backupCapacity.primary.targetCount,
+          percentage: data.backupCapacity.primary.percentage,
+          status: data.backupCapacity.primary.status as 'healthy' | 'warning' | 'critical',
+        },
+        hotBackup: {
+          tier: 'hot_backup' as const,
+          label: data.backupCapacity.hotBackup.label,
+          count: data.backupCapacity.hotBackup.count,
+          targetCount: data.backupCapacity.hotBackup.targetCount,
+          percentage: data.backupCapacity.hotBackup.percentage,
+          status: data.backupCapacity.hotBackup.status as 'healthy' | 'warning' | 'critical',
+        },
+        warmingPipeline: {
+          tier: 'warming_pipeline' as const,
+          label: data.backupCapacity.warmingPipeline.label,
+          count: data.backupCapacity.warmingPipeline.count,
+          targetCount: data.backupCapacity.warmingPipeline.targetCount,
+          percentage: data.backupCapacity.warmingPipeline.percentage,
+          status: data.backupCapacity.warmingPipeline.status as 'healthy' | 'warning' | 'critical',
+        },
+        totalCapacity: data.backupCapacity.totalCapacity,
+        activeCapacity: data.backupCapacity.activeCapacity,
+        backupRatio: data.backupCapacity.backupRatio,
+        overallStatus: data.backupCapacity.overallStatus as 'healthy' | 'warning' | 'critical',
+      } : null;
+
+      // Map domain metrics
+      const domainMetrics: DomainHealthMetrics[] = (data.domainGrid || []).map((d) => ({
+        domainId: d.domainId,
+        domain: d.domain,
+        state: d.state as DomainHealthMetrics['state'],
+        phase: d.phase as DomainHealthMetrics['phase'],
+        overallHealthScore: d.overallHealthScore,
+        totalInboxes: d.totalInboxes,
+        liveInboxes: d.liveInboxes,
+        deadInboxes: d.deadInboxes,
+        warmingInboxes: d.warmingInboxes,
+        ageInDays: d.ageInDays,
+        daysUntilRotation: d.daysUntilRotation,
+        gmailReputation: d.gmailReputation as DomainHealthMetrics['gmailReputation'],
+        microsoftReputation: d.microsoftReputation as DomainHealthMetrics['microsoftReputation'],
+        lastInboxPlacement: d.lastInboxPlacement ?? undefined,
+        lastSpamPlacement: d.lastSpamPlacement ?? undefined,
+        createdAt: new Date(d.createdAt),
+        lastHealthCheck: d.lastHealthCheck ? new Date(d.lastHealthCheck) : new Date(),
+      }));
+
+      // Map campaign metrics
+      const campaignMetrics: CampaignHealthMetrics[] = (data.campaignAttribution || []).map((c) => ({
+        campaignId: c.campaignId,
+        campaignName: c.campaignName,
+        state: c.state as CampaignHealthMetrics['state'],
+        inboxesKilled7d: c.inboxesKilled7d,
+        domainsAffected: c.domainsAffected,
+        totalSent: c.totalSent,
+        bounceCount: c.bounceCount,
+        bounceRate: c.bounceRate,
+        complaintCount: c.complaintCount,
+        complaintRate: c.complaintRate,
+        riskLevel: c.riskLevel as CampaignHealthMetrics['riskLevel'],
+      }));
+
+      set({
+        overallSummary,
+        killTriggers,
+        backupCapacity,
+        domainMetrics,
+        campaignMetrics,
+        contaminationSources: [],
+        espSummaries: [],
+        isLoading: false,
+        lastRefresh: new Date(),
+      });
     } catch (error) {
       set({ error: (error as Error).message, isLoading: false });
     }

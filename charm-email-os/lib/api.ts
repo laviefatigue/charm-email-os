@@ -2165,6 +2165,87 @@ export const healthApi = {
       warningCount: response.warning_count,
     };
   },
+
+  /**
+   * Get full dashboard data for all health containers in a single call
+   */
+  async getFullDashboard(clientId: string) {
+    const response = await fetchApi<Record<string, unknown>>(`/api/health/full-dashboard/${clientId}`);
+    return toCamelCase<{
+      overallSummary: {
+        clientId: string;
+        healthScore: number;
+        status: string;
+        statusMessage: string;
+        totalDomains: number;
+        liveDomains: number;
+        flaggedDomains: number;
+        deadDomains: number;
+        totalInboxes: number;
+        liveInboxes: number;
+        deadInboxes: number;
+        warmingInboxes: number;
+        pendingKillTriggers: number;
+        activeAlerts: number;
+        lastRefresh: string;
+      };
+      killTriggers: Array<{
+        id: string;
+        inboxId: string;
+        inboxEmail: string;
+        domainId: string | null;
+        domainName: string | null;
+        type: string;
+        severity: string;
+        value: number;
+        threshold: number;
+        detectedAt: string;
+      }>;
+      backupCapacity: {
+        primary: { tier: string; label: string; count: number; targetCount: number; percentage: number; status: string };
+        hotBackup: { tier: string; label: string; count: number; targetCount: number; percentage: number; status: string };
+        warmingPipeline: { tier: string; label: string; count: number; targetCount: number; percentage: number; status: string };
+        totalCapacity: number;
+        activeCapacity: number;
+        backupRatio: number;
+        overallStatus: string;
+      } | null;
+      domainGrid: Array<{
+        domainId: string;
+        domain: string;
+        state: string;
+        phase: string;
+        overallHealthScore: number;
+        totalInboxes: number;
+        liveInboxes: number;
+        deadInboxes: number;
+        warmingInboxes: number;
+        ageInDays: number;
+        daysUntilRotation: number;
+        gmailReputation: string | null;
+        microsoftReputation: string | null;
+        lastInboxPlacement: number | null;
+        lastSpamPlacement: number | null;
+        createdAt: string;
+        lastHealthCheck: string | null;
+      }>;
+      campaignAttribution: Array<{
+        campaignId: string;
+        campaignName: string;
+        state: string;
+        inboxesKilled7d: number;
+        domainsAffected: number;
+        totalSent: number;
+        bounceCount: number;
+        bounceRate: number;
+        complaintCount: number;
+        complaintRate: number;
+        riskLevel: string;
+      }>;
+      contaminationSources: unknown[];
+      espSummaries: unknown[];
+    }>(response);
+  },
 };
 
 // ===== SUBSCRIPTION API =====

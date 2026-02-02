@@ -36,24 +36,21 @@ export default function HealthPage() {
     espSummaries,
     isLoading,
     error,
-    fetchHealthOverview,
-    fetchAlerts,
     refreshHealth,
     lastRefresh,
   } = useHealthStore();
 
   const client = getClient(clientId);
 
-  // Fetch health data on mount
+  // Fetch all health data on mount via composite endpoint
   useEffect(() => {
     selectClient(clientId);
-    fetchHealthOverview(clientId);
-    fetchAlerts(clientId);
+    refreshHealth(clientId);
     // Also fetch clients if not loaded
     if (clients.length === 0) {
       fetchClients();
     }
-  }, [clientId, selectClient, fetchHealthOverview, fetchAlerts, fetchClients, clients.length]);
+  }, [clientId, selectClient, refreshHealth, fetchClients, clients.length]);
 
   const pendingTriggers = killTriggers.filter((t) => t.actionTaken === 'pending');
 
@@ -68,8 +65,6 @@ export default function HealthPage() {
   const StatusIcon = currentStatus.icon;
 
   const handleRefresh = () => {
-    fetchHealthOverview(clientId);
-    fetchAlerts(clientId);
     refreshHealth(clientId);
     toast.success('Health data refreshed');
   };

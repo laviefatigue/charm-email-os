@@ -11,7 +11,10 @@ import logging
 from database import fetch_all, fetch_one
 from models.health import (
     HealthOverview, HealthDashboard, InboxHealthMetrics,
-    DomainHealthMetrics, Alert, KillTriggerStats
+    DomainHealthMetrics, Alert, KillTriggerStats,
+    FullDashboardResponse, OverallSummaryResponse, KillTriggerItem,
+    BackupCapacityResponse, BackupTierStatus, DomainGridItem,
+    CampaignAttributionItem,
 )
 
 router = APIRouter()
@@ -370,3 +373,536 @@ async def get_active_alerts(
         "critical_count": len([a for a in alerts if a["severity"] == "critical"]),
         "warning_count": len([a for a in alerts if a["severity"] == "warning"])
     }
+
+
+# ===== Full Dashboard Endpoint =====
+
+def _calculate_domain_phase(age_days: float) -> str:
+    """Calculate domain lifecycle phase from age in days"""
+    if age_days < 14:
+        return "warming"
+    elif age_days < 30:
+        return "ramping"
+    elif age_days < 90:
+        return "establishing"
+    elif age_days < 180:
+        return "peak"
+    elif age_days < 240:
+        return "monitoring"
+    return "rotation"
+
+
+def _tier_status(count: int, target: int) -> str:
+    """Calculate tier health status from count vs target"""
+    if target <= 0:
+        return "healthy"
+    ratio = count / target
+    if ratio >= 0.8:
+        return "healthy"
+    elif ratio >= 0.5:
+        return "warning"
+    return "critical"
+
+
+async def _build_kill_triggers(workspace_id: UUID) -> list[KillTriggerItem]:
+    """Scan live inboxes for kill trigger threshold violations"""
+    rows = await fetch_all("""
+        SELECT
+            sa.id as inbox_id,
+            sa.email_address,
+            d.id as domain_id,
+            d.domain_name,
+            COALESCE(sa.hard_bounces_24h, 0) as hard_bounces_24h,
+            COALESCE(sa.hard_bounces_7d, 0) as hard_bounces_7d,
+            COALESCE(sa.total_sends_7d, 0) as total_sends_7d,
+            CASE WHEN COALESCE(sa.total_sends_7d, 0) > 0
+                THEN (COALESCE(sa.hard_bounces_7d, 0)::float / sa.total_sends_7d * 100)
+                ELSE 0
+            END as bounce_rate_7d,
+            EXTRACT(EPOCH FROM (NOW() - sa.created_at)) / 86400 as age_days
+        FROM sender_accounts sa
+        LEFT JOIN domains d ON SPLIT_PART(sa.email_address, '@', 2) = d.domain_name
+            AND sa.workspace_id = d.workspace_id
+        WHERE sa.workspace_id = $1
+            AND sa.inbox_state = 'live'
+            AND (
+                COALESCE(sa.hard_bounces_24h, 0) >= 2
+                OR (COALESCE(sa.total_sends_7d, 0) >= 50 AND
+                    COALESCE(sa.hard_bounces_7d, 0)::float / NULLIF(sa.total_sends_7d, 0) > 0.005)
+                OR (COALESCE(sa.total_sends_7d, 0) > 0 AND
+                    COALESCE(sa.hard_bounces_7d, 0)::float / NULLIF(sa.total_sends_7d, 0) > 0.05)
+                OR (COALESCE(sa.hard_bounces_24h, 0) >= 1 AND sa.created_at > NOW() - INTERVAL '14 days')
+            )
+        ORDER BY COALESCE(sa.hard_bounces_24h, 0) DESC
+        LIMIT 200
+    """, workspace_id)
+
+    triggers = []
+    now = datetime.now(timezone.utc)
+
+    for row in rows:
+        inbox_id = row["inbox_id"]
+        hard_bounces_24h = row["hard_bounces_24h"]
+        hard_bounces_7d = row["hard_bounces_7d"]
+        total_sends_7d = row["total_sends_7d"]
+        bounce_rate_7d = row["bounce_rate_7d"]
+        age_days = row["age_days"] or 0
+
+        # Check each trigger type independently
+        if hard_bounces_24h >= 2:
+            triggers.append(KillTriggerItem(
+                id=f"trigger-{inbox_id}-hard_bounces_24h",
+                inbox_id=inbox_id,
+                inbox_email=row["email_address"],
+                domain_id=row["domain_id"],
+                domain_name=row["domain_name"],
+                type="hard_bounces_24h",
+                severity="instant",
+                value=float(hard_bounces_24h),
+                threshold=2.0,
+                detected_at=now,
+            ))
+
+        if total_sends_7d >= 50 and bounce_rate_7d > 0.5:
+            triggers.append(KillTriggerItem(
+                id=f"trigger-{inbox_id}-hard_bounce_rate_7d",
+                inbox_id=inbox_id,
+                inbox_email=row["email_address"],
+                domain_id=row["domain_id"],
+                domain_name=row["domain_name"],
+                type="hard_bounce_rate_7d",
+                severity="instant",
+                value=round(bounce_rate_7d, 2),
+                threshold=0.5,
+                detected_at=now,
+            ))
+
+        if total_sends_7d > 0 and bounce_rate_7d > 5.0:
+            triggers.append(KillTriggerItem(
+                id=f"trigger-{inbox_id}-bounce_rate_all_7d",
+                inbox_id=inbox_id,
+                inbox_email=row["email_address"],
+                domain_id=row["domain_id"],
+                domain_name=row["domain_name"],
+                type="bounce_rate_all_7d",
+                severity="instant",
+                value=round(bounce_rate_7d, 2),
+                threshold=5.0,
+                detected_at=now,
+            ))
+
+        if hard_bounces_24h >= 1 and age_days < 14:
+            triggers.append(KillTriggerItem(
+                id=f"trigger-{inbox_id}-fresh_inbox_hard_bounce",
+                inbox_id=inbox_id,
+                inbox_email=row["email_address"],
+                domain_id=row["domain_id"],
+                domain_name=row["domain_name"],
+                type="fresh_inbox_hard_bounce",
+                severity="instant",
+                value=float(hard_bounces_24h),
+                threshold=1.0,
+                detected_at=now,
+            ))
+
+    return triggers
+
+
+async def _build_backup_capacity(client_id: UUID, workspace_id: UUID) -> Optional[BackupCapacityResponse]:
+    """Build backup capacity from subscription quota + actual inbox inventory"""
+    # Get subscription quota
+    sub = await fetch_one("""
+        SELECT
+            s.entra_packages * s.entra_domains_per_package * s.entra_inboxes_per_domain +
+            s.google_packages * s.google_domains_per_package * s.google_inboxes_per_domain as total_quota,
+            s.spare_ratio
+        FROM client_subscriptions s
+        WHERE s.client_id = $1 AND s.status = 'active'
+        LIMIT 1
+    """, client_id)
+
+    if not sub:
+        return None
+
+    total_quota = sub["total_quota"] or 0
+    spare_ratio = float(sub["spare_ratio"] or 0.15)
+
+    # Count inbox inventory by tier
+    counts = await fetch_one("""
+        SELECT
+            COUNT(*) FILTER (WHERE sa.inbox_state = 'live'
+                AND COALESCE(d.approval_status, '') NOT IN ('warming')) as active_live,
+            COUNT(*) FILTER (WHERE sa.inbox_state = 'live'
+                AND d.approval_status = 'warming') as warming,
+            COUNT(*) FILTER (WHERE sa.inbox_state = 'dead') as dead,
+            COUNT(*) as total_provisioned
+        FROM sender_accounts sa
+        LEFT JOIN domains d ON SPLIT_PART(sa.email_address, '@', 2) = d.domain_name
+            AND sa.workspace_id = d.workspace_id
+        WHERE sa.workspace_id = $1
+    """, workspace_id)
+
+    active_live = counts["active_live"] if counts else 0
+    warming = counts["warming"] if counts else 0
+    total_provisioned = counts["total_provisioned"] if counts else 0
+
+    # Calculate tier targets
+    primary_target = int(total_quota * (1 - spare_ratio))
+    hot_backup_target = int(total_quota * spare_ratio)
+    warming_target = max(1, int(total_quota * 0.10))
+
+    # Primary: all active live inboxes (capped at primary target for count)
+    primary_count = min(active_live, primary_target) if primary_target > 0 else active_live
+    # Hot backup: surplus live inboxes beyond primary need
+    hot_backup_count = max(0, active_live - primary_target)
+    warming_count = warming
+
+    primary_pct = (primary_count / primary_target * 100) if primary_target > 0 else 100
+    hot_backup_pct = (hot_backup_count / hot_backup_target * 100) if hot_backup_target > 0 else 100
+    warming_pct = (warming_count / warming_target * 100) if warming_target > 0 else 100
+
+    primary_status = _tier_status(primary_count, primary_target)
+    hot_backup_status = _tier_status(hot_backup_count, hot_backup_target)
+    warming_status = _tier_status(warming_count, warming_target)
+
+    # Overall status is the worst of the three
+    status_priority = {"critical": 0, "warning": 1, "healthy": 2}
+    worst = min(
+        [primary_status, hot_backup_status, warming_status],
+        key=lambda s: status_priority.get(s, 2)
+    )
+
+    backup_ratio = (
+        (hot_backup_count + warming_count) / primary_target
+        if primary_target > 0 else 0.0
+    )
+
+    return BackupCapacityResponse(
+        primary=BackupTierStatus(
+            tier="primary",
+            label="Active Sending",
+            count=primary_count,
+            target_count=primary_target,
+            percentage=round(min(primary_pct, 100), 1),
+            status=primary_status,
+        ),
+        hot_backup=BackupTierStatus(
+            tier="hot_backup",
+            label="Hot Backup",
+            count=hot_backup_count,
+            target_count=hot_backup_target,
+            percentage=round(min(hot_backup_pct, 100), 1),
+            status=hot_backup_status,
+        ),
+        warming_pipeline=BackupTierStatus(
+            tier="warming_pipeline",
+            label="Warming Pipeline",
+            count=warming_count,
+            target_count=warming_target,
+            percentage=round(min(warming_pct, 100), 1),
+            status=warming_status,
+        ),
+        total_capacity=total_provisioned,
+        active_capacity=active_live,
+        backup_ratio=round(backup_ratio, 2),
+        overall_status=worst,
+    )
+
+
+async def _build_domain_grid(workspace_id: UUID) -> list[DomainGridItem]:
+    """Build domain health grid with inbox counts per domain"""
+    rows = await fetch_all("""
+        SELECT
+            d.id as domain_id,
+            d.domain_name,
+            COALESCE(d.latest_health_score, 100) as health_score,
+            d.infrastructure_type,
+            COALESCE(d.purchased_at, d.created_at) as domain_start_date,
+            EXTRACT(EPOCH FROM (NOW() - COALESCE(d.purchased_at, d.created_at))) / 86400 as age_days,
+            d.last_checked_at,
+            COALESCE(d.latest_blacklist_count, 0) as blacklist_count,
+            COUNT(sa.id) as total_inboxes,
+            COUNT(sa.id) FILTER (WHERE sa.inbox_state = 'live') as live_inboxes,
+            COUNT(sa.id) FILTER (WHERE sa.inbox_state = 'dead') as dead_inboxes
+        FROM domains d
+        LEFT JOIN sender_accounts sa
+            ON SPLIT_PART(sa.email_address, '@', 2) = d.domain_name
+            AND sa.workspace_id = d.workspace_id
+        WHERE d.workspace_id = $1
+        GROUP BY d.id, d.domain_name, d.latest_health_score, d.infrastructure_type,
+                 d.purchased_at, d.created_at, d.last_checked_at, d.latest_blacklist_count
+        ORDER BY
+            COUNT(sa.id) FILTER (WHERE sa.inbox_state = 'dead') DESC,
+            d.latest_health_score ASC NULLS LAST
+    """, workspace_id)
+
+    items = []
+    for row in rows:
+        dead = row["dead_inboxes"]
+        age_days = max(0, int(row["age_days"] or 0))
+
+        if dead >= 2:
+            state = "dead"
+        elif dead == 1:
+            state = "flagged"
+        else:
+            state = "live"
+
+        phase = _calculate_domain_phase(age_days)
+
+        items.append(DomainGridItem(
+            domain_id=row["domain_id"],
+            domain=row["domain_name"],
+            state=state,
+            phase=phase,
+            overall_health_score=float(row["health_score"]),
+            total_inboxes=row["total_inboxes"],
+            live_inboxes=row["live_inboxes"],
+            dead_inboxes=dead,
+            warming_inboxes=0,
+            age_in_days=age_days,
+            days_until_rotation=max(0, 240 - age_days),
+            created_at=row["domain_start_date"] or datetime.now(timezone.utc),
+            last_health_check=row["last_checked_at"],
+        ))
+
+    return items
+
+
+async def _build_campaign_attribution(workspace_id: UUID) -> list[CampaignAttributionItem]:
+    """Build campaign health attribution from campaign metrics"""
+    rows = await fetch_all("""
+        SELECT
+            c.id as campaign_id,
+            c.campaign_name,
+            c.campaign_status,
+            COALESCE(c.emails_sent, 0) as total_sent,
+            COALESCE(c.bounced, 0) as bounce_count,
+            COALESCE(c.bounce_rate, 0) as bounce_rate,
+            COALESCE(c.spam_complaints, 0) as complaint_count,
+            CASE WHEN COALESCE(c.emails_sent, 0) > 0
+                THEN (COALESCE(c.spam_complaints, 0)::float / c.emails_sent * 100)
+                ELSE 0
+            END as complaint_rate,
+            c.created_at
+        FROM emailbison_campaigns c
+        WHERE c.workspace_id = $1
+        ORDER BY COALESCE(c.bounced, 0) DESC, c.created_at DESC
+    """, workspace_id)
+
+    items = []
+    for row in rows:
+        bounce_rate = float(row["bounce_rate"] or 0)
+        complaint_rate = float(row["complaint_rate"] or 0)
+
+        # Risk level
+        if bounce_rate > 4 or complaint_rate > 0.3:
+            risk_level = "critical"
+        elif bounce_rate > 3:
+            risk_level = "high"
+        elif bounce_rate > 2:
+            risk_level = "medium"
+        else:
+            risk_level = "low"
+
+        # Campaign state
+        if risk_level == "critical":
+            state = "quarantined"
+        elif bounce_rate > 5:
+            state = "dead"
+        else:
+            state = "live"
+
+        items.append(CampaignAttributionItem(
+            campaign_id=row["campaign_id"],
+            campaign_name=row["campaign_name"] or "Unnamed Campaign",
+            state=state,
+            inboxes_killed_7d=0,
+            domains_affected=0,
+            total_sent=row["total_sent"],
+            bounce_count=row["bounce_count"],
+            bounce_rate=round(bounce_rate, 2),
+            complaint_count=row["complaint_count"],
+            complaint_rate=round(complaint_rate, 2),
+            risk_level=risk_level,
+        ))
+
+    return items
+
+
+async def _build_overall_summary(
+    client_id: UUID,
+    workspace_id: UUID,
+    client_name: str,
+    kill_trigger_count: int,
+) -> OverallSummaryResponse:
+    """Build enhanced overall health summary"""
+    now = datetime.now(timezone.utc)
+
+    # Inbox stats
+    inbox_stats = await fetch_one("""
+        SELECT
+            COUNT(*) as total,
+            COUNT(*) FILTER (WHERE inbox_state = 'live' AND COALESCE(hard_bounces_24h, 0) = 0) as healthy,
+            COUNT(*) FILTER (WHERE inbox_state = 'live' AND (COALESCE(hard_bounces_24h, 0) >= 1 OR COALESCE(hard_bounces_7d, 0) >= 5)) as warning,
+            COUNT(*) FILTER (WHERE COALESCE(hard_bounces_24h, 0) >= 3) as critical,
+            COUNT(*) FILTER (WHERE inbox_state = 'dead') as dead
+        FROM sender_accounts
+        WHERE workspace_id = $1
+    """, workspace_id)
+
+    total_inboxes = inbox_stats["total"] if inbox_stats else 0
+    healthy_inboxes = inbox_stats["healthy"] if inbox_stats else 0
+    warning_inboxes = inbox_stats["warning"] if inbox_stats else 0
+    critical_inboxes = inbox_stats["critical"] if inbox_stats else 0
+    dead_inboxes = inbox_stats["dead"] if inbox_stats else 0
+
+    # Warming inboxes (on warming domains)
+    warming_result = await fetch_one("""
+        SELECT COUNT(*) as warming
+        FROM sender_accounts sa
+        JOIN domains d ON SPLIT_PART(sa.email_address, '@', 2) = d.domain_name
+            AND sa.workspace_id = d.workspace_id
+        WHERE sa.workspace_id = $1
+            AND sa.inbox_state = 'live'
+            AND d.approval_status = 'warming'
+    """, workspace_id)
+    warming_inboxes = warming_result["warming"] if warming_result else 0
+
+    # Domain stats
+    domain_stats = await fetch_one("""
+        SELECT
+            COUNT(*) as total,
+            COUNT(*) FILTER (WHERE is_clean = true OR COALESCE(latest_blacklist_count, 0) = 0) as clean,
+            COUNT(*) FILTER (WHERE is_clean = false OR COALESCE(latest_blacklist_count, 0) > 0) as flagged
+        FROM domains
+        WHERE workspace_id = $1
+    """, workspace_id)
+
+    total_domains = domain_stats["total"] if domain_stats else 0
+    clean_domains = domain_stats["clean"] if domain_stats else 0
+    flagged_domains = domain_stats["flagged"] if domain_stats else 0
+
+    # Dead domains (>=2 dead inboxes)
+    dead_domain_result = await fetch_one("""
+        SELECT COUNT(*) as dead_domains FROM (
+            SELECT d.id
+            FROM domains d
+            JOIN sender_accounts sa ON SPLIT_PART(sa.email_address, '@', 2) = d.domain_name
+                AND sa.workspace_id = d.workspace_id
+            WHERE d.workspace_id = $1 AND sa.inbox_state = 'dead'
+            GROUP BY d.id
+            HAVING COUNT(*) >= 2
+        ) sub
+    """, workspace_id)
+    dead_domains = dead_domain_result["dead_domains"] if dead_domain_result else 0
+    live_domains = total_domains - flagged_domains - dead_domains
+
+    # Alert counts
+    critical_alerts = critical_inboxes + flagged_domains
+    warning_alerts = warning_inboxes
+
+    # Weighted health score
+    health_score = 100
+    if total_inboxes > 0:
+        health_score -= min(40, int((dead_inboxes / total_inboxes) * 200))
+        health_score -= min(20, critical_inboxes * 5)
+    if total_domains > 0:
+        health_score -= min(15, flagged_domains * 3)
+    health_score -= min(25, int(dead_domains * 12.5))
+    health_score = max(0, min(100, health_score))
+
+    # Status
+    if health_score < 50 or dead_domains > 0:
+        status = "critical"
+    elif health_score < 80 or dead_inboxes > 3:
+        status = "warning"
+    else:
+        status = "healthy"
+
+    # Status message
+    issues = []
+    if dead_inboxes > 0:
+        issues.append(f"{dead_inboxes} dead inbox(es)")
+    if dead_domains > 0:
+        issues.append(f"{dead_domains} dead domain(s)")
+    if flagged_domains > 0:
+        issues.append(f"{flagged_domains} flagged domain(s)")
+    if kill_trigger_count > 0:
+        issues.append(f"{kill_trigger_count} active trigger(s)")
+    status_message = ", ".join(issues) if issues else "All systems healthy"
+
+    return OverallSummaryResponse(
+        client_id=client_id,
+        health_score=health_score,
+        status=status,
+        status_message=status_message,
+        total_domains=total_domains,
+        live_domains=max(0, live_domains),
+        flagged_domains=flagged_domains,
+        dead_domains=dead_domains,
+        total_inboxes=total_inboxes,
+        live_inboxes=healthy_inboxes + warning_inboxes,
+        dead_inboxes=dead_inboxes,
+        warming_inboxes=warming_inboxes,
+        pending_kill_triggers=kill_trigger_count,
+        active_alerts=critical_alerts + warning_alerts,
+        last_refresh=now,
+    )
+
+
+@router.get("/full-dashboard/{client_id}", response_model=FullDashboardResponse)
+async def get_full_dashboard(client_id: UUID):
+    """Get complete health dashboard data for all containers in a single call"""
+    # Validate client and get workspace
+    client = await fetch_one("""
+        SELECT c.id, c.name, c.workspace_id
+        FROM clients c
+        WHERE c.id = $1
+    """, client_id)
+
+    if not client:
+        raise HTTPException(status_code=404, detail="Client not found")
+
+    workspace_id = client["workspace_id"]
+    now = datetime.now(timezone.utc)
+
+    # If no workspace linked, return empty dashboard
+    if not workspace_id:
+        return FullDashboardResponse(
+            overall_summary=OverallSummaryResponse(
+                client_id=client_id,
+                health_score=100,
+                status="healthy",
+                status_message="No workspace linked",
+                total_domains=0, live_domains=0, flagged_domains=0, dead_domains=0,
+                total_inboxes=0, live_inboxes=0, dead_inboxes=0, warming_inboxes=0,
+                pending_kill_triggers=0, active_alerts=0,
+                last_refresh=now,
+            ),
+            kill_triggers=[],
+            backup_capacity=None,
+            domain_grid=[],
+            campaign_attribution=[],
+            contamination_sources=[],
+            esp_summaries=[],
+        )
+
+    # Build all container data
+    kill_triggers = await _build_kill_triggers(workspace_id)
+    backup_capacity = await _build_backup_capacity(client_id, workspace_id)
+    domain_grid = await _build_domain_grid(workspace_id)
+    campaign_attribution = await _build_campaign_attribution(workspace_id)
+    overall_summary = await _build_overall_summary(
+        client_id, workspace_id, client["name"], len(kill_triggers)
+    )
+
+    return FullDashboardResponse(
+        overall_summary=overall_summary,
+        kill_triggers=kill_triggers,
+        backup_capacity=backup_capacity,
+        domain_grid=domain_grid,
+        campaign_attribution=campaign_attribution,
+        contamination_sources=[],
+        esp_summaries=[],
+    )
