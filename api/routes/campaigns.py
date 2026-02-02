@@ -67,33 +67,41 @@ async def list_campaigns(
     """
     status_counts = await fetch_one(status_counts_query, *params[:param_idx-1] if params else [])
 
-    # Get campaigns with actual metric columns
+    # Get campaigns - join latest snapshot for metrics not on emailbison_campaigns
     query = f"""
         SELECT
             c.id,
             c.workspace_id,
             c.emailbison_campaign_id,
             c.campaign_name,
-            c.industry,
-            c.segment,
-            c.angle,
+            NULL as industry,
+            NULL as segment,
+            NULL as angle,
             COALESCE(c.campaign_status, 'active') as campaign_status,
             COALESCE(c.total_leads, 0) as total_leads,
             COALESCE(c.total_leads_contacted, 0) as total_leads_contacted,
-            COALESCE(c.leads_capacity, 0) as leads_capacity,
-            COALESCE(c.emails_sent, 0) as emails_sent,
-            COALESCE(c.unique_opens, 0) as unique_opens,
-            COALESCE(c.unique_replies, 0) as unique_replies,
-            COALESCE(c.bounced, 0) as bounced,
-            COALESCE(c.unsubscribed, 0) as unsubscribed,
-            COALESCE(c.spam_complaints, 0) as spam_complaints,
-            COALESCE(c.reply_rate, 0) as reply_rate,
-            COALESCE(c.open_rate, 0) as open_rate,
-            COALESCE(c.bounce_rate, 0) as bounce_rate,
+            0 as leads_capacity,
+            COALESCE(cs.emails_sent, c.emails_sent, 0) as emails_sent,
+            COALESCE(cs.unique_opens, 0) as unique_opens,
+            COALESCE(cs.unique_replies, 0) as unique_replies,
+            COALESCE(cs.bounced, 0) as bounced,
+            COALESCE(cs.unsubscribed, 0) as unsubscribed,
+            0 as spam_complaints,
+            COALESCE(cs.reply_rate, 0) as reply_rate,
+            COALESCE(cs.open_rate, 0) as open_rate,
+            COALESCE(cs.bounce_rate, 0) as bounce_rate,
             c.created_at,
             c.updated_at,
-            c.updated_at as last_snapshot_at
+            c.last_snapshot_at
         FROM emailbison_campaigns c
+        LEFT JOIN LATERAL (
+            SELECT s.emails_sent, s.unique_opens, s.unique_replies,
+                   s.bounced, s.unsubscribed, s.reply_rate, s.open_rate, s.bounce_rate
+            FROM campaign_snapshots s
+            WHERE s.campaign_id = c.id
+            ORDER BY s.snapshot_timestamp DESC
+            LIMIT 1
+        ) cs ON true
         {where_clause}
         ORDER BY c.created_at DESC
         LIMIT ${param_idx} OFFSET ${param_idx + 1}
@@ -131,26 +139,34 @@ async def get_campaign(campaign_id: UUID):
             c.workspace_id,
             c.emailbison_campaign_id,
             c.campaign_name,
-            c.industry,
-            c.segment,
-            c.angle,
+            NULL as industry,
+            NULL as segment,
+            NULL as angle,
             COALESCE(c.campaign_status, 'active') as campaign_status,
             COALESCE(c.total_leads, 0) as total_leads,
             COALESCE(c.total_leads_contacted, 0) as total_leads_contacted,
-            COALESCE(c.leads_capacity, 0) as leads_capacity,
-            COALESCE(c.emails_sent, 0) as emails_sent,
-            COALESCE(c.unique_opens, 0) as unique_opens,
-            COALESCE(c.unique_replies, 0) as unique_replies,
-            COALESCE(c.bounced, 0) as bounced,
-            COALESCE(c.unsubscribed, 0) as unsubscribed,
-            COALESCE(c.spam_complaints, 0) as spam_complaints,
-            COALESCE(c.reply_rate, 0) as reply_rate,
-            COALESCE(c.open_rate, 0) as open_rate,
-            COALESCE(c.bounce_rate, 0) as bounce_rate,
+            0 as leads_capacity,
+            COALESCE(cs.emails_sent, c.emails_sent, 0) as emails_sent,
+            COALESCE(cs.unique_opens, 0) as unique_opens,
+            COALESCE(cs.unique_replies, 0) as unique_replies,
+            COALESCE(cs.bounced, 0) as bounced,
+            COALESCE(cs.unsubscribed, 0) as unsubscribed,
+            0 as spam_complaints,
+            COALESCE(cs.reply_rate, 0) as reply_rate,
+            COALESCE(cs.open_rate, 0) as open_rate,
+            COALESCE(cs.bounce_rate, 0) as bounce_rate,
             c.created_at,
             c.updated_at,
-            c.updated_at as last_snapshot_at
+            c.last_snapshot_at
         FROM emailbison_campaigns c
+        LEFT JOIN LATERAL (
+            SELECT s.emails_sent, s.unique_opens, s.unique_replies,
+                   s.bounced, s.unsubscribed, s.reply_rate, s.open_rate, s.bounce_rate
+            FROM campaign_snapshots s
+            WHERE s.campaign_id = c.id
+            ORDER BY s.snapshot_timestamp DESC
+            LIMIT 1
+        ) cs ON true
         WHERE c.id = $1
     """
     row = await fetch_one(query, campaign_id)
@@ -214,21 +230,25 @@ async def create_campaign(campaign: CampaignCreate):
     """Create a new campaign (from idea)"""
     query = """
         INSERT INTO emailbison_campaigns (
-            workspace_id, campaign_name, industry, segment, angle, campaign_status
+            workspace_id, campaign_name, campaign_status
         )
-        VALUES ($1, $2, $3, $4, $5, 'draft')
-        RETURNING id, workspace_id, campaign_name, industry, segment, angle, campaign_status,
-                  total_leads, total_leads_contacted, leads_capacity, emails_sent,
-                  unique_opens, unique_replies, bounced, unsubscribed, spam_complaints,
-                  reply_rate, open_rate, bounce_rate, created_at, updated_at
+        VALUES ($1, $2, 'draft')
+        RETURNING id, workspace_id, campaign_name,
+                  NULL as industry, NULL as segment, NULL as angle,
+                  campaign_status,
+                  COALESCE(total_leads, 0) as total_leads,
+                  COALESCE(total_leads_contacted, 0) as total_leads_contacted,
+                  0 as leads_capacity,
+                  COALESCE(emails_sent, 0) as emails_sent,
+                  0 as unique_opens, 0 as unique_replies,
+                  0 as bounced, 0 as unsubscribed, 0 as spam_complaints,
+                  0.0 as reply_rate, 0.0 as open_rate, 0.0 as bounce_rate,
+                  created_at, updated_at
     """
     row = await fetch_one(
         query,
         campaign.workspace_id,
         campaign.campaign_name,
-        campaign.industry,
-        campaign.segment,
-        campaign.angle
     )
 
     if not row:

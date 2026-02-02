@@ -676,18 +676,22 @@ async def _build_campaign_attribution(workspace_id: UUID) -> list[CampaignAttrib
             c.id as campaign_id,
             c.campaign_name,
             c.campaign_status,
-            COALESCE(c.emails_sent, 0) as total_sent,
-            COALESCE(c.bounced, 0) as bounce_count,
-            COALESCE(c.bounce_rate, 0) as bounce_rate,
-            COALESCE(c.spam_complaints, 0) as complaint_count,
-            CASE WHEN COALESCE(c.emails_sent, 0) > 0
-                THEN (COALESCE(c.spam_complaints, 0)::float / c.emails_sent * 100)
-                ELSE 0
-            END as complaint_rate,
+            COALESCE(cs.emails_sent, c.emails_sent, 0) as total_sent,
+            COALESCE(cs.bounced, 0) as bounce_count,
+            COALESCE(cs.bounce_rate, 0) as bounce_rate,
+            0 as complaint_count,
+            0 as complaint_rate,
             c.created_at
         FROM emailbison_campaigns c
+        LEFT JOIN LATERAL (
+            SELECT s.emails_sent, s.bounced, s.bounce_rate
+            FROM campaign_snapshots s
+            WHERE s.campaign_id = c.id
+            ORDER BY s.snapshot_timestamp DESC
+            LIMIT 1
+        ) cs ON true
         WHERE c.workspace_id = $1
-        ORDER BY COALESCE(c.bounced, 0) DESC, c.created_at DESC
+        ORDER BY COALESCE(cs.bounced, 0) DESC, c.created_at DESC
     """, workspace_id)
 
     items = []
