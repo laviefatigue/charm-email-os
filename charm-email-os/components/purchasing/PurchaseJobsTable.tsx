@@ -67,6 +67,7 @@ export function PurchaseJobsTable({ clientId, onJobRetried }: PurchaseJobsTableP
   const [isLoading, setIsLoading] = useState(true);
   const [retryingJobId, setRetryingJobId] = useState<string | null>(null);
   const [cancellingJobId, setCancellingJobId] = useState<string | null>(null);
+  const [refreshingJobId, setRefreshingJobId] = useState<string | null>(null);
   const [expandedJobId, setExpandedJobId] = useState<string | null>(null);
   const jobsRef = useRef(jobs);
   jobsRef.current = jobs;
@@ -131,6 +132,21 @@ export function PurchaseJobsTable({ clientId, onJobRetried }: PurchaseJobsTableP
       setCancellingJobId(null);
     }
   }, [fetchJobs, onJobRetried]);
+
+  const handleRefreshJob = useCallback(async (jobId: string) => {
+    setRefreshingJobId(jobId);
+    try {
+      const updated = await inboxProvisioningApi.getJobStatus(jobId);
+      setJobs(prev => prev.map(j =>
+        j.jobId === jobId ? { ...j, ...updated } as PurchaseJob : j
+      ));
+    } catch (err) {
+      console.error('Failed to refresh job:', err);
+      toast.error('Failed to refresh job status');
+    } finally {
+      setRefreshingJobId(null);
+    }
+  }, []);
 
   const getFailureBadge = (errorType?: string | null) => {
     switch (errorType) {
@@ -268,17 +284,11 @@ export function PurchaseJobsTable({ clientId, onJobRetried }: PurchaseJobsTableP
 
   return (
     <Card>
-      <CardHeader className="flex flex-row items-center justify-between pb-2">
-        <div>
-          <CardTitle className="text-lg">Purchase Job History</CardTitle>
-          <CardDescription>
-            Track inbox provisioning jobs and retry failed purchases
-          </CardDescription>
-        </div>
-        <Button variant="outline" size="sm" onClick={fetchJobs} disabled={isLoading}>
-          <RefreshCw className={`h-4 w-4 mr-2 ${isLoading ? 'animate-spin' : ''}`} />
-          Refresh
-        </Button>
+      <CardHeader className="pb-2">
+        <CardTitle className="text-lg">Purchase Job History</CardTitle>
+        <CardDescription>
+          Track inbox provisioning jobs and retry failed purchases
+        </CardDescription>
       </CardHeader>
       <CardContent>
         {isLoading && jobs.length === 0 ? (
@@ -408,6 +418,25 @@ export function PurchaseJobsTable({ clientId, onJobRetried }: PurchaseJobsTableP
                             </Tooltip>
                           </TooltipProvider>
                         )}
+                        <TooltipProvider>
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => handleRefreshJob(job.jobId)}
+                                disabled={refreshingJobId === job.jobId}
+                              >
+                                {refreshingJobId === job.jobId ? (
+                                  <Loader2 className="h-4 w-4 animate-spin" />
+                                ) : (
+                                  <RefreshCw className="h-4 w-4" />
+                                )}
+                              </Button>
+                            </TooltipTrigger>
+                            <TooltipContent>Refresh status</TooltipContent>
+                          </Tooltip>
+                        </TooltipProvider>
                         <TooltipProvider>
                           <Tooltip>
                             <TooltipTrigger asChild>

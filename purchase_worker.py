@@ -329,7 +329,7 @@ def cleanup_stale_jobs():
                 completed_at = NOW(),
                 errors = COALESCE(errors, ARRAY[]::TEXT[]) ||
                     ARRAY['Worker restarted while job was processing. Last step: ' || COALESCE(current_step, 'unknown')]
-            WHERE status = 'processing'
+            WHERE status IN ('processing', 'executing')
               AND worker_mode = 'worker'
             RETURNING id, current_step
         """)
