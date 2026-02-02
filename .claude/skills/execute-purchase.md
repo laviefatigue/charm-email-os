@@ -43,6 +43,10 @@ Extract these fields from the response:
 - `bison_api_key` - EmailBison API key for fetching workspaces (starts with "17|...")
 - `sender_names` - JSON array of {firstName, lastName} for inbox user configuration
 - `use_saved_payment` - Whether to use saved payment method
+- `stripe_card_number` - (optional) Card number for manual payment
+- `stripe_card_exp` - (optional) Card expiration (MM/YY)
+- `stripe_card_cvc` - (optional) Card CVC
+- `stripe_card_zip` - (optional) Card billing ZIP code
 
 Then update status:
 ```
@@ -246,7 +250,10 @@ Call: log_step(job_id, "review_order", notes="Order review: {summary of what you
 
 ### Step 12: Checkout / Payment
 
-If `use_saved_payment` is true:
+There are two payment paths. Choose based on the job data:
+
+**Path A: Saved Payment Method** (when `use_saved_payment` is true AND no card fields in job data)
+
 - Look for a saved payment method option and select it
 - Click the final "Place Order" / "Confirm" / "Submit" button
 
@@ -254,7 +261,28 @@ If `use_saved_payment` is true:
 Call: log_step(job_id, "checkout", notes="Proceeding with saved payment method")
 ```
 
-Wait for confirmation:
+**Path B: Manual Card Entry** (when `stripe_card_number` is present in job data)
+
+The checkout page will show a Stripe payment form (may be in an iframe). Fill in the card details:
+
+1. Look for the Stripe checkout form. It may be inside an `iframe` with a src containing `stripe.com`. If so, you need to interact with elements inside that iframe.
+2. Fill the card number field with `stripe_card_number`
+3. Fill the expiration field with `stripe_card_exp` (MM/YY format)
+4. Fill the CVC field with `stripe_card_cvc`
+5. If there is a ZIP/postal code field, fill it with `stripe_card_zip`
+6. Click the final "Place Order" / "Pay" / "Confirm" / "Submit" button
+
+```
+Call: log_step(job_id, "checkout", notes="Proceeding with manual card entry")
+```
+
+**If neither** `use_saved_payment` is true nor card fields are present:
+```
+Call: fail_job(job_id, "No payment method available - set use_saved_payment or provide card ENV vars", "checkout")
+```
+STOP EXECUTION.
+
+Wait for confirmation after either path:
 ```
 Call: wait_for_text("Order", timeout_ms=30000)
 ```

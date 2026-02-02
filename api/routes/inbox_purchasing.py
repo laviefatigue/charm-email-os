@@ -764,9 +764,9 @@ async def cancel_purchase_job(job_id: str):
     if not job:
         raise HTTPException(status_code=404, detail="Purchase job not found")
 
-    if job["status"] == "executing":
+    if job["status"] in ("executing", "processing"):
         return {
-            "message": "Cannot cancel in-progress purchase. HyperTide automation must complete.",
+            "message": "Cannot cancel in-progress purchase. Automation must complete.",
             "status": job["status"],
         }
 

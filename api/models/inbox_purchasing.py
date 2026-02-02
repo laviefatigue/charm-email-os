@@ -22,9 +22,12 @@ class OrderStatus(str, Enum):
     PENDING = "pending"
     CALCULATING = "calculating"
     READY = "ready"
+    PROCESSING = "processing"
     EXECUTING = "executing"
     COMPLETED = "completed"
     FAILED = "failed"
+    SUPERSEDED = "superseded"
+    CANCELLED = "cancelled"
 
 
 # =============================================================================

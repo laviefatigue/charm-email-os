@@ -294,6 +294,12 @@ def get_pending_job():
             RETURNING id, client_id, provider_type, domain_names, company_name
         """)
         job = cur.fetchone()
+        if job:
+            # Sync domain lock status so UI shows correct state
+            cur.execute("""
+                UPDATE domains SET purchase_job_status = 'processing'
+                WHERE purchase_job_id = %s
+            """, (str(job['id']),))
         conn.commit()
         return job
     except Exception as e:
@@ -324,6 +330,12 @@ def mark_job_failed(job_id: str, error: str):
             SET errors = COALESCE(errors, ARRAY[]::TEXT[]) || ARRAY[%s]
             WHERE id = %s
         """, (error, job_id))
+
+        # Sync domain lock status so UI shows correct state
+        cur.execute("""
+            UPDATE domains SET purchase_job_status = 'failed'
+            WHERE purchase_job_id = %s::uuid
+        """, (job_id,))
 
         conn.commit()
     except Exception as e:
@@ -465,6 +477,11 @@ REMINDER: This is a TEST RUN. STOP after Step {stop_after_step}. Call fail_job()
                         SET status = 'pending', started_at = NULL,
                             current_step = 'OAuth expired - awaiting re-authentication'
                         WHERE id = %s
+                    """, (job_id,))
+                    # Sync domain lock status back to pending
+                    cur.execute("""
+                        UPDATE domains SET purchase_job_status = 'pending'
+                        WHERE purchase_job_id = %s::uuid
                     """, (job_id,))
                     conn.commit()
                     logger.info(f"Job {job_id} returned to pending queue for retry after re-auth")

@@ -1,8 +1,8 @@
 ---
 title: VPS Server Configuration
 created: 2026-01-16
-updated: 2026-01-16
-tags: [infrastructure, vps, server]
+updated: 2026-02-02
+tags: [infrastructure, vps, server, disk-management]
 ---
 
 # VPS Server
@@ -41,6 +41,31 @@ Uses sslip.io for automatic DNS resolution:
 
 - **Coolify Dashboard**: `https://panel.laviefatigue.com`
 - **SSH**: Available if needed (contact admin)
+
+## Resource Usage
+
+As of 2026-01-30, the VPS hosts:
+- **21 Docker applications** (20 running, 1 stopped)
+- **1 PostgreSQL database**
+- **2 Coolify services**
+
+### Disk Usage Concerns
+
+The server has experienced disk exhaustion from accumulated Docker artifacts. Key consumers:
+- Docker images (21 apps × multiple layers each)
+- Docker build cache (multi-stage builds)
+- Docker volumes from old containers
+- Failed deployment artifacts
+
+See [[coolify#Disk Management & Deployment Optimization]] for cleanup procedures and prevention settings.
+
+### Quick Disk Check (SSH)
+
+```bash
+df -h /                    # Overall disk usage
+docker system df           # Docker-specific breakdown
+docker system df -v        # Detailed per-image sizes
+```
 
 ## Security
 
