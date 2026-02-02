@@ -313,11 +313,12 @@ def get_pending_job():
 
 
 def cleanup_stale_jobs():
-    """On startup, fail any jobs stuck in 'processing' from a previous worker run.
+    """On startup, fail any jobs stuck in 'processing'/'executing' from a previous worker run.
 
-    If the worker crashed mid-job, those jobs are stuck in 'processing' forever.
+    If the worker crashed mid-job, those jobs are stuck forever.
     This recovers them by marking as failed with error_type='stale'.
     """
+    logger.info("Checking for stale jobs from previous run...")
     conn = get_db()
     cur = conn.cursor(cursor_factory=RealDictCursor)
     try:
@@ -345,6 +346,8 @@ def cleanup_stale_jobs():
         conn.commit()
         if stale_jobs:
             logger.info(f"Cleaned up {len(stale_jobs)} stale job(s) from previous run")
+        else:
+            logger.info("No stale jobs found")
     except Exception as e:
         logger.error(f"Failed to clean up stale jobs: {e}")
         conn.rollback()
