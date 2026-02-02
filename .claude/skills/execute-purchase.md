@@ -263,14 +263,16 @@ Call: log_step(job_id, "checkout", notes="Proceeding with saved payment method")
 
 **Path B: Manual Card Entry** (when `stripe_card_number` is present in job data)
 
-The checkout page will show a Stripe payment form (may be in an iframe). Fill in the card details:
+The checkout page will show a Stripe payment form. **Stripe Link may intercept the page first** — you MUST dismiss it before entering card details:
 
-1. Look for the Stripe checkout form. It may be inside an `iframe` with a src containing `stripe.com`. If so, you need to interact with elements inside that iframe.
-2. Fill the card number field with `stripe_card_number`
-3. Fill the expiration field with `stripe_card_exp` (MM/YY format)
-4. Fill the CVC field with `stripe_card_cvc`
-5. If there is a ZIP/postal code field, fill it with `stripe_card_zip`
-6. Click the final "Place Order" / "Pay" / "Confirm" / "Submit" button
+1. **Dismiss Stripe Link**: The page may show a "Confirm it's you" 2FA prompt from Stripe Link. Look for a **"Pay without Link"** link/button on the page and click it. This reveals the standard card entry form. If no Stripe Link prompt appears, proceed directly to step 2.
+2. Look for the Stripe checkout form. It may be inside an `iframe` with a src containing `stripe.com`. If so, you need to interact with elements inside that iframe.
+3. Fill the card number field with `stripe_card_number`
+4. Fill the expiration field with `stripe_card_exp` (MM/YY format)
+5. Fill the CVC field with `stripe_card_cvc`
+6. If there is a cardholder name field, enter "Chris Elliott"
+7. If there is a ZIP/postal code field, fill it with `stripe_card_zip`
+8. Click the final "Subscribe" / "Pay" / "Place Order" / "Confirm" button
 
 ```
 Call: log_step(job_id, "checkout", notes="Proceeding with manual card entry")
