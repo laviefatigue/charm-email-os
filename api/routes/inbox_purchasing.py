@@ -1671,6 +1671,7 @@ async def execute_smart_order(
 
         # Create worker job FIRST (must exist before locking domains due to FK constraint)
         job_id = str(uuid.uuid4())
+        request_data = request.model_dump(mode="json")
         await execute(
             """
             INSERT INTO inbox_purchase_jobs (
@@ -1680,6 +1681,7 @@ async def execute_smart_order(
                 worker_mode, company_name, forwarding_domain,
                 bison_workspace_name,
                 sender_names, use_saved_payment,
+                request_data,
                 created_at
             ) VALUES (
                 $1, $2, $3, 'pending', $4,
@@ -1688,6 +1690,7 @@ async def execute_smart_order(
                 'worker', $11, $12,
                 $13,
                 $14, TRUE,
+                $15,
                 NOW()
             )
             """,
@@ -1705,6 +1708,7 @@ async def execute_smart_order(
             onboarding_data.get("primaryDomain", "") if onboarding_data else "",
             client.get("workspace_name") or "Charm",
             json.dumps(sender_names_json),
+            request_data,
         )
 
         # Lock domains for this job (FK constraint satisfied — job now exists)
