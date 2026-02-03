@@ -189,7 +189,40 @@ The Hypertide form "Step 2) Connect Your Email Automation Tool" has:
 
 **Sub-step 7a: Select Bison as the email tool**
 
-Click the "Bison" radio button/option. Wait for the form fields to appear.
+The email tool buttons are styled text elements. Use JavaScript to reliably click the Bison option:
+
+```
+Call: evaluate_script(`
+    // Find the Bison text and click its clickable parent
+    const allElements = Array.from(document.querySelectorAll('*'));
+    const bisonEl = allElements.find(el =>
+        el.textContent.trim() === 'Bison' &&
+        !el.querySelector('*')  // Leaf node only
+    );
+    if (bisonEl) {
+        // Try clicking parent containers that might be the actual radio
+        const clickable = bisonEl.closest('[role="radio"], label, button, [class*="radio"], [class*="option"], [class*="tab"]') || bisonEl.parentElement || bisonEl;
+        clickable.click();
+        return { clicked: true, element: clickable.tagName, classes: clickable.className };
+    }
+    return { clicked: false, error: 'Bison element not found' };
+`)
+```
+
+**Verify the selection changed:**
+```
+Call: get_page_text()
+```
+
+Look for text indicating Bison is now selected (e.g., "Selected Tool: Bison" or the Bison-specific fields appearing).
+
+**If Bison is NOT selected after the JS click, FAIL immediately:**
+```
+Call: fail_job(job_id, "Could not select Bison as email tool. UI shows different tool selected.", "bison_tool_selection", "config")
+```
+STOP EXECUTION.
+
+Wait for the Bison-specific form fields (Username, Password, Workspace, Bison URL) to appear before proceeding.
 
 **Sub-step 7b: Fill Username, Password, and Bison URL**
 

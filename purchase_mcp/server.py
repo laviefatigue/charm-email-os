@@ -51,7 +51,7 @@ _page = None
 # Rate limiting state
 _last_navigate_time = 0.0      # Timestamp of last navigate() call
 _current_url = ""              # Currently loaded URL (for deduplication)
-NAVIGATE_COOLDOWN_SEC = 3.0    # Minimum seconds between navigate() calls
+NAVIGATE_COOLDOWN_SEC = 1.5    # Minimum seconds between navigate() calls (reduced from 3.0)
 
 # Login guard — prevents double login (wastes time + hammers Hypertide)
 _login_completed = False       # Set True after successful login (dashboard seen)
@@ -77,7 +77,7 @@ async def _ensure_browser():
     # The Dockerfile installs xvfb and the worker launches with DISPLAY=:99.
     _browser = await _playwright.chromium.launch(
         headless=False,
-        slow_mo=100,  # 100ms between every Playwright action — prevents hammering
+        slow_mo=50,  # 50ms between every Playwright action (reduced from 100ms)
         args=[
             "--no-sandbox",
             "--disable-setuid-sandbox",
@@ -205,6 +205,17 @@ async def list_tools():
                     "timeout_ms": {"type": "integer", "description": "Maximum time to wait in milliseconds (default 10000)", "default": 10000}
                 },
                 "required": ["text"]
+            }
+        ),
+        Tool(
+            name="evaluate_script",
+            description="Run JavaScript in the page context. Use for clicking elements with complex selectors or verifying page state. Return value will be JSON-serialized.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "script": {"type": "string", "description": "JavaScript code to execute. Can return values."}
+                },
+                "required": ["script"]
             }
         ),
 
@@ -359,8 +370,8 @@ async def call_tool(name: str, arguments: dict):
             except Exception:
                 pass
 
-            # Brief pause for React hydration
-            await asyncio.sleep(2)
+            # Brief pause for React hydration (reduced from 2s)
+            await asyncio.sleep(1)
 
             screenshot = await _take_screenshot()
             info = await _get_page_info()
@@ -402,16 +413,18 @@ async def call_tool(name: str, arguments: dict):
             else:
                 await page.click(selector, timeout=10000)
 
-            # Wait for any navigation or animation triggered by the click
-            await asyncio.sleep(3)
+            # Smart wait: brief pause, then check if navigation happened
+            await asyncio.sleep(0.5)  # Brief settle (reduced from 3s unconditional)
 
-            # If the URL changed, a navigation happened — wait for DOM and update tracking
+            # Check if URL changed (navigation occurred)
             url_after = page.url
             if url_after != url_before:
+                # Navigation happened — wait for DOM to load
                 try:
                     await page.wait_for_load_state("domcontentloaded", timeout=10000)
                 except Exception:
                     pass
+                await asyncio.sleep(0.5)  # Extra settle after navigation
                 _current_url = url_after
 
             screenshot = await _take_screenshot()
@@ -463,7 +476,7 @@ async def call_tool(name: str, arguments: dict):
 
             # Click the dropdown trigger
             await page.click(trigger_selector, timeout=10000)
-            await asyncio.sleep(1)
+            await asyncio.sleep(0.5)  # Reduced from 1s
 
             # Look for the option by text
             option = page.get_by_text(option_text, exact=True)
@@ -486,7 +499,7 @@ async def call_tool(name: str, arguments: dict):
                 }))]
 
             await option.first.click(timeout=5000)
-            await asyncio.sleep(1)
+            await asyncio.sleep(0.5)  # Reduced from 1s
             screenshot = await _take_screenshot()
             info = await _get_page_info()
             return [TextContent(type="text", text=json.dumps({
@@ -508,7 +521,7 @@ async def call_tool(name: str, arguments: dict):
         try:
             page = await _ensure_browser()
             await page.evaluate(f"window.scrollBy(0, {pixels})")
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(0.2)  # Reduced from 0.5s
             screenshot = await _take_screenshot()
             info = await _get_page_info()
             return [TextContent(type="text", text=json.dumps({
@@ -562,6 +575,26 @@ async def call_tool(name: str, arguments: dict):
                 "status": "not_found",
                 "text": text,
                 "waited_ms": timeout_ms,
+                "screenshot_base64": screenshot
+            }))]
+
+    elif name == "evaluate_script":
+        script = arguments["script"]
+        try:
+            page = await _ensure_browser()
+            result = await page.evaluate(script)
+            await asyncio.sleep(0.5)  # Brief settle after script execution
+            screenshot = await _take_screenshot()
+            return [TextContent(type="text", text=json.dumps({
+                "status": "ok",
+                "result": result,
+                "screenshot_base64": screenshot
+            }))]
+        except Exception as e:
+            screenshot = await _take_screenshot()
+            return [TextContent(type="text", text=json.dumps({
+                "status": "error",
+                "error": str(e),
                 "screenshot_base64": screenshot
             }))]
 
