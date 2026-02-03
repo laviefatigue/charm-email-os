@@ -130,8 +130,13 @@ This step has multiple sections. Fill in:
 - Find the company name input field
 - Fill with `company_name` value
 
+**Save the configuration:**
+- Click the "Save Basic Configuration" button (orange button at bottom of Step 1 section)
+- Wait for the form to indicate success (Step 2 should become enabled/expanded)
+
 ```
-Call: log_step(job_id, "basic_config", notes="Filled forwarding domain and company name")
+Call: wait_for_text("Connect Your Email Automation Tool", timeout_ms=10000)
+Call: log_step(job_id, "basic_config", notes="Filled forwarding domain and company name, saved configuration")
 ```
 
 ### Step 7: Email Tool Configuration (Bison) - CRITICAL STEP
