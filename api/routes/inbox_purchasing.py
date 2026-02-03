@@ -219,7 +219,7 @@ async def _get_job_from_db(job_id: str) -> Optional[dict]:
                total_inboxes, monthly_cost,
                created_at, started_at, completed_at,
                results, errors, error_type, request_data,
-               override_age_check, custom_purchase
+               override_age_check, custom_purchase, checkout_url
         FROM inbox_purchase_jobs
         WHERE id = $1
         """,
@@ -265,6 +265,7 @@ async def _get_job_from_db(job_id: str) -> Optional[dict]:
         "request_data": request_data,
         "override_age_check": job.get("override_age_check", False),
         "custom_purchase": job.get("custom_purchase", False),
+        "checkout_url": job.get("checkout_url"),
     }
 
 
@@ -755,6 +756,7 @@ async def get_purchase_status(job_id: str):
         completed_at=job.get("completed_at"),
         errors=job.get("errors", []),
         error_type=job.get("error_type"),
+        checkout_url=job.get("checkout_url"),
     )
 
 
@@ -776,10 +778,38 @@ async def cancel_purchase_job(job_id: str):
             "status": job["status"],
         }
 
+    # awaiting_checkout can be cancelled (user abandons payment)
+
     # Release domain locks and mark as cancelled (preserve history)
     await _release_domain_locks(job_id)
     await _update_job_status(job_id, "cancelled", "Cancelled by user")
     return {"message": "Purchase job cancelled", "job_id": job_id}
+
+
+@router.post("/jobs/{job_id}/confirm-checkout")
+async def confirm_checkout(job_id: str):
+    """
+    Confirm manual checkout payment.
+
+    Called by the frontend after the user has completed Stripe payment manually.
+    Transitions the job from 'awaiting_checkout' to 'completed'.
+    """
+    job = await _get_job_from_db(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    if job["status"] != "awaiting_checkout":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Job is not awaiting checkout. Current status: {job['status']}"
+        )
+
+    await _update_job_status(
+        job_id, "completed",
+        current_step="Payment confirmed by user (manual checkout)",
+    )
+
+    return {"message": "Payment confirmed", "job_id": job_id, "status": "completed"}
 
 
 @router.get("/jobs")
@@ -810,7 +840,7 @@ async def list_purchase_jobs(
         SELECT id, client_id, status, current_step, provider_type,
                domain_names, entra_orders, google_orders, orders_completed, orders_total,
                total_inboxes, monthly_cost,
-               created_at, started_at, completed_at, errors, error_type
+               created_at, started_at, completed_at, errors, error_type, checkout_url
         FROM inbox_purchase_jobs
         {where_clause}
         ORDER BY created_at DESC
@@ -844,6 +874,7 @@ async def list_purchase_jobs(
                 "completed_at": j.get("completed_at").isoformat() if j.get("completed_at") else None,
                 "errors": j.get("errors") or [],
                 "error_type": j.get("error_type"),
+                "checkout_url": j.get("checkout_url"),
             }
             for j in jobs
         ],

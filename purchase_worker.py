@@ -220,6 +220,7 @@ def ensure_tables():
             ("worker_mode", "VARCHAR(20) DEFAULT 'api'"),
             ("hypertide_order_id", "TEXT"),
             ("error_type", "TEXT"),
+            ("checkout_url", "TEXT"),
         ]
 
         for col_name, col_def in worker_columns:
@@ -500,6 +501,20 @@ REMINDER: This is a TEST RUN. STOP after Step {stop_after_step}. Call fail_job()
         )
 
         if result.returncode != 0:
+            # Check if handoff_checkout already transitioned the job
+            try:
+                guard_conn = get_db()
+                guard_cur = guard_conn.cursor(cursor_factory=RealDictCursor)
+                guard_cur.execute("SELECT status FROM inbox_purchase_jobs WHERE id = %s", (job_id,))
+                current = guard_cur.fetchone()
+                guard_cur.close()
+                guard_conn.close()
+                if current and current['status'] == 'awaiting_checkout':
+                    logger.info(f"Job {job_id} already handed off (awaiting_checkout). Ignoring non-zero exit.")
+                    return
+            except Exception as e:
+                logger.warning(f"Failed to check job status guard: {e}")
+
             error_msg = result.stderr or result.stdout or "Unknown error"
             logger.error(f"Claude Code failed: {error_msg[:500]}")
 

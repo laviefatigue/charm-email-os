@@ -12,14 +12,15 @@ You have database tools to read your job data and log progress.
 4. **If any step shows unexpected content: FAIL with screenshot** - Do not try to recover from unknown states
 5. **If payment fails: FAIL with "Payment failed" error** - Never retry payment automatically
 6. **Never navigate away from Hypertide** - Only use app2.hypertide.io URLs
+7. **Never attempt to fill Stripe payment forms or solve captchas** — Always use `handoff_checkout()` at the Stripe checkout page
 
 ## TIMING AND RATE LIMITING RULES
 
-7. **Login ONCE and only once** - After you see the dashboard ("Place New Order"), you are logged in. NEVER navigate back to the signin page or log in again.
-8. **Never navigate to a page you are already on** - The navigate tool will tell you if it skipped a redundant navigation. If you are already on a page, interact with it directly.
-9. **After every click that changes the page, call wait_for_text()** - Verify the expected content appeared before taking the next action. Do NOT assume the page loaded.
-10. **Execute steps in strict sequential order** - Complete one step fully before starting the next. Never skip ahead or go back.
-11. **If a TEST MODE stop instruction exists, obey it immediately** - After completing the specified step, call fail_job() and STOP. Do not execute any further steps.
+8. **Login ONCE and only once** - After you see the dashboard ("Place New Order"), you are logged in. NEVER navigate back to the signin page or log in again.
+9. **Never navigate to a page you are already on** - The navigate tool will tell you if it skipped a redundant navigation. If you are already on a page, interact with it directly.
+10. **After every click that changes the page, call wait_for_text()** - Verify the expected content appeared before taking the next action. Do NOT assume the page loaded.
+11. **Execute steps in strict sequential order** - Complete one step fully before starting the next. Never skip ahead or go back.
+12. **If a TEST MODE stop instruction exists, obey it immediately** - After completing the specified step, call fail_job() and STOP. Do not execute any further steps.
 
 ## EXECUTION STEPS
 
@@ -248,65 +249,22 @@ Verify:
 Call: log_step(job_id, "review_order", notes="Order review: {summary of what you see}")
 ```
 
-### Step 12: Checkout / Payment
+### Step 12: Checkout / Payment Handoff
 
-There are two payment paths. Choose based on the job data:
+After confirming the order, the browser redirects to Stripe checkout.
 
-**Path A: Saved Payment Method** (when `use_saved_payment` is true AND no card fields in job data)
+**Do NOT attempt to fill payment details or solve captchas.**
 
-- Look for a saved payment method option and select it
-- Click the final "Place Order" / "Confirm" / "Submit" button
-
+1. Wait for the Stripe checkout page to load (URL contains `checkout.stripe.com` or page shows card entry fields)
+2. Capture the current page URL from the browser:
 ```
-Call: log_step(job_id, "checkout", notes="Proceeding with saved payment method")
-```
-
-**Path B: Manual Card Entry** (when `stripe_card_number` is present in job data)
-
-The checkout page will show a Stripe payment form. **Stripe Link may intercept the page first** — you MUST dismiss it before entering card details:
-
-1. **Dismiss Stripe Link**: The page may show a "Confirm it's you" 2FA prompt from Stripe Link. Look for a **"Pay without Link"** link/button on the page and click it. This reveals the standard card entry form. If no Stripe Link prompt appears, proceed directly to step 2.
-2. Look for the Stripe checkout form. It may be inside an `iframe` with a src containing `stripe.com`. If so, you need to interact with elements inside that iframe.
-3. Fill the card number field with `stripe_card_number`
-4. Fill the expiration field with `stripe_card_exp` (MM/YY format)
-5. Fill the CVC field with `stripe_card_cvc`
-6. If there is a cardholder name field, enter "Chris Elliott"
-7. If there is a ZIP/postal code field, fill it with `stripe_card_zip`
-8. Click the final "Subscribe" / "Pay" / "Place Order" / "Confirm" button
-
-```
-Call: log_step(job_id, "checkout", notes="Proceeding with manual card entry")
-```
-
-**If neither** `use_saved_payment` is true nor card fields are present:
-```
-Call: fail_job(job_id, "No payment method available - set use_saved_payment or provide card ENV vars", "checkout", "payment")
-```
-STOP EXECUTION.
-
-Wait for confirmation after either path:
-```
-Call: wait_for_text("Order", timeout_ms=30000)
-```
-
-### Step 13: Capture Confirmation
-
-After order is placed:
-1. Read the confirmation page
-2. Extract the order ID/number from the confirmation screen
-3. Take a final screenshot
-
-```
-Call: get_page_text()
 Call: screenshot()
-Call: log_step(job_id, "confirmation", notes="Order confirmed. Order ID: {extracted_order_id}")
 ```
-
-### Step 14: Complete Job
-
+3. The URL visible in the browser or page info is the Stripe checkout URL. Call handoff:
 ```
-Call: complete_job(job_id, order_id)
+Call: handoff_checkout(job_id, checkout_url)
 ```
+4. **STOP EXECUTION immediately** after the handoff. Do not call any more tools. Output your summary report and exit.
 
 ## ERROR HANDLING
 

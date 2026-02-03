@@ -2647,6 +2647,16 @@ export const inboxProvisioningApi = {
       { method: 'DELETE' }
     );
   },
+
+  /**
+   * Confirm manual checkout payment for an awaiting_checkout job.
+   */
+  async confirmCheckout(jobId: string): Promise<{ message: string; jobId: string; status: string }> {
+    return fetchApi<{ message: string; jobId: string; status: string }>(
+      `/api/inbox-purchasing/jobs/${jobId}/confirm-checkout`,
+      { method: 'POST' }
+    );
+  },
 };
 
 // ===== COMBINED API EXPORT =====

@@ -279,6 +279,18 @@ async def list_tools():
                 "required": ["job_id", "error"]
             }
         ),
+        Tool(
+            name="handoff_checkout",
+            description="Hand off checkout to user for manual payment. Stores the Stripe URL and sets status to awaiting_checkout. STOP all execution after calling this.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "job_id": {"type": "string", "description": "The purchase job UUID"},
+                    "checkout_url": {"type": "string", "description": "Full Stripe checkout URL"}
+                },
+                "required": ["job_id", "checkout_url"]
+            }
+        ),
     ]
 
 
@@ -807,6 +819,59 @@ async def call_tool(name: str, arguments: dict):
                 "╚════════════════════════════════════════════╝"
             ))]
 
+        finally:
+            cur.close()
+            conn.close()
+
+    elif name == "handoff_checkout":
+        job_id = arguments["job_id"]
+        checkout_url = arguments["checkout_url"]
+
+        # Capture screenshot for audit trail
+        screenshot_b64 = await _take_screenshot()
+
+        conn = get_db()
+        cur = conn.cursor()
+
+        try:
+            # Update job: status → awaiting_checkout, store checkout URL
+            cur.execute("""
+                UPDATE inbox_purchase_jobs
+                SET status = 'awaiting_checkout',
+                    checkout_url = %s,
+                    current_step = 'awaiting_manual_checkout'
+                WHERE id = %s
+            """, (checkout_url, job_id))
+
+            # Sync domain lock status
+            cur.execute("""
+                UPDATE domains SET purchase_job_status = 'awaiting_checkout'
+                WHERE purchase_job_id = %s
+            """, (job_id,))
+
+            # Log step with screenshot
+            cur.execute("""
+                INSERT INTO purchase_job_steps (job_id, step_name, screenshot_base64, notes)
+                VALUES (%s, 'checkout_handoff', %s, %s)
+            """, (job_id, screenshot_b64, f"Checkout handed off to user. URL: {checkout_url}"))
+
+            conn.commit()
+            return [TextContent(type="text", text=(
+                f"Job {job_id} handed off for manual checkout.\n"
+                f"Stripe URL: {checkout_url}\n\n"
+                "╔════════════════════════════════════════════════╗\n"
+                "║  CHECKOUT HANDED OFF — STOP EXECUTION NOW.     ║\n"
+                "║  Do NOT call any more tools.                    ║\n"
+                "║  Do NOT navigate to any pages.                  ║\n"
+                "║  Do NOT attempt to complete the payment.        ║\n"
+                "║  The user will pay manually and confirm.        ║\n"
+                "║  Your task is COMPLETE. Output your report.     ║\n"
+                "╚════════════════════════════════════════════════╝"
+            ))]
+
+        except Exception as e:
+            conn.rollback()
+            return [TextContent(type="text", text=f"Error handing off checkout: {str(e)}")]
         finally:
             cur.close()
             conn.close()

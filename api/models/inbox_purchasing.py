@@ -26,6 +26,7 @@ class OrderStatus(str, Enum):
     EXECUTING = "executing"
     COMPLETED = "completed"
     FAILED = "failed"
+    AWAITING_CHECKOUT = "awaiting_checkout"
     SUPERSEDED = "superseded"
     CANCELLED = "cancelled"
 
@@ -204,6 +205,12 @@ class PurchaseStatusResponse(BaseModel):
     # Timing
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
+
+    # Checkout handoff
+    checkout_url: Optional[str] = Field(
+        default=None,
+        description="Stripe checkout URL for manual payment (when status is awaiting_checkout)"
+    )
 
     # Errors
     errors: list[str] = Field(default_factory=list)

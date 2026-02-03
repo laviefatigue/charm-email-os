@@ -40,7 +40,7 @@ import { formatDistanceToNow, format } from 'date-fns';
 interface PurchaseJob {
   jobId: string;
   clientId: string;
-  status: 'pending' | 'executing' | 'processing' | 'completed' | 'failed' | 'superseded' | 'cancelled';
+  status: 'pending' | 'executing' | 'processing' | 'completed' | 'failed' | 'awaiting_checkout' | 'superseded' | 'cancelled';
   currentStep?: string;
   providerType: string;
   domainNames: string[];
@@ -55,6 +55,7 @@ interface PurchaseJob {
   completedAt?: string;
   errors?: string[];
   errorType?: 'payment' | 'config' | 'auth' | 'timeout' | 'system' | 'stale' | null;
+  checkoutUrl?: string;
 }
 
 interface PurchaseJobsTableProps {
@@ -67,6 +68,7 @@ export function PurchaseJobsTable({ clientId, onJobRetried }: PurchaseJobsTableP
   const [isLoading, setIsLoading] = useState(true);
   const [retryingJobId, setRetryingJobId] = useState<string | null>(null);
   const [cancellingJobId, setCancellingJobId] = useState<string | null>(null);
+  const [confirmingJobId, setConfirmingJobId] = useState<string | null>(null);
   const [refreshingJobId, setRefreshingJobId] = useState<string | null>(null);
   const [expandedJobId, setExpandedJobId] = useState<string | null>(null);
   const jobsRef = useRef(jobs);
@@ -95,7 +97,7 @@ export function PurchaseJobsTable({ clientId, onJobRetried }: PurchaseJobsTableP
     // Poll for updates every 10 seconds if any jobs are pending/executing
     const interval = setInterval(() => {
       const hasActiveJobs = jobsRef.current.some(
-        (j) => j.status === 'pending' || j.status === 'executing' || j.status === 'processing'
+        (j) => j.status === 'pending' || j.status === 'executing' || j.status === 'processing' || j.status === 'awaiting_checkout'
       );
       if (hasActiveJobs) {
         fetchJobs();
@@ -130,6 +132,20 @@ export function PurchaseJobsTable({ clientId, onJobRetried }: PurchaseJobsTableP
       toast.error(err.message || 'Failed to cancel job');
     } finally {
       setCancellingJobId(null);
+    }
+  }, [fetchJobs, onJobRetried]);
+
+  const handleConfirmCheckout = useCallback(async (jobId: string) => {
+    try {
+      setConfirmingJobId(jobId);
+      await inboxProvisioningApi.confirmCheckout(jobId);
+      toast.success('Payment confirmed! Job marked as completed.');
+      fetchJobs();
+      onJobRetried?.();
+    } catch (err: any) {
+      toast.error(err.message || 'Failed to confirm checkout');
+    } finally {
+      setConfirmingJobId(null);
     }
   }, [fetchJobs, onJobRetried]);
 
@@ -228,6 +244,13 @@ export function PurchaseJobsTable({ clientId, onJobRetried }: PurchaseJobsTableP
         );
       case 'failed':
         return getFailureBadge(job.errorType);
+      case 'awaiting_checkout':
+        return (
+          <Badge className="bg-amber-100 text-amber-800 gap-1">
+            <CreditCard className="h-3 w-3" />
+            Awaiting Payment
+          </Badge>
+        );
       case 'superseded':
         return (
           <Badge variant="secondary" className="gap-1">
@@ -375,6 +398,67 @@ export function PurchaseJobsTable({ clientId, onJobRetried }: PurchaseJobsTableP
                     <TableCell>{formatDuration(job)}</TableCell>
                     <TableCell className="text-right">
                       <div className="flex justify-end gap-1">
+                        {job.status === 'awaiting_checkout' && job.checkoutUrl && (
+                          <TooltipProvider>
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  onClick={() => window.open(job.checkoutUrl, '_blank')}
+                                  className="text-amber-700 hover:text-amber-800 hover:bg-amber-50"
+                                >
+                                  <CreditCard className="h-4 w-4" />
+                                </Button>
+                              </TooltipTrigger>
+                              <TooltipContent>Open Stripe checkout to pay</TooltipContent>
+                            </Tooltip>
+                          </TooltipProvider>
+                        )}
+                        {job.status === 'awaiting_checkout' && (
+                          <>
+                            <TooltipProvider>
+                              <Tooltip>
+                                <TooltipTrigger asChild>
+                                  <Button
+                                    variant="outline"
+                                    size="sm"
+                                    onClick={() => handleConfirmCheckout(job.jobId)}
+                                    disabled={confirmingJobId === job.jobId}
+                                    className="text-green-600 hover:text-green-700 hover:bg-green-50"
+                                  >
+                                    {confirmingJobId === job.jobId ? (
+                                      <Loader2 className="h-4 w-4 animate-spin" />
+                                    ) : (
+                                      <CheckCircle2 className="h-4 w-4" />
+                                    )}
+                                  </Button>
+                                </TooltipTrigger>
+                                <TooltipContent>Confirm payment completed</TooltipContent>
+                              </Tooltip>
+                            </TooltipProvider>
+                            <TooltipProvider>
+                              <Tooltip>
+                                <TooltipTrigger asChild>
+                                  <Button
+                                    variant="outline"
+                                    size="sm"
+                                    onClick={() => handleCancel(job.jobId)}
+                                    disabled={cancellingJobId === job.jobId}
+                                    className="text-red-600 hover:text-red-700 hover:bg-red-50"
+                                  >
+                                    {cancellingJobId === job.jobId ? (
+                                      <Loader2 className="h-4 w-4 animate-spin" />
+                                    ) : (
+                                      <Trash2 className="h-4 w-4" />
+                                    )}
+                                  </Button>
+                                </TooltipTrigger>
+                                <TooltipContent>Cancel job &amp; unlock domains</TooltipContent>
+                              </Tooltip>
+                            </TooltipProvider>
+                          </>
+                        )}
                         {(job.status === 'failed' || job.status === 'pending') && (
                           <TooltipProvider>
                             <Tooltip>
@@ -493,6 +577,25 @@ export function PurchaseJobsTable({ clientId, onJobRetried }: PurchaseJobsTableP
                                   </Badge>
                                 ))}
                               </div>
+                            </div>
+                          )}
+                          {job.status === 'awaiting_checkout' && job.checkoutUrl && (
+                            <div className="bg-amber-50 border border-amber-200 rounded p-3">
+                              <div className="flex items-center gap-2 text-amber-700 font-medium mb-2">
+                                <CreditCard className="h-4 w-4" />
+                                Manual Checkout Required
+                              </div>
+                              <p className="text-amber-600 text-xs mb-2">
+                                Automation completed all steps. Click the link below to complete payment in your browser, then click &quot;Confirm&quot;.
+                              </p>
+                              <a
+                                href={job.checkoutUrl}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="text-amber-800 underline text-xs break-all hover:text-amber-900"
+                              >
+                                {job.checkoutUrl}
+                              </a>
                             </div>
                           )}
                           {job.errors && job.errors.length > 0 && (
