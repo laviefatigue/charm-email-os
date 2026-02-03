@@ -1,6 +1,6 @@
 'use client';
 
-import { Globe, Inbox, AlertTriangle, Clock } from 'lucide-react';
+import { Globe, Inbox, AlertTriangle, Clock, Mail } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { DomainPhaseBadge } from './DomainPhaseBadge';
 import { HealthScoreRing } from './HealthScoreRing';
@@ -33,9 +33,24 @@ export function DomainHealthCard({ domain, onClick }: DomainHealthCardProps) {
           <Globe className="h-4 w-4 text-muted-foreground flex-shrink-0" />
           <span className="font-medium text-sm truncate">{domain.domain}</span>
         </div>
-        <Badge className={cn(stateColor.bg, stateColor.text, 'uppercase text-xs')}>
-          {domain.state}
-        </Badge>
+        <div className="flex items-center gap-1.5 flex-shrink-0">
+          {domain.infrastructureType && (
+            <Badge
+              variant="outline"
+              className={cn(
+                'text-[10px] px-1.5 py-0',
+                domain.infrastructureType === 'entra' && 'bg-blue-50 text-blue-700 border-blue-200',
+                domain.infrastructureType === 'google' && 'bg-red-50 text-red-700 border-red-200'
+              )}
+            >
+              <Mail className="h-2.5 w-2.5 mr-0.5" />
+              {domain.infrastructureType === 'entra' ? 'MS' : 'Gmail'}
+            </Badge>
+          )}
+          <Badge className={cn(stateColor.bg, stateColor.text, 'uppercase text-xs')}>
+            {domain.state}
+          </Badge>
+        </div>
       </div>
 
       {/* Main content */}

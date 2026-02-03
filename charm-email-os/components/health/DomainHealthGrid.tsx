@@ -1,6 +1,6 @@
 'use client';
 
-import { Globe, CheckCircle, AlertTriangle, XCircle } from 'lucide-react';
+import { Globe, CheckCircle, AlertTriangle, XCircle, Mail } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { DomainHealthCard } from './DomainHealthCard';
 import type { DomainHealthMetrics } from '@/lib/types/health';
@@ -14,6 +14,8 @@ export function DomainHealthGrid({ domains, onDomainClick }: DomainHealthGridPro
   const liveDomains = domains.filter((d) => d.state === 'live');
   const flaggedDomains = domains.filter((d) => d.state === 'flagged');
   const deadDomains = domains.filter((d) => d.state === 'dead');
+  const msDomains = domains.filter((d) => d.infrastructureType === 'entra');
+  const gmailDomains = domains.filter((d) => d.infrastructureType === 'google');
 
   // Sort: flagged first (need attention), then dead, then live
   const sortedDomains = [...flaggedDomains, ...deadDomains, ...liveDomains];
@@ -27,6 +29,19 @@ export function DomainHealthGrid({ domains, onDomainClick }: DomainHealthGridPro
             Domain Health
           </CardTitle>
           <div className="flex items-center gap-3 text-sm">
+            {msDomains.length > 0 && (
+              <span className="flex items-center gap-1 text-blue-600">
+                <Mail className="h-3.5 w-3.5" />
+                {msDomains.length} Microsoft
+              </span>
+            )}
+            {gmailDomains.length > 0 && (
+              <span className="flex items-center gap-1 text-red-500">
+                <Mail className="h-3.5 w-3.5" />
+                {gmailDomains.length} Gmail
+              </span>
+            )}
+            <span className="text-muted-foreground">|</span>
             <span className="flex items-center gap-1 text-green-600">
               <CheckCircle className="h-4 w-4" />
               {liveDomains.length} live

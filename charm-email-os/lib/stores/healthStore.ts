@@ -402,7 +402,9 @@ export const useHealthStore = create<HealthStore>((set, get) => ({
         value: t.value,
         threshold: t.threshold,
         detectedAt: new Date(t.detectedAt),
-        actionTaken: 'pending' as const,
+        retestAt: t.retestAt ? new Date(t.retestAt) : undefined,
+        resolvedAt: t.resolvedAt ? new Date(t.resolvedAt) : undefined,
+        actionTaken: (t.actionTaken || 'pending') as 'killed' | 'dismissed' | 'pending',
       }));
 
       // Map backup capacity
@@ -448,6 +450,7 @@ export const useHealthStore = create<HealthStore>((set, get) => ({
         liveInboxes: d.liveInboxes,
         deadInboxes: d.deadInboxes,
         warmingInboxes: d.warmingInboxes,
+        infrastructureType: d.infrastructureType ?? undefined,
         ageInDays: d.ageInDays,
         daysUntilRotation: d.daysUntilRotation,
         gmailReputation: d.gmailReputation as DomainHealthMetrics['gmailReputation'],
@@ -473,14 +476,50 @@ export const useHealthStore = create<HealthStore>((set, get) => ({
         riskLevel: c.riskLevel as CampaignHealthMetrics['riskLevel'],
       }));
 
+      // Map contamination sources
+      const contaminationSources: ListContaminationSource[] = (data.contaminationSources || []).map((s) => ({
+        id: s.id,
+        listName: s.listName,
+        campaignId: s.campaignId,
+        campaignName: s.campaignName,
+        totalLeads: s.totalLeads,
+        bouncedLeads: s.bouncedLeads,
+        bounceRate: s.bounceRate,
+        sourceType: s.sourceType as ListContaminationSource['sourceType'],
+        sourceProvider: s.sourceProvider ?? undefined,
+        importedAt: new Date(s.importedAt),
+        status: s.status as ListContaminationSource['status'],
+        inboxesAffected: s.inboxesAffected,
+        domainsAffected: s.domainsAffected,
+      }));
+
+      // Map ESP summaries
+      const espSummaries: ESPHealthSummary[] = (data.espSummaries || []).map((e) => ({
+        provider: e.provider as ESPHealthSummary['provider'],
+        reputation: e.reputation as ESPHealthSummary['reputation'],
+        reputationTrend: e.reputationTrend as ESPHealthSummary['reputationTrend'],
+        inboxPlacementRate: e.inboxPlacementRate,
+        spamPlacementRate: e.spamPlacementRate,
+        promotionsPlacementRate: e.promotionsPlacementRate ?? undefined,
+        spfPassing: e.spfPassing,
+        dkimPassing: e.dkimPassing,
+        dmarcPassing: e.dmarcPassing,
+        userReportedSpamRate: e.userReportedSpamRate ?? undefined,
+        ipReputation: (e.ipReputation ?? undefined) as ESPHealthSummary['ipReputation'],
+        complaintRate: e.complaintRate ?? undefined,
+        trapHits: e.trapHits ?? undefined,
+        filterResult: (e.filterResult ?? undefined) as ESPHealthSummary['filterResult'],
+        lastUpdated: new Date(e.lastUpdated),
+      }));
+
       set({
         overallSummary,
         killTriggers,
         backupCapacity,
         domainMetrics,
         campaignMetrics,
-        contaminationSources: [],
-        espSummaries: [],
+        contaminationSources,
+        espSummaries,
         isLoading: false,
         lastRefresh: new Date(),
       });

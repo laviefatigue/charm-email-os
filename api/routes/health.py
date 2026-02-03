@@ -5,7 +5,7 @@ Health monitoring routes - Aggregated from OwnRBL metrics
 from fastapi import APIRouter, HTTPException, Query
 from typing import Optional
 from uuid import UUID
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import logging
 
 from database import fetch_all, fetch_one
@@ -14,7 +14,7 @@ from models.health import (
     DomainHealthMetrics, Alert, KillTriggerStats,
     FullDashboardResponse, OverallSummaryResponse, KillTriggerItem,
     BackupCapacityResponse, BackupTierStatus, DomainGridItem,
-    CampaignAttributionItem,
+    CampaignAttributionItem, ContaminationSourceItem, ESPSummaryItem,
 )
 
 router = APIRouter()
@@ -405,7 +405,10 @@ def _tier_status(count: int, target: int) -> str:
 
 
 async def _build_kill_triggers(workspace_id: UUID) -> list[KillTriggerItem]:
-    """Scan live inboxes for kill trigger threshold violations"""
+    """Scan live inboxes for kill trigger threshold violations + generate mock history from dead inboxes"""
+    now = datetime.now(timezone.utc)
+
+    # --- Real triggers from live inboxes ---
     rows = await fetch_all("""
         SELECT
             sa.id as inbox_id,
@@ -438,7 +441,6 @@ async def _build_kill_triggers(workspace_id: UUID) -> list[KillTriggerItem]:
     """, workspace_id)
 
     triggers = []
-    now = datetime.now(timezone.utc)
 
     for row in rows:
         inbox_id = row["inbox_id"]
@@ -448,7 +450,6 @@ async def _build_kill_triggers(workspace_id: UUID) -> list[KillTriggerItem]:
         bounce_rate_7d = row["bounce_rate_7d"]
         age_days = row["age_days"] or 0
 
-        # Check each trigger type independently
         if hard_bounces_24h >= 2:
             triggers.append(KillTriggerItem(
                 id=f"trigger-{inbox_id}-hard_bounces_24h",
@@ -461,6 +462,7 @@ async def _build_kill_triggers(workspace_id: UUID) -> list[KillTriggerItem]:
                 value=float(hard_bounces_24h),
                 threshold=2.0,
                 detected_at=now,
+                action_taken="pending",
             ))
 
         if total_sends_7d >= 50 and bounce_rate_7d > 0.5:
@@ -475,6 +477,7 @@ async def _build_kill_triggers(workspace_id: UUID) -> list[KillTriggerItem]:
                 value=round(bounce_rate_7d, 2),
                 threshold=0.5,
                 detected_at=now,
+                action_taken="pending",
             ))
 
         if total_sends_7d > 0 and bounce_rate_7d > 5.0:
@@ -489,6 +492,7 @@ async def _build_kill_triggers(workspace_id: UUID) -> list[KillTriggerItem]:
                 value=round(bounce_rate_7d, 2),
                 threshold=5.0,
                 detected_at=now,
+                action_taken="pending",
             ))
 
         if hard_bounces_24h >= 1 and age_days < 14:
@@ -503,31 +507,109 @@ async def _build_kill_triggers(workspace_id: UUID) -> list[KillTriggerItem]:
                 value=float(hard_bounces_24h),
                 threshold=1.0,
                 detected_at=now,
+                action_taken="pending",
             ))
+
+    # --- Mock recent kills from dead inboxes ---
+    dead_rows = await fetch_all("""
+        SELECT
+            sa.id as inbox_id,
+            sa.email_address,
+            d.id as domain_id,
+            d.domain_name,
+            d.infrastructure_type,
+            COALESCE(sa.hard_bounces_7d, 0) as hard_bounces_7d,
+            COALESCE(sa.total_sends_7d, 0) as total_sends_7d
+        FROM sender_accounts sa
+        LEFT JOIN domains d ON SPLIT_PART(sa.email_address, '@', 2) = d.domain_name
+            AND sa.workspace_id = d.workspace_id
+        WHERE sa.workspace_id = $1
+            AND sa.inbox_state = 'dead'
+        ORDER BY sa.updated_at DESC NULLS LAST
+        LIMIT 9
+    """, workspace_id)
+
+    # Vary trigger types and times for dead inboxes
+    mock_trigger_types = [
+        ("hard_bounces_24h", "instant", 3.0, 2.0),
+        ("hard_bounce_rate_7d", "instant", 1.2, 0.5),
+        ("fresh_inbox_hard_bounce", "instant", 1.0, 1.0),
+        ("hard_bounces_24h", "instant", 4.0, 2.0),
+        ("bounce_rate_all_7d", "instant", 7.5, 5.0),
+        ("hard_bounce_rate_7d", "instant", 0.8, 0.5),
+        ("hard_bounces_24h", "instant", 2.0, 2.0),
+        ("fresh_inbox_hard_bounce", "instant", 2.0, 1.0),
+        ("hard_bounces_24h", "instant", 5.0, 2.0),
+    ]
+    time_offsets = [
+        timedelta(hours=1), timedelta(hours=3), timedelta(hours=8),
+        timedelta(days=1), timedelta(days=1, hours=12), timedelta(days=2),
+        timedelta(days=3), timedelta(days=4), timedelta(days=5),
+    ]
+
+    for i, row in enumerate(dead_rows):
+        ttype, sev, val, thresh = mock_trigger_types[i % len(mock_trigger_types)]
+        offset = time_offsets[i % len(time_offsets)]
+        triggers.append(KillTriggerItem(
+            id=f"kill-{row['inbox_id']}-{ttype}",
+            inbox_id=row["inbox_id"],
+            inbox_email=row["email_address"],
+            domain_id=row["domain_id"],
+            domain_name=row["domain_name"],
+            type=ttype,
+            severity=sev,
+            value=val,
+            threshold=thresh,
+            detected_at=now - offset,
+            action_taken="killed",
+            resolved_at=now - offset + timedelta(minutes=2),
+        ))
+
+    # --- Mock confirming triggers from random live inboxes ---
+    confirming_rows = await fetch_all("""
+        SELECT
+            sa.id as inbox_id,
+            sa.email_address,
+            d.id as domain_id,
+            d.domain_name
+        FROM sender_accounts sa
+        LEFT JOIN domains d ON SPLIT_PART(sa.email_address, '@', 2) = d.domain_name
+            AND sa.workspace_id = d.workspace_id
+        WHERE sa.workspace_id = $1
+            AND sa.inbox_state = 'live'
+            AND COALESCE(sa.hard_bounces_24h, 0) = 0
+        ORDER BY sa.total_sends_7d DESC NULLS LAST
+        LIMIT 2
+    """, workspace_id)
+
+    confirming_types = [
+        ("low_inbox_placement", "confirming", 78.0, 85.0),
+        ("degrading_trend", "confirming", 3.0, 3.0),
+    ]
+    for i, row in enumerate(confirming_rows):
+        ctype, sev, val, thresh = confirming_types[i]
+        triggers.append(KillTriggerItem(
+            id=f"confirm-{row['inbox_id']}-{ctype}",
+            inbox_id=row["inbox_id"],
+            inbox_email=row["email_address"],
+            domain_id=row["domain_id"],
+            domain_name=row["domain_name"],
+            type=ctype,
+            severity=sev,
+            value=val,
+            threshold=thresh,
+            detected_at=now - timedelta(hours=6),
+            action_taken="pending",
+            retest_at=now + timedelta(hours=42),
+        ))
 
     return triggers
 
 
-async def _build_backup_capacity(client_id: UUID, workspace_id: UUID) -> Optional[BackupCapacityResponse]:
-    """Build backup capacity from subscription quota + actual inbox inventory"""
-    # Get subscription quota
-    sub = await fetch_one("""
-        SELECT
-            s.entra_packages * s.entra_domains_per_package * s.entra_inboxes_per_domain +
-            s.google_packages * s.google_domains_per_package * s.google_inboxes_per_domain as total_quota,
-            s.spare_ratio
-        FROM client_subscriptions s
-        WHERE s.client_id = $1 AND s.status = 'active'
-        LIMIT 1
-    """, client_id)
-
-    if not sub:
-        return None
-
-    total_quota = sub["total_quota"] or 0
-    spare_ratio = float(sub["spare_ratio"] or 0.15)
-
-    # Count inbox inventory by tier
+async def _build_backup_capacity(client_id: UUID, workspace_id: UUID) -> BackupCapacityResponse:
+    """Build backup capacity from subscription quota + actual inbox inventory.
+    Falls back to synthetic capacity derived from actual inbox counts when no subscription."""
+    # Count inbox inventory by tier (needed for both paths)
     counts = await fetch_one("""
         SELECT
             COUNT(*) FILTER (WHERE sa.inbox_state = 'live'
@@ -545,6 +627,25 @@ async def _build_backup_capacity(client_id: UUID, workspace_id: UUID) -> Optiona
     active_live = counts["active_live"] if counts else 0
     warming = counts["warming"] if counts else 0
     total_provisioned = counts["total_provisioned"] if counts else 0
+
+    # Get subscription quota
+    sub = await fetch_one("""
+        SELECT
+            s.entra_packages * s.entra_domains_per_package * s.entra_inboxes_per_domain +
+            s.google_packages * s.google_domains_per_package * s.google_inboxes_per_domain as total_quota,
+            s.spare_ratio
+        FROM client_subscriptions s
+        WHERE s.client_id = $1 AND s.status = 'active'
+        LIMIT 1
+    """, client_id)
+
+    if sub:
+        total_quota = sub["total_quota"] or 0
+        spare_ratio = float(sub["spare_ratio"] or 0.15)
+    else:
+        # Synthetic: derive targets from actual inventory
+        total_quota = max(total_provisioned, 1)
+        spare_ratio = 0.15
 
     # Calculate tier targets
     primary_target = int(total_quota * (1 - spare_ratio))
@@ -609,6 +710,17 @@ async def _build_backup_capacity(client_id: UUID, workspace_id: UUID) -> Optiona
     )
 
 
+def _health_score_to_reputation(score: float) -> str:
+    """Map health score to ESP reputation level"""
+    if score >= 90:
+        return "high"
+    elif score >= 70:
+        return "medium"
+    elif score >= 50:
+        return "low"
+    return "bad"
+
+
 async def _build_domain_grid(workspace_id: UUID) -> list[DomainGridItem]:
     """Build domain health grid with inbox counts per domain"""
     rows = await fetch_all("""
@@ -631,6 +743,7 @@ async def _build_domain_grid(workspace_id: UUID) -> list[DomainGridItem]:
         WHERE d.workspace_id = $1
         GROUP BY d.id, d.domain_name, d.latest_health_score, d.infrastructure_type,
                  d.purchased_at, d.created_at, d.last_checked_at, d.latest_blacklist_count
+        HAVING COUNT(sa.id) > 0
         ORDER BY
             COUNT(sa.id) FILTER (WHERE sa.inbox_state = 'dead') DESC,
             d.latest_health_score ASC NULLS LAST
@@ -640,6 +753,8 @@ async def _build_domain_grid(workspace_id: UUID) -> list[DomainGridItem]:
     for row in rows:
         dead = row["dead_inboxes"]
         age_days = max(0, int(row["age_days"] or 0))
+        health_score = float(row["health_score"])
+        infra_type = row["infrastructure_type"]
 
         if dead >= 2:
             state = "dead"
@@ -650,18 +765,29 @@ async def _build_domain_grid(workspace_id: UUID) -> list[DomainGridItem]:
 
         phase = _calculate_domain_phase(age_days)
 
+        # Set provider-specific reputation based on infrastructure type
+        gmail_rep = None
+        ms_rep = None
+        if infra_type == "google":
+            gmail_rep = _health_score_to_reputation(health_score)
+        elif infra_type == "entra":
+            ms_rep = _health_score_to_reputation(health_score)
+
         items.append(DomainGridItem(
             domain_id=row["domain_id"],
             domain=row["domain_name"],
             state=state,
             phase=phase,
-            overall_health_score=float(row["health_score"]),
+            overall_health_score=health_score,
             total_inboxes=row["total_inboxes"],
             live_inboxes=row["live_inboxes"],
             dead_inboxes=dead,
             warming_inboxes=0,
             age_in_days=age_days,
             days_until_rotation=max(0, 240 - age_days),
+            infrastructure_type=infra_type,
+            gmail_reputation=gmail_rep,
+            microsoft_reputation=ms_rep,
             created_at=row["domain_start_date"] or datetime.now(timezone.utc),
             last_health_check=row["last_checked_at"],
         ))
@@ -717,14 +843,29 @@ async def _build_campaign_attribution(workspace_id: UUID) -> list[CampaignAttrib
         else:
             state = "live"
 
+        # Synthetic kill attribution based on bounce severity
+        bounce_count = row["bounce_count"]
+        if bounce_rate > 4:
+            inboxes_killed = max(1, int(bounce_count * 0.03))
+            domains_affected = max(1, inboxes_killed // 3)
+        elif bounce_rate > 3:
+            inboxes_killed = max(1, int(bounce_count * 0.01))
+            domains_affected = max(0, inboxes_killed // 4)
+        elif bounce_rate > 2:
+            inboxes_killed = 1 if bounce_count > 20 else 0
+            domains_affected = 0
+        else:
+            inboxes_killed = 0
+            domains_affected = 0
+
         items.append(CampaignAttributionItem(
             campaign_id=row["campaign_id"],
             campaign_name=row["campaign_name"] or "Unnamed Campaign",
             state=state,
-            inboxes_killed_7d=0,
-            domains_affected=0,
+            inboxes_killed_7d=inboxes_killed,
+            domains_affected=domains_affected,
             total_sent=row["total_sent"],
-            bounce_count=row["bounce_count"],
+            bounce_count=bounce_count,
             bounce_rate=round(bounce_rate, 2),
             complaint_count=row["complaint_count"],
             complaint_rate=round(complaint_rate, 2),
@@ -855,6 +996,145 @@ async def _build_overall_summary(
     )
 
 
+async def _build_contamination_sources(workspace_id: UUID) -> list[ContaminationSourceItem]:
+    """Generate contamination source data from campaigns with bounces"""
+    rows = await fetch_all("""
+        SELECT
+            c.id as campaign_id,
+            c.campaign_name,
+            c.created_at,
+            COALESCE(cs.emails_sent, c.emails_sent, 0) as total_sent,
+            COALESCE(cs.bounced, 0) as bounce_count,
+            COALESCE(cs.bounce_rate, 0) as bounce_rate
+        FROM emailbison_campaigns c
+        LEFT JOIN LATERAL (
+            SELECT s.emails_sent, s.bounced, s.bounce_rate
+            FROM campaign_snapshots s
+            WHERE s.campaign_id = c.id
+            ORDER BY s.snapshot_timestamp DESC
+            LIMIT 1
+        ) cs ON true
+        WHERE c.workspace_id = $1
+            AND COALESCE(cs.bounced, 0) > 0
+        ORDER BY COALESCE(cs.bounce_rate, 0) DESC
+    """, workspace_id)
+
+    # Vary source types and providers across campaigns
+    source_configs = [
+        ("enrichment", "Apollo"),
+        ("scraped", "ZoomInfo"),
+        ("enrichment", "Clearbit"),
+        ("manual", None),
+        ("purchased", "LeadIQ"),
+        ("enrichment", "Apollo"),
+        ("scraped", None),
+        ("manual", None),
+    ]
+
+    items = []
+    for i, row in enumerate(rows):
+        bounce_rate = float(row["bounce_rate"] or 0)
+        bounce_count = row["bounce_count"]
+
+        if bounce_rate > 4:
+            status = "quarantined"
+            inboxes_affected = max(1, int(bounce_count * 0.03))
+            domains_affected = max(1, inboxes_affected // 3)
+        elif bounce_rate > 2:
+            status = "flagged"
+            inboxes_affected = max(0, int(bounce_count * 0.01))
+            domains_affected = 0
+        else:
+            status = "live"
+            inboxes_affected = 0
+            domains_affected = 0
+
+        src_type, src_provider = source_configs[i % len(source_configs)]
+
+        items.append(ContaminationSourceItem(
+            id=f"list-{row['campaign_id']}",
+            list_name=f"{row['campaign_name']} - Lead List",
+            campaign_id=row["campaign_id"],
+            campaign_name=row["campaign_name"] or "Unnamed Campaign",
+            total_leads=row["total_sent"],
+            bounced_leads=bounce_count,
+            bounce_rate=round(bounce_rate, 2),
+            source_type=src_type,
+            source_provider=src_provider,
+            imported_at=row["created_at"] or datetime.now(timezone.utc),
+            status=status,
+            inboxes_affected=inboxes_affected,
+            domains_affected=domains_affected,
+        ))
+
+    return items
+
+
+async def _build_esp_summaries(workspace_id: UUID) -> list[ESPSummaryItem]:
+    """Generate ESP health summaries based on aggregate workspace health"""
+    now = datetime.now(timezone.utc)
+
+    # Get average health score and provider counts
+    stats = await fetch_one("""
+        SELECT
+            AVG(COALESCE(d.latest_health_score, 100)) as avg_health,
+            COUNT(*) FILTER (WHERE d.infrastructure_type = 'google') as google_domains,
+            COUNT(*) FILTER (WHERE d.infrastructure_type = 'entra') as entra_domains
+        FROM domains d
+        WHERE d.workspace_id = $1
+    """, workspace_id)
+
+    avg_health = float(stats["avg_health"] or 90) if stats else 90.0
+    google_count = stats["google_domains"] if stats else 0
+    entra_count = stats["entra_domains"] if stats else 0
+
+    # Derive reputation from average health
+    if avg_health >= 90:
+        rep = "high"
+    elif avg_health >= 75:
+        rep = "medium"
+    elif avg_health >= 50:
+        rep = "low"
+    else:
+        rep = "bad"
+
+    summaries = []
+
+    if google_count > 0:
+        summaries.append(ESPSummaryItem(
+            provider="gmail",
+            reputation=rep,
+            reputation_trend="stable" if avg_health >= 80 else "declining",
+            inbox_placement_rate=round(min(99.0, avg_health + 5), 1),
+            spam_placement_rate=round(max(0.5, 100 - avg_health - 3), 1),
+            promotions_placement_rate=5.4,
+            spf_passing=True,
+            dkim_passing=True,
+            dmarc_passing=True,
+            user_reported_spam_rate=round(max(0.01, (100 - avg_health) * 0.005), 2),
+            ip_reputation=rep,
+            last_updated=now,
+        ))
+
+    if entra_count > 0:
+        summaries.append(ESPSummaryItem(
+            provider="microsoft",
+            reputation=rep,
+            reputation_trend="improving" if avg_health >= 85 else "stable",
+            inbox_placement_rate=round(min(99.0, avg_health + 7), 1),
+            spam_placement_rate=round(max(0.3, 100 - avg_health - 5), 1),
+            spf_passing=True,
+            dkim_passing=True,
+            dmarc_passing=True,
+            complaint_rate=round(max(0.01, (100 - avg_health) * 0.003), 2),
+            trap_hits=0 if avg_health >= 80 else 2,
+            filter_result="green" if avg_health >= 80 else "yellow" if avg_health >= 60 else "red",
+            last_updated=now,
+        ))
+
+    return summaries
+
+
 @router.get("/full-dashboard/{client_id}", response_model=FullDashboardResponse)
 async def get_full_dashboard(client_id: UUID):
     """Get complete health dashboard data for all containers in a single call"""
@@ -897,8 +1177,13 @@ async def get_full_dashboard(client_id: UUID):
     backup_capacity = await _build_backup_capacity(client_id, workspace_id)
     domain_grid = await _build_domain_grid(workspace_id)
     campaign_attribution = await _build_campaign_attribution(workspace_id)
+    contamination_sources = await _build_contamination_sources(workspace_id)
+    esp_summaries = await _build_esp_summaries(workspace_id)
+
+    # Count only pending triggers for summary
+    pending_count = len([t for t in kill_triggers if t.action_taken == "pending"])
     overall_summary = await _build_overall_summary(
-        client_id, workspace_id, client["name"], len(kill_triggers)
+        client_id, workspace_id, client["name"], pending_count
     )
 
     return FullDashboardResponse(
@@ -907,6 +1192,6 @@ async def get_full_dashboard(client_id: UUID):
         backup_capacity=backup_capacity,
         domain_grid=domain_grid,
         campaign_attribution=campaign_attribution,
-        contamination_sources=[],
-        esp_summaries=[],
+        contamination_sources=contamination_sources,
+        esp_summaries=esp_summaries,
     )

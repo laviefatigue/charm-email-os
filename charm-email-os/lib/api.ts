@@ -2200,6 +2200,9 @@ export const healthApi = {
         value: number;
         threshold: number;
         detectedAt: string;
+        actionTaken: string | null;
+        resolvedAt: string | null;
+        retestAt: string | null;
       }>;
       backupCapacity: {
         primary: { tier: string; label: string; count: number; targetCount: number; percentage: number; status: string };
@@ -2222,6 +2225,7 @@ export const healthApi = {
         warmingInboxes: number;
         ageInDays: number;
         daysUntilRotation: number;
+        infrastructureType: string | null;
         gmailReputation: string | null;
         microsoftReputation: string | null;
         lastInboxPlacement: number | null;
@@ -2242,8 +2246,38 @@ export const healthApi = {
         complaintRate: number;
         riskLevel: string;
       }>;
-      contaminationSources: unknown[];
-      espSummaries: unknown[];
+      contaminationSources: Array<{
+        id: string;
+        listName: string;
+        campaignId: string;
+        campaignName: string;
+        totalLeads: number;
+        bouncedLeads: number;
+        bounceRate: number;
+        sourceType: string;
+        sourceProvider: string | null;
+        importedAt: string;
+        status: string;
+        inboxesAffected: number;
+        domainsAffected: number;
+      }>;
+      espSummaries: Array<{
+        provider: string;
+        reputation: string;
+        reputationTrend: string;
+        inboxPlacementRate: number;
+        spamPlacementRate: number;
+        promotionsPlacementRate: number | null;
+        spfPassing: boolean;
+        dkimPassing: boolean;
+        dmarcPassing: boolean;
+        userReportedSpamRate: number | null;
+        ipReputation: string | null;
+        complaintRate: number | null;
+        trapHits: number | null;
+        filterResult: string | null;
+        lastUpdated: string;
+      }>;
     }>(response);
   },
 };

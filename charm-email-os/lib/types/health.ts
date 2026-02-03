@@ -123,6 +123,9 @@ export interface DomainHealthMetrics {
   deadInboxes: number;
   warmingInboxes: number;
 
+  // Provider type
+  infrastructureType?: 'entra' | 'google' | string;
+
   // ESP reputation (mock initially)
   gmailReputation?: 'high' | 'medium' | 'low' | 'bad';
   microsoftReputation?: 'high' | 'medium' | 'low' | 'bad';

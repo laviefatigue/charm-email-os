@@ -166,6 +166,9 @@ class KillTriggerItem(BaseModel):
     value: float
     threshold: float
     detected_at: datetime
+    action_taken: Optional[str] = None  # killed, dismissed, pending
+    resolved_at: Optional[datetime] = None
+    retest_at: Optional[datetime] = None
 
 
 class BackupTierStatus(BaseModel):
@@ -202,6 +205,7 @@ class DomainGridItem(BaseModel):
     warming_inboxes: int = 0
     age_in_days: int
     days_until_rotation: int
+    infrastructure_type: Optional[str] = None  # entra, google
     gmail_reputation: Optional[str] = None
     microsoft_reputation: Optional[str] = None
     last_inbox_placement: Optional[float] = None
@@ -244,6 +248,44 @@ class OverallSummaryResponse(BaseModel):
     last_refresh: datetime
 
 
+class ContaminationSourceItem(BaseModel):
+    """Lead list contamination source data"""
+    id: str
+    list_name: str
+    campaign_id: UUID
+    campaign_name: str
+    total_leads: int
+    bounced_leads: int
+    bounce_rate: float
+    source_type: str  # enrichment, scraped, manual, purchased, unknown
+    source_provider: Optional[str] = None  # Apollo, ZoomInfo, etc.
+    imported_at: datetime
+    status: str  # live, quarantined, flagged
+    inboxes_affected: int = 0
+    domains_affected: int = 0
+
+
+class ESPSummaryItem(BaseModel):
+    """ESP health summary data"""
+    provider: str  # gmail, microsoft
+    reputation: str  # high, medium, low, bad
+    reputation_trend: str  # improving, stable, declining
+    inbox_placement_rate: float
+    spam_placement_rate: float
+    promotions_placement_rate: Optional[float] = None  # Gmail only
+    spf_passing: bool = True
+    dkim_passing: bool = True
+    dmarc_passing: bool = True
+    # Gmail-specific
+    user_reported_spam_rate: Optional[float] = None
+    ip_reputation: Optional[str] = None
+    # Microsoft-specific
+    complaint_rate: Optional[float] = None
+    trap_hits: Optional[int] = None
+    filter_result: Optional[str] = None  # green, yellow, red
+    last_updated: datetime
+
+
 class FullDashboardResponse(BaseModel):
     """Composite response for the full health dashboard"""
     overall_summary: OverallSummaryResponse
@@ -251,5 +293,5 @@ class FullDashboardResponse(BaseModel):
     backup_capacity: Optional[BackupCapacityResponse] = None
     domain_grid: list[DomainGridItem]
     campaign_attribution: list[CampaignAttributionItem]
-    contamination_sources: list = []
-    esp_summaries: list = []
+    contamination_sources: list[ContaminationSourceItem] = []
+    esp_summaries: list[ESPSummaryItem] = []
