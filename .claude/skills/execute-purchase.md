@@ -120,23 +120,60 @@ After entering all domains, proceed to the next step (click Next/Continue/Save).
 
 ### Step 6: Basic Configuration (Settings)
 
-This step has multiple sections. Fill in:
+This step configures the forwarding domain and company name in "Step 1) Basic Configuration".
 
-**Forwarding Domain:**
-- Find the forwarding domain input field
-- Fill with `forwarding_domain` value
-
-**Company Name:**
-- Find the company name input field
-- Fill with `company_name` value
-
-**Save the configuration:**
-- Click the "Save Basic Configuration" button (orange button at bottom of Step 1 section)
-- Wait for the form to indicate success (Step 2 should become enabled/expanded)
+**IMPORTANT: Wait for the page to fully load before interacting with form fields.**
 
 ```
+Call: wait_for_text("What URL should we forward your domains to?", timeout_ms=10000)
+Call: wait_for_text("What Company/Client is this for?", timeout_ms=5000)
+```
+
+**Step 6a: Fill Forwarding Domain**
+
+The first input field asks "What URL should we forward your domains to?" - fill it with `forwarding_domain`.
+
+```
+Call: fill("input[placeholder*='example.com']", forwarding_domain)
+```
+
+**Step 6b: Fill Company Name**
+
+The second input field asks "What Company/Client is this for?" - fill it with `company_name`.
+
+```
+Call: fill("input[placeholder*='Acme Corp']", company_name)
+```
+
+**Step 6c: Verify fields are filled**
+
+Before saving, take a screenshot to verify the fields contain the expected values:
+```
+Call: screenshot()
+```
+
+If the fields appear empty in the screenshot, try filling them again using alternative selectors:
+```
+Call: fill("input[type='text']:nth-of-type(1)", forwarding_domain)
+Call: fill("input[type='text']:nth-of-type(2)", company_name)
+```
+
+**Step 6d: Save Basic Configuration**
+
+Click the orange "Save Basic Configuration" button at the bottom of Step 1:
+```
+Call: click("button:has-text('Save Basic Configuration')")
 Call: wait_for_text("Connect Your Email Automation Tool", timeout_ms=10000)
-Call: log_step(job_id, "basic_config", notes="Filled forwarding domain and company name, saved configuration")
+```
+
+Wait for Step 1 to collapse (shows checkmark) and Step 2 to expand. If Step 2 does not expand:
+```
+Call: fail_job(job_id, "Basic Configuration not saved - Step 2 did not expand", "basic_config", "config")
+```
+STOP EXECUTION.
+
+```
+Call: log_step(job_id, "basic_config", notes="Filled forwarding domain ({forwarding_domain}) and company name ({company_name}), saved configuration")
 ```
 
 ### Step 7: Email Tool Configuration (Bison) - CRITICAL STEP
