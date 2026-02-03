@@ -1679,7 +1679,7 @@ async def execute_smart_order(
                 domain_ids, domain_names, orders_total, order_count,
                 override_age_check, custom_purchase,
                 worker_mode, company_name, forwarding_domain,
-                bison_workspace_name,
+                bison_workspace_name, bison_url,
                 sender_names, use_saved_payment,
                 request_data,
                 created_at
@@ -1688,7 +1688,7 @@ async def execute_smart_order(
                 $5, $6, $7, $8,
                 $9, $10,
                 'worker', $11, $12,
-                $13,
+                $13, 'https://spellcast.hirecharm.com',
                 $14, TRUE,
                 $15,
                 NOW()
