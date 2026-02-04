@@ -1654,9 +1654,11 @@ async def execute_smart_order(
         pre_generated = onboarding_data.get("preGeneratedSenderNames", []) if onboarding_data else []
         sender_names_json = pre_generated[:10] if pre_generated else []
 
-        # Calculate order count
+        # Calculate order count and provider-specific order counts
         domains_per_order = 2 if request.provider_type == "entra" else 5
         order_count = len(request.domain_ids) // domains_per_order
+        entra_orders_val = order_count if request.provider_type == "entra" else 0
+        google_orders_val = order_count if request.provider_type == "google" else 0
 
         # Check for domain lock conflicts before creating the job (read-only check)
         lock_conflicts = await _check_domain_lock_conflicts(request.domain_ids)
@@ -1676,7 +1678,8 @@ async def execute_smart_order(
             """
             INSERT INTO inbox_purchase_jobs (
                 id, client_id, workspace_id, status, provider_type,
-                domain_ids, domain_names, orders_total, order_count,
+                domain_ids, domain_names, entra_orders, google_orders,
+                orders_total, order_count,
                 override_age_check, custom_purchase,
                 worker_mode, company_name, forwarding_domain,
                 bison_workspace_name, bison_url,
@@ -1687,10 +1690,11 @@ async def execute_smart_order(
                 $1, $2, $3, 'pending', $4,
                 $5, $6, $7, $8,
                 $9, $10,
-                'worker', $11, $12,
-                $13, 'https://spellcast.hirecharm.com',
-                $14, TRUE,
-                $15,
+                $11, $12,
+                'worker', $13, $14,
+                $15, 'https://spellcast.hirecharm.com',
+                $16, TRUE,
+                $17,
                 NOW()
             )
             """,
@@ -1700,6 +1704,8 @@ async def execute_smart_order(
             request.provider_type,
             request.domain_ids,
             domain_names,
+            entra_orders_val,
+            google_orders_val,
             order_count,
             order_count,
             request.override_age_check,

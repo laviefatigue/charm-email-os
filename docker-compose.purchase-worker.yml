@@ -15,7 +15,6 @@ services:
       - POSTGRES_USER=${POSTGRES_USER}
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
       - POLL_INTERVAL=${POLL_INTERVAL:-10}
-      - CLAUDE_ACCOUNT=${CLAUDE_ACCOUNT:-}
       - JOB_TIMEOUT=${JOB_TIMEOUT:-600}
       - JOB_COOLDOWN=${JOB_COOLDOWN:-30}
       - ALERT_WEBHOOK_URL=${ALERT_WEBHOOK_URL:-}
@@ -25,19 +24,9 @@ services:
       - BISON_PASSWORD=${BISON_PASSWORD}
       - BISON_URL=${BISON_URL:-https://spellcast.hirecharm.com}
       - EMAILBISON_API_KEY=${EMAILBISON_API_KEY}
-      - STRIPE_CARD_NUMBER=${STRIPE_CARD_NUMBER:-}
-      - STRIPE_CARD_EXP=${STRIPE_CARD_EXP:-}
-      - STRIPE_CARD_CVC=${STRIPE_CARD_CVC:-}
-      - STRIPE_CARD_ZIP=${STRIPE_CARD_ZIP:-}
-    volumes:
-      - claude-credentials-purchase:/home/claude/.claude
     healthcheck:
       test: ["CMD", "pgrep", "-f", "python3.*purchase_worker.py"]
       interval: 30s
       timeout: 10s
       start_period: 10s
       retries: 3
-
-volumes:
-  claude-credentials-purchase:
-    driver: local
