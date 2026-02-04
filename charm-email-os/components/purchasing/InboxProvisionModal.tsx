@@ -36,13 +36,15 @@ import {
   Zap,
   XCircle,
   RefreshCw,
+  CreditCard,
+  ExternalLink,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { inboxProvisioningApi } from '@/lib/api';
 import type { SmartOrderPreview, InfrastructureType } from '@/lib/types';
 
 // Job status types
-type JobStatus = 'pending' | 'executing' | 'completed' | 'failed';
+type JobStatus = 'pending' | 'executing' | 'processing' | 'completed' | 'failed' | 'awaiting_checkout';
 
 interface JobState {
   jobId: string;
@@ -54,6 +56,7 @@ interface JobState {
   errors: string[];
   startedAt?: string;
   completedAt?: string;
+  checkoutUrl?: string;
 }
 
 interface InboxProvisionModalProps {
@@ -160,10 +163,11 @@ export function InboxProvisionModal({
         errors: status.errors || [],
         startedAt: status.startedAt,
         completedAt: status.completedAt,
+        checkoutUrl: status.checkoutUrl,
       });
 
-      // Stop polling if job is complete or failed
-      if (status.status === 'completed' || status.status === 'failed') {
+      // Stop polling if job is complete, failed, or awaiting manual checkout
+      if (status.status === 'completed' || status.status === 'failed' || status.status === 'awaiting_checkout') {
         setIsPolling(false);
         if (pollingRef.current) {
           clearInterval(pollingRef.current);
@@ -173,6 +177,8 @@ export function InboxProvisionModal({
         if (status.status === 'completed') {
           toast.success(`Successfully provisioned ${status.totalInboxes} inboxes!`);
           onSuccess();
+        } else if (status.status === 'awaiting_checkout') {
+          toast.info('Order submitted! Complete payment to finish.');
         } else {
           toast.error('Purchase failed. See details below.');
         }
@@ -241,7 +247,7 @@ export function InboxProvisionModal({
   };
 
   const handleClose = () => {
-    // Only allow closing if not executing
+    // Allow closing if not actively executing/polling, or if awaiting manual checkout
     if (!isExecuting && !isPolling) {
       onOpenChange(false);
     }
@@ -259,11 +265,14 @@ export function InboxProvisionModal({
     switch (status) {
       case 'pending':
       case 'executing':
+      case 'processing':
         return <Loader2 className="h-5 w-5 animate-spin text-blue-500" />;
       case 'completed':
         return <CheckCircle2 className="h-5 w-5 text-green-500" />;
       case 'failed':
         return <XCircle className="h-5 w-5 text-red-500" />;
+      case 'awaiting_checkout':
+        return <CreditCard className="h-5 w-5 text-amber-500" />;
     }
   };
 
@@ -272,11 +281,14 @@ export function InboxProvisionModal({
       case 'pending':
         return 'bg-yellow-100 text-yellow-800';
       case 'executing':
+      case 'processing':
         return 'bg-blue-100 text-blue-800';
       case 'completed':
         return 'bg-green-100 text-green-800';
       case 'failed':
         return 'bg-red-100 text-red-800';
+      case 'awaiting_checkout':
+        return 'bg-amber-100 text-amber-800';
     }
   };
 
@@ -296,9 +308,10 @@ export function InboxProvisionModal({
             {getStatusIcon(jobState.status)}
             <span className="font-medium">
               {jobState.status === 'pending' && 'Preparing...'}
-              {jobState.status === 'executing' && 'Processing...'}
+              {(jobState.status === 'executing' || jobState.status === 'processing') && 'Processing...'}
               {jobState.status === 'completed' && 'Complete!'}
               {jobState.status === 'failed' && 'Failed'}
+              {jobState.status === 'awaiting_checkout' && 'Awaiting Payment'}
             </span>
           </div>
           <Badge className={getStatusColor(jobState.status)}>
@@ -307,7 +320,7 @@ export function InboxProvisionModal({
         </div>
 
         {/* Progress bar */}
-        {(jobState.status === 'pending' || jobState.status === 'executing') && (
+        {(jobState.status === 'pending' || jobState.status === 'executing' || jobState.status === 'processing') && (
           <div className="space-y-2">
             <Progress value={progress} className="h-2" />
             <div className="flex justify-between text-xs text-muted-foreground">
@@ -321,12 +334,39 @@ export function InboxProvisionModal({
         {jobState.currentStep && (
           <div className="rounded-lg border bg-muted/30 p-3">
             <div className="flex items-center gap-2 text-sm">
-              {(jobState.status === 'pending' || jobState.status === 'executing') && (
+              {(jobState.status === 'pending' || jobState.status === 'executing' || jobState.status === 'processing') && (
                 <Loader2 className="h-3 w-3 animate-spin" />
               )}
               <span className="text-muted-foreground">{jobState.currentStep}</span>
             </div>
           </div>
+        )}
+
+        {/* Awaiting checkout - manual Stripe payment */}
+        {jobState.status === 'awaiting_checkout' && (
+          <Card className="border-amber-200 bg-amber-50">
+            <CardContent className="pt-4 space-y-3">
+              <div className="flex items-center gap-2 text-amber-700">
+                <CreditCard className="h-5 w-5" />
+                <span className="font-medium">Payment Required</span>
+              </div>
+              <p className="text-sm text-amber-700">
+                Order submitted successfully. Complete payment via Stripe to finish provisioning.
+              </p>
+              {jobState.checkoutUrl && (
+                <Button
+                  className="w-full"
+                  onClick={() => window.open(jobState.checkoutUrl, '_blank')}
+                >
+                  <ExternalLink className="h-4 w-4 mr-2" />
+                  Open Stripe Checkout
+                </Button>
+              )}
+              <p className="text-xs text-muted-foreground">
+                After payment, confirm via the Purchase Jobs table to complete the order.
+              </p>
+            </CardContent>
+          </Card>
         )}
 
         {/* Success details */}

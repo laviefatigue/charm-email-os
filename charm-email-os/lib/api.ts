@@ -2531,6 +2531,8 @@ export const inboxProvisioningApi = {
     startedAt?: string;
     completedAt?: string;
     errors: string[];
+    errorType?: string;
+    checkoutUrl?: string;
   }> {
     const response = await fetchApi<Record<string, unknown>>(
       `/api/inbox-purchasing/status/${jobId}`
@@ -2546,6 +2548,8 @@ export const inboxProvisioningApi = {
       startedAt?: string;
       completedAt?: string;
       errors: string[];
+      errorType?: string;
+      checkoutUrl?: string;
     }>(response);
   },
 

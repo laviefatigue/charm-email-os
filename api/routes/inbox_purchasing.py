@@ -262,6 +262,7 @@ async def _get_job_from_db(job_id: str) -> Optional[dict]:
         "created_at": job.get("created_at"),
         "results": results or [],
         "errors": job.get("errors") or [],
+        "error_type": job.get("error_type"),
         "request_data": request_data,
         "override_age_check": job.get("override_age_check", False),
         "custom_purchase": job.get("custom_purchase", False),
