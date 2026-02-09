@@ -65,7 +65,7 @@ class EmailBisonService:
             summary = await bison.get_workspace_summary("Charm")
     """
 
-    BASE_URL = "https://spellcast.hirecharm.com/api"
+    BASE_URL = "https://spellcast.hirecharm.com"
 
     def __init__(
         self,
@@ -81,10 +81,10 @@ class EmailBisonService:
         """
         self.api_key = api_key or os.environ.get("EMAILBISON_API_KEY", "")
         self.base_url = base_url or os.environ.get("EMAILBISON_API_URL", self.BASE_URL)
-        if self.base_url and not self.base_url.endswith("/api"):
-            self.base_url = f"{self.base_url.rstrip('/')}/api"
+        self.base_url = self.base_url.rstrip("/")
 
         self._client: Optional[httpx.AsyncClient] = None
+        self._workspace_id: Optional[int] = None
 
     async def __aenter__(self):
         await self._ensure_client()
@@ -111,6 +111,37 @@ class EmailBisonService:
             await self._client.aclose()
             self._client = None
 
+    async def _get_workspace_id(self, workspace_name: str) -> Optional[int]:
+        """Get workspace ID by name from the API."""
+        try:
+            response = await self._client.get(f"{self.base_url}/api/workspaces/v1.1")
+            response.raise_for_status()
+            data = response.json()
+            workspaces = data.get("data", [])
+
+            for ws in workspaces:
+                if ws.get("name", "").lower() == workspace_name.lower():
+                    return ws.get("id")
+
+            return None
+        except Exception as e:
+            logger.error(f"Failed to get workspace list: {e}")
+            return None
+
+    async def _switch_workspace(self, workspace_id: int) -> bool:
+        """Switch to a specific workspace context."""
+        try:
+            response = await self._client.post(
+                f"{self.base_url}/api/workspaces/v1.1/switch-workspace",
+                json={"team_id": workspace_id}
+            )
+            response.raise_for_status()
+            self._workspace_id = workspace_id
+            return True
+        except Exception as e:
+            logger.error(f"Failed to switch workspace: {e}")
+            return False
+
     async def get_workspace_summary(self, workspace_name: str) -> WorkspaceHealthSummary:
         """
         Get real-time health summary for a workspace.
@@ -131,27 +162,47 @@ class EmailBisonService:
         await self._ensure_client()
 
         try:
-            # Get all inboxes for the workspace
-            response = await self._client.get(
-                f"{self.base_url}/inboxes",
-                params={"workspace_name": workspace_name}
-            )
-
-            if response.status_code == 404:
+            # Step 1: Find workspace ID by name
+            workspace_id = await self._get_workspace_id(workspace_name)
+            if workspace_id is None:
                 return WorkspaceHealthSummary(
                     workspace_name=workspace_name,
                     error=f"Workspace '{workspace_name}' not found"
                 )
 
-            response.raise_for_status()
-            data = response.json()
+            # Step 2: Switch to that workspace
+            switched = await self._switch_workspace(workspace_id)
+            if not switched:
+                return WorkspaceHealthSummary(
+                    workspace_name=workspace_name,
+                    error=f"Failed to switch to workspace '{workspace_name}'"
+                )
 
-            # Parse inbox data
-            inboxes = data.get("data", data.get("inboxes", []))
-            if isinstance(inboxes, dict):
-                inboxes = inboxes.get("data", [])
+            # Step 3: Get sender emails (inboxes) with pagination
+            all_inboxes = []
+            page = 1
+            while True:
+                response = await self._client.get(
+                    f"{self.base_url}/api/sender-emails",
+                    params={"page": page, "per_page": 100}
+                )
+                response.raise_for_status()
+                data = response.json()
 
-            return self._parse_inbox_list(workspace_name, inboxes)
+                inboxes = data.get("data", [])
+                if not inboxes:
+                    break
+
+                all_inboxes.extend(inboxes)
+
+                # Check if more pages
+                meta = data.get("meta", {})
+                last_page = meta.get("last_page", 1)
+                if page >= last_page:
+                    break
+                page += 1
+
+            return self._parse_inbox_list(workspace_name, all_inboxes)
 
         except httpx.HTTPStatusError as e:
             logger.error(f"EmailBison API error: {e.response.status_code} - {e.response.text}")
@@ -188,9 +239,9 @@ class EmailBisonService:
         high_bounce_sample = []
 
         for inbox in inboxes:
-            # Connection status
-            status = inbox.get("status", "").lower()
-            is_connected = status in ("connected", "active")
+            # Connection status - EmailBison uses "connection_status" field
+            status = inbox.get("connection_status", inbox.get("status", "")).lower()
+            is_connected = status in ("connected", "active", "1", "true")
             if is_connected:
                 connected += 1
             else:
@@ -212,8 +263,8 @@ class EmailBisonService:
                     ))
 
             # Bounce rate
-            bounced = inbox.get("bounced", 0)
-            sent = inbox.get("emails_sent", inbox.get("sent", 0))
+            bounced = inbox.get("bounced", 0) or 0
+            sent = inbox.get("emails_sent", inbox.get("sent", 0)) or 0
             if sent > 0:
                 bounce_rate = bounced / sent
                 if bounce_rate > 0.02 and len(high_bounce_sample) < 5:
@@ -224,8 +275,13 @@ class EmailBisonService:
                         sent=sent
                     ))
 
-            # Provider breakdown
-            provider = inbox.get("provider", inbox.get("esp_type", "Unknown"))
+            # Provider breakdown - EmailBison uses "esp_type"
+            provider = inbox.get("esp_type", inbox.get("provider", "Unknown"))
+            if provider == "microsoft":
+                provider = "Microsoft"
+            elif provider == "google":
+                provider = "Google"
+
             if provider not in providers:
                 providers[provider] = {
                     "count": 0,
