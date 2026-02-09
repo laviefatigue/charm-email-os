@@ -19,7 +19,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { Loader2, Check, X, DollarSign, ShoppingCart, RefreshCw, ArrowUpDown } from 'lucide-react';
+import { Loader2, Check, X, DollarSign, ShoppingCart, RefreshCw, ArrowUpDown, Filter } from 'lucide-react';
 import { domainSourcingApi } from '@/lib/api';
 import { toast } from 'sonner';
 import type { Domain } from '@/lib/types';
@@ -62,6 +62,8 @@ export function DomainCandidatesTable({
   const [isBulkCheckingPrices, setIsBulkCheckingPrices] = useState(false);
   // Sort option
   const [sortBy, setSortBy] = useState<SortOption>('status');
+  // TLD filter
+  const [tldFilter, setTldFilter] = useState<string>('all');
 
   const setDomainState = useCallback((domainId: string, state: ActionState) => {
     setActionStates((prev) => ({ ...prev, [domainId]: state }));
@@ -118,6 +120,28 @@ export function DomainCandidatesTable({
     );
   }, [domains]);
 
+  // Extract unique TLDs from domains
+  const uniqueTlds = useMemo(() => {
+    const tlds = new Set<string>();
+    filteredDomains.forEach(d => {
+      const domainName = d.domainName || d.domain || '';
+      const parts = domainName.split('.');
+      if (parts.length > 1) {
+        tlds.add(`.${parts[parts.length - 1]}`);
+      }
+    });
+    return Array.from(tlds).sort();
+  }, [filteredDomains]);
+
+  // Apply TLD filter
+  const tldFilteredDomains = useMemo(() => {
+    if (tldFilter === 'all') return filteredDomains;
+    return filteredDomains.filter(d => {
+      const domainName = d.domainName || d.domain || '';
+      return domainName.endsWith(tldFilter);
+    });
+  }, [filteredDomains, tldFilter]);
+
   // Sort domains based on selected sort option
   const sortedDomains = useMemo(() => {
     const statusOrder: Record<string, number> = {
@@ -128,7 +152,7 @@ export function DomainCandidatesTable({
       denied: 2,
     };
 
-    return [...filteredDomains].sort((a, b) => {
+    return [...tldFilteredDomains].sort((a, b) => {
       // Denied/rejected domains always at bottom regardless of sort
       const aIsDenied = a.status === 'rejected' || a.status === 'denied';
       const bIsDenied = b.status === 'rejected' || b.status === 'denied';
@@ -157,7 +181,7 @@ export function DomainCandidatesTable({
       // sortBy === 'name'
       return (a.domainName || a.domain || '').localeCompare(b.domainName || b.domain || '');
     });
-  }, [filteredDomains, prices, sortBy]);
+  }, [tldFilteredDomains, prices, sortBy]);
 
   // Count domains that need price check (use filtered domains)
   const domainsNeedingPriceCheck = useMemo(() => {
@@ -558,23 +582,42 @@ export function DomainCandidatesTable({
 
   return (
     <div className="space-y-4">
-      {/* Sort & Count Bar */}
+      {/* Sort & Filter Bar */}
       <div className="flex items-center justify-between">
         <span className="text-sm text-muted-foreground">
           {sortedDomains.length} domain{sortedDomains.length !== 1 ? 's' : ''}
+          {tldFilter !== 'all' && ` (filtered: ${tldFilter})`}
         </span>
-        <div className="flex items-center gap-2">
-          <ArrowUpDown className="h-3.5 w-3.5 text-muted-foreground" />
-          <Select value={sortBy} onValueChange={(v) => setSortBy(v as SortOption)}>
-            <SelectTrigger className="h-8 w-35 text-xs">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="status">Sort by Status</SelectItem>
-              <SelectItem value="price">Sort by Price</SelectItem>
-              <SelectItem value="name">Sort by Name</SelectItem>
-            </SelectContent>
-          </Select>
+        <div className="flex items-center gap-3">
+          {/* TLD Filter */}
+          <div className="flex items-center gap-2">
+            <Filter className="h-3.5 w-3.5 text-muted-foreground" />
+            <Select value={tldFilter} onValueChange={setTldFilter}>
+              <SelectTrigger className="h-8 w-24 text-xs">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All TLDs</SelectItem>
+                {uniqueTlds.map(tld => (
+                  <SelectItem key={tld} value={tld}>{tld}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          {/* Sort */}
+          <div className="flex items-center gap-2">
+            <ArrowUpDown className="h-3.5 w-3.5 text-muted-foreground" />
+            <Select value={sortBy} onValueChange={(v) => setSortBy(v as SortOption)}>
+              <SelectTrigger className="h-8 w-32 text-xs">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="status">Sort by Status</SelectItem>
+                <SelectItem value="price">Sort by Price</SelectItem>
+                <SelectItem value="name">Sort by Name</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
         </div>
       </div>
 
