@@ -1249,7 +1249,7 @@ async def get_inventory_health(client_id: UUID):
     """
     # Get client with workspace
     client = await fetch_one("""
-        SELECT c.id, c.name, c.workspace_id, w.name as workspace_name
+        SELECT c.id, c.name, c.workspace_id, w.workspace_name
         FROM clients c
         LEFT JOIN workspaces w ON c.workspace_id = w.id
         WHERE c.id = $1
