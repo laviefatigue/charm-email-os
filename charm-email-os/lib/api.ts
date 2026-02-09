@@ -29,6 +29,7 @@ import type {
   SmartOrderPreview,
   SmartOrderRequest,
   SmartOrderResponse,
+  InventoryHealth,
 } from './types';
 
 // API base URL - use environment variable or default to deployed API
@@ -2363,6 +2364,14 @@ export const healthApi = {
         lastUpdated: string;
       }>;
     }>(response);
+  },
+
+  /**
+   * Get real-time inventory health from EmailBison + RBL data
+   */
+  async getInventoryHealth(clientId: string): Promise<InventoryHealth> {
+    const response = await fetchApi<Record<string, unknown>>(`/api/health/inventory/${clientId}`);
+    return toCamelCase<InventoryHealth>(response);
   },
 };
 

@@ -20,10 +20,12 @@ import {
   DomainEditModal,
   InboxEditModal,
   DomainInboxTree,
+  InventoryHealthDashboard,
 } from '@/components/inboxes';
 import { DomainCandidatesTable, DomainsNeedingSetupTable, InboxProvisionModal, PurchaseJobsTable, PackageFulfillmentDashboard } from '@/components/purchasing';
 import { useClientStore, useInfrastructureStore } from '@/lib/stores';
-import { domainSourcingApi, subscriptionApi, type CanGenerateResponse, type GenerateForClientResponse } from '@/lib/api';
+import { domainSourcingApi, subscriptionApi, healthApi, type CanGenerateResponse, type GenerateForClientResponse } from '@/lib/api';
+import type { InventoryHealth } from '@/lib/types';
 import type { Domain, Inbox, SubscriptionWithUsage } from '@/lib/types';
 
 export default function InboxesPage() {
@@ -96,6 +98,8 @@ export default function InboxesPage() {
   const [canGenerateInfo, setCanGenerateInfo] = useState<CanGenerateResponse | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
   const [subscription, setSubscription] = useState<SubscriptionWithUsage | null>(null);
+  const [inventoryHealth, setInventoryHealth] = useState<InventoryHealth | null>(null);
+  const [isLoadingHealth, setIsLoadingHealth] = useState(false);
 
   // Default tab: new clients (no inventory) → procurement, existing → inventory
   const [activeTab, setActiveTab] = useState<string>(() => {
@@ -137,6 +141,22 @@ export default function InboxesPage() {
     fetchSubscription();
   }, [clientId]);
 
+  // Fetch inventory health from EmailBison + RBL data
+  useEffect(() => {
+    const fetchInventoryHealth = async () => {
+      setIsLoadingHealth(true);
+      try {
+        const health = await healthApi.getInventoryHealth(clientId);
+        setInventoryHealth(health);
+      } catch (error) {
+        console.error('Failed to fetch inventory health:', error);
+      } finally {
+        setIsLoadingHealth(false);
+      }
+    };
+    fetchInventoryHealth();
+  }, [clientId]);
+
   const filteredInboxes = useMemo(() => {
     if (!selectedDomainId) return allInboxes;
     return allInboxes.filter((i) => i.domainId === selectedDomainId);
@@ -146,6 +166,20 @@ export default function InboxesPage() {
   const handleExpandDomain = useCallback((domainId: string) => {
     fetchInboxesForDomainLazy(domainId, clientId);
   }, [fetchInboxesForDomainLazy, clientId]);
+
+  // Refresh inventory health data
+  const handleRefreshHealth = useCallback(async () => {
+    setIsLoadingHealth(true);
+    try {
+      const health = await healthApi.getInventoryHealth(clientId);
+      setInventoryHealth(health);
+    } catch (error) {
+      console.error('Failed to refresh inventory health:', error);
+      toast.error('Failed to refresh health data');
+    } finally {
+      setIsLoadingHealth(false);
+    }
+  }, [clientId]);
 
   // Count pending approvals (use both 'pending' and legacy 'pending_approval')
   const pendingDomainsCount = domains.filter((d) => d.status === 'pending' || d.status === 'pending_approval').length;
@@ -429,30 +463,14 @@ export default function InboxesPage() {
 
           {/* Active Inventory Tab */}
           <TabsContent value="inventory">
-            {/* Infrastructure Status */}
-            <div className="mb-6 flex items-center gap-4 flex-wrap">
-              <div className="flex items-center gap-2 px-3 py-1.5 bg-green-50 text-green-700 rounded-full text-sm">
-                <div className="h-2 w-2 rounded-full bg-green-500" />
-                <span>Infrastructure Active</span>
-              </div>
-              {pendingInboxes > 0 && (
-                <div className="flex items-center gap-2 px-3 py-1.5 bg-yellow-50 text-yellow-700 rounded-full text-sm">
-                  <AlertTriangle className="h-3 w-3" />
-                  <span>{pendingInboxes} inboxes pending approval</span>
-                </div>
-              )}
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <button className="text-muted-foreground hover:text-foreground">
-                    <Info className="h-4 w-4" />
-                  </button>
-                </TooltipTrigger>
-                <TooltipContent>
-                  <p className="max-w-xs">
-                    Active domains and their inboxes. Go to &quot;Procurement&quot; to add more.
-                  </p>
-                </TooltipContent>
-              </Tooltip>
+            {/* Inventory Health Dashboard */}
+            <div className="mb-6">
+              <InventoryHealthDashboard
+                health={inventoryHealth}
+                isLoading={isLoadingHealth}
+                onRefresh={handleRefreshHealth}
+                pendingInboxes={pendingInboxes}
+              />
             </div>
 
             {/* Empty State for Inventory */}

@@ -880,3 +880,50 @@ export interface SmartOrderResponse {
   message: string;
   estimatedDurationSeconds: number;
 }
+
+// ===== Inventory Health (from EmailBison + RBL) =====
+
+export interface InventoryProvider {
+  name: string;
+  count: number;
+  connected: number;
+  connectionRate: number;
+  avgHealth: number;
+}
+
+export interface InventoryAttentionItem {
+  type: 'blacklist' | 'high_bounce' | 'low_health';
+  domain?: string;
+  email?: string;
+  count?: number;
+  lists?: string[];
+  bounceRate?: number;
+  bounced?: number;
+  sent?: number;
+  healthScore?: number;
+  severity: 'critical' | 'warning' | 'info';
+}
+
+export interface InventoryHealth {
+  clientId: string;
+  clientName: string;
+  workspaceName?: string;
+  // EmailBison metrics
+  totalInboxes: number;
+  connectedInboxes: number;
+  disconnectedInboxes: number;
+  avgHealthScore: number;
+  connectionRate: number;
+  // Provider breakdown
+  providers: InventoryProvider[];
+  // Domain metrics (RBL)
+  totalDomains: number;
+  cleanDomains: number;
+  flaggedDomains: number;
+  // Issues
+  attentionItems: InventoryAttentionItem[];
+  // Data source info
+  emailbisonAvailable: boolean;
+  emailbisonError?: string;
+  rblLastCheck?: Date;
+}

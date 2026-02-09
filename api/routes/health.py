@@ -1193,3 +1193,186 @@ async def get_full_dashboard(client_id: UUID):
         contamination_sources=contamination_sources,
         esp_summaries=esp_summaries,
     )
+
+
+# ===== Real-Time Inventory Health from EmailBison =====
+
+from services.emailbison import EmailBisonService, WorkspaceHealthSummary
+from pydantic import BaseModel as PydanticBaseModel
+
+
+class InventoryHealthResponse(PydanticBaseModel):
+    """Real-time inventory health from EmailBison + RBL data."""
+    # Workspace identification
+    client_id: str
+    client_name: str
+    workspace_name: Optional[str] = None
+
+    # EmailBison metrics (real-time)
+    total_inboxes: int = 0
+    connected_inboxes: int = 0
+    disconnected_inboxes: int = 0
+    avg_health_score: float = 0.0
+    connection_rate: float = 0.0
+
+    # Provider breakdown
+    providers: list[dict] = []
+
+    # Domain metrics (from RBL/database)
+    total_domains: int = 0
+    clean_domains: int = 0
+    flagged_domains: int = 0
+
+    # Issues needing attention
+    attention_items: list[dict] = []
+
+    # Data source info
+    emailbison_available: bool = False
+    emailbison_error: Optional[str] = None
+    rbl_last_check: Optional[datetime] = None
+
+
+@router.get("/inventory/{client_id}", response_model=InventoryHealthResponse)
+async def get_inventory_health(client_id: UUID):
+    """
+    Get real-time inventory health combining EmailBison metrics with RBL data.
+
+    This endpoint fetches live data from EmailBison API for:
+    - Inbox connection status
+    - Health scores
+    - Bounce rates
+    - Provider breakdown
+
+    And combines it with local RBL data for:
+    - Domain blacklist status
+    - Domain health scores
+    """
+    # Get client with workspace
+    client = await fetch_one("""
+        SELECT c.id, c.name, c.workspace_id, w.name as workspace_name
+        FROM clients c
+        LEFT JOIN workspaces w ON c.workspace_id = w.id
+        WHERE c.id = $1
+    """, client_id)
+
+    if not client:
+        raise HTTPException(status_code=404, detail="Client not found")
+
+    workspace_id = client["workspace_id"]
+    workspace_name = client["workspace_name"]
+
+    # Initialize response
+    response = InventoryHealthResponse(
+        client_id=str(client_id),
+        client_name=client["name"],
+        workspace_name=workspace_name,
+    )
+
+    # Get RBL/domain data from database
+    if workspace_id:
+        domain_stats = await fetch_one("""
+            SELECT
+                COUNT(*) as total,
+                COUNT(*) FILTER (WHERE is_clean = true OR COALESCE(latest_blacklist_count, 0) = 0) as clean,
+                COUNT(*) FILTER (WHERE is_clean = false OR COALESCE(latest_blacklist_count, 0) > 0) as flagged,
+                MAX(last_checked_at) as last_check
+            FROM domains
+            WHERE workspace_id = $1
+        """, workspace_id)
+
+        if domain_stats:
+            response.total_domains = domain_stats["total"] or 0
+            response.clean_domains = domain_stats["clean"] or 0
+            response.flagged_domains = domain_stats["flagged"] or 0
+            response.rbl_last_check = domain_stats["last_check"]
+
+        # Get flagged domain details for attention items
+        flagged_domains = await fetch_all("""
+            SELECT domain_name, latest_blacklist_count,
+                   ARRAY_AGG(DISTINCT rbl_name) FILTER (WHERE rbl_name IS NOT NULL) as blacklist_names
+            FROM domains d
+            LEFT JOIN LATERAL (
+                SELECT rd.rbl_name
+                FROM rbl_check_logs rcl
+                JOIN rbl_definitions rd ON rcl.rbl_definition_id = rd.id
+                WHERE rcl.domain_id = d.id
+                AND rcl.is_listed = true
+                AND rcl.check_timestamp >= NOW() - INTERVAL '24 hours'
+            ) bl ON true
+            WHERE d.workspace_id = $1
+            AND (d.is_clean = false OR COALESCE(d.latest_blacklist_count, 0) > 0)
+            GROUP BY d.id, d.domain_name, d.latest_blacklist_count
+            LIMIT 10
+        """, workspace_id)
+
+        for domain in flagged_domains:
+            bl_names = domain["blacklist_names"] or []
+            response.attention_items.append({
+                "type": "blacklist",
+                "domain": domain["domain_name"],
+                "count": domain["latest_blacklist_count"] or 0,
+                "lists": bl_names[:5],  # Limit to first 5
+                "severity": "critical" if (domain["latest_blacklist_count"] or 0) > 3 else "warning"
+            })
+
+    # Fetch real-time EmailBison data
+    if workspace_name:
+        try:
+            async with EmailBisonService() as bison:
+                eb_summary = await bison.get_workspace_summary(workspace_name)
+
+            if eb_summary.error:
+                response.emailbison_error = eb_summary.error
+            else:
+                response.emailbison_available = True
+                response.total_inboxes = eb_summary.total_inboxes
+                response.connected_inboxes = eb_summary.connected
+                response.disconnected_inboxes = eb_summary.not_connected
+                response.avg_health_score = eb_summary.avg_health_score
+                response.connection_rate = round(
+                    eb_summary.connected / eb_summary.total_inboxes * 100, 1
+                ) if eb_summary.total_inboxes > 0 else 0.0
+
+                # Provider breakdown
+                response.providers = [
+                    {
+                        "name": p.provider,
+                        "count": p.count,
+                        "connected": p.connected,
+                        "connection_rate": p.connection_rate,
+                        "avg_health": p.avg_health_score
+                    }
+                    for p in eb_summary.provider_breakdown
+                ]
+
+                # Add high-bounce inboxes to attention items
+                for inbox in eb_summary.high_bounce_sample:
+                    response.attention_items.append({
+                        "type": "high_bounce",
+                        "email": inbox.email,
+                        "bounce_rate": inbox.bounce_rate,
+                        "bounced": inbox.bounced,
+                        "sent": inbox.sent,
+                        "severity": "critical" if (inbox.bounce_rate or 0) > 0.05 else "warning"
+                    })
+
+                # Add low-health inboxes
+                for inbox in eb_summary.low_health_sample:
+                    response.attention_items.append({
+                        "type": "low_health",
+                        "email": inbox.email,
+                        "health_score": inbox.health_score,
+                        "severity": "warning"
+                    })
+
+        except Exception as e:
+            logger.error(f"Failed to fetch EmailBison data: {e}")
+            response.emailbison_error = str(e)
+    else:
+        response.emailbison_error = "No workspace linked to client"
+
+    # Sort attention items by severity
+    severity_order = {"critical": 0, "warning": 1, "info": 2}
+    response.attention_items.sort(key=lambda x: severity_order.get(x.get("severity", "info"), 99))
+
+    return response
