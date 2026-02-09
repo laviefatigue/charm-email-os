@@ -32,13 +32,16 @@ Core app shell components:
 
 | Component | Purpose |
 |-----------|---------|
+| [[InventoryHealthDashboard]] | Real-time [[emailbison-integration|EmailBison]] health metrics |
 | [[DomainCard]] | Domain status and actions |
 | [[DomainForm]] | New domain creation |
 | [[DomainEditModal]] | Edit domain details |
+| [[DomainInboxTree]] | Collapsible domain/inbox tree view |
 | [[InboxCard]] | Inbox status and health |
 | [[InboxForm]] | New inbox creation |
 | [[InboxEditModal]] | Edit inbox details |
 | [[WarmupProgress]] | Warmup progress indicator |
+| [[SenderNamesTab]] | Sender name management |
 
 ### Health Components (`components/health/`)
 
@@ -59,7 +62,36 @@ Core app shell components:
 
 ### Strategy Components (`components/strategy/`)
 
-[[campaign-ideas]] workflow:
+[[campaigns]] and [[strategy-cycles]] workflow:
+
+| Component | Purpose |
+|-----------|---------|
+| [[CampaignSequences]] | Main campaign list with generation UI |
+| [[CampaignSequenceCard]] | Campaign card in list view |
+| [[SelectedCampaignDetail]] | Full campaign detail with email steps |
+| [[EmailStepCard]] | Individual email in sequence |
+| [[SequenceTimeline]] | Visual timeline of email sequence |
+
+#### Cycle Components
+
+See [[strategy-cycles]] for architecture.
+
+| Component | Purpose |
+|-----------|---------|
+| [[CycleNavigator]] | Horizontal cycle pills (1-6) for selection |
+| [[ActiveCycleCard]] | Selected cycle metadata + campaign grid |
+| [[CampaignMiniCard]] | Compact campaign card for grid view |
+| [[CampaignEmptySlot]] | Dashed placeholder for unfilled slots |
+
+#### Profile Components
+
+| Component | Purpose |
+|-----------|---------|
+| [[ComprehensiveOnboarding]] | Collapsible client profile card |
+| [[OnboardingSummary]] | Compact profile summary |
+| [[OnboardingEditModal]] | Edit profile modal |
+
+#### Legacy Components
 
 | Component | Purpose |
 |-----------|---------|

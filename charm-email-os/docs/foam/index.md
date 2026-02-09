@@ -15,6 +15,7 @@ Charm Email OS is a Next.js 16 application designed to manage email outreach ope
 - [[routing]] - Page routes and navigation
 - [[onboarding-form]] - External client onboarding form
 - [[strategy-ai-container]] - VPS Docker deployment for AI strategy generation
+- [[strategy-cycles]] - Campaign cycles and Strategy page UI
 - [[strategy-upgrade]] - Planned strategy page improvements (spintax workflow)
 
 ## Core Concepts
@@ -23,10 +24,10 @@ Charm Email OS is a Next.js 16 application designed to manage email outreach ope
 Organizations using the platform. Each client has their own infrastructure, campaigns, and leads.
 
 ### [[infrastructure]]
-Email sending infrastructure including [[domains]] and [[inboxes]] with warmup and health tracking.
+Email sending infrastructure including [[domains]] and [[inboxes]] with warmup and health tracking. Real-time metrics via [[emailbison-integration]].
 
 ### [[campaigns]]
-Outbound email campaigns created from [[campaign-ideas]] through the [[strategy]] workflow.
+Outbound email campaigns organized by [[strategy-cycles]]. 4-email sequences with distinct angles (signal, pain, case study, risk).
 
 ### [[leads]]
 Contact records managed per campaign with status tracking and CSV upload support.
@@ -41,7 +42,10 @@ JIT lead verification pipeline for manufacturing verified cold email lists. Proc
 AI-ARK enrichment data flows back to the database, building a living TAM map. Every pipeline run makes future contracts cheaper and data fresher.
 
 ### [[health-monitoring]]
-Comprehensive system for tracking inbox/domain health, kill triggers, and ESP reputation.
+Comprehensive system for tracking inbox/domain health, kill triggers, and ESP reputation. Powered by [[emailbison-integration]] for real-time metrics.
+
+### [[emailbison-integration]]
+Real-time API integration with EmailBison for inbox connection status, health scores, bounce rates, and provider breakdown. Powers the [[inventory-health-dashboard]].
 
 ### [[strategy-ai-container]]
 Purpose-built Docker container for autonomous email strategy generation using Claude Code on VPS.
