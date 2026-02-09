@@ -273,10 +273,10 @@ export function DomainCandidatesTable({
 
   // Bulk check all approved domains
   const handleCheckAllPrices = useCallback(async () => {
-    // Get all approved domains that need price check (use filteredDomains)
-    const approvedDomains = filteredDomains.filter(d => d.status === 'approved' && !prices[d.id]);
+    // Get all approved domains (check all, not just those without prices)
+    const approvedDomains = filteredDomains.filter(d => d.status === 'approved');
     if (approvedDomains.length === 0) {
-      toast.info('All approved domains already have prices checked');
+      toast.info('No approved domains to check prices for');
       return;
     }
 
@@ -578,28 +578,35 @@ export function DomainCandidatesTable({
         </div>
       </div>
 
-      {/* Refresh Prices Bar */}
-      {domainsNeedingPriceCheck > 0 && (
-        <div className="flex items-center justify-between p-3 bg-blue-50 rounded-lg border border-blue-200">
-          <span className="text-sm text-blue-700">
-            {domainsNeedingPriceCheck} approved domains available for purchase
-          </span>
-          <Button
-            size="sm"
-            variant="outline"
-            disabled={isBulkCheckingPrices}
-            className="border-blue-300 text-blue-700 hover:bg-blue-100"
-            onClick={handleCheckAllPrices}
-          >
-            {isBulkCheckingPrices ? (
-              <Loader2 className="h-4 w-4 mr-1 animate-spin" />
-            ) : (
+      {/* Refresh Prices Bar - Always visible */}
+      <div className="p-3 bg-blue-50 rounded-lg border border-blue-200">
+        {isBulkCheckingPrices ? (
+          <div className="space-y-2">
+            <span className="text-sm text-blue-700 font-medium">
+              Checking prices across registrars...
+            </span>
+            <div className="h-2 w-full bg-blue-200 rounded-full overflow-hidden">
+              <div className="h-full w-full bg-blue-600 rounded-full animate-pulse" />
+            </div>
+          </div>
+        ) : (
+          <div className="flex items-center justify-between">
+            <span className="text-sm text-blue-700">
+              {sortedDomains.filter(d => d.status === 'approved').length} approved domain{sortedDomains.filter(d => d.status === 'approved').length !== 1 ? 's' : ''}
+              {domainsNeedingPriceCheck > 0 && ` · ${domainsNeedingPriceCheck} need pricing`}
+            </span>
+            <Button
+              size="sm"
+              variant="outline"
+              className="border-blue-300 text-blue-700 hover:bg-blue-100"
+              onClick={handleCheckAllPrices}
+            >
               <RefreshCw className="h-4 w-4 mr-1" />
-            )}
-            Refresh Prices
-          </Button>
-        </div>
-      )}
+              Refresh Prices
+            </Button>
+          </div>
+        )}
+      </div>
 
       {/* Bulk Purchase Bar */}
       {qualifiedDomains.length > 0 && (
