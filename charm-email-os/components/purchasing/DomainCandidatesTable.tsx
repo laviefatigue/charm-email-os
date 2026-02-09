@@ -12,10 +12,19 @@ import {
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Checkbox } from '@/components/ui/checkbox';
-import { Loader2, Check, X, DollarSign, ShoppingCart, RefreshCw } from 'lucide-react';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+import { Loader2, Check, X, DollarSign, ShoppingCart, RefreshCw, ArrowUpDown } from 'lucide-react';
 import { domainSourcingApi } from '@/lib/api';
 import { toast } from 'sonner';
 import type { Domain } from '@/lib/types';
+
+type SortOption = 'status' | 'price' | 'name';
 
 const PRICE_THRESHOLD = 15.0;
 
@@ -51,6 +60,8 @@ export function DomainCandidatesTable({
   const [isBulkPurchasing, setIsBulkPurchasing] = useState(false);
   // Track bulk price check loading
   const [isBulkCheckingPrices, setIsBulkCheckingPrices] = useState(false);
+  // Sort option
+  const [sortBy, setSortBy] = useState<SortOption>('status');
 
   const setDomainState = useCallback((domainId: string, state: ActionState) => {
     setActionStates((prev) => ({ ...prev, [domainId]: state }));
@@ -107,41 +118,46 @@ export function DomainCandidatesTable({
     );
   }, [domains]);
 
-  // Sort domains: price ascending (cheapest first), denied/rejected at bottom
+  // Sort domains based on selected sort option
   const sortedDomains = useMemo(() => {
+    const statusOrder: Record<string, number> = {
+      pending: 0,
+      pending_approval: 0,
+      approved: 1,
+      rejected: 2,
+      denied: 2,
+    };
+
     return [...filteredDomains].sort((a, b) => {
-      // Denied/rejected domains always at bottom
+      // Denied/rejected domains always at bottom regardless of sort
       const aIsDenied = a.status === 'rejected' || a.status === 'denied';
       const bIsDenied = b.status === 'rejected' || b.status === 'denied';
-
       if (aIsDenied && !bIsDenied) return 1;
       if (bIsDenied && !aIsDenied) return -1;
 
-      // Both denied - sort alphabetically
-      if (aIsDenied && bIsDenied) {
-        const aName = a.domainName || a.domain || '';
-        const bName = b.domainName || b.domain || '';
-        return aName.localeCompare(bName);
+      if (sortBy === 'status') {
+        const aOrder = statusOrder[a.status] ?? 3;
+        const bOrder = statusOrder[b.status] ?? 3;
+        if (aOrder !== bOrder) return aOrder - bOrder;
+        // Same status — secondary sort by name
+        return (a.domainName || a.domain || '').localeCompare(b.domainName || b.domain || '');
       }
 
-      // For non-denied: sort by price (cheapest first)
-      // Use cached price from DB, or local price state
-      const priceInfoA = prices[a.id];
-      const priceInfoB = prices[b.id];
+      if (sortBy === 'price') {
+        const priceInfoA = prices[a.id];
+        const priceInfoB = prices[b.id];
+        const priceA = priceInfoA?.price ? parseFloat(priceInfoA.price) :
+                       (a.cachedPrice ? parseFloat(String(a.cachedPrice)) : Infinity);
+        const priceB = priceInfoB?.price ? parseFloat(priceInfoB.price) :
+                       (b.cachedPrice ? parseFloat(String(b.cachedPrice)) : Infinity);
+        if (priceA !== priceB) return priceA - priceB;
+        return (a.domainName || a.domain || '').localeCompare(b.domainName || b.domain || '');
+      }
 
-      const priceA = priceInfoA?.price ? parseFloat(priceInfoA.price) :
-                     (a.cachedPrice ? parseFloat(String(a.cachedPrice)) : Infinity);
-      const priceB = priceInfoB?.price ? parseFloat(priceInfoB.price) :
-                     (b.cachedPrice ? parseFloat(String(b.cachedPrice)) : Infinity);
-
-      if (priceA !== priceB) return priceA - priceB;
-
-      // Same price - sort alphabetically
-      const aName = a.domainName || a.domain || '';
-      const bName = b.domainName || b.domain || '';
-      return aName.localeCompare(bName);
+      // sortBy === 'name'
+      return (a.domainName || a.domain || '').localeCompare(b.domainName || b.domain || '');
     });
-  }, [filteredDomains, prices]);
+  }, [filteredDomains, prices, sortBy]);
 
   // Count domains that need price check (use filtered domains)
   const domainsNeedingPriceCheck = useMemo(() => {
@@ -203,6 +219,28 @@ export function DomainCandidatesTable({
       onDomainUpdate?.();
     } catch (err) {
       setDomainState(domainId, { loading: false, error: 'Failed to deny' });
+    }
+  }, [onDomainUpdate, setDomainState]);
+
+  const handleUnapprove = useCallback(async (domainId: string) => {
+    setDomainState(domainId, { loading: true, error: null });
+    try {
+      await domainSourcingApi.unapproveDomain(domainId);
+      // Clear cached price when unapproving
+      setPrices((prev) => {
+        const next = { ...prev };
+        delete next[domainId];
+        return next;
+      });
+      // Remove from selection if selected
+      setSelectedDomains((prev) => {
+        const next = new Set(prev);
+        next.delete(domainId);
+        return next;
+      });
+      onDomainUpdate?.();
+    } catch (err) {
+      setDomainState(domainId, { loading: false, error: 'Failed to unapprove' });
     }
   }, [onDomainUpdate, setDomainState]);
 
@@ -472,9 +510,21 @@ export function DomainCandidatesTable({
       );
     }
 
-    // Approved: Use bulk purchase via checkbox selection (no individual buy button)
+    // Approved: Show Unapprove button to revert to pending
     if (status === 'approved') {
-      return <span className="text-sm text-muted-foreground text-center block">-</span>;
+      return (
+        <div className="flex justify-center">
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-7 text-orange-600 hover:text-orange-700 hover:bg-orange-50"
+            onClick={() => handleUnapprove(domain.id)}
+          >
+            <X className="h-3 w-3 mr-1" />
+            Unapprove
+          </Button>
+        </div>
+      );
     }
 
     // Rejected: Just show dash (centered)
@@ -508,6 +558,26 @@ export function DomainCandidatesTable({
 
   return (
     <div className="space-y-4">
+      {/* Sort & Count Bar */}
+      <div className="flex items-center justify-between">
+        <span className="text-sm text-muted-foreground">
+          {sortedDomains.length} domain{sortedDomains.length !== 1 ? 's' : ''}
+        </span>
+        <div className="flex items-center gap-2">
+          <ArrowUpDown className="h-3.5 w-3.5 text-muted-foreground" />
+          <Select value={sortBy} onValueChange={(v) => setSortBy(v as SortOption)}>
+            <SelectTrigger className="h-8 w-35 text-xs">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="status">Sort by Status</SelectItem>
+              <SelectItem value="price">Sort by Price</SelectItem>
+              <SelectItem value="name">Sort by Name</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+      </div>
+
       {/* Refresh Prices Bar */}
       {domainsNeedingPriceCheck > 0 && (
         <div className="flex items-center justify-between p-3 bg-blue-50 rounded-lg border border-blue-200">

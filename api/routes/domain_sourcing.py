@@ -906,6 +906,45 @@ async def deny_domain_candidate(domain_id: UUID):
     )
 
 
+@router.post("/unapprove/{domain_id}", response_model=ApprovalResponse)
+async def unapprove_domain_candidate(domain_id: UUID):
+    """
+    Unapprove a domain candidate - revert it back to pending status.
+
+    Sets the approval_status back to 'pending' and clears the review timestamp.
+    Used when a domain was approved by mistake or needs re-evaluation.
+    """
+    # Verify domain exists and is approved
+    domain = await fetch_one(
+        "SELECT id, domain_name, approval_status FROM domains WHERE id = $1",
+        domain_id
+    )
+    if not domain:
+        raise HTTPException(status_code=404, detail="Domain not found")
+
+    if domain["approval_status"] != "approved":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Domain is not approved (current status: {domain['approval_status']})"
+        )
+
+    # Revert to pending status
+    await execute("""
+        UPDATE domains
+        SET approval_status = 'pending', reviewed_at = NULL
+        WHERE id = $1
+    """, domain_id)
+
+    logger.info(f"Unapproved domain candidate: {domain['domain_name']} ({domain_id})")
+
+    return ApprovalResponse(
+        domain_id=domain_id,
+        domain_name=domain["domain_name"],
+        status="pending",
+        message=f"Domain {domain['domain_name']} reverted to pending",
+    )
+
+
 @router.delete("/clear-candidates/{client_id}")
 async def clear_domain_candidates(client_id: UUID):
     """

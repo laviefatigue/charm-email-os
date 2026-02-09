@@ -3,7 +3,7 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { cn } from '@/lib/utils';
-import { Inbox, Lightbulb, Users, HeartPulse, Building2 } from 'lucide-react';
+import { Server, Lightbulb, Users, HeartPulse, Building2 } from 'lucide-react';
 
 interface TabNavigationProps {
   clientId: string;
@@ -11,7 +11,7 @@ interface TabNavigationProps {
 
 const tabs = [
   { name: 'Profile', href: 'profile', icon: Building2 },
-  { name: 'Domains / Inboxes', href: 'inboxes', icon: Inbox },
+  { name: 'Infrastructure', href: 'inboxes', icon: Server },
   { name: 'Strategy', href: 'strategy', icon: Lightbulb },
   { name: 'Leads', href: 'leads', icon: Users },
   { name: 'Health', href: 'health', icon: HeartPulse },

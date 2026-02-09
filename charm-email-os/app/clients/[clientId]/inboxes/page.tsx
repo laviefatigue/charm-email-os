@@ -2,13 +2,14 @@
 
 import { useState, useMemo, useEffect, useCallback } from 'react';
 import { useParams } from 'next/navigation';
-import { Plus, Globe, Mail, Info, Sparkles, AlertTriangle, CheckCheck, Loader2, AlertCircle, ShoppingCart, Package, Users, History } from 'lucide-react';
+import { Plus, Globe, Mail, Info, Sparkles, AlertTriangle, CheckCheck, Loader2, AlertCircle, ShoppingCart, Package, History, Server, Workflow } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
+import { Accordion, AccordionItem, AccordionTrigger, AccordionContent } from '@/components/ui/accordion';
 import { ClientHeader, TabNavigation, PageContainer } from '@/components/layout';
 import { EmptyState } from '@/components/shared';
 import {
@@ -19,9 +20,8 @@ import {
   DomainEditModal,
   InboxEditModal,
   DomainInboxTree,
-  SenderNamesTab,
 } from '@/components/inboxes';
-import { DomainCandidatesTable, DomainsNeedingSetupTable, InboxProvisionModal, PurchaseJobsTable } from '@/components/purchasing';
+import { DomainCandidatesTable, DomainsNeedingSetupTable, InboxProvisionModal, PurchaseJobsTable, PackageFulfillmentDashboard } from '@/components/purchasing';
 import { useClientStore, useInfrastructureStore } from '@/lib/stores';
 import { domainSourcingApi, subscriptionApi, type CanGenerateResponse, type GenerateForClientResponse } from '@/lib/api';
 import type { Domain, Inbox, SubscriptionWithUsage } from '@/lib/types';
@@ -90,13 +90,26 @@ export default function InboxesPage() {
   const [showInboxForm, setShowInboxForm] = useState(false);
   const [editingDomain, setEditingDomain] = useState<Domain | null>(null);
   const [editingInbox, setEditingInbox] = useState<Inbox | null>(null);
-  const [activeTab, setActiveTab] = useState<string>('inventory');
   const [showInboxPurchaseWizard, setShowInboxPurchaseWizard] = useState(false);
   const [selectedDomainsForSetup, setSelectedDomainsForSetup] = useState<string[]>([]);
   const [hasAgeOverride, setHasAgeOverride] = useState(false);
   const [canGenerateInfo, setCanGenerateInfo] = useState<CanGenerateResponse | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
   const [subscription, setSubscription] = useState<SubscriptionWithUsage | null>(null);
+
+  // Default tab: new clients (no inventory) → procurement, existing → inventory
+  const [activeTab, setActiveTab] = useState<string>(() => {
+    return 'inventory'; // Will be updated once data loads
+  });
+  const [hasSetDefaultTab, setHasSetDefaultTab] = useState(false);
+
+  // Set default tab based on inventory once data loads
+  useEffect(() => {
+    if (!hasSetDefaultTab && !isLoading && domains.length >= 0) {
+      setActiveTab(inventoryDomains.length === 0 ? 'procurement' : 'inventory');
+      setHasSetDefaultTab(true);
+    }
+  }, [isLoading, inventoryDomains.length, domains.length, hasSetDefaultTab]);
 
   // Fetch can-generate info for the client
   useEffect(() => {
@@ -138,6 +151,10 @@ export default function InboxesPage() {
   const pendingDomainsCount = domains.filter((d) => d.status === 'pending' || d.status === 'pending_approval').length;
   const approvedDomainsCount = domains.filter((d) => d.status === 'approved').length;
   const pendingInboxes = allInboxes.filter((i) => i.status === 'pending_approval').length;
+
+  // Provider breakdown from inventory domains
+  const entraDomainsActive = inventoryDomains.filter((d) => d.infrastructureType === 'entra').length;
+  const googleDomainsActive = inventoryDomains.filter((d) => d.infrastructureType === 'google').length;
 
   // Loading state
   if ((isLoading || isLoadingClients) && domains.length === 0 && allInboxes.length === 0) {
@@ -207,8 +224,16 @@ export default function InboxesPage() {
           const status = await domainSourcingApi.getJobStatus(job.jobId);
           if (status.status === 'completed') {
             clearInterval(pollInterval);
-            fetchDomainsByClient(clientId);
-            toast.success('Domain generation complete!');
+            await fetchDomainsByClient(clientId);
+            // Auto-trigger bulk price check for newly generated domains
+            try {
+              toast.success('Domain generation complete! Checking prices...');
+              await domainSourcingApi.checkPricesBulk({ clientId });
+              await fetchDomainsByClient(clientId); // Refresh with prices
+              toast.success('Prices checked across registrars.');
+            } catch {
+              toast.success('Domain generation complete! Price check can be done manually.');
+            }
             setIsGenerating(false);
           } else if (status.status === 'failed') {
             clearInterval(pollInterval);
@@ -267,20 +292,29 @@ export default function InboxesPage() {
       <TabNavigation clientId={clientId} />
 
       <PageContainer>
-        {/* Tab Navigation */}
+        {/* Package Fulfillment Dashboard - always visible above tabs */}
+        <PackageFulfillmentDashboard
+          subscription={subscription}
+          inventoryDomainsCount={inventoryDomains.length}
+          purchasedNeedingSetupCount={purchasedNeedingSetup.length}
+          pendingDomainsCount={pendingDomainsCount}
+          approvedDomainsCount={approvedDomainsCount}
+          totalInboxesCount={allInboxes.length}
+          entraDomainsActive={entraDomainsActive}
+          googleDomainsActive={googleDomainsActive}
+          onNavigateToTab={setActiveTab}
+        />
+
+        {/* Tab Navigation - 3 tabs */}
         <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
           <TabsList className="mb-6">
+            <TabsTrigger value="procurement" className="flex items-center gap-2">
+              <Workflow className="h-4 w-4" />
+              Procurement
+            </TabsTrigger>
             <TabsTrigger value="inventory" className="flex items-center gap-2">
               <Package className="h-4 w-4" />
-              Current Inventory
-            </TabsTrigger>
-            <TabsTrigger value="purchase" className="flex items-center gap-2">
-              <ShoppingCart className="h-4 w-4" />
-              Purchase New
-            </TabsTrigger>
-            <TabsTrigger value="names" className="flex items-center gap-2">
-              <Users className="h-4 w-4" />
-              Names
+              Active Inventory
             </TabsTrigger>
             <TabsTrigger value="jobs" className="flex items-center gap-2">
               <History className="h-4 w-4" />
@@ -288,158 +322,42 @@ export default function InboxesPage() {
             </TabsTrigger>
           </TabsList>
 
-          {/* Current Inventory Tab */}
-          <TabsContent value="inventory">
-            {/* Infrastructure Status */}
-            <div className="mb-6 flex items-center gap-4 flex-wrap">
-          <div className="flex items-center gap-2 px-3 py-1.5 bg-green-50 text-green-700 rounded-full text-sm">
-            <div className="h-2 w-2 rounded-full bg-green-500" />
-            <span>Infrastructure Active</span>
-          </div>
-          {pendingInboxes > 0 && (
-            <div className="flex items-center gap-2 px-3 py-1.5 bg-yellow-50 text-yellow-700 rounded-full text-sm">
-              <AlertTriangle className="h-3 w-3" />
-              <span>{pendingInboxes} inboxes pending approval</span>
-            </div>
-          )}
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <button className="text-muted-foreground hover:text-foreground">
-                <Info className="h-4 w-4" />
-              </button>
-            </TooltipTrigger>
-            <TooltipContent>
-              <p className="max-w-xs">
-                This shows your purchased domains and their inboxes.
-                Go to &quot;Purchase New&quot; to add more domains.
-              </p>
-            </TooltipContent>
-          </Tooltip>
-        </div>
-
-        {/* Empty State for Inventory */}
-        {inventoryDomains.length === 0 && (
-          <Alert className="mb-6">
-            <Sparkles className="h-4 w-4" />
-            <AlertDescription>
-              <strong>No purchased domains yet.</strong> Go to the &quot;Purchase New&quot; tab to generate
-              domain suggestions, check pricing, and purchase domains.
-            </AlertDescription>
-          </Alert>
-        )}
-
-        {/* Domain/Inbox Tree View */}
-        <Card>
-          <CardHeader className="pb-4">
-            <div className="flex items-center justify-between">
-              <div>
-                <CardTitle className="text-base font-semibold flex items-center gap-2">
-                  <Globe className="h-4 w-4" />
-                  Domains & Inboxes
-                </CardTitle>
-                <CardDescription className="mt-1">
-                  Click a domain to expand and see its inboxes
-                </CardDescription>
-              </div>
-              <div className="flex gap-2">
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={() => setShowInboxForm(true)}
-                  disabled={approvedDomains.length === 0}
-                >
-                  <Plus className="h-4 w-4 mr-1" />
-                  Add Inbox
-                </Button>
-              </div>
-            </div>
-          </CardHeader>
-          <CardContent>
-            {inventoryDomains.length === 0 ? (
-              <EmptyState
-                icon={Globe}
-                title="No purchased domains"
-                description="Go to the 'Purchase New' tab to generate and purchase domains."
-              />
-            ) : (
-              <DomainInboxTree
-                domains={inventoryDomains}
-                inboxes={allInboxes}
-                onExpandDomain={handleExpandDomain}
-                loadingDomainIds={loadingDomainIds}
-              />
-            )}
-          </CardContent>
-        </Card>
-          </TabsContent>
-
-          {/* Purchase New Tab */}
-          <TabsContent value="purchase">
+          {/* Procurement Tab - accordion workflow */}
+          <TabsContent value="procurement">
             <div className="space-y-6">
-              {/* Domain Pipeline Summary */}
-              <Card>
-                <CardHeader className="pb-3">
-                  <CardTitle className="text-base">Domain Pipeline Summary</CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
-                    <div className="text-center p-3 bg-yellow-50 rounded-lg">
-                      <div className="text-2xl font-bold text-yellow-700">{pendingDomainsCount}</div>
-                      <div className="text-xs text-yellow-600">Pending Approval</div>
-                    </div>
-                    <div className="text-center p-3 bg-blue-50 rounded-lg">
-                      <div className="text-2xl font-bold text-blue-700">{approvedDomainsCount}</div>
-                      <div className="text-xs text-blue-600">Ready to Purchase</div>
-                    </div>
-                    <div className="text-center p-3 bg-orange-50 rounded-lg">
-                      <div className="text-2xl font-bold text-orange-700">{purchasedNeedingSetup.length}</div>
-                      <div className="text-xs text-orange-600">Needs Inbox Setup</div>
-                    </div>
-                    <div className="text-center p-3 bg-green-50 rounded-lg">
-                      <div className="text-2xl font-bold text-green-700">{inventoryDomains.length}</div>
-                      <div className="text-xs text-green-600">Active Inventory</div>
-                    </div>
-                    <div className="text-center p-3 bg-muted rounded-lg">
-                      <div className="text-2xl font-bold">{allInboxes.length}</div>
-                      <div className="text-xs text-muted-foreground">Total Inboxes</div>
-                    </div>
-                  </div>
-                </CardContent>
-              </Card>
+              {/* Contextual header */}
+              {subscription && subscription.domainsRemaining > 0 && (
+                <Alert>
+                  <Package className="h-4 w-4" />
+                  <AlertDescription>
+                    Your <strong>{subscription.packageTemplateName || 'Custom'}</strong> package needs <strong>{subscription.domainsRemaining} more domains</strong> to reach full capacity.
+                  </AlertDescription>
+                </Alert>
+              )}
 
-              {/* Status Summary */}
-              <div className="flex items-center gap-4 flex-wrap">
-                {pendingDomainsCount > 0 && (
-                  <div className="flex items-center gap-2 px-3 py-1.5 bg-yellow-50 text-yellow-700 rounded-full text-sm">
-                    <AlertTriangle className="h-3 w-3" />
-                    <span>{pendingDomainsCount} domains pending approval</span>
-                  </div>
-                )}
-                {approvedDomainsCount > 0 && (
-                  <div className="flex items-center gap-2 px-3 py-1.5 bg-blue-50 text-blue-700 rounded-full text-sm">
-                    <CheckCheck className="h-3 w-3" />
-                    <span>{approvedDomainsCount} domains ready to purchase</span>
-                  </div>
-                )}
-              </div>
-
-              {/* Domain Candidates Table with Inline Actions */}
-              {purchaseDomains.length > 0 && (
-                <Card>
-                  <CardHeader>
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <CardTitle className="text-base font-semibold flex items-center gap-2">
-                          <Globe className="h-4 w-4" />
-                          Domain Candidates
-                        </CardTitle>
-                        <CardDescription className="mt-1">
-                          Approve or deny domains, check pricing, and purchase directly from this table
-                        </CardDescription>
-                      </div>
+              <Accordion type="multiple" defaultValue={['domains', 'setup-inboxes']} className="space-y-4">
+                {/* Domain Candidates — Generate + Review/Price/Purchase */}
+                <AccordionItem value="domains" className="border rounded-lg px-4">
+                  <AccordionTrigger className="hover:no-underline py-4">
+                    <div className="flex items-center gap-3">
+                      <Globe className="h-4 w-4 text-muted-foreground" />
+                      <span className="text-base font-semibold">Domain Candidates</span>
+                      {purchaseDomains.length > 0 && (
+                        <div className="flex items-center gap-2">
+                          {pendingDomainsCount > 0 && (
+                            <span className="px-2 py-0.5 bg-yellow-50 text-yellow-700 rounded-full text-xs">{pendingDomainsCount} pending</span>
+                          )}
+                          {approvedDomainsCount > 0 && (
+                            <span className="px-2 py-0.5 bg-blue-50 text-blue-700 rounded-full text-xs">{approvedDomainsCount} approved</span>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  </AccordionTrigger>
+                  <AccordionContent>
+                    <div className="flex items-center gap-3 mb-4">
                       <Button
                         size="sm"
-                        variant="default"
                         disabled={!canGenerateInfo?.canGenerate || isGenerating}
                         onClick={handleGenerateDomainsInline}
                       >
@@ -448,90 +366,149 @@ export default function InboxesPage() {
                         ) : (
                           <Sparkles className="h-4 w-4 mr-1" />
                         )}
-                        {isGenerating ? 'Generating...' : 'Generate More'}
-                      </Button>
-                    </div>
-                  </CardHeader>
-                  <CardContent>
-                    <DomainCandidatesTable
-                      domains={purchaseDomains}
-                      clientId={clientId}
-                      onDomainUpdate={() => fetchDomainsByClient(clientId)}
-                    />
-                  </CardContent>
-                </Card>
-              )}
-
-              {/* Empty State */}
-              {purchaseDomains.length === 0 && (
-                <Card>
-                  <CardContent className="py-8">
-                    <EmptyState
-                      icon={Globe}
-                      title="No domain candidates"
-                      description="Generate domain suggestions to get started with purchasing."
-                    />
-                    <div className="flex justify-center mt-4">
-                      <Button
-                        disabled={!canGenerateInfo?.canGenerate || isGenerating}
-                        onClick={handleGenerateDomainsInline}
-                      >
-                        {isGenerating ? (
-                          <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                        ) : (
-                          <Sparkles className="h-4 w-4 mr-2" />
-                        )}
                         {isGenerating ? 'Generating...' : 'Generate Domains'}
                       </Button>
+                      {!canGenerateInfo?.canGenerate && canGenerateInfo?.message && (
+                        <p className="text-xs text-muted-foreground">{canGenerateInfo.message}</p>
+                      )}
                     </div>
-                  </CardContent>
-                </Card>
-              )}
+                    {purchaseDomains.length > 0 ? (
+                      <DomainCandidatesTable
+                        domains={purchaseDomains}
+                        clientId={clientId}
+                        onDomainUpdate={() => fetchDomainsByClient(clientId)}
+                      />
+                    ) : (
+                      <EmptyState
+                        icon={Globe}
+                        title="No domain candidates yet"
+                        description="Click 'Generate Domains' above to create AI-powered domain suggestions."
+                      />
+                    )}
+                  </AccordionContent>
+                </AccordionItem>
 
-              {/* Domains Ready for Inbox Setup - Step 2 */}
-              {purchasedNeedingSetup.length > 0 && (
-                <Card>
-                  <CardHeader>
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <CardTitle className="text-base font-semibold flex items-center gap-2">
-                          <Mail className="h-4 w-4" />
-                          Step 2: Setup Inboxes
-                        </CardTitle>
-                        <CardDescription className="mt-1">
-                          These domains are purchased and ready for inbox provisioning in Hypertide
-                        </CardDescription>
+                {/* Setup Inboxes */}
+                <AccordionItem value="setup-inboxes" className="border rounded-lg px-4">
+                  <AccordionTrigger className="hover:no-underline py-4">
+                    <div className="flex items-center justify-between w-full pr-2">
+                      <div className="flex items-center gap-3">
+                        <Mail className="h-4 w-4 text-muted-foreground" />
+                        <span className="text-base font-semibold">Setup Inboxes</span>
+                        {purchasedNeedingSetup.length > 0 && (
+                          <span className="px-2 py-0.5 bg-orange-50 text-orange-700 rounded-full text-xs">
+                            {purchasedNeedingSetup.length} ready
+                          </span>
+                        )}
                       </div>
                     </div>
-                  </CardHeader>
-                  <CardContent>
-                    <DomainsNeedingSetupTable
-                      domains={purchasedNeedingSetup}
-                      onSetupClick={(selectedIds, override) => {
-                        setSelectedDomainsForSetup(selectedIds);
-                        setHasAgeOverride(override);
-                        setShowInboxPurchaseWizard(true);
-                      }}
-                      onDomainsChange={() => fetchDomainsByClient(clientId)}
-                    />
-                  </CardContent>
-                </Card>
-              )}
-
-
+                  </AccordionTrigger>
+                  <AccordionContent>
+                    {purchasedNeedingSetup.length > 0 ? (
+                      <DomainsNeedingSetupTable
+                        domains={purchasedNeedingSetup}
+                        onSetupClick={(selectedIds, override) => {
+                          setSelectedDomainsForSetup(selectedIds);
+                          setHasAgeOverride(override);
+                          setShowInboxPurchaseWizard(true);
+                        }}
+                        onDomainsChange={() => fetchDomainsByClient(clientId)}
+                      />
+                    ) : (
+                      <EmptyState
+                        icon={Mail}
+                        title="No domains awaiting inbox setup"
+                        description="Domains will appear here once purchased above."
+                      />
+                    )}
+                  </AccordionContent>
+                </AccordionItem>
+              </Accordion>
             </div>
           </TabsContent>
 
-          {/* Names Tab - Sender Name Management */}
-          <TabsContent value="names">
-            <SenderNamesTab
-              clientId={clientId}
-              client={client}
-              onSave={() => {
-                // Refresh client data after saving names
-                fetchClients();
-              }}
-            />
+          {/* Active Inventory Tab */}
+          <TabsContent value="inventory">
+            {/* Infrastructure Status */}
+            <div className="mb-6 flex items-center gap-4 flex-wrap">
+              <div className="flex items-center gap-2 px-3 py-1.5 bg-green-50 text-green-700 rounded-full text-sm">
+                <div className="h-2 w-2 rounded-full bg-green-500" />
+                <span>Infrastructure Active</span>
+              </div>
+              {pendingInboxes > 0 && (
+                <div className="flex items-center gap-2 px-3 py-1.5 bg-yellow-50 text-yellow-700 rounded-full text-sm">
+                  <AlertTriangle className="h-3 w-3" />
+                  <span>{pendingInboxes} inboxes pending approval</span>
+                </div>
+              )}
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button className="text-muted-foreground hover:text-foreground">
+                    <Info className="h-4 w-4" />
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent>
+                  <p className="max-w-xs">
+                    Active domains and their inboxes. Go to &quot;Procurement&quot; to add more.
+                  </p>
+                </TooltipContent>
+              </Tooltip>
+            </div>
+
+            {/* Empty State for Inventory */}
+            {inventoryDomains.length === 0 && (
+              <Alert className="mb-6">
+                <Sparkles className="h-4 w-4" />
+                <AlertDescription>
+                  <strong>No active domains yet.</strong> Go to the &quot;Procurement&quot; tab to generate
+                  domain suggestions, check pricing, and purchase domains.
+                </AlertDescription>
+              </Alert>
+            )}
+
+            {/* Domain/Inbox Tree View */}
+            <Card>
+              <CardHeader className="pb-4">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <CardTitle className="text-base font-semibold flex items-center gap-2">
+                      <Globe className="h-4 w-4" />
+                      Domains & Inboxes
+                    </CardTitle>
+                    <CardDescription className="mt-1">
+                      Click a domain to expand and see its inboxes
+                    </CardDescription>
+                  </div>
+                  <div className="flex gap-2">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => setShowInboxForm(true)}
+                      disabled={approvedDomains.length === 0}
+                    >
+                      <Plus className="h-4 w-4 mr-1" />
+                      Add Inbox
+                    </Button>
+                  </div>
+                </div>
+              </CardHeader>
+              <CardContent>
+                {inventoryDomains.length === 0 ? (
+                  <EmptyState
+                    icon={Globe}
+                    title="No active domains"
+                    description="Go to the 'Procurement' tab to generate and purchase domains."
+                  />
+                ) : (
+                  <DomainInboxTree
+                    domains={inventoryDomains}
+                    inboxes={allInboxes}
+                    onExpandDomain={handleExpandDomain}
+                    loadingDomainIds={loadingDomainIds}
+                  />
+                )}
+              </CardContent>
+            </Card>
           </TabsContent>
 
           {/* Jobs Tab - Purchase Job History */}

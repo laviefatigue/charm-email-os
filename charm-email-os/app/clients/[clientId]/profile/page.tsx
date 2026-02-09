@@ -8,6 +8,7 @@ import { ClientProfileCard } from '@/components/clients/ClientProfileCard';
 import { SubmissionsList } from '@/components/clients/SubmissionsList';
 import { SubscriptionCard } from '@/components/clients/SubscriptionCard';
 import { SubscriptionEditModal } from '@/components/clients/SubscriptionEditModal';
+import { SenderNamesTab } from '@/components/inboxes';
 import { subscriptionApi } from '@/lib/api';
 import type { SubscriptionWithUsage } from '@/lib/types';
 
@@ -76,6 +77,15 @@ export default function ProfilePage() {
             key={subscriptionKey}
             clientId={clientId}
             onEdit={handleEditSubscription}
+          />
+        </div>
+
+        {/* Sender Names */}
+        <div className="mb-6">
+          <SenderNamesTab
+            clientId={clientId}
+            client={client}
+            onSave={() => {}}
           />
         </div>
 

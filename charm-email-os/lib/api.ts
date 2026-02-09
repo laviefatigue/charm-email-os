@@ -871,6 +871,17 @@ export const domainSourcingApi = {
   },
 
   /**
+   * Unapprove a domain - revert it back to pending status.
+   */
+  async unapproveDomain(domainId: string): Promise<DomainApprovalResult> {
+    const response = await fetchApi<Record<string, unknown>>(
+      `/api/domain-sourcing/unapprove/${domainId}`,
+      { method: 'POST' }
+    );
+    return toCamelCase<DomainApprovalResult>(response);
+  },
+
+  /**
    * Get all approved domains for a client that are ready for pricing search.
    */
   async getApprovedDomains(clientId: string): Promise<ApprovedDomainsResponse> {
