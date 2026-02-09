@@ -110,6 +110,68 @@ async def get_configured_registrars():
         )
 
 
+@router.get("/registrar-status")
+async def registrar_status():
+    """
+    Health check for registrar API connections.
+
+    Returns status and balance for both Porkbun and Dynadot registrars.
+    Use this to verify credentials are working before purchasing domains.
+    """
+    # Import here to avoid circular imports (services imported later in file)
+    from services.porkbun import PorkbunService
+    from services.dynadot import DynadotService
+
+    porkbun = PorkbunService()
+    dynadot = DynadotService()
+
+    result = {
+        "porkbun": {
+            "configured": bool(porkbun.api_key and porkbun.api_secret),
+            "connected": False,
+            "balance": None,
+            "error": None,
+        },
+        "dynadot": {
+            "configured": bool(dynadot.api_key),
+            "connected": False,
+            "balance": None,
+            "error": None,
+        },
+    }
+
+    try:
+        # Test Porkbun
+        if result["porkbun"]["configured"]:
+            try:
+                pb_ok = await porkbun.ping()
+                result["porkbun"]["connected"] = pb_ok
+                if pb_ok:
+                    pb_balance = await porkbun.get_balance()
+                    result["porkbun"]["balance"] = str(pb_balance)
+            except Exception as e:
+                result["porkbun"]["error"] = str(e)
+        else:
+            result["porkbun"]["error"] = "API credentials not configured"
+
+        # Test Dynadot
+        if result["dynadot"]["configured"]:
+            try:
+                dd_balance = await dynadot.get_balance()
+                result["dynadot"]["connected"] = dd_balance > 0
+                result["dynadot"]["balance"] = str(dd_balance)
+            except Exception as e:
+                result["dynadot"]["error"] = str(e)
+        else:
+            result["dynadot"]["error"] = "API key not configured"
+
+    finally:
+        await porkbun.close()
+        await dynadot.close()
+
+    return result
+
+
 @router.post("/generate", response_model=DomainGenerateResponse)
 async def generate_domains(request: DomainGenerateRequest):
     """
@@ -1665,8 +1727,24 @@ async def purchase_single_domain(domain_id: UUID, provider: Optional[str] = None
             detail=f"Domain must be approved before purchase (current status: {domain['approval_status']})"
         )
 
-    # Determine which provider to use
-    use_provider = provider or domain.get("selected_provider") or "porkbun"
+    # Require price check before purchase - prevents defaulting to wrong registrar
+    if domain.get("porkbun_price") is None and domain.get("dynadot_price") is None:
+        return PurchaseSingleResponse(
+            domain_id=str(domain_id),
+            domain_name=domain["domain_name"],
+            success=False,
+            error="Price check required before purchase. Run 'Refresh Prices' first.",
+        )
+
+    # Determine which provider to use (selected_provider is set by price check to cheapest)
+    use_provider = provider or domain.get("selected_provider")
+    if not use_provider:
+        return PurchaseSingleResponse(
+            domain_id=str(domain_id),
+            domain_name=domain["domain_name"],
+            success=False,
+            error="No provider selected. Run price check first.",
+        )
 
     if use_provider == "dynadot":
         registrar = DynadotService()

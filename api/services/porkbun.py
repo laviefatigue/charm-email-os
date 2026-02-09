@@ -163,6 +163,15 @@ class PorkbunService:
         Returns:
             DomainCheckResult with availability and pricing
         """
+        # Validate credentials before making API call
+        if not self.api_key or not self.api_secret:
+            logger.warning("Porkbun API credentials not configured")
+            return DomainCheckResult(
+                domain=domain,
+                available=False,
+                error="Porkbun API credentials not configured",
+            )
+
         try:
             response = await self.client.post(
                 f"{self.base_url}/domain/checkDomain/{domain}",
