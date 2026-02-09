@@ -15,6 +15,7 @@ import {
   Clock,
   MessageSquare,
   Edit2,
+  History,
 } from 'lucide-react';
 import { Card, CardHeader, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -367,6 +368,26 @@ export function SelectedCampaignDetail({
                   )}
                 </div>
               )}
+              {/* Cycle and version badges */}
+              {(sequence.cycleId || sequence.campaignVersion) && (
+                <div className="flex items-center gap-2 mt-1 flex-wrap">
+                  {sequence.cycleId && (
+                    <Badge variant="outline" className="text-xs bg-gray-50 border-gray-200 text-gray-700">
+                      Cycle
+                    </Badge>
+                  )}
+                  {sequence.campaignVersion && (
+                    <Badge variant="secondary" className="text-xs">
+                      v{sequence.campaignVersion}
+                    </Badge>
+                  )}
+                  {sequence.lineageId && (
+                    <span className="text-xs text-muted-foreground">
+                      Lineage: {sequence.lineageId.slice(0, 8)}...
+                    </span>
+                  )}
+                </div>
+              )}
             </div>
           </div>
         </div>
@@ -444,6 +465,36 @@ export function SelectedCampaignDetail({
             considerations={sequence.strategyConsiderations}
             sequence={sequence}
           />
+        )}
+
+        {/* Version History - show if campaign has version tracking */}
+        {sequence.campaignVersion && sequence.campaignVersion > 1 && (
+          <div className="bg-gray-50 border border-gray-200 rounded-lg p-3">
+            <h4 className="text-xs font-semibold text-gray-700 mb-2 flex items-center gap-1">
+              <History className="w-3.5 h-3.5" />
+              Version History
+            </h4>
+            <div className="space-y-2">
+              {/* Current version */}
+              <div className="flex items-center gap-2 text-sm">
+                <Badge variant="secondary" className="text-xs">
+                  v{sequence.campaignVersion}
+                </Badge>
+                <span className="text-muted-foreground">Current</span>
+                {sequence.createdAt && (
+                  <span className="text-xs text-muted-foreground">
+                    {new Date(sequence.createdAt).toLocaleDateString()}
+                  </span>
+                )}
+              </div>
+              {/* Previous version link (if available) */}
+              {sequence.previousVersionId && (
+                <p className="text-xs text-muted-foreground">
+                  Evolved from previous version
+                </p>
+              )}
+            </div>
+          </div>
         )}
 
         {/* Campaign Performance (for campaigns pushed to EmailBison) */}

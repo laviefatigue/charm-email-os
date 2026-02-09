@@ -102,6 +102,7 @@ export function ComprehensiveOnboarding({ clientId }: ComprehensiveOnboardingPro
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [editModalOpen, setEditModalOpen] = useState(false);
+  const [isExpanded, setIsExpanded] = useState(false); // Default collapsed
 
   useEffect(() => {
     async function fetchSubmission() {
@@ -179,22 +180,35 @@ export function ComprehensiveOnboarding({ clientId }: ComprehensiveOnboardingPro
 
   return (
     <Card>
-      <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-4">
-        <div>
-          <CardTitle className="text-base font-semibold flex items-center gap-2">
-            <Building2 className="h-4 w-4" />
-            Comprehensive Profile
-          </CardTitle>
-          <p className="text-xs text-muted-foreground mt-1">
-            Submitted {formatDate(submission.submittedAt || submission.createdAt)}
-          </p>
+      <CardHeader
+        className="flex flex-row items-center justify-between space-y-0 pb-4 cursor-pointer hover:bg-muted/50 transition-colors"
+        onClick={() => setIsExpanded(!isExpanded)}
+      >
+        <div className="flex items-center gap-3">
+          <div>
+            <CardTitle className="text-base font-semibold flex items-center gap-2">
+              <Building2 className="h-4 w-4" />
+              Comprehensive Profile
+            </CardTitle>
+            <p className="text-xs text-muted-foreground mt-1">
+              Submitted {formatDate(submission.submittedAt || submission.createdAt)}
+            </p>
+          </div>
         </div>
-        <Badge
-          variant={submission.submissionStatus === 'completed' ? 'default' : 'secondary'}
-        >
-          {submission.submissionStatus}
-        </Badge>
+        <div className="flex items-center gap-2">
+          <Badge
+            variant={submission.submissionStatus === 'completed' ? 'default' : 'secondary'}
+          >
+            {submission.submissionStatus}
+          </Badge>
+          {isExpanded ? (
+            <ChevronUp className="h-4 w-4 text-muted-foreground" />
+          ) : (
+            <ChevronDown className="h-4 w-4 text-muted-foreground" />
+          )}
+        </div>
       </CardHeader>
+      {isExpanded && (
       <CardContent className="space-y-4">
         {/* Section 1: Foundation */}
         <Section icon={Building2} title="Foundation">
@@ -343,13 +357,17 @@ export function ComprehensiveOnboarding({ clientId }: ComprehensiveOnboardingPro
             variant="ghost"
             size="sm"
             className="h-7 text-xs"
-            onClick={() => setEditModalOpen(true)}
+            onClick={(e) => {
+              e.stopPropagation();
+              setEditModalOpen(true);
+            }}
           >
             <Pencil className="h-3 w-3 mr-1" />
             Edit
           </Button>
         </div>
       </CardContent>
+      )}
 
       {/* Edit Modal */}
       <OnboardingEditModal

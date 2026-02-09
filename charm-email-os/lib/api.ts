@@ -2193,6 +2193,97 @@ export const strategyApi = {
       message: string;
     }>(response);
   },
+
+  // ===== CAMPAIGN CYCLES =====
+
+  /**
+   * Get all cycles for a client
+   */
+  async getCycles(clientId: string): Promise<{ cycles: CampaignCycle[]; total: number }> {
+    const response = await fetchApi<Record<string, unknown>>(
+      `/api/strategy/cycles/${clientId}`
+    );
+    return toCamelCase<{ cycles: CampaignCycle[]; total: number }>(response);
+  },
+
+  /**
+   * Get a specific cycle by ID
+   */
+  async getCycle(cycleId: string): Promise<CampaignCycle> {
+    const response = await fetchApi<Record<string, unknown>>(
+      `/api/strategy/cycles/detail/${cycleId}`
+    );
+    return toCamelCase<CampaignCycle>(response);
+  },
+
+  /**
+   * Create a new cycle for a client
+   */
+  async createCycle(
+    clientId: string,
+    data: {
+      cycleName?: string;
+      strategyId?: string;
+      cycleNumber: number;
+      targetCampaigns: number;
+      durationDays?: number;
+      startDate?: string;
+      notes?: string;
+    }
+  ): Promise<CampaignCycle> {
+    const response = await fetchApi<Record<string, unknown>>(
+      `/api/strategy/cycles/${clientId}`,
+      {
+        method: 'POST',
+        body: JSON.stringify(toSnakeCase(data)),
+      }
+    );
+    return toCamelCase<CampaignCycle>(response);
+  },
+
+  /**
+   * Update a cycle
+   */
+  async updateCycle(
+    cycleId: string,
+    data: Partial<{
+      cycleName: string;
+      status: 'planned' | 'active' | 'completed';
+      targetCampaigns: number;
+      startDate: string;
+      endDate: string;
+      notes: string;
+    }>
+  ): Promise<CampaignCycle> {
+    const response = await fetchApi<Record<string, unknown>>(
+      `/api/strategy/cycles/detail/${cycleId}`,
+      {
+        method: 'PUT',
+        body: JSON.stringify(toSnakeCase(data)),
+      }
+    );
+    return toCamelCase<CampaignCycle>(response);
+  },
+
+  /**
+   * Delete a cycle
+   */
+  async deleteCycle(cycleId: string): Promise<{ message: string }> {
+    return fetchApi<{ message: string }>(
+      `/api/strategy/cycles/detail/${cycleId}`,
+      { method: 'DELETE' }
+    );
+  },
+
+  /**
+   * Get campaigns for a specific cycle
+   */
+  async getCampaignsForCycle(cycleId: string): Promise<{ campaigns: CampaignSequence[]; total: number }> {
+    const response = await fetchApi<Record<string, unknown>>(
+      `/api/strategy/cycles/${cycleId}/campaigns`
+    );
+    return toCamelCase<{ campaigns: CampaignSequence[]; total: number }>(response);
+  },
 };
 
 // ===== HEALTH API =====
