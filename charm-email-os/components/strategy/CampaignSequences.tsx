@@ -44,6 +44,12 @@ export function CampaignSequences({ clientId, className }: CampaignSequencesProp
   const [sequences, setSequences] = useState<CampaignSequence[]>([]);
   const [loading, setLoading] = useState(true);
   const [generating, setGenerating] = useState(false);
+  const [generationStatus, setGenerationStatus] = useState<{
+    jobId: string;
+    round: number;
+    status: string;
+    startedAt: Date;
+  } | null>(null);
   const [counts, setCounts] = useState({
     pending: 0,
     approved: 0,
@@ -137,12 +143,22 @@ export function CampaignSequences({ clientId, className }: CampaignSequencesProp
   // Generate more sequences
   const handleGenerate = async () => {
     setGenerating(true);
+    setGenerationStatus(null);
     try {
       const job = await strategyApi.createJob(
         clientId,
         undefined,
         selectedStrategyId || undefined
       );
+
+      // Set generation status for UI feedback
+      setGenerationStatus({
+        jobId: job.jobId,
+        round: job.generationRound,
+        status: 'processing',
+        startedAt: new Date(),
+      });
+
       toast.success(`Generation job started (Round ${job.generationRound})`);
 
       // Poll for completion
@@ -152,18 +168,25 @@ export function CampaignSequences({ clientId, className }: CampaignSequencesProp
         attempts++;
         try {
           const status = await strategyApi.getJobStatus(job.jobId);
+
+          // Update status for UI
+          setGenerationStatus(prev => prev ? { ...prev, status: status.status } : null);
+
           if (status.status === 'review' || status.status === 'completed') {
             clearInterval(pollInterval);
             toast.success('New sequences generated!');
+            setGenerationStatus(null);
             fetchSequences();
             setGenerating(false);
           } else if (status.status === 'failed') {
             clearInterval(pollInterval);
             toast.error(`Generation failed: ${status.errorMessage || 'Unknown error'}`);
+            setGenerationStatus(null);
             setGenerating(false);
           } else if (attempts >= maxAttempts) {
             clearInterval(pollInterval);
             toast.error('Generation timed out. Check job status manually.');
+            setGenerationStatus(null);
             setGenerating(false);
           }
         } catch {
@@ -173,6 +196,7 @@ export function CampaignSequences({ clientId, className }: CampaignSequencesProp
     } catch (error) {
       console.error('Failed to start generation:', error);
       toast.error('Failed to start generation');
+      setGenerationStatus(null);
       setGenerating(false);
     }
   };
@@ -435,8 +459,43 @@ export function CampaignSequences({ clientId, className }: CampaignSequencesProp
         </Card>
       )}
 
+      {/* Generation in progress state */}
+      {generating && generationStatus && (
+        <Card className="border-blue-200 bg-blue-50/50">
+          <CardContent className="py-8">
+            <div className="flex flex-col items-center justify-center text-center">
+              <div className="relative mb-4">
+                <div className="w-16 h-16 rounded-full bg-blue-100 flex items-center justify-center">
+                  <Sparkles className="w-8 h-8 text-blue-600 animate-pulse" />
+                </div>
+                <div className="absolute -bottom-1 -right-1 w-6 h-6 rounded-full bg-white flex items-center justify-center shadow-sm">
+                  <Loader2 className="w-4 h-4 animate-spin text-blue-600" />
+                </div>
+              </div>
+              <h3 className="font-semibold text-lg text-blue-900 mb-1">
+                Generating 4 Campaign Sequences
+              </h3>
+              <p className="text-sm text-blue-700 mb-3">
+                Round {generationStatus.round} • Strategy AI is crafting your campaigns
+              </p>
+              <div className="flex items-center gap-2 text-xs text-blue-600">
+                <Badge variant="outline" className="bg-white border-blue-200">
+                  Job: {generationStatus.jobId.slice(0, 8)}...
+                </Badge>
+                <Badge variant="outline" className="bg-white border-blue-200 capitalize">
+                  Status: {generationStatus.status}
+                </Badge>
+              </div>
+              <p className="text-xs text-blue-500 mt-4">
+                This typically takes 1-3 minutes. You can leave this page and return later.
+              </p>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
       {/* Empty state */}
-      {!loading && sequences.length === 0 && (
+      {!loading && !generating && sequences.length === 0 && (
         <Card>
           <CardContent className="text-center py-12">
             <Sparkles className="w-12 h-12 mx-auto text-muted-foreground mb-4" />
@@ -457,7 +516,7 @@ export function CampaignSequences({ clientId, className }: CampaignSequencesProp
       )}
 
       {/* Selected campaign detail */}
-      {!loading && selectedCampaign && (
+      {!loading && !generating && selectedCampaign && (
         <SelectedCampaignDetail
           sequence={selectedCampaign}
           onApprove={async () => handleApprove(selectedCampaign.id)}
@@ -470,7 +529,7 @@ export function CampaignSequences({ clientId, className }: CampaignSequencesProp
       )}
 
       {/* No campaign selected state */}
-      {!loading && sequences.length > 0 && !selectedCampaign && (
+      {!loading && !generating && sequences.length > 0 && !selectedCampaign && (
         <Card>
           <CardContent className="text-center py-12">
             <Sparkles className="w-12 h-12 mx-auto text-muted-foreground mb-4" />
