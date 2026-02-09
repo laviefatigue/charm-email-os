@@ -386,7 +386,7 @@ Execute these steps:
 7. Call complete_job with the job_id"""
 
     else:
-        # Initial job - generate 4-email sequence
+        # Initial job - generate 4 distinct campaign sequences as a batch
         prompt = f"""You are executing a cold email strategy generation task. Follow these instructions exactly:
 
 {skill_content}
@@ -406,12 +406,33 @@ NOW EXECUTE THE TASK WITH THESE PARAMETERS:
         prompt += """
 
 Execute all steps:
-1. Call get_client_context with the client_id
-2. Call get_feedback_summary with the client_id
-3. Generate a complete 4-email sequence following the skill instructions
-4. QA score the sequence
-5. Call save_campaign_sequence with the full sequence (not save_campaign_variant)
-6. Call complete_job with the job_id"""
+1. Call get_client_context with the client_id to get:
+   - Company info, target customer, ICP
+   - Segments and personas (critical for targeting the 4 campaigns)
+   - Case studies and ROI results
+
+2. Call get_feedback_summary with the client_id to learn:
+   - Which patterns work (approved)
+   - Which to avoid (denied)
+
+3. Plan 4 distinct campaign angles using the client's segments/personas:
+   - Campaign 1: custom_signal angle targeting primary segment/persona
+   - Campaign 2: persona_pain angle targeting secondary persona
+   - Campaign 3: case_study angle targeting decision makers
+   - Campaign 4: risk_efficiency angle targeting budget holders
+
+4. For EACH of the 4 campaigns, create a complete 4-email sequence:
+   - Use a different opener pattern for each campaign
+   - Target a different persona/segment for each campaign
+   - Vary the value prop lead across campaigns
+
+5. Apply QA checklist to all 16 emails (4 campaigns × 4 emails)
+
+6. Call save_campaign_batch with all 4 campaigns + strategy_considerations:
+   - Include campaign_angle, target_persona, target_segment, opener_pattern
+   - Include strategy_considerations showing which onboarding inputs influenced each campaign
+
+7. Call complete_job with the job_id"""
 
     cmd = [
         "claude",

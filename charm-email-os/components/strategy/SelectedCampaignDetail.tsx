@@ -21,6 +21,8 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
 import type { CampaignSequence, SequenceEmail } from '@/lib/api';
+import { StrategyConsiderationPanel } from './StrategyConsiderationPanel';
+import { CampaignPerformanceCard } from './CampaignPerformanceCard';
 
 interface SelectedCampaignDetailProps {
   sequence: CampaignSequence;
@@ -345,6 +347,26 @@ export function SelectedCampaignDetail({
                   ))}
                 </div>
               )}
+              {/* Campaign angle and target info */}
+              {(sequence.campaignAngle || sequence.targetPersona || sequence.targetSegment) && (
+                <div className="flex items-center gap-2 mt-1 flex-wrap">
+                  {sequence.campaignAngle && (
+                    <Badge variant="outline" className="text-xs bg-amber-50 border-amber-200 text-amber-700">
+                      {sequence.campaignAngle.replace(/_/g, ' ')}
+                    </Badge>
+                  )}
+                  {sequence.targetPersona && (
+                    <Badge variant="outline" className="text-xs bg-purple-50 border-purple-200 text-purple-700">
+                      {sequence.targetPersona}
+                    </Badge>
+                  )}
+                  {sequence.targetSegment && (
+                    <Badge variant="outline" className="text-xs bg-blue-50 border-blue-200 text-blue-700">
+                      {sequence.targetSegment}
+                    </Badge>
+                  )}
+                </div>
+              )}
             </div>
           </div>
         </div>
@@ -415,6 +437,23 @@ export function SelectedCampaignDetail({
             />
           ))}
         </div>
+
+        {/* Strategy Consideration Panel */}
+        {sequence.strategyConsiderations && (
+          <StrategyConsiderationPanel
+            considerations={sequence.strategyConsiderations}
+            sequence={sequence}
+          />
+        )}
+
+        {/* Campaign Performance (for campaigns pushed to EmailBison) */}
+        {sequence.performanceMetrics && (
+          <CampaignPerformanceCard
+            metrics={sequence.performanceMetrics}
+            emailbisonCampaignId={sequence.emailbisonCampaignId}
+            lastSync={sequence.lastPerformanceSync}
+          />
+        )}
 
         {/* Rationale */}
         {sequence.rationale && (

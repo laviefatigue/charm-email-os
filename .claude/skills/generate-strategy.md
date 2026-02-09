@@ -1,6 +1,34 @@
 # Generate Strategy - 4-Email Campaign Sequences
 
-You are generating **complete 4-email campaign sequences** for a client. Each sequence matches EmailBison's campaign structure with proper timing, threading, and value prop rotation.
+You are generating **4 distinct campaign sequences** for a client. Each sequence matches EmailBison's campaign structure with proper timing, threading, and value prop rotation. **Generate all 4 campaigns in a single batch.**
+
+## 6th Principle: Generate 4 Distinct Campaigns Per Request
+
+For each generation request, create **4 unique 4-email sequences** with different angles:
+
+| Campaign # | Angle | Target | Opener Style | Value Prop Lead |
+|------------|-------|--------|--------------|-----------------|
+| 1 | `custom_signal` | Primary ICP | Pattern 1: Status Pressure | save_time |
+| 2 | `persona_pain` | Secondary Persona | Pattern 2: Efficiency/Leverage | make_money |
+| 3 | `case_study` | Decision Maker | Pattern 3: Risk-Based | save_money |
+| 4 | `risk_efficiency` | Budget Holder | Pattern 4: Binary | save_time |
+
+### Differentiation Requirements (MANDATORY)
+
+- Each campaign **MUST** use a **different opener pattern** (from the 5 Poke the Bear patterns)
+- Each campaign **MUST** target a **different persona OR segment** (from onboarding data)
+- Each campaign **MUST** have a **distinct value prop lead** in Email 1
+- Subject lines **MUST** be noticeably different across the 4 campaigns
+- If client has fewer than 4 personas/segments, vary by pain point instead
+
+### Angle Descriptions
+
+1. **custom_signal**: Lead with specific research signal about the prospect company
+2. **persona_pain**: Focus on role-specific challenge the target persona faces daily
+3. **case_study**: Lead with ROI/results from a similar customer (proof-first approach)
+4. **risk_efficiency**: Focus on cost savings, risk avoidance, or doing more with less
+
+---
 
 ## 5 Non-Negotiable Principles
 
@@ -249,6 +277,7 @@ Can they reply in 5 words or less? If no, simplify.
 Call `get_client_context(client_id="{client_id}")` to retrieve:
 - Company info (name, industry, product)
 - Onboarding data (target customer, ICP, messaging)
+- **Segments and personas** (critical for campaign targeting)
 - Case studies and ROI results
 - Previous suggestions and their status
 
@@ -259,108 +288,160 @@ Call `get_feedback_summary(client_id="{client_id}")` to learn:
 - Which were denied (patterns to avoid)
 - Revision requests (specific guidance)
 
-### Step 3: ICP Role-Play
+### Step 3: Plan 4 Campaign Angles
 
-Answer the 4 ICP questions mentally:
+Based on the client's segments and personas, assign 4 different targeting angles:
+
+| Campaign | Angle | Target From | Opener Pattern |
+|----------|-------|-------------|----------------|
+| 1 | `custom_signal` | Primary segment/persona | Pattern 1: Status Pressure |
+| 2 | `persona_pain` | Secondary persona | Pattern 2: Efficiency/Leverage |
+| 3 | `case_study` | Decision maker | Pattern 3: Risk-Based |
+| 4 | `risk_efficiency` | Budget holder | Pattern 4: Binary |
+
+**Track which onboarding inputs you use** — this feeds the Strategy Consideration panel:
+- `target_customer`, `job_titles`, `segments`, `personas`
+- `roi_results`, `customer_voice`, `case_study_company`
+- `pain_points`, `buying_triggers`, `success_metrics`
+
+### Step 4: ICP Role-Play (For Each Campaign)
+
+For EACH of the 4 campaigns, answer:
 1. How are they doing this now?
 2. Why would they switch?
 3. What objections will they have?
 4. What's their personal benefit?
 
-### Step 4: Choose Campaign Type
+### Step 5: Draft All 4 Campaign Sequences
 
-Based on the context, choose:
-- **custom_signal**: Strong research data available
-- **creative_ideas**: Feature-constrained format
-- **whole_offer**: Subject line = full value prop
-- **fallback**: Low research available
-
-### Step 5: Plan Value Prop Rotation
-
-Decide the rotation order (e.g., save_time → make_money → save_money).
-
-### Step 6: Draft 4-Email Sequence
-
-Create all 4 emails following the templates:
-- **Email 1**: New thread, chosen opener pattern, value prop #1
-- **Email 2**: Threads, different angle, value prop #2
-- **Email 3**: New thread, direct/case study, value prop #3
+For EACH campaign (4 total), create a complete 4-email sequence:
+- **Email 1**: New thread, assigned opener pattern, value prop lead
+- **Email 2**: Threads, rotated value prop, creative ideas
+- **Email 3**: New thread, direct/case study approach
 - **Email 4**: Redirect or value bomb
 
-### Step 7: Apply 3-Pass Cutting to Each Email
+**Total: 16 emails (4 campaigns × 4 emails each)**
 
-For each of the 4 emails:
-1. Pass 1: Delete fluff
-2. Pass 2: Compress sentences
-3. Pass 3: Cut adjectives
+### Step 6: Apply 3-Pass Cutting to All Emails
+
+For all 16 emails:
+1. Pass 1: Delete fluff (target 20% cut)
+2. Pass 2: Compress sentences (target 15% cut)
+3. Pass 3: Cut adjectives (target 10% cut)
 
 Target: 50-90 words per email.
 
-### Step 8: Run QA Checklist
+### Step 7: Run QA Checklist
 
-Verify ALL 11 items pass for each email.
+Verify ALL 11 items pass for each of the 16 emails.
 
-### Step 9: Save the Sequence
+### Step 8: Save All 4 Campaigns as a Batch
 
-Call `save_campaign_sequence` with the full sequence:
+Call `save_campaign_batch` with all 4 sequences and strategy considerations:
 
 ```
-save_campaign_sequence(
+save_campaign_batch(
   job_id="{job_id}",
-  campaign_name="Quick q about {{company_name}}",
-  campaign_type="custom_signal",
-  sequence=[
+  campaigns=[
     {
-      "position": 1,
-      "wait_days": 0,
-      "subject_line": "Quick q about {{company_name}}",
-      "email_body": "{{first_name}}—saw you sell to...",
-      "thread_reply": false,
-      "strategy": "custom_signal",
-      "value_prop": "save_time",
-      "word_count": 72
+      "campaign_name": "Quick q about scaling",
+      "campaign_type": "custom_signal",
+      "campaign_angle": "custom_signal",
+      "target_persona": "VP of Sales",
+      "target_segment": "Mid-Market SaaS",
+      "opener_pattern": "status_pressure",
+      "sequence": [
+        {"position": 1, "wait_days": 0, "subject_line": "Quick q", ...},
+        {"position": 2, "wait_days": 3, "subject_line": null, ...},
+        {"position": 3, "wait_days": 4, "subject_line": "Scaling", ...},
+        {"position": 4, "wait_days": 4, "subject_line": null, ...}
+      ],
+      "value_prop_rotation": ["save_time", "make_money", "save_money"],
+      "used_variables": ["{{first_name}}", "{{company_name}}"],
+      "score": 87,
+      "rationale": "Strong research signal, targets primary ICP pain point"
     },
     {
-      "position": 2,
-      "wait_days": 3,
-      "subject_line": null,
-      "email_body": "{{first_name}}—I was back on your site...",
-      "thread_reply": true,
-      "strategy": "creative_ideas",
-      "value_prop": "make_money",
-      "word_count": 85
+      "campaign_name": "Hiring struggles?",
+      "campaign_type": "custom_signal",
+      "campaign_angle": "persona_pain",
+      "target_persona": "Head of RevOps",
+      "target_segment": null,
+      "opener_pattern": "efficiency_leverage",
+      "sequence": [...],
+      "value_prop_rotation": ["make_money", "save_money", "save_time"],
+      "used_variables": ["{{first_name}}", "{{role_title}}"],
+      "score": 84,
+      "rationale": "Focuses on RevOps-specific challenge"
     },
     {
-      "position": 3,
-      "wait_days": 4,
-      "subject_line": "Scaling outbound",
-      "email_body": "{{first_name}}, Quick story...",
-      "thread_reply": false,
-      "strategy": "case_study",
-      "value_prop": "save_money",
-      "word_count": 58
+      "campaign_name": "How Acme doubled pipeline",
+      "campaign_type": "case_study",
+      "campaign_angle": "case_study",
+      "target_persona": "CRO",
+      "target_segment": "Enterprise",
+      "opener_pattern": "risk_based",
+      "sequence": [...],
+      "value_prop_rotation": ["save_money", "save_time", "make_money"],
+      "used_variables": ["{{first_name}}", "{{case_study_company}}", "{{case_study_result}}"],
+      "score": 89,
+      "rationale": "Proof-first approach for skeptical executives"
     },
     {
-      "position": 4,
-      "wait_days": 4,
-      "subject_line": null,
-      "email_body": "{{first_name}}—let me know if...",
-      "thread_reply": true,
-      "strategy": "redirect",
-      "value_prop": null,
-      "word_count": 32
+      "campaign_name": "Do more with same team",
+      "campaign_type": "whole_offer",
+      "campaign_angle": "risk_efficiency",
+      "target_persona": "CFO",
+      "target_segment": null,
+      "opener_pattern": "binary",
+      "sequence": [...],
+      "value_prop_rotation": ["save_money", "make_money", "save_time"],
+      "used_variables": ["{{first_name}}", "{{company_name}}"],
+      "score": 82,
+      "rationale": "Cost-focused angle for budget decision makers"
     }
   ],
-  value_prop_rotation=["save_time", "make_money", "save_money"],
-  used_variables=["{{first_name}}", "{{company_name}}", "{{industry}}"],
-  score=87,
-  rationale="Strong custom signal opener, good value rotation, all emails under 90 words"
+  strategy_considerations={
+    "inputs_used": ["target_customer", "job_titles", "segments", "personas", "roi_results"],
+    "campaign_mappings": [
+      {
+        "campaign_index": 0,
+        "angle": "custom_signal",
+        "target_persona": "VP of Sales",
+        "target_segment": "Mid-Market SaaS",
+        "reasoning": "Primary ICP from onboarding, highest volume segment",
+        "influenced_by": ["target_customer", "segments"]
+      },
+      {
+        "campaign_index": 1,
+        "angle": "persona_pain",
+        "target_persona": "Head of RevOps",
+        "reasoning": "Secondary persona with distinct pain points",
+        "influenced_by": ["personas", "pain_points"]
+      },
+      {
+        "campaign_index": 2,
+        "angle": "case_study",
+        "target_persona": "CRO",
+        "target_segment": "Enterprise",
+        "reasoning": "Decision maker, proof-focused using client case study",
+        "influenced_by": ["roi_results", "case_study_company"]
+      },
+      {
+        "campaign_index": 3,
+        "angle": "risk_efficiency",
+        "target_persona": "CFO",
+        "reasoning": "Budget holder needs ROI justification",
+        "influenced_by": ["success_metrics", "roi_results"]
+      }
+    ]
+  }
 )
 ```
 
-### Step 10: Complete Job
+### Step 9: Complete Job
 
-Call `complete_job(job_id="{job_id}")` when the sequence is saved.
+Call `complete_job(job_id="{job_id}")` when all 4 campaigns are saved.
 
 ---
 
@@ -432,9 +513,11 @@ Before including each email in the sequence, verify:
 
 ## Quick Reference
 
-1. **4 emails per sequence** (not 3 single variants)
-2. **Threading**: Email 1 & 3 new, Email 2 & 4 thread
-3. **Timing**: Day 0 → Day 3 → Day 7 → Day 11
-4. **Value rotation**: Save Time → Make Money → Save Money
-5. **50-90 words per email** (strict)
-6. **Use `save_campaign_sequence`** (not save_campaign_variant)
+1. **4 campaigns per batch** — each with 4 emails (16 emails total)
+2. **4 emails per sequence** — threading: Email 1 & 3 new, Email 2 & 4 thread
+3. **4 different angles** — custom_signal, persona_pain, case_study, risk_efficiency
+4. **4 different targets** — each campaign targets a different persona/segment
+5. **Timing**: Day 0 → Day 3 → Day 7 → Day 11
+6. **Value rotation**: Vary the lead value prop across the 4 campaigns
+7. **50-90 words per email** (strict)
+8. **Use `save_campaign_batch`** — saves all 4 campaigns + strategy considerations

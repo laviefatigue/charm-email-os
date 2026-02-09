@@ -1672,6 +1672,59 @@ export interface SequenceEmail {
   wordCount?: number;
 }
 
+// ===== CAMPAIGN BATCH & CYCLE TYPES =====
+
+// Campaign angle types for the 4-campaign batch generation
+export type CampaignAngle = 'custom_signal' | 'persona_pain' | 'case_study' | 'risk_efficiency';
+export type OpenerPattern = 'status_pressure' | 'efficiency_leverage' | 'risk_based' | 'binary' | 'redirect';
+
+// Strategy considerations - maps onboarding inputs to campaign targeting
+export interface CampaignMapping {
+  campaignIndex: number;
+  campaignId?: string;
+  angle: CampaignAngle;
+  targetPersona?: string;
+  targetSegment?: string;
+  reasoning: string;
+  influencedBy: string[];  // e.g., ['target_customer', 'job_titles', 'segments']
+}
+
+export interface StrategyConsiderations {
+  inputsUsed: string[];  // Onboarding fields used: ['target_customer', 'job_titles', 'roi_results']
+  campaignMappings: CampaignMapping[];
+}
+
+// Campaign cycles for tracking progressive scaling (4 → 8 → 12 → 16 → 20 → 24)
+export interface CampaignCycle {
+  id: string;
+  clientId: string;
+  strategyId?: string;
+  cycleNumber: number;  // 1, 2, 3, 4, 5, 6...
+  cycleName?: string;  // e.g., "Pre-Launch", "Cycle 1", "Infra Refresh"
+  startDate?: string;
+  endDate?: string;
+  durationDays: number;
+  targetCampaigns: number;  // Target number of campaigns for this cycle
+  actualCampaigns: number;
+  status: 'planned' | 'active' | 'completed';
+  notes?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+// Performance metrics synced from EmailBison
+export interface CampaignPerformanceMetrics {
+  emailsSent: number;
+  opens: number;
+  openRate: number;
+  replies: number;
+  replyRate: number;
+  bounces: number;
+  bounceRate: number;
+  unsubscribes: number;
+  lastSyncedAt?: string;
+}
+
 export interface CampaignSequence {
   id: string;
   jobId: string;
@@ -1695,6 +1748,26 @@ export interface CampaignSequence {
   pushedAt?: string;
   generationRound: number;
   createdAt: string;
+
+  // Batch generation differentiation
+  campaignAngle?: CampaignAngle;  // custom_signal, persona_pain, case_study, risk_efficiency
+  targetPersona?: string;  // Which persona this campaign targets
+  targetSegment?: string;  // Which segment this campaign targets
+  openerPattern?: OpenerPattern;  // Which Poke the Bear pattern was used
+
+  // Versioning and lineage (campaigns evolve across cycles)
+  cycleId?: string;  // Which cycle this campaign belongs to
+  campaignVersion?: number;  // v1, v2, v3... (increments on regeneration)
+  lineageId?: string;  // Groups campaigns that evolve from each other
+  previousVersionId?: string;  // Links to previous version of this campaign
+
+  // Performance tracking from EmailBison
+  emailbisonCampaignId?: string;
+  performanceMetrics?: CampaignPerformanceMetrics;
+  lastPerformanceSync?: string;
+
+  // Strategy considerations (populated from job)
+  strategyConsiderations?: StrategyConsiderations;
 }
 
 export interface ClientSequencesResponse {

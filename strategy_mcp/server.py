@@ -261,6 +261,100 @@ async def list_tools():
                 },
                 "required": ["job_id", "campaign_name", "campaign_type", "sequence"]
             }
+        ),
+        Tool(
+            name="save_campaign_batch",
+            description="""Save a batch of 4 distinct campaign sequences for human review.
+            This is the preferred method when generating multiple campaigns at once.
+
+            Each campaign should target a different persona/segment with a different angle:
+            - Campaign 1: custom_signal angle (research-led)
+            - Campaign 2: persona_pain angle (role-specific challenge)
+            - Campaign 3: case_study angle (proof-first)
+            - Campaign 4: risk_efficiency angle (cost/savings-focused)
+
+            Also tracks strategy_considerations to show which onboarding inputs
+            influenced each campaign (for the Strategy Consideration panel).""",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "job_id": {
+                        "type": "string",
+                        "description": "The strategy generation job ID"
+                    },
+                    "campaigns": {
+                        "type": "array",
+                        "description": "Array of 4 campaign objects",
+                        "minItems": 4,
+                        "maxItems": 4,
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "campaign_name": {"type": "string"},
+                                "campaign_type": {"type": "string"},
+                                "campaign_angle": {
+                                    "type": "string",
+                                    "enum": ["custom_signal", "persona_pain", "case_study", "risk_efficiency"]
+                                },
+                                "target_persona": {"type": ["string", "null"]},
+                                "target_segment": {"type": ["string", "null"]},
+                                "opener_pattern": {
+                                    "type": "string",
+                                    "enum": ["status_pressure", "efficiency_leverage", "risk_based", "binary", "redirect"]
+                                },
+                                "sequence": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "object",
+                                        "properties": {
+                                            "position": {"type": "integer"},
+                                            "wait_days": {"type": "integer"},
+                                            "subject_line": {"type": ["string", "null"]},
+                                            "email_body": {"type": "string"},
+                                            "thread_reply": {"type": "boolean"},
+                                            "strategy": {"type": "string"},
+                                            "value_prop": {"type": ["string", "null"]},
+                                            "word_count": {"type": "integer"}
+                                        }
+                                    }
+                                },
+                                "value_prop_rotation": {"type": "array", "items": {"type": "string"}},
+                                "used_variables": {"type": "array", "items": {"type": "string"}},
+                                "score": {"type": "integer"},
+                                "rationale": {"type": "string"}
+                            },
+                            "required": ["campaign_name", "campaign_type", "campaign_angle", "sequence"]
+                        }
+                    },
+                    "strategy_considerations": {
+                        "type": "object",
+                        "description": "Maps onboarding inputs to how they influenced each campaign",
+                        "properties": {
+                            "inputs_used": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": "List of onboarding fields used (e.g., target_customer, job_titles)"
+                            },
+                            "campaign_mappings": {
+                                "type": "array",
+                                "description": "Per-campaign reasoning about targeting",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "campaign_index": {"type": "integer"},
+                                        "angle": {"type": "string"},
+                                        "target_persona": {"type": ["string", "null"]},
+                                        "target_segment": {"type": ["string", "null"]},
+                                        "reasoning": {"type": "string"},
+                                        "influenced_by": {"type": "array", "items": {"type": "string"}}
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                "required": ["job_id", "campaigns"]
+            }
         )
     ]
 
@@ -691,6 +785,106 @@ async def call_tool(name: str, arguments: dict):
             conn.commit()
 
             return [TextContent(type="text", text=f"Saved 4-email sequence '{campaign_name}' with {total_word_count} total words (score: {score or 'N/A'})")]
+
+        finally:
+            cur.close()
+            conn.close()
+
+    elif name == "save_campaign_batch":
+        job_id = arguments["job_id"]
+        campaigns = arguments["campaigns"]
+        strategy_considerations = arguments.get("strategy_considerations", {})
+
+        conn = get_db()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+
+        try:
+            # Get job info
+            cur.execute("""
+                SELECT client_id, generation_round, strategy_id
+                FROM strategy_generation_jobs
+                WHERE id = %s
+            """, (job_id,))
+            job = cur.fetchone()
+
+            if not job:
+                return [TextContent(type="text", text=f"Error: Job {job_id} not found")]
+
+            client_id = job["client_id"]
+            generation_round = job["generation_round"]
+            job_strategy_id = job.get("strategy_id")
+
+            # Generate a lineage_id for this batch (all 4 campaigns share it initially)
+            batch_lineage_base = str(uuid.uuid4())
+
+            saved_campaigns = []
+
+            for idx, campaign in enumerate(campaigns):
+                campaign_name = campaign["campaign_name"]
+                campaign_type = campaign["campaign_type"]
+                campaign_angle = campaign.get("campaign_angle")
+                target_persona = campaign.get("target_persona")
+                target_segment = campaign.get("target_segment")
+                opener_pattern = campaign.get("opener_pattern")
+                sequence = campaign["sequence"]
+                value_prop_rotation = campaign.get("value_prop_rotation", [])
+                used_variables = campaign.get("used_variables", [])
+                score = campaign.get("score")
+                rationale = campaign.get("rationale")
+
+                # Calculate total word count
+                total_word_count = sum(email.get("word_count", 0) for email in sequence)
+
+                # Get subject line from Email 1
+                email_1 = next((e for e in sequence if e.get("position") == 1), sequence[0] if sequence else {})
+                subject_line = email_1.get("subject_line") or campaign_name
+                email_body = email_1.get("email_body", "")
+
+                # Each campaign gets its own lineage_id (they're separate campaign families)
+                lineage_id = str(uuid.uuid4())
+
+                # Insert campaign as a sequence suggestion
+                suggestion_id = str(uuid.uuid4())
+                cur.execute("""
+                    INSERT INTO strategy_suggestions
+                    (id, job_id, client_id, variant_number, subject_line, email_body,
+                     score, rationale, used_variables, campaign_type,
+                     generation_round, strategy_id, status,
+                     sequence_data, value_prop_rotation, is_sequence, total_word_count,
+                     campaign_angle, target_persona, target_segment, opener_pattern,
+                     lineage_id, campaign_version)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'pending',
+                            %s, %s, TRUE, %s, %s, %s, %s, %s, %s, 1)
+                """, (suggestion_id, job_id, client_id, idx + 1, subject_line, email_body,
+                      score, rationale, Json(used_variables),
+                      campaign_type, generation_round, job_strategy_id,
+                      Json(sequence), Json(value_prop_rotation), total_word_count,
+                      campaign_angle, target_persona, target_segment, opener_pattern,
+                      lineage_id))
+
+                saved_campaigns.append({
+                    "id": suggestion_id,
+                    "name": campaign_name,
+                    "angle": campaign_angle,
+                    "score": score
+                })
+
+            # Store strategy_considerations on the job
+            if strategy_considerations:
+                cur.execute("""
+                    UPDATE strategy_generation_jobs
+                    SET strategy_considerations = %s
+                    WHERE id = %s
+                """, (Json(strategy_considerations), job_id))
+
+            conn.commit()
+
+            # Build response summary
+            summary_parts = [f"Saved batch of {len(saved_campaigns)} campaigns:"]
+            for c in saved_campaigns:
+                summary_parts.append(f"  - {c['name']} ({c['angle']}, score: {c['score'] or 'N/A'})")
+
+            return [TextContent(type="text", text="\n".join(summary_parts))]
 
         finally:
             cur.close()
