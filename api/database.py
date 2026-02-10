@@ -306,7 +306,7 @@ async def _init_strategy_tables() -> None:
     # Fix for trigger referencing non-existent is_active column
     # First, list and drop any problematic triggers
     try:
-        triggers = await fetch("""
+        triggers = await fetch_all("""
             SELECT tgname FROM pg_trigger
             WHERE tgrelid = 'strategy_suggestions'::regclass
             AND NOT tgisinternal
