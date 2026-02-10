@@ -303,6 +303,16 @@ async def _init_strategy_tables() -> None:
     except Exception as e:
         logger.warning(f"Strategy suggestions table note: {e}")
 
+    # Add is_active column if missing (fix for trigger referencing non-existent column)
+    try:
+        await execute("""
+            ALTER TABLE strategy_suggestions
+            ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT true
+        """)
+        logger.info("Strategy suggestions is_active column ready")
+    except Exception as e:
+        logger.warning(f"Strategy suggestions is_active column note: {e}")
+
     # Strategy revision requests table
     create_revisions_table = """
         CREATE TABLE IF NOT EXISTS strategy_revision_requests (
