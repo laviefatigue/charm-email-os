@@ -355,6 +355,196 @@ async def list_tools():
                 },
                 "required": ["job_id", "campaigns"]
             }
+        ),
+        Tool(
+            name="save_campaign_document",
+            description="""Save a complete campaign document in stablekernel format for human review.
+            This creates a document with multiple variants per email position, along with
+            ICP mapping, variable schema, QA scoring, and strategy notes.
+
+            Document structure:
+            - Email 1: 2-3 variants (V1 custom_signal, V2 persona_pain, V3 case_study)
+            - Email 2: 1-2 variants (threaded reply, creative ideas)
+            - Email 3: 2-3 variants (new thread, different angle)
+            - Email 4: 2 variants (redirect or value bomb)
+
+            Mark one variant per position as is_recommended=true.""",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "job_id": {
+                        "type": "string",
+                        "description": "The strategy generation job ID"
+                    },
+                    "document_name": {
+                        "type": "string",
+                        "description": "Document name (e.g., 'Financial Services Campaign v1')"
+                    },
+                    "vertical": {
+                        "type": "string",
+                        "description": "Target vertical/industry"
+                    },
+                    "objective": {
+                        "type": "string",
+                        "description": "Primary GTM objective"
+                    },
+                    "icp_mapping": {
+                        "type": "object",
+                        "description": "Target ICP, pain points, and objections",
+                        "properties": {
+                            "target_icp": {
+                                "type": "object",
+                                "properties": {
+                                    "role": {"type": "string"},
+                                    "company_type": {"type": "string"},
+                                    "company_size": {"type": "string"}
+                                }
+                            },
+                            "pain_points": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "category": {"type": "string"},
+                                        "label": {"type": "string"},
+                                        "points": {"type": "array", "items": {"type": "string"}}
+                                    }
+                                }
+                            },
+                            "objections": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "objection": {"type": "string"},
+                                        "preemption": {"type": "string"}
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "variable_schema": {
+                        "type": "object",
+                        "description": "Variable definitions with sources",
+                        "properties": {
+                            "core": {"type": "array", "items": {"type": "object"}},
+                            "high_signal": {"type": "array", "items": {"type": "object"}},
+                            "ai_generated": {"type": "array", "items": {"type": "object"}}
+                        }
+                    },
+                    "email_positions": {
+                        "type": "array",
+                        "description": "Array of 4 email positions with variants",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "position": {"type": "integer"},
+                                "title": {"type": "string"},
+                                "variants": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "object",
+                                        "properties": {
+                                            "variant_number": {"type": "integer"},
+                                            "variant_name": {"type": "string"},
+                                            "is_recommended": {"type": "boolean"},
+                                            "subject_line": {"type": ["string", "null"]},
+                                            "email_body": {"type": "string"},
+                                            "wait_days": {"type": "integer"},
+                                            "thread_reply": {"type": "boolean"},
+                                            "word_count": {"type": "integer"},
+                                            "them_us_ratio": {"type": "string"},
+                                            "score": {"type": "integer"},
+                                            "angle": {"type": "string"},
+                                            "strategy": {"type": "string"},
+                                            "value_prop": {"type": "string"}
+                                        }
+                                    }
+                                },
+                                "subject_options": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "object",
+                                        "properties": {
+                                            "subject_line": {"type": "string"},
+                                            "rationale": {"type": "string"}
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "sequence_summary": {
+                        "type": "array",
+                        "description": "Timeline steps for sequence overview",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "day": {"type": "string"},
+                                "title": {"type": "string"},
+                                "description": {"type": "string"}
+                            }
+                        }
+                    },
+                    "qa_scoring": {
+                        "type": "object",
+                        "description": "QA scoring breakdown for lead variant",
+                        "properties": {
+                            "overall_score": {"type": "integer"},
+                            "verdict": {"type": "string"},
+                            "dimensions": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "name": {"type": "string"},
+                                        "score": {"type": "string"},
+                                        "notes": {"type": "string"}
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "strategy_notes": {
+                        "type": "object",
+                        "description": "Callouts, data enrichment, A/B testing",
+                        "properties": {
+                            "callouts": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "type": {"type": "string"},
+                                        "text": {"type": "string"}
+                                    }
+                                }
+                            },
+                            "data_enrichment": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "variable": {"type": "string"},
+                                        "source": {"type": "string"}
+                                    }
+                                }
+                            },
+                            "ab_testing": {"type": "array", "items": {"type": "string"}}
+                        }
+                    },
+                    "used_variables": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Variables used across the document"
+                    },
+                    "missing_variables": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Variables referenced but not available"
+                    }
+                },
+                "required": ["job_id", "document_name", "email_positions"]
+            }
         )
     ]
 
@@ -420,7 +610,7 @@ async def call_tool(name: str, arguments: dict):
                 else:
                     onboarding = client["onboarding_data"]
 
-            # Build context object
+            # Build context object with all available fields
             context = {
                 "client_id": str(client["id"]),
                 "client_name": client["name"],
@@ -433,16 +623,25 @@ async def call_tool(name: str, arguments: dict):
                 "company_name": submission.get("company_name") if submission else client["name"],
                 "employee_count": submission.get("employee_count") if submission else None,
                 "funding_stage": submission.get("funding_stage") if submission else None,
+                "hq_location": submission.get("hq_location") if submission else None,
 
                 # Offering details
                 "core_product": submission.get("core_product") if submission else onboarding.get("product"),
                 "target_customer": submission.get("target_customer") if submission else None,
                 "acv": submission.get("acv") if submission else None,
                 "sales_cycle_length": submission.get("sales_cycle_length") if submission else None,
+                "annual_revenue": submission.get("annual_revenue") if submission else None,
+                "self_serve_pct": submission.get("self_serve_pct") if submission else None,
 
                 # Market signals
                 "buying_signals": submission.get("signals") if submission else [],
                 "job_titles": submission.get("job_titles") if submission else [],
+
+                # Competitive landscape (NEW)
+                "competitors": submission.get("competitors") if submission else [],
+                "key_differentiators": submission.get("key_differentiators") if submission else None,
+                "common_objections": submission.get("common_objections") if submission else None,
+                "buying_triggers_global": submission.get("buying_triggers_global") if submission else None,
 
                 # Segments and personas
                 "segments": [
@@ -471,6 +670,19 @@ async def call_tool(name: str, arguments: dict):
                 "customer_voice": submission.get("customer_voice") if submission else None,
                 "roi_results": submission.get("roi_results") if submission else None,
                 "tone_style": submission.get("tone_style") if submission else None,
+                "case_studies": submission.get("case_studies") if submission else None,
+                "industry_jargon": submission.get("industry_jargon") if submission else None,
+
+                # Tech stack / Core vendors (NEW - for {{core_vendor}} variable)
+                "core_vendors": submission.get("core_vendors") if submission else [],
+
+                # Process & Performance (NEW)
+                "monthly_volume": submission.get("monthly_volume") if submission else None,
+                "current_open_rate": submission.get("current_open_rate") if submission else None,
+                "current_reply_rate": submission.get("current_reply_rate") if submission else None,
+                "other_channels": submission.get("other_channels") if submission else None,
+                "messages_worked": submission.get("messages_worked") if submission else None,
+                "approaches_failed": submission.get("approaches_failed") if submission else None,
 
                 # Tools
                 "outbound_tools": submission.get("outbound_tools") if submission else [],
@@ -480,6 +692,8 @@ async def call_tool(name: str, arguments: dict):
                 "primary_objective": submission.get("primary_gtm_objective") if submission else None,
                 "success_metrics": submission.get("success_metrics") if submission else [],
                 "success_definition": submission.get("success_definition") if submission else None,
+                "engagement_win": submission.get("engagement_win") if submission else None,
+                "additional_context": submission.get("additional_context") if submission else None,
 
                 # Generation info
                 "has_comprehensive_onboarding": submission is not None,
@@ -885,6 +1099,118 @@ async def call_tool(name: str, arguments: dict):
                 summary_parts.append(f"  - {c['name']} ({c['angle']}, score: {c['score'] or 'N/A'})")
 
             return [TextContent(type="text", text="\n".join(summary_parts))]
+
+        finally:
+            cur.close()
+            conn.close()
+
+    elif name == "save_campaign_document":
+        job_id = arguments["job_id"]
+        document_name = arguments["document_name"]
+        vertical = arguments.get("vertical")
+        objective = arguments.get("objective")
+        icp_mapping = arguments.get("icp_mapping")
+        variable_schema = arguments.get("variable_schema")
+        email_positions = arguments["email_positions"]
+        sequence_summary = arguments.get("sequence_summary")
+        qa_scoring = arguments.get("qa_scoring")
+        strategy_notes = arguments.get("strategy_notes")
+        used_variables = arguments.get("used_variables", [])
+        missing_variables = arguments.get("missing_variables", [])
+
+        conn = get_db()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+
+        try:
+            # Get job info
+            cur.execute("""
+                SELECT client_id, strategy_id
+                FROM strategy_generation_jobs
+                WHERE id = %s
+            """, (job_id,))
+            job = cur.fetchone()
+
+            if not job:
+                return [TextContent(type="text", text=f"Error: Job {job_id} not found")]
+
+            client_id = str(job["client_id"])
+            strategy_id = job.get("strategy_id")
+
+            # Create the campaign document
+            document_id = str(uuid.uuid4())
+            cur.execute("""
+                INSERT INTO campaign_documents
+                (id, job_id, client_id, strategy_id, document_name, document_version,
+                 vertical, objective, icp_mapping, variable_schema,
+                 sequence_summary, qa_scoring, strategy_notes, status)
+                VALUES (%s, %s, %s, %s, %s, 1, %s, %s, %s, %s, %s, %s, %s, 'draft')
+            """, (document_id, job_id, client_id, strategy_id, document_name,
+                  vertical, objective,
+                  Json(icp_mapping) if icp_mapping else None,
+                  Json(variable_schema) if variable_schema else None,
+                  Json(sequence_summary) if sequence_summary else None,
+                  Json(qa_scoring) if qa_scoring else None,
+                  Json(strategy_notes) if strategy_notes else None))
+
+            # Insert email variants for each position
+            variant_count = 0
+            for position_data in email_positions:
+                position = position_data["position"]
+                variants = position_data.get("variants", [])
+                subject_options = position_data.get("subject_options", [])
+
+                for variant in variants:
+                    variant_id = str(uuid.uuid4())
+                    cur.execute("""
+                        INSERT INTO document_email_variants
+                        (id, document_id, email_position, variant_number, variant_name,
+                         is_recommended, subject_line, email_body, wait_days, thread_reply,
+                         word_count, them_us_ratio, score, angle, strategy, value_prop)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    """, (variant_id, document_id, position,
+                          variant.get("variant_number", 1),
+                          variant.get("variant_name"),
+                          variant.get("is_recommended", False),
+                          variant.get("subject_line"),
+                          variant["email_body"],
+                          variant.get("wait_days", 0),
+                          variant.get("thread_reply", False),
+                          variant.get("word_count"),
+                          variant.get("them_us_ratio"),
+                          variant.get("score"),
+                          variant.get("angle"),
+                          variant.get("strategy"),
+                          variant.get("value_prop")))
+                    variant_count += 1
+
+                # Insert subject line options
+                for idx, subj_opt in enumerate(subject_options):
+                    cur.execute("""
+                        INSERT INTO document_subject_options
+                        (id, document_id, email_position, subject_line, rationale, sort_order)
+                        VALUES (%s, %s, %s, %s, %s, %s)
+                    """, (str(uuid.uuid4()), document_id, position,
+                          subj_opt["subject_line"],
+                          subj_opt.get("rationale"),
+                          idx))
+
+            conn.commit()
+
+            result = {
+                "document_id": document_id,
+                "document_name": document_name,
+                "positions": len(email_positions),
+                "variants": variant_count,
+                "has_icp_mapping": icp_mapping is not None,
+                "has_qa_scoring": qa_scoring is not None
+            }
+
+            return [TextContent(type="text", text=f"Saved campaign document: {document_name}\n"
+                               f"  Document ID: {document_id}\n"
+                               f"  Positions: {len(email_positions)}\n"
+                               f"  Total variants: {variant_count}\n"
+                               f"  ICP mapping: {'Yes' if icp_mapping else 'No'}\n"
+                               f"  QA scoring: {'Yes' if qa_scoring else 'No'}")]
 
         finally:
             cur.close()

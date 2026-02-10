@@ -39,6 +39,19 @@ from models.strategy import (
     SequenceRevisionRequest,
     # Spintax models
     SpintaxJobResponse,
+    # Campaign Document models
+    CampaignDocumentResponse,
+    ClientDocumentsResponse,
+    DocumentReviewRequest,
+    DocumentVariantEditRequest,
+    SelectVariantRequest,
+    EmailPosition,
+    EmailVariant,
+    SubjectOption,
+    ICPMapping,
+    VariableSchema,
+    QAScoring,
+    StrategyNotes,
 )
 
 router = APIRouter()
@@ -1801,3 +1814,290 @@ async def migration_005_execute(confirm: bool = False):
         logger.error(f"Migration 005 failed: {e}")
 
     return results
+
+
+# ============================================================================
+# Campaign Document Routes (Stablekernel Format)
+# ============================================================================
+
+@router.get("/documents/{client_id}", response_model=ClientDocumentsResponse)
+async def get_client_documents(client_id: UUID):
+    """
+    Get all campaign documents for a client.
+    Returns documents with full structure (ICP, variables, email positions).
+    """
+    # Verify client exists
+    client = await fetch_one("SELECT id FROM clients WHERE id = $1", client_id)
+    if not client:
+        raise HTTPException(status_code=404, detail="Client not found")
+
+    # Get all documents for client
+    documents = await fetch_all("""
+        SELECT d.id, d.job_id, d.client_id, d.strategy_id,
+               d.document_name, d.document_version, d.vertical, d.objective,
+               d.icp_mapping, d.variable_schema, d.sequence_summary,
+               d.qa_scoring, d.strategy_notes, d.status,
+               d.human_comment, d.reviewed_by, d.reviewed_at,
+               d.created_at, d.updated_at
+        FROM campaign_documents d
+        WHERE d.client_id = $1
+        ORDER BY d.created_at DESC
+    """, client_id)
+
+    result_docs = []
+    for doc in documents:
+        # Get email variants for this document
+        variants = await fetch_all("""
+            SELECT id, document_id, email_position, variant_number, variant_name,
+                   is_recommended, subject_line, email_body, wait_days, thread_reply,
+                   word_count, them_us_ratio, score, angle, strategy, value_prop,
+                   edited_subject_line, edited_email_body, created_at
+            FROM document_email_variants
+            WHERE document_id = $1
+            ORDER BY email_position, variant_number
+        """, doc["id"])
+
+        # Get subject options
+        subject_options = await fetch_all("""
+            SELECT id, email_position, subject_line, rationale, sort_order
+            FROM document_subject_options
+            WHERE document_id = $1
+            ORDER BY email_position, sort_order
+        """, doc["id"])
+
+        # Group variants by position
+        positions_map = {}
+        for v in variants:
+            pos = v["email_position"]
+            if pos not in positions_map:
+                positions_map[pos] = {"position": pos, "title": f"Email {pos}", "variants": [], "subject_options": []}
+            positions_map[pos]["variants"].append(EmailVariant(
+                id=v["id"],
+                variant_number=v["variant_number"],
+                variant_name=v.get("variant_name"),
+                is_recommended=v.get("is_recommended", False),
+                subject_line=v.get("subject_line"),
+                email_body=v["email_body"],
+                wait_days=v.get("wait_days", 0),
+                thread_reply=v.get("thread_reply", False),
+                word_count=v.get("word_count"),
+                them_us_ratio=v.get("them_us_ratio"),
+                score=v.get("score"),
+                angle=v.get("angle"),
+                strategy=v.get("strategy"),
+                value_prop=v.get("value_prop"),
+                edited_subject_line=v.get("edited_subject_line"),
+                edited_email_body=v.get("edited_email_body"),
+            ))
+
+        # Add subject options to positions
+        for so in subject_options:
+            pos = so["email_position"]
+            if pos in positions_map:
+                positions_map[pos]["subject_options"].append(SubjectOption(
+                    subject_line=so["subject_line"],
+                    rationale=so.get("rationale")
+                ))
+
+        email_positions = [EmailPosition(**p) for p in sorted(positions_map.values(), key=lambda x: x["position"])]
+
+        result_docs.append(CampaignDocumentResponse(
+            id=doc["id"],
+            job_id=doc["job_id"],
+            client_id=doc["client_id"],
+            strategy_id=doc.get("strategy_id"),
+            document_name=doc["document_name"],
+            document_version=doc.get("document_version", 1),
+            vertical=doc.get("vertical"),
+            objective=doc.get("objective"),
+            icp_mapping=ICPMapping(**doc["icp_mapping"]) if doc.get("icp_mapping") else None,
+            variable_schema=VariableSchema(**doc["variable_schema"]) if doc.get("variable_schema") else None,
+            email_positions=email_positions,
+            sequence_summary=doc.get("sequence_summary"),
+            qa_scoring=QAScoring(**doc["qa_scoring"]) if doc.get("qa_scoring") else None,
+            strategy_notes=StrategyNotes(**doc["strategy_notes"]) if doc.get("strategy_notes") else None,
+            status=doc["status"],
+            human_comment=doc.get("human_comment"),
+            reviewed_by=doc.get("reviewed_by"),
+            reviewed_at=doc.get("reviewed_at"),
+            created_at=doc["created_at"],
+            updated_at=doc["updated_at"],
+        ))
+
+    return ClientDocumentsResponse(
+        client_id=client_id,
+        documents=result_docs,
+        total=len(result_docs)
+    )
+
+
+@router.get("/documents/{client_id}/{document_id}", response_model=CampaignDocumentResponse)
+async def get_document(client_id: UUID, document_id: UUID):
+    """
+    Get a single campaign document with all details.
+    """
+    doc = await fetch_one("""
+        SELECT d.id, d.job_id, d.client_id, d.strategy_id,
+               d.document_name, d.document_version, d.vertical, d.objective,
+               d.icp_mapping, d.variable_schema, d.sequence_summary,
+               d.qa_scoring, d.strategy_notes, d.status,
+               d.human_comment, d.reviewed_by, d.reviewed_at,
+               d.created_at, d.updated_at
+        FROM campaign_documents d
+        WHERE d.id = $1 AND d.client_id = $2
+    """, document_id, client_id)
+
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    # Get email variants
+    variants = await fetch_all("""
+        SELECT id, email_position, variant_number, variant_name,
+               is_recommended, subject_line, email_body, wait_days, thread_reply,
+               word_count, them_us_ratio, score, angle, strategy, value_prop,
+               edited_subject_line, edited_email_body
+        FROM document_email_variants
+        WHERE document_id = $1
+        ORDER BY email_position, variant_number
+    """, document_id)
+
+    # Get subject options
+    subject_options = await fetch_all("""
+        SELECT email_position, subject_line, rationale
+        FROM document_subject_options
+        WHERE document_id = $1
+        ORDER BY email_position, sort_order
+    """, document_id)
+
+    # Group by position
+    positions_map = {}
+    for v in variants:
+        pos = v["email_position"]
+        if pos not in positions_map:
+            positions_map[pos] = {"position": pos, "title": f"Email {pos}", "variants": [], "subject_options": []}
+        positions_map[pos]["variants"].append(EmailVariant(
+            id=v["id"],
+            variant_number=v["variant_number"],
+            variant_name=v.get("variant_name"),
+            is_recommended=v.get("is_recommended", False),
+            subject_line=v.get("subject_line"),
+            email_body=v["email_body"],
+            wait_days=v.get("wait_days", 0),
+            thread_reply=v.get("thread_reply", False),
+            word_count=v.get("word_count"),
+            them_us_ratio=v.get("them_us_ratio"),
+            score=v.get("score"),
+            angle=v.get("angle"),
+            strategy=v.get("strategy"),
+            value_prop=v.get("value_prop"),
+            edited_subject_line=v.get("edited_subject_line"),
+            edited_email_body=v.get("edited_email_body"),
+        ))
+
+    for so in subject_options:
+        pos = so["email_position"]
+        if pos in positions_map:
+            positions_map[pos]["subject_options"].append(SubjectOption(
+                subject_line=so["subject_line"],
+                rationale=so.get("rationale")
+            ))
+
+    email_positions = [EmailPosition(**p) for p in sorted(positions_map.values(), key=lambda x: x["position"])]
+
+    return CampaignDocumentResponse(
+        id=doc["id"],
+        job_id=doc["job_id"],
+        client_id=doc["client_id"],
+        strategy_id=doc.get("strategy_id"),
+        document_name=doc["document_name"],
+        document_version=doc.get("document_version", 1),
+        vertical=doc.get("vertical"),
+        objective=doc.get("objective"),
+        icp_mapping=ICPMapping(**doc["icp_mapping"]) if doc.get("icp_mapping") else None,
+        variable_schema=VariableSchema(**doc["variable_schema"]) if doc.get("variable_schema") else None,
+        email_positions=email_positions,
+        sequence_summary=doc.get("sequence_summary"),
+        qa_scoring=QAScoring(**doc["qa_scoring"]) if doc.get("qa_scoring") else None,
+        strategy_notes=StrategyNotes(**doc["strategy_notes"]) if doc.get("strategy_notes") else None,
+        status=doc["status"],
+        human_comment=doc.get("human_comment"),
+        reviewed_by=doc.get("reviewed_by"),
+        reviewed_at=doc.get("reviewed_at"),
+        created_at=doc["created_at"],
+        updated_at=doc["updated_at"],
+    )
+
+
+@router.patch("/documents/{document_id}/variants/{variant_id}")
+async def edit_document_variant(document_id: UUID, variant_id: UUID, request: DocumentVariantEditRequest):
+    """
+    Edit a specific variant's content in a campaign document.
+    Stores edits in edited_* columns, preserving originals.
+    """
+    # Verify variant exists
+    variant = await fetch_one("""
+        SELECT id, document_id
+        FROM document_email_variants
+        WHERE id = $1 AND document_id = $2
+    """, variant_id, document_id)
+
+    if not variant:
+        raise HTTPException(status_code=404, detail="Variant not found")
+
+    # Update edited fields
+    await execute("""
+        UPDATE document_email_variants
+        SET edited_subject_line = $1, edited_email_body = $2
+        WHERE id = $3
+    """, request.subject_line, request.email_body, variant_id)
+
+    return {"status": "updated", "variant_id": str(variant_id)}
+
+
+@router.post("/documents/{document_id}/select-variant")
+async def select_recommended_variant(document_id: UUID, request: SelectVariantRequest):
+    """
+    Select a variant as the recommended one for its position.
+    Clears is_recommended from other variants in the same position.
+    """
+    # Clear existing recommendation for this position
+    await execute("""
+        UPDATE document_email_variants
+        SET is_recommended = FALSE
+        WHERE document_id = $1 AND email_position = $2
+    """, document_id, request.position)
+
+    # Set new recommendation
+    await execute("""
+        UPDATE document_email_variants
+        SET is_recommended = TRUE
+        WHERE document_id = $1 AND email_position = $2 AND variant_number = $3
+    """, document_id, request.position, request.variant_number)
+
+    return {"status": "updated", "position": request.position, "variant": request.variant_number}
+
+
+@router.post("/documents/{document_id}/review")
+async def review_document(document_id: UUID, request: DocumentReviewRequest):
+    """
+    Review a campaign document - approve, deny, or request revision.
+    """
+    doc = await fetch_one("SELECT id, status FROM campaign_documents WHERE id = $1", document_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    new_status = request.action  # approve, deny, revision_requested
+    if new_status == "approve":
+        new_status = "approved"
+    elif new_status == "deny":
+        new_status = "denied"
+
+    await execute("""
+        UPDATE campaign_documents
+        SET status = $1, human_comment = $2, reviewed_by = $3, reviewed_at = NOW(), updated_at = NOW()
+        WHERE id = $4
+    """, new_status, request.comment, request.reviewer, document_id)
+
+    logger.info(f"Document {document_id} reviewed: {new_status}")
+
+    return {"status": new_status, "document_id": str(document_id)}
