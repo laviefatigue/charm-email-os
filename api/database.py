@@ -303,7 +303,24 @@ async def _init_strategy_tables() -> None:
     except Exception as e:
         logger.warning(f"Strategy suggestions table note: {e}")
 
-    # Add is_active column if missing (fix for trigger referencing non-existent column)
+    # Fix for trigger referencing non-existent is_active column
+    # First, list and drop any problematic triggers
+    try:
+        triggers = await fetch("""
+            SELECT tgname FROM pg_trigger
+            WHERE tgrelid = 'strategy_suggestions'::regclass
+            AND NOT tgisinternal
+        """)
+        for trigger in triggers:
+            trigger_name = trigger['tgname']
+            logger.warning(f"Dropping trigger {trigger_name} on strategy_suggestions")
+            await execute(f'DROP TRIGGER IF EXISTS "{trigger_name}" ON strategy_suggestions')
+        if triggers:
+            logger.info(f"Dropped {len(triggers)} trigger(s) on strategy_suggestions")
+    except Exception as e:
+        logger.warning(f"Trigger cleanup note: {e}")
+
+    # Add is_active column if missing
     try:
         await execute("""
             ALTER TABLE strategy_suggestions
