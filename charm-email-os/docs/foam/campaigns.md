@@ -1,10 +1,12 @@
 # Campaigns
 
-Email campaigns created from approved [[campaign-ideas]].
+Email campaigns created from approved [[campaign-ideas]] or [[strategy-suggestions]].
 
 ## Overview
 
-Campaigns are the execution layer for outbound email:
+Campaigns are the execution layer for outbound email.
+
+> **Note**: The newer [[strategy-suggestions]] system has replaced much of the campaign-ideas workflow. Strategy suggestions are AI-generated 4-email sequences with QA scoring that go through a streamlined approval flow. See [[strategy-cycles]] for how campaigns are organized.
 
 ```
 CampaignIdea (Strategy)
@@ -209,7 +211,9 @@ Draft → Run → Active → Progress → Completed
 
 ## Related
 
-- [[campaign-ideas]] - Strategy details
+- [[strategy-suggestions]] - AI-generated campaign sequences (newer system)
+- [[strategy-cycles]] - Campaign organization by cycles
+- [[campaign-ideas]] - Legacy strategy details
 - [[leads]] - Lead management
 - [[clients]] - Parent entity
 - [[strategy]] - Workflow details

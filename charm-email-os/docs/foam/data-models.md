@@ -138,6 +138,44 @@ interface Campaign {
 }
 ```
 
+## [[strategy-suggestions|Strategy Suggestion]]
+
+```typescript
+type SuggestionStatus = 'pending' | 'approved' | 'denied' | 'revision_requested';
+type CampaignAngle = 'custom_signal' | 'persona_pain' | 'case_study' | 'risk_efficiency';
+
+interface StrategySuggestion {
+  id: string;
+  jobId: string;
+  clientId: string;
+  variantNumber: number;           // 1-4
+  subjectLine: string;
+  emailBody: string;
+  score?: number;                  // 0-100 QA score
+  rationale?: string;
+  usedVariables?: string[];        // ["{{first_name}}", "{{company_name}}"]
+  campaignType?: CampaignAngle;
+  status: SuggestionStatus;
+  humanComment?: string;
+  reviewedBy?: string;
+  reviewedAt?: Date;
+  cycleId?: string;                // Link to campaign cycle
+  lineageId?: string;              // Groups versions across cycles
+  campaignVersion?: number;
+  isActive: boolean;
+  createdAt: Date;
+}
+
+interface SequenceEmail {
+  position: number;                // 1-4
+  subjectLine?: string;
+  emailBody: string;
+  waitDays: number;
+  threadReply: boolean;
+  wordCount?: number;
+}
+```
+
 ## [[leads|Lead]]
 
 ```typescript
@@ -194,6 +232,7 @@ Consistent color mappings for status badges:
 - [[architecture]] - System structure
 - [[state-management]] - How data is managed
 - [[health-monitoring]] - Health type details
+- [[strategy-suggestions]] - Campaign sequence approval workflow
 
 ---
 Tags: #types #models #data

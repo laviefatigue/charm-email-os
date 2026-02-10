@@ -16,6 +16,7 @@ Charm Email OS is a Next.js 16 application designed to manage email outreach ope
 - [[onboarding-form]] - External client onboarding form
 - [[strategy-ai-container]] - VPS Docker deployment for AI strategy generation
 - [[strategy-cycles]] - Campaign cycles and Strategy page UI
+- [[strategy-suggestions]] - Campaign sequence approval workflow and database schema
 - [[strategy-upgrade]] - Planned strategy page improvements (spintax workflow)
 
 ## Core Concepts
