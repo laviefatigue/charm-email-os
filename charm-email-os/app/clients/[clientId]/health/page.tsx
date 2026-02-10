@@ -15,6 +15,7 @@ import {
   CampaignAttributionPanel,
   ListContaminationTracker,
   ESPHealthSummary,
+  RotationOverview,
 } from '@/components/health';
 import { useClientStore, useHealthStore } from '@/lib/stores';
 import { cn } from '@/lib/utils';
@@ -176,6 +177,14 @@ export default function HealthPage() {
             </Card>
           </div>
         )}
+
+        {/* Rotation Overview */}
+        <div className="mb-6">
+          <RotationOverview
+            domains={domainMetrics}
+            backupCapacity={backupCapacity}
+          />
+        </div>
 
         {/* Main Dashboard Grid */}
         <div className="grid grid-cols-12 gap-6">

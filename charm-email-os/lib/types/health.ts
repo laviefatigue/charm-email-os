@@ -355,3 +355,63 @@ export function getDomainHealthState(deadInboxes: number): DomainHealthState {
 export function isInstantKillTrigger(type: KillTriggerType): boolean {
   return KILL_TRIGGER_THRESHOLDS[type].severity === 'instant';
 }
+
+// ===== ROTATION DASHBOARD TYPES =====
+
+// Group domains by lifecycle phase for distribution visualization
+export interface DomainsByPhase {
+  warming: number;
+  ramping: number;
+  establishing: number;
+  peak: number;
+  monitoring: number;
+  rotation: number;
+}
+
+// Domain needing rotation attention
+export interface RotationAttentionItem {
+  domainId: string;
+  domain: string;
+  phase: DomainLifecyclePhase;
+  ageInDays: number;
+  daysUntilRotation: number;
+  inboxCount: number;
+  urgency: 'critical' | 'warning' | 'monitor';
+}
+
+// Helper to group domains by phase
+export function groupDomainsByPhase(domains: DomainHealthMetrics[]): DomainsByPhase {
+  const result: DomainsByPhase = {
+    warming: 0,
+    ramping: 0,
+    establishing: 0,
+    peak: 0,
+    monitoring: 0,
+    rotation: 0,
+  };
+
+  for (const domain of domains) {
+    if (domain.phase in result) {
+      result[domain.phase]++;
+    }
+  }
+
+  return result;
+}
+
+// Helper to get domains needing rotation attention (monitoring + rotation phases)
+export function getRotationAttentionItems(domains: DomainHealthMetrics[]): RotationAttentionItem[] {
+  return domains
+    .filter(d => d.phase === 'monitoring' || d.phase === 'rotation')
+    .map(d => ({
+      domainId: d.domainId,
+      domain: d.domain,
+      phase: d.phase,
+      ageInDays: d.ageInDays,
+      daysUntilRotation: d.daysUntilRotation,
+      inboxCount: d.totalInboxes,
+      urgency: d.phase === 'rotation' ? 'critical' as const :
+               d.ageInDays >= 210 ? 'warning' as const : 'monitor' as const,
+    }))
+    .sort((a, b) => b.ageInDays - a.ageInDays); // Oldest first
+}

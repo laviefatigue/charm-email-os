@@ -59,6 +59,9 @@ Core app shell components:
 | [[BackupCapacityGauge]] | Backup inbox capacity |
 | [[ListContaminationTracker]] | List quality monitoring |
 | [[CampaignAttributionPanel]] | Campaign impact on health |
+| [[RotationOverview]] | Domain rotation dashboard with phase distribution |
+| [[DomainPhaseDistribution]] | Lifecycle phase bar chart visualization |
+| [[RotationNeedsAttention]] | Domains approaching/needing rotation |
 
 ### Strategy Components (`components/strategy/`)
 

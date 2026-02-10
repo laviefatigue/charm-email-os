@@ -157,13 +157,16 @@ Inboxes are killed when [[health-monitoring|kill triggers]] are activated.
 
 | Component | Purpose |
 |-----------|---------|
+| [[InventoryHealthDashboard]] | Real-time EmailBison health metrics |
 | [[DomainCard]] | Domain with status and inboxes |
 | [[DomainForm]] | Create new domain |
 | [[DomainEditModal]] | Edit domain |
+| [[DomainInboxTree]] | Collapsible domain/inbox tree |
 | [[InboxCard]] | Inbox status and health |
 | [[InboxForm]] | Create new inbox |
 | [[InboxEditModal]] | Edit inbox |
 | [[WarmupProgress]] | Warmup progress bar |
+| [[SenderNamesTab]] | Sender name management |
 
 ## Route
 
@@ -193,6 +196,24 @@ Names: Smith, Johnson, Williams, Brown, Davis
 Format: {firstName}.{lastName}@{domain}
 ```
 
+## Real-Time Health Dashboard
+
+The Active Inventory tab displays live infrastructure health via [[emailbison-integration]]:
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│ ≡ Infrastructure Health                      ● EmailBison: Live │
+├─────────────────────────────────────────────────────────────────┤
+│ 📥 187 Inboxes │ 📊 30 Connected │ 🏠 77 Domains │ 💚 100 Health│
+├─────────────────────────────────────────────────────────────────┤
+│ Provider Breakdown: Microsoft (90%) vs Google (10%)             │
+├─────────────────────────────────────────────────────────────────┤
+│ ⚠️ Needs Attention: Blacklisted domains, high-bounce inboxes   │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+See [[inventory-health-dashboard]] for the component implementation.
+
 ## Connection to EmailBison & Lead Refinery
 
 Infrastructure provisioned in Charm OS becomes the sending layer in EmailBison:
@@ -202,6 +223,7 @@ Charm OS Inbox (provisioned)
     → emailbisonAccountId (sender account in EmailBison)
     → Used by campaigns loaded with [[lead-refinery]] verified leads
     → [[health-monitoring]] tracks bounce rates back from EmailBison
+    → [[emailbison-integration]] provides real-time metrics display
 ```
 
 When the [[lead-refinery]] pushes verified leads into an EmailBison campaign, those leads are sent from the inboxes provisioned here. Bounce and complaint data flows back through [[health-monitoring]] to trigger domain/inbox kill decisions.
@@ -213,6 +235,8 @@ See [[system-integration]] for the full platform data flow.
 - [[clients]] - Parent entity
 - [[sender-names]] - Name configuration and variations
 - [[health-monitoring]] - Health tracking
+- [[emailbison-integration]] - Real-time EmailBison API
+- [[inventory-health-dashboard]] - Dashboard component
 - [[domains]] - Domain details
 - [[inboxes]] - Inbox details
 - [[system-integration]] - Platform-wide integration map

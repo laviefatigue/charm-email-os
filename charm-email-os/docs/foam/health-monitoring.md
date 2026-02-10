@@ -201,6 +201,52 @@ interface OverallBackupCapacity {
 }
 ```
 
+## Rotation Dashboard
+
+The Health page includes a [[RotationOverview]] component for proactive domain rotation planning:
+
+### Key Questions Answered
+
+1. **Which domains are approaching rotation?** (monitoring phase, 180-240 days)
+2. **Which domains must be rotated NOW?** (rotation phase, 240+ days)
+3. **Do I have enough spare capacity for replacements?**
+4. **What's my domain age distribution?**
+
+### Components
+
+| Component | Purpose |
+|-----------|---------|
+| [[RotationOverview]] | Main rotation dashboard container |
+| [[DomainPhaseDistribution]] | Visual bar chart of domains by lifecycle phase |
+| [[RotationNeedsAttention]] | Table of domains in monitoring/rotation phases |
+
+### Urgency Levels
+
+Domains needing attention are categorized:
+
+| Urgency | Criteria | Action |
+|---------|----------|--------|
+| Critical (red) | rotation phase (240+ days) | Order replacement immediately |
+| Warning (yellow) | monitoring phase, 210+ days | Plan migration |
+| Monitor (blue) | monitoring phase, 180-210 days | Monitor closely |
+
+### Helper Functions
+
+```typescript
+// Group domains by lifecycle phase
+function groupDomainsByPhase(domains: DomainHealthMetrics[]): DomainsByPhase;
+
+// Get domains needing rotation attention, sorted by age
+function getRotationAttentionItems(domains: DomainHealthMetrics[]): RotationAttentionItem[];
+```
+
+### Spare Capacity Integration
+
+The rotation dashboard shows spare capacity status from [[BackupCapacityGauge]]:
+- Target spare ratio from subscription settings
+- Current spare inbox count
+- Status indicator (adequate/low/critical)
+
 ## Store: [[healthStore]]
 
 ### State
@@ -239,6 +285,9 @@ interface OverallBackupCapacity {
 | [[BackupCapacityGauge]] | Capacity visualization |
 | [[ListContaminationTracker]] | List quality |
 | [[CampaignAttributionPanel]] | Campaign impact |
+| [[RotationOverview]] | Domain rotation dashboard |
+| [[DomainPhaseDistribution]] | Lifecycle phase bar chart |
+| [[RotationNeedsAttention]] | Domains needing rotation |
 
 ## Route
 
@@ -268,9 +317,22 @@ Bounce data from EmailBison feeds back through [[lead-dispositions]] to update t
 
 This creates a feedback loop: bad leads damage [[infrastructure]], health monitoring catches it, and the [[lead-refinery]] learns which leads to avoid. See [[system-integration]] for the full flow.
 
+## Real-Time Data via EmailBison
+
+Health monitoring receives real-time data from [[emailbison-integration]]:
+
+- **Inbox connection status** - Connected vs disconnected counts
+- **Health scores** - Per-inbox 0-100 health metric
+- **Bounce rates** - Hard/soft bounce percentages
+- **Provider breakdown** - Microsoft vs Google metrics
+
+The [[inventory-health-dashboard]] displays this data in the Active Inventory tab.
+
 ## Related
 
 - [[infrastructure]] - Domains and inboxes
+- [[emailbison-integration]] - Real-time EmailBison API
+- [[inventory-health-dashboard]] - Dashboard component
 - [[campaigns]] - Campaign health
 - [[kill-triggers]] - Detailed trigger docs
 - [[data-models]] - Full type definitions
@@ -279,4 +341,4 @@ This creates a feedback loop: bad leads damage [[infrastructure]], health monito
 - [[system-integration]] - Platform-wide integration map
 
 ---
-Tags: #health #monitoring #deliverability
+Tags: #health #monitoring #deliverability #emailbison

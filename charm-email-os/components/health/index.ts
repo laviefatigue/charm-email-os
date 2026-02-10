@@ -8,3 +8,6 @@ export { BackupCapacityGauge } from './BackupCapacityGauge';
 export { CampaignAttributionPanel } from './CampaignAttributionPanel';
 export { ListContaminationTracker } from './ListContaminationTracker';
 export { ESPHealthSummary } from './ESPHealthSummary';
+export { RotationOverview } from './RotationOverview';
+export { DomainPhaseDistribution } from './DomainPhaseDistribution';
+export { RotationNeedsAttention } from './RotationNeedsAttention';
