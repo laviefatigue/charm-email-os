@@ -30,6 +30,8 @@ import type {
   SmartOrderRequest,
   SmartOrderResponse,
   InventoryHealth,
+  CampaignDocument,
+  ClientDocumentsResponse,
 } from './types';
 
 // API base URL - use environment variable or default to deployed API
@@ -2847,6 +2849,78 @@ export const inboxProvisioningApi = {
   },
 };
 
+// ===== CAMPAIGN DOCUMENT API =====
+
+export const campaignDocumentApi = {
+  /**
+   * Get all campaign documents for a client
+   */
+  async getClientDocuments(clientId: string): Promise<ClientDocumentsResponse> {
+    const response = await fetchApi<Record<string, unknown>>(`/api/strategy/documents/${clientId}`);
+    return toCamelCase<ClientDocumentsResponse>(response);
+  },
+
+  /**
+   * Get a single campaign document
+   */
+  async getDocument(clientId: string, documentId: string): Promise<CampaignDocument> {
+    const response = await fetchApi<Record<string, unknown>>(`/api/strategy/documents/${clientId}/${documentId}`);
+    return toCamelCase<CampaignDocument>(response);
+  },
+
+  /**
+   * Edit a variant within a document
+   */
+  async editVariant(
+    documentId: string,
+    variantId: string,
+    data: { subjectLine?: string; emailBody: string }
+  ): Promise<{ success: boolean; message: string }> {
+    return fetchApi<{ success: boolean; message: string }>(
+      `/api/strategy/documents/${documentId}/variants/${variantId}`,
+      {
+        method: 'PATCH',
+        body: JSON.stringify(toSnakeCase(data as Record<string, unknown>)),
+      }
+    );
+  },
+
+  /**
+   * Select a variant as recommended for a position
+   */
+  async selectRecommended(
+    documentId: string,
+    position: number,
+    variantNumber: number
+  ): Promise<{ success: boolean; message: string }> {
+    return fetchApi<{ success: boolean; message: string }>(
+      `/api/strategy/documents/${documentId}/select-variant`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ position, variant_number: variantNumber }),
+      }
+    );
+  },
+
+  /**
+   * Review a campaign document (approve/deny/revision_requested)
+   */
+  async reviewDocument(
+    documentId: string,
+    action: 'approve' | 'deny' | 'revision_requested',
+    comment?: string,
+    reviewer?: string
+  ): Promise<{ success: boolean; message: string; status: string }> {
+    return fetchApi<{ success: boolean; message: string; status: string }>(
+      `/api/strategy/documents/${documentId}/review`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ action, comment, reviewer }),
+      }
+    );
+  },
+};
+
 // ===== COMBINED API EXPORT =====
 
 export const api = {
@@ -2862,6 +2936,7 @@ export const api = {
   onboarding: onboardingApi,
   strategy: strategyApi,
   subscriptions: subscriptionApi,
+  campaignDocuments: campaignDocumentApi,
 };
 
 export default api;

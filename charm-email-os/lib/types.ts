@@ -927,3 +927,173 @@ export interface InventoryHealth {
   emailbisonError?: string;
   rblLastCheck?: Date;
 }
+
+// ===== CAMPAIGN DOCUMENT TYPES (Stablekernel Format) =====
+
+// Target ICP definition
+export interface TargetICP {
+  role: string;
+  companyType: string;
+  companySize: string;
+}
+
+// Pain point category
+export interface PainPoint {
+  category: string;
+  label: string;
+  points: string[];
+}
+
+// Objection with preemption strategy
+export interface Objection {
+  objection: string;
+  preemption: string;
+}
+
+// Complete ICP mapping
+export interface ICPMapping {
+  targetIcp: TargetICP;
+  painPoints: PainPoint[];
+  objections: Objection[];
+}
+
+// Variable definition
+export interface VariableDefinition {
+  name: string;
+  description: string;
+  source?: string;
+}
+
+// Variable schema
+export interface VariableSchema {
+  core: VariableDefinition[];
+  highSignal: VariableDefinition[];
+  aiGenerated: VariableDefinition[];
+}
+
+// Email variant within a position
+export interface EmailVariant {
+  id?: string;
+  variantNumber: number;
+  variantName?: string;
+  isRecommended: boolean;
+  subjectLine?: string | null;
+  emailBody: string;
+  waitDays: number;
+  threadReply: boolean;
+  wordCount?: number;
+  themUsRatio?: string;
+  score?: number;
+  angle?: string;
+  strategy?: string;
+  valueProp?: string;
+  editedSubjectLine?: string | null;
+  editedEmailBody?: string | null;
+}
+
+// Subject line option with rationale
+export interface SubjectOption {
+  subjectLine: string;
+  rationale: string;
+}
+
+// Email position with variants
+export interface EmailPosition {
+  position: number;
+  title: string;
+  variants: EmailVariant[];
+  subjectOptions?: SubjectOption[];
+}
+
+// Sequence summary step
+export interface SequenceSummaryStep {
+  day: string;
+  title: string;
+  description: string;
+}
+
+// QA scoring dimension
+export interface QADimension {
+  name: string;
+  score: string;
+  notes: string;
+}
+
+// Complete QA scoring
+export interface QAScoring {
+  overallScore: number;
+  verdict: string;
+  dimensions: QADimension[];
+}
+
+// Strategy callout
+export interface StrategyCallout {
+  type: 'recommendation' | 'warning' | 'info';
+  text: string;
+}
+
+// Data enrichment source
+export interface DataEnrichment {
+  variable: string;
+  source: string;
+}
+
+// Strategy notes section
+export interface StrategyNotes {
+  callouts: StrategyCallout[];
+  dataEnrichment: DataEnrichment[];
+  abTesting: string[];
+}
+
+// Complete campaign document (stablekernel format)
+export interface CampaignDocument {
+  id: string;
+  jobId: string;
+  clientId: string;
+  strategyId?: string;
+  documentName: string;
+  documentVersion: number;
+  vertical?: string;
+  objective?: string;
+  icpMapping?: ICPMapping;
+  variableSchema?: VariableSchema;
+  emailPositions: EmailPosition[];
+  sequenceSummary?: SequenceSummaryStep[];
+  qaScoring?: QAScoring;
+  strategyNotes?: StrategyNotes;
+  status: 'draft' | 'approved' | 'denied' | 'revision_requested';
+  humanComment?: string;
+  reviewedBy?: string;
+  reviewedAt?: Date;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+// Response for client documents list
+export interface ClientDocumentsResponse {
+  clientId: string;
+  documents: CampaignDocument[];
+  total: number;
+}
+
+// Document status colors
+export const DOCUMENT_STATUS_COLORS: Record<string, { bg: string; text: string }> = {
+  draft: { bg: 'bg-gray-100', text: 'text-gray-800' },
+  approved: { bg: 'bg-green-100', text: 'text-green-800' },
+  denied: { bg: 'bg-red-100', text: 'text-red-800' },
+  revision_requested: { bg: 'bg-yellow-100', text: 'text-yellow-800' },
+};
+
+// Verdict colors
+export const VERDICT_COLORS: Record<string, { bg: string; text: string; border: string }> = {
+  'Ship it': { bg: 'bg-emerald-50', text: 'text-emerald-700', border: 'border-emerald-200' },
+  'One more pass': { bg: 'bg-amber-50', text: 'text-amber-700', border: 'border-amber-200' },
+  'Start over': { bg: 'bg-red-50', text: 'text-red-700', border: 'border-red-200' },
+};
+
+// Callout type colors
+export const CALLOUT_COLORS: Record<string, { bg: string; border: string; icon: string }> = {
+  recommendation: { bg: 'bg-purple-50', border: 'border-purple-300', icon: 'text-purple-600' },
+  warning: { bg: 'bg-amber-50', border: 'border-amber-300', icon: 'text-amber-600' },
+  info: { bg: 'bg-cyan-50', border: 'border-cyan-300', icon: 'text-cyan-600' },
+};
