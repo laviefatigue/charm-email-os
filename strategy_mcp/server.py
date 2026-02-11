@@ -6,17 +6,29 @@ This server gives Claude the ability to:
 - Get feedback summary from previous strategy generations
 - Save campaign variants for human review
 - Mark generation jobs as complete
+
+LOCAL_MODE: When STRATEGY_LOCAL_MODE=true, output is saved to local filesystem
+instead of the production database. This enables local testing and validation.
 """
 import json
 import os
 import uuid
 from datetime import datetime
+from pathlib import Path
 from typing import Optional
 import psycopg2
 from psycopg2.extras import RealDictCursor, Json
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import Tool, TextContent
+
+# Local mode configuration
+LOCAL_MODE = os.getenv("STRATEGY_LOCAL_MODE", "false").lower() == "true"
+LOCAL_OUTPUT_DIR = Path(os.getenv("STRATEGY_OUTPUT_DIR", "/app/test-output"))
+
+# Debug: Log LOCAL_MODE status at startup
+import sys
+print(f"[MCP SERVER DEBUG] LOCAL_MODE={LOCAL_MODE}, STRATEGY_LOCAL_MODE env={os.getenv('STRATEGY_LOCAL_MODE', 'NOT SET')}", file=sys.stderr)
 
 # Database configuration from environment
 DB_CONFIG = {
@@ -26,6 +38,37 @@ DB_CONFIG = {
     "user": os.getenv("POSTGRES_USER", "postgres"),
     "password": os.getenv("POSTGRES_PASSWORD", ""),
 }
+
+
+def save_locally(job_id: str, document: dict, filename: str = "campaign_document.json") -> str:
+    """Save output to local filesystem instead of database (LOCAL_MODE only)."""
+    job_dir = LOCAL_OUTPUT_DIR / "jobs" / job_id
+    job_dir.mkdir(parents=True, exist_ok=True)
+
+    # Add timestamp
+    document["saved_at"] = datetime.now().isoformat()
+    document["local_mode"] = True
+
+    # Save document
+    output_path = job_dir / filename
+    with open(output_path, "w", encoding="utf-8") as f:
+        json.dump(document, f, indent=2, ensure_ascii=False)
+
+    # Update latest.json symlink/copy
+    latest = LOCAL_OUTPUT_DIR / "latest.json"
+    try:
+        if latest.exists():
+            latest.unlink()
+        # On Windows, use copy instead of symlink
+        if os.name == 'nt':
+            import shutil
+            shutil.copy(output_path, latest)
+        else:
+            latest.symlink_to(output_path)
+    except Exception:
+        pass  # Non-critical, continue even if latest link fails
+
+    return str(output_path)
 
 server = Server("strategy-generator")
 
@@ -262,19 +305,28 @@ async def list_tools():
                 "required": ["job_id", "campaign_name", "campaign_type", "sequence"]
             }
         ),
+        # NOTE: save_campaign_batch removed - use save_campaign_document instead
         Tool(
-            name="save_campaign_batch",
-            description="""Save a batch of 4 distinct campaign sequences for human review.
-            This is the preferred method when generating multiple campaigns at once.
+            name="save_cycle_package",
+            description="""[PREFERRED - Use for full strategy generation]
+            Save a complete 4-campaign cycle package in one atomic operation.
+            This creates a full 14-day cycle with 4 distinct campaign angles.
 
-            Each campaign should target a different persona/segment with a different angle:
-            - Campaign 1: custom_signal angle (research-led)
-            - Campaign 2: persona_pain angle (role-specific challenge)
-            - Campaign 3: case_study angle (proof-first)
-            - Campaign 4: risk_efficiency angle (cost/savings-focused)
+            Required structure:
+            - cycle_config: Shared ICP, cycle variables, strategic focus
+            - campaigns: Array of 4 campaign documents, each with:
+              - angle: 'custom_signal', 'persona_pain', 'case_study', 'risk_efficiency'
+              - campaign_variables: Variables unique to this campaign angle
+              - email_positions: 4 positions with 2-3 variants each
 
-            Also tracks strategy_considerations to show which onboarding inputs
-            influenced each campaign (for the Strategy Consideration panel).""",
+            Campaign Angles:
+            1. Custom Signal - Job postings, funding triggers, tool adoption
+            2. Persona Pain - Role-specific overwhelm and challenges
+            3. Case Study - Social proof with specific results
+            4. Risk/Efficiency - Board pressure, ROI focus, efficiency gains
+
+            All 4 campaigns share the ICP mapping and cycle variables.
+            Each campaign has its own QA score + overall cycle score.""",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -282,91 +334,244 @@ async def list_tools():
                         "type": "string",
                         "description": "The strategy generation job ID"
                     },
-                    "campaigns": {
-                        "type": "array",
-                        "description": "Array of 4 campaign objects",
-                        "minItems": 4,
-                        "maxItems": 4,
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "campaign_name": {"type": "string"},
-                                "campaign_type": {"type": "string"},
-                                "campaign_angle": {
-                                    "type": "string",
-                                    "enum": ["custom_signal", "persona_pain", "case_study", "risk_efficiency"]
-                                },
-                                "target_persona": {"type": ["string", "null"]},
-                                "target_segment": {"type": ["string", "null"]},
-                                "opener_pattern": {
-                                    "type": "string",
-                                    "enum": ["status_pressure", "efficiency_leverage", "risk_based", "binary", "redirect"]
-                                },
-                                "sequence": {
-                                    "type": "array",
-                                    "items": {
-                                        "type": "object",
-                                        "properties": {
-                                            "position": {"type": "integer"},
-                                            "wait_days": {"type": "integer"},
-                                            "subject_line": {"type": ["string", "null"]},
-                                            "email_body": {"type": "string"},
-                                            "thread_reply": {"type": "boolean"},
-                                            "strategy": {"type": "string"},
-                                            "value_prop": {"type": ["string", "null"]},
-                                            "word_count": {"type": "integer"}
-                                        }
-                                    }
-                                },
-                                "value_prop_rotation": {"type": "array", "items": {"type": "string"}},
-                                "used_variables": {"type": "array", "items": {"type": "string"}},
-                                "score": {"type": "integer"},
-                                "rationale": {"type": "string"}
-                            },
-                            "required": ["campaign_name", "campaign_type", "campaign_angle", "sequence"]
-                        }
+                    "cycle_name": {
+                        "type": "string",
+                        "description": "Cycle name (e.g., 'Q1 2026 Outbound Cycle')"
                     },
-                    "strategy_considerations": {
+                    "cycle_config": {
                         "type": "object",
-                        "description": "Maps onboarding inputs to how they influenced each campaign",
+                        "description": "Shared cycle-level configuration",
                         "properties": {
-                            "inputs_used": {
-                                "type": "array",
-                                "items": {"type": "string"},
-                                "description": "List of onboarding fields used (e.g., target_customer, job_titles)"
+                            "icp_mapping": {
+                                "type": "object",
+                                "description": "Target ICP, pain points, objections (shared across all 4 campaigns)"
                             },
-                            "campaign_mappings": {
+                            "cycle_variables": {
                                 "type": "array",
-                                "description": "Per-campaign reasoning about targeting",
+                                "description": "Variables at cycle level (apply to all campaigns)",
                                 "items": {
                                     "type": "object",
                                     "properties": {
-                                        "campaign_index": {"type": "integer"},
-                                        "angle": {"type": "string"},
-                                        "target_persona": {"type": ["string", "null"]},
-                                        "target_segment": {"type": ["string", "null"]},
-                                        "reasoning": {"type": "string"},
-                                        "influenced_by": {"type": "array", "items": {"type": "string"}}
+                                        "name": {"type": "string"},
+                                        "description": {"type": "string"},
+                                        "source": {"type": "string"}
                                     }
                                 }
-                            }
+                            },
+                            "strategic_focus": {
+                                "type": "string",
+                                "description": "Overall strategic focus for this cycle"
+                            },
+                            "target_outcome": {
+                                "type": "string",
+                                "description": "Expected outcome from this cycle"
+                            },
+                            "vertical": {"type": "string"},
+                            "objective": {"type": "string"}
                         }
+                    },
+                    "campaigns": {
+                        "type": "array",
+                        "description": "Array of 4 campaign documents",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "campaign_number": {"type": "integer", "description": "1-4"},
+                                "campaign_name": {"type": "string"},
+                                "angle": {
+                                    "type": "string",
+                                    "enum": ["custom_signal", "persona_pain", "case_study", "risk_efficiency"]
+                                },
+                                "campaign_variables": {
+                                    "type": "array",
+                                    "description": "Variables unique to this campaign angle",
+                                    "items": {"type": "object"}
+                                },
+                                "email_positions": {
+                                    "type": "array",
+                                    "description": "4 email positions with variants"
+                                },
+                                "qa_scoring": {
+                                    "type": "object",
+                                    "description": "QA scoring for this campaign"
+                                },
+                                "strategy_notes": {
+                                    "type": "object",
+                                    "description": "Campaign-specific callouts and notes"
+                                }
+                            },
+                            "required": ["campaign_number", "campaign_name", "angle", "email_positions"]
+                        },
+                        "minItems": 4,
+                        "maxItems": 4
+                    },
+                    "overall_qa_score": {
+                        "type": "integer",
+                        "description": "Overall QA score for the entire cycle (0-100)"
+                    },
+                    "overall_verdict": {
+                        "type": "string",
+                        "description": "Cycle-level verdict (e.g., 'Ship it', 'Needs review')"
                     }
                 },
-                "required": ["job_id", "campaigns"]
+                "required": ["job_id", "cycle_name", "cycle_config", "campaigns"]
+            }
+        ),
+        Tool(
+            name="save_cycle_scaffold",
+            description="""[PHASED GENERATION - Phase 1]
+            Create cycle structure with campaign stubs (no email content).
+            This is the first phase of phased generation.
+
+            Creates:
+            - campaign_cycle record
+            - cycle_strategy_config (ICP, cycle_variables)
+            - 4 campaign_document stubs (angle, campaign_variables, no emails)
+
+            After this completes, 4 campaign_copy phases should be triggered
+            to generate emails for each campaign.
+
+            Campaign angles:
+            1. custom_signal - Job postings, funding triggers
+            2. persona_pain - Role-specific overwhelm
+            3. case_study - Social proof focus
+            4. risk_efficiency - Board pressure, ROI""",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "job_id": {
+                        "type": "string",
+                        "description": "The strategy generation job ID"
+                    },
+                    "client_id": {
+                        "type": "string",
+                        "description": "The client UUID"
+                    },
+                    "cycle_config": {
+                        "type": "object",
+                        "description": "Shared cycle-level configuration",
+                        "properties": {
+                            "icp_mapping": {"type": "object"},
+                            "cycle_variables": {"type": "array"},
+                            "strategic_focus": {"type": "string"},
+                            "target_outcome": {"type": "string"},
+                            "vertical": {"type": "string"},
+                            "objective": {"type": "string"}
+                        }
+                    },
+                    "campaigns": {
+                        "type": "array",
+                        "description": "Array of 4 campaign stubs (no email content)",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "campaign_number": {"type": "integer", "description": "1-4"},
+                                "campaign_name": {"type": "string"},
+                                "angle": {
+                                    "type": "string",
+                                    "enum": ["custom_signal", "persona_pain", "case_study", "risk_efficiency"]
+                                },
+                                "campaign_variables": {"type": "array"}
+                            },
+                            "required": ["campaign_number", "campaign_name", "angle"]
+                        },
+                        "minItems": 4,
+                        "maxItems": 4
+                    }
+                },
+                "required": ["job_id", "client_id", "cycle_config", "campaigns"]
+            }
+        ),
+        Tool(
+            name="get_campaign_context",
+            description="""[PHASED GENERATION - Phase 2 Input]
+            Fetch all context needed to generate one campaign's emails.
+            Call this at the start of each campaign_copy phase.
+
+            Returns merged context:
+            - Client submission data (company, ICP, messaging)
+            - Cycle config (ICP mapping, cycle variables, strategic focus)
+            - Campaign stub (name, angle, campaign-level variables)
+
+            Use this context to generate 4 email positions with 2-3 variants each.""",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "job_id": {
+                        "type": "string",
+                        "description": "The strategy generation job ID"
+                    },
+                    "campaign_number": {
+                        "type": "integer",
+                        "description": "Which campaign (1-4) to get context for"
+                    }
+                },
+                "required": ["job_id", "campaign_number"]
+            }
+        ),
+        Tool(
+            name="save_campaign_copy",
+            description="""[PHASED GENERATION - Phase 2 Output]
+            Save generated email copy to an existing campaign document stub.
+            Updates the stub (created by save_cycle_scaffold) with full email content.
+
+            Include for each position:
+            - 2-3 variants with subject_line, email_body, word_count
+            - One variant marked is_recommended=true
+            - QA scoring for this campaign
+            - Strategy notes
+
+            All emails should be 50-90 words, with 3:1 them:us ratio.""",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "job_id": {
+                        "type": "string",
+                        "description": "The strategy generation job ID"
+                    },
+                    "campaign_number": {
+                        "type": "integer",
+                        "description": "Which campaign (1-4) to save copy for"
+                    },
+                    "email_positions": {
+                        "type": "array",
+                        "description": "Array of 4 email positions with variants",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "position": {"type": "integer"},
+                                "variants": {"type": "array"}
+                            }
+                        }
+                    },
+                    "qa_scoring": {
+                        "type": "object",
+                        "description": "QA scoring for this campaign"
+                    },
+                    "strategy_notes": {
+                        "type": "object",
+                        "description": "Strategy notes for this campaign"
+                    },
+                    "variable_schema": {
+                        "type": "object",
+                        "description": "Variables used in this campaign's emails"
+                    }
+                },
+                "required": ["job_id", "campaign_number", "email_positions"]
             }
         ),
         Tool(
             name="save_campaign_document",
-            description="""Save a complete campaign document in stablekernel format for human review.
-            This creates a document with multiple variants per email position, along with
-            ICP mapping, variable schema, QA scoring, and strategy notes.
+            description="""[SINGLE CAMPAIGN - Use for individual campaign generation]
+            Save a complete campaign document in stablekernel format for human review.
+            For full 4-campaign cycles, use save_cycle_package instead.
 
-            Document structure:
-            - Email 1: 2-3 variants (V1 custom_signal, V2 persona_pain, V3 case_study)
-            - Email 2: 1-2 variants (threaded reply, creative ideas)
-            - Email 3: 2-3 variants (new thread, different angle)
-            - Email 4: 2 variants (redirect or value bomb)
+            Required structure:
+            - icp_mapping: target_icp, pain_points (4 categories), objections (3 with preemption)
+            - variable_schema: core, high_signal, ai_generated arrays with sources
+            - email_positions: 4 positions with 2-3 variants each, is_recommended flags
+            - qa_scoring: overall_score, verdict, 6 dimension breakdowns with notes
+            - strategy_notes: callouts, data_enrichment, ab_testing arrays
 
             Mark one variant per position as is_recommended=true.""",
             inputSchema={
@@ -792,6 +997,44 @@ async def call_tool(name: str, arguments: dict):
         original_suggestion_id = arguments.get("original_suggestion_id")
         strategy_id = arguments.get("strategy_id")
 
+        # LOCAL MODE: Save variant to local filesystem
+        if LOCAL_MODE:
+            job_dir = LOCAL_OUTPUT_DIR / "jobs" / job_id
+            job_dir.mkdir(parents=True, exist_ok=True)
+
+            # Load existing variants or create new list
+            variants_file = job_dir / "variants.json"
+            if variants_file.exists():
+                with open(variants_file, "r", encoding="utf-8") as f:
+                    variants = json.load(f)
+            else:
+                variants = {"job_id": job_id, "variants": [], "saved_at": None}
+
+            # Add this variant
+            variant_data = {
+                "variant_number": variant_number,
+                "subject_line": subject_line,
+                "email_body": email_body,
+                "score": score,
+                "rationale": rationale,
+                "used_variables": used_variables,
+                "campaign_type": campaign_type,
+                "original_suggestion_id": original_suggestion_id,
+                "strategy_id": strategy_id,
+                "saved_at": datetime.now().isoformat()
+            }
+            variants["variants"].append(variant_data)
+            variants["saved_at"] = datetime.now().isoformat()
+
+            # Save back
+            with open(variants_file, "w", encoding="utf-8") as f:
+                json.dump(variants, f, indent=2, ensure_ascii=False)
+
+            revision_note = " (revision)" if original_suggestion_id else ""
+            return [TextContent(type="text", text=f"[LOCAL MODE] Saved variant {variant_number}{revision_note}: {subject_line[:50]}... (score: {score or 'N/A'})\n"
+                               f"Output: {variants_file}")]
+
+        # PRODUCTION MODE: Save to database
         conn = get_db()
         cur = conn.cursor(cursor_factory=RealDictCursor)
 
@@ -835,6 +1078,26 @@ async def call_tool(name: str, arguments: dict):
 
     elif name == "complete_job":
         job_id = arguments["job_id"]
+
+        # LOCAL MODE: Just log completion
+        if LOCAL_MODE:
+            job_dir = LOCAL_OUTPUT_DIR / "jobs" / job_id
+            metadata_path = job_dir / "metadata.json"
+
+            if job_dir.exists():
+                metadata = {
+                    "job_id": job_id,
+                    "status": "completed",
+                    "completed_at": datetime.now().isoformat()
+                }
+                with open(metadata_path, "w") as f:
+                    json.dump(metadata, f, indent=2)
+
+            return [TextContent(type="text", text=f"[LOCAL MODE] Job {job_id} marked complete\n"
+                               f"Output directory: {job_dir}\n\n"
+                               f"To validate: python scripts/validate_output.py")]
+
+        # PRODUCTION MODE: Update database
         conn = get_db()
         cur = conn.cursor()
 
@@ -1005,17 +1268,93 @@ async def call_tool(name: str, arguments: dict):
             conn.close()
 
     elif name == "save_campaign_batch":
-        job_id = arguments["job_id"]
-        campaigns = arguments["campaigns"]
-        strategy_considerations = arguments.get("strategy_considerations", {})
+        # DEPRECATED: Return error directing to use save_campaign_document instead
+        return [TextContent(type="text", text="""ERROR: save_campaign_batch is DEPRECATED and has been removed.
 
+You MUST use save_campaign_document instead. This tool creates the stablekernel format with:
+- icp_mapping (target_icp, pain_points, objections)
+- variable_schema (core, high_signal, ai_generated)
+- email_positions with variants
+- qa_scoring with dimension breakdowns
+- strategy_notes with callouts, enrichment, A/B testing
+
+Please call save_campaign_document with the complete document structure.""")]
+
+    elif name == "save_cycle_package":
+        job_id = arguments["job_id"]
+        cycle_name = arguments["cycle_name"]
+        cycle_config = arguments["cycle_config"]
+        campaigns = arguments["campaigns"]
+        overall_qa_score = arguments.get("overall_qa_score")
+        overall_verdict = arguments.get("overall_verdict")
+
+        # Extract shared config
+        icp_mapping = cycle_config.get("icp_mapping")
+        cycle_variables = cycle_config.get("cycle_variables", [])
+        strategic_focus = cycle_config.get("strategic_focus")
+        target_outcome = cycle_config.get("target_outcome")
+        vertical = cycle_config.get("vertical")
+        objective = cycle_config.get("objective")
+
+        # Count total variants across all campaigns
+        total_variants = sum(
+            sum(len(pos.get("variants", [])) for pos in c.get("email_positions", []))
+            for c in campaigns
+        )
+
+        # LOCAL MODE: Save to filesystem
+        if LOCAL_MODE:
+            cycle_package = {
+                "cycle_id": str(uuid.uuid4()),
+                "job_id": job_id,
+                "cycle_name": cycle_name,
+                "cycle_config": {
+                    "icp_mapping": icp_mapping,
+                    "cycle_variables": cycle_variables,
+                    "strategic_focus": strategic_focus,
+                    "target_outcome": target_outcome,
+                    "vertical": vertical,
+                    "objective": objective
+                },
+                "campaigns": [],
+                "overall_qa_score": overall_qa_score,
+                "overall_verdict": overall_verdict,
+                "created_at": datetime.now().isoformat()
+            }
+
+            # Process each campaign
+            for campaign in campaigns:
+                campaign_data = {
+                    "campaign_id": str(uuid.uuid4()),
+                    "campaign_number": campaign["campaign_number"],
+                    "campaign_name": campaign["campaign_name"],
+                    "angle": campaign["angle"],
+                    "campaign_variables": campaign.get("campaign_variables", []),
+                    "email_positions": campaign.get("email_positions", []),
+                    "qa_scoring": campaign.get("qa_scoring"),
+                    "strategy_notes": campaign.get("strategy_notes")
+                }
+                cycle_package["campaigns"].append(campaign_data)
+
+            output_path = save_locally(job_id, cycle_package, "cycle_package.json")
+
+            return [TextContent(type="text", text=f"[LOCAL MODE] Saved cycle package: {cycle_name}\n"
+                               f"  Output file: {output_path}\n"
+                               f"  Campaigns: {len(campaigns)}\n"
+                               f"  Total email variants: {total_variants}\n"
+                               f"  ICP mapping: {'Yes' if icp_mapping else 'No'}\n"
+                               f"  Cycle variables: {len(cycle_variables)}\n"
+                               f"  Overall QA: {overall_qa_score or 'N/A'} - {overall_verdict or 'N/A'}\n\n"
+                               f"Run validation: python scripts/validate_output.py {output_path}")]
+
+        # PRODUCTION MODE: Save to database
         conn = get_db()
         cur = conn.cursor(cursor_factory=RealDictCursor)
 
         try:
             # Get job info
             cur.execute("""
-                SELECT client_id, generation_round, strategy_id
+                SELECT client_id, strategy_id
                 FROM strategy_generation_jobs
                 WHERE id = %s
             """, (job_id,))
@@ -1024,81 +1363,560 @@ async def call_tool(name: str, arguments: dict):
             if not job:
                 return [TextContent(type="text", text=f"Error: Job {job_id} not found")]
 
-            client_id = job["client_id"]
-            generation_round = job["generation_round"]
-            job_strategy_id = job.get("strategy_id")
+            client_id = str(job["client_id"])
+            strategy_id = job.get("strategy_id")
 
-            # Generate a lineage_id for this batch (all 4 campaigns share it initially)
-            batch_lineage_base = str(uuid.uuid4())
+            # Create or get campaign cycle
+            cycle_id = str(uuid.uuid4())
+            cur.execute("""
+                INSERT INTO campaign_cycles
+                (id, client_id, status, created_at)
+                VALUES (%s, %s, 'active', NOW())
+                RETURNING id
+            """, (cycle_id, client_id))
+            cycle_id = str(cur.fetchone()["id"])
 
-            saved_campaigns = []
+            # Create cycle strategy config (if table exists)
+            try:
+                cur.execute("""
+                    INSERT INTO cycle_strategy_config
+                    (id, cycle_id, icp_mapping, cycle_variables, strategic_focus, target_outcome)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                """, (str(uuid.uuid4()), cycle_id,
+                      Json(icp_mapping) if icp_mapping else None,
+                      Json(cycle_variables) if cycle_variables else None,
+                      strategic_focus,
+                      target_outcome))
+            except Exception as e:
+                # Table might not exist yet - log but continue
+                print(f"[MCP] Warning: Could not save cycle_strategy_config: {e}", file=sys.stderr)
 
-            for idx, campaign in enumerate(campaigns):
+            document_ids = []
+
+            # Create each campaign document linked to the cycle
+            for campaign in campaigns:
+                document_id = str(uuid.uuid4())
                 campaign_name = campaign["campaign_name"]
-                campaign_type = campaign["campaign_type"]
-                campaign_angle = campaign.get("campaign_angle")
-                target_persona = campaign.get("target_persona")
-                target_segment = campaign.get("target_segment")
-                opener_pattern = campaign.get("opener_pattern")
-                sequence = campaign["sequence"]
-                value_prop_rotation = campaign.get("value_prop_rotation", [])
-                used_variables = campaign.get("used_variables", [])
-                score = campaign.get("score")
-                rationale = campaign.get("rationale")
+                angle = campaign["angle"]
+                campaign_variables = campaign.get("campaign_variables", [])
+                email_positions = campaign.get("email_positions", [])
+                qa_scoring = campaign.get("qa_scoring")
+                strategy_notes = campaign.get("strategy_notes")
 
-                # Calculate total word count
-                total_word_count = sum(email.get("word_count", 0) for email in sequence)
+                # Build variable schema with campaign-level variables
+                variable_schema = {
+                    "core": [],
+                    "high_signal": [],
+                    "ai_generated": [],
+                    "campaign_level": campaign_variables
+                }
 
-                # Get subject line from Email 1
-                email_1 = next((e for e in sequence if e.get("position") == 1), sequence[0] if sequence else {})
-                subject_line = email_1.get("subject_line") or campaign_name
-                email_body = email_1.get("email_body", "")
+                # Add angle to strategy_notes for reference
+                notes_with_angle = strategy_notes or {}
+                notes_with_angle["campaign_angle"] = angle
 
-                # Each campaign gets its own lineage_id (they're separate campaign families)
-                lineage_id = str(uuid.uuid4())
-
-                # Insert campaign as a sequence suggestion
-                suggestion_id = str(uuid.uuid4())
                 cur.execute("""
-                    INSERT INTO strategy_suggestions
-                    (id, job_id, client_id, variant_number, subject_line, email_body,
-                     score, rationale, used_variables, campaign_type,
-                     generation_round, strategy_id, status,
-                     sequence_data, value_prop_rotation, is_sequence, total_word_count,
-                     campaign_angle, target_persona, target_segment, opener_pattern,
-                     lineage_id, campaign_version)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'pending',
-                            %s, %s, TRUE, %s, %s, %s, %s, %s, %s, 1)
-                """, (suggestion_id, job_id, client_id, idx + 1, subject_line, email_body,
-                      score, rationale, Json(used_variables),
-                      campaign_type, generation_round, job_strategy_id,
-                      Json(sequence), Json(value_prop_rotation), total_word_count,
-                      campaign_angle, target_persona, target_segment, opener_pattern,
-                      lineage_id))
+                    INSERT INTO campaign_documents
+                    (id, job_id, client_id, strategy_id, cycle_id, document_name, document_version,
+                     vertical, objective, icp_mapping, variable_schema, campaign_variables,
+                     qa_scoring, strategy_notes, status, campaign_number)
+                    VALUES (%s, %s, %s, %s, %s, %s, 1, %s, %s, %s, %s, %s, %s, %s, 'draft', %s)
+                """, (document_id, job_id, client_id, strategy_id, cycle_id, campaign_name,
+                      vertical, objective,
+                      Json(icp_mapping) if icp_mapping else None,
+                      Json(variable_schema),
+                      Json(campaign_variables) if campaign_variables else None,
+                      Json(qa_scoring) if qa_scoring else None,
+                      Json(notes_with_angle),
+                      campaign.get("campaign_number", 1)))
 
-                saved_campaigns.append({
-                    "id": suggestion_id,
-                    "name": campaign_name,
-                    "angle": campaign_angle,
-                    "score": score
+                # Insert email variants for each position
+                for position_data in email_positions:
+                    position = position_data.get("position", 1)
+                    variants = position_data.get("variants", [])
+
+                    for variant in variants:
+                        variant_id = str(uuid.uuid4())
+                        cur.execute("""
+                            INSERT INTO document_email_variants
+                            (id, document_id, email_position, variant_number, variant_name,
+                             is_recommended, subject_line, email_body, wait_days, thread_reply,
+                             word_count, them_us_ratio, score, angle, strategy, value_prop)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        """, (variant_id, document_id, position,
+                              variant.get("variant_number", 1),
+                              variant.get("variant_name"),
+                              variant.get("is_recommended", False),
+                              variant.get("subject_line"),
+                              variant.get("email_body", ""),
+                              variant.get("wait_days", 0),
+                              variant.get("thread_reply", False),
+                              variant.get("word_count"),
+                              variant.get("them_us_ratio"),
+                              variant.get("score"),
+                              variant.get("angle"),
+                              variant.get("strategy"),
+                              variant.get("value_prop")))
+
+                document_ids.append({
+                    "document_id": document_id,
+                    "campaign_name": campaign_name,
+                    "angle": angle
                 })
-
-            # Store strategy_considerations on the job
-            if strategy_considerations:
-                cur.execute("""
-                    UPDATE strategy_generation_jobs
-                    SET strategy_considerations = %s
-                    WHERE id = %s
-                """, (Json(strategy_considerations), job_id))
 
             conn.commit()
 
-            # Build response summary
-            summary_parts = [f"Saved batch of {len(saved_campaigns)} campaigns:"]
-            for c in saved_campaigns:
-                summary_parts.append(f"  - {c['name']} ({c['angle']}, score: {c['score'] or 'N/A'})")
+            # Build response
+            campaign_summary = "\n".join([
+                f"  {i+1}. {c['campaign_name']} ({c['angle']}): {c['document_id'][:8]}..."
+                for i, c in enumerate(document_ids)
+            ])
 
-            return [TextContent(type="text", text="\n".join(summary_parts))]
+            return [TextContent(type="text", text=f"Saved cycle package: {cycle_name}\n"
+                               f"  Cycle ID: {cycle_id}\n"
+                               f"  Campaigns:\n{campaign_summary}\n"
+                               f"  Total variants: {total_variants}\n"
+                               f"  Overall QA: {overall_qa_score or 'N/A'} - {overall_verdict or 'N/A'}")]
+
+        except Exception as e:
+            conn.rollback()
+            return [TextContent(type="text", text=f"Error saving cycle package: {str(e)}")]
+
+        finally:
+            cur.close()
+            conn.close()
+
+    elif name == "save_cycle_scaffold":
+        job_id = arguments["job_id"]
+        client_id = arguments["client_id"]
+        cycle_config = arguments["cycle_config"]
+        campaigns = arguments["campaigns"]
+
+        # DEBUG: Log what we received
+        print(f"[MCP] save_cycle_scaffold called", file=sys.stderr)
+        print(f"[MCP]   job_id: {job_id}", file=sys.stderr)
+        print(f"[MCP]   client_id: {client_id}", file=sys.stderr)
+        print(f"[MCP]   campaigns count: {len(campaigns)}", file=sys.stderr)
+        for i, c in enumerate(campaigns):
+            print(f"[MCP]   campaign {i+1}: {c.get('campaign_name', 'NO NAME')}, angle={c.get('angle', 'NO ANGLE')}", file=sys.stderr)
+
+        # Extract config
+        icp_mapping = cycle_config.get("icp_mapping")
+        cycle_variables = cycle_config.get("cycle_variables", [])
+        strategic_focus = cycle_config.get("strategic_focus")
+        target_outcome = cycle_config.get("target_outcome")
+        vertical = cycle_config.get("vertical")
+        objective = cycle_config.get("objective")
+
+        # LOCAL MODE: Save scaffold to filesystem
+        if LOCAL_MODE:
+            scaffold = {
+                "cycle_id": str(uuid.uuid4()),
+                "job_id": job_id,
+                "client_id": client_id,
+                "cycle_config": {
+                    "icp_mapping": icp_mapping,
+                    "cycle_variables": cycle_variables,
+                    "strategic_focus": strategic_focus,
+                    "target_outcome": target_outcome,
+                    "vertical": vertical,
+                    "objective": objective
+                },
+                "campaigns": [],
+                "created_at": datetime.now().isoformat()
+            }
+
+            # Add campaign stubs
+            for campaign in campaigns:
+                scaffold["campaigns"].append({
+                    "campaign_document_id": str(uuid.uuid4()),
+                    "campaign_number": campaign["campaign_number"],
+                    "campaign_name": campaign["campaign_name"],
+                    "angle": campaign["angle"],
+                    "campaign_variables": campaign.get("campaign_variables", []),
+                    "email_positions": []  # Empty - will be filled by save_campaign_copy
+                })
+
+            output_path = save_locally(job_id, scaffold, "cycle_scaffold.json")
+
+            return [TextContent(type="text", text=f"[LOCAL MODE] Saved cycle scaffold:\n"
+                               f"  Output file: {output_path}\n"
+                               f"  Cycle ID: {scaffold['cycle_id']}\n"
+                               f"  ICP mapping: {'Yes' if icp_mapping else 'No'}\n"
+                               f"  Cycle variables: {len(cycle_variables)}\n"
+                               f"  Campaign stubs: {len(campaigns)}\n\n"
+                               f"Next: Run 4 campaign_copy phases to generate emails")]
+
+        # PRODUCTION MODE: Save to database
+        conn = get_db()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+
+        try:
+            # Create campaign cycle
+            cycle_id = str(uuid.uuid4())
+            cur.execute("""
+                INSERT INTO campaign_cycles
+                (id, client_id, status, created_at)
+                VALUES (%s, %s, 'active', NOW())
+                RETURNING id
+            """, (cycle_id, client_id))
+            cycle_id = str(cur.fetchone()["id"])
+
+            # Create cycle strategy config
+            try:
+                cur.execute("""
+                    INSERT INTO cycle_strategy_config
+                    (id, cycle_id, icp_mapping, cycle_variables, strategic_focus, target_outcome)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                """, (str(uuid.uuid4()), cycle_id,
+                      Json(icp_mapping) if icp_mapping else None,
+                      Json(cycle_variables) if cycle_variables else None,
+                      strategic_focus,
+                      target_outcome))
+            except Exception as e:
+                print(f"[MCP] Warning: Could not save cycle_strategy_config: {e}", file=sys.stderr)
+
+            # Update job with cycle_id
+            cur.execute("""
+                UPDATE strategy_generation_jobs
+                SET cycle_id = %s
+                WHERE id = %s
+            """, (cycle_id, job_id))
+
+            campaign_stubs = []
+
+            # Create 4 campaign document stubs (no email content yet)
+            for campaign in campaigns:
+                document_id = str(uuid.uuid4())
+                campaign_number = campaign["campaign_number"]
+                campaign_name = campaign["campaign_name"]
+                angle = campaign["angle"]
+                campaign_variables = campaign.get("campaign_variables", [])
+
+                cur.execute("""
+                    INSERT INTO campaign_documents
+                    (id, job_id, client_id, cycle_id, document_name, document_version,
+                     vertical, objective, icp_mapping, campaign_variables, angle,
+                     campaign_number, status)
+                    VALUES (%s, %s, %s, %s, %s, 1, %s, %s, %s, %s, %s, %s, 'draft')
+                """, (document_id, job_id, client_id, cycle_id, campaign_name,
+                      vertical, objective,
+                      Json(icp_mapping) if icp_mapping else None,
+                      Json(campaign_variables) if campaign_variables else None,
+                      angle,
+                      campaign_number))
+
+                campaign_stubs.append({
+                    "campaign_number": campaign_number,
+                    "campaign_document_id": document_id
+                })
+
+            conn.commit()
+            print(f"[MCP]   Created {len(campaign_stubs)} campaign stubs, cycle_id={cycle_id}", file=sys.stderr)
+
+            # Build response with IDs for creating phases
+            campaign_summary = "\n".join([
+                f"  {c['campaign_number']}. {c['campaign_document_id'][:8]}..."
+                for c in campaign_stubs
+            ])
+
+            return [TextContent(type="text", text=f"Saved cycle scaffold:\n"
+                               f"  Cycle ID: {cycle_id}\n"
+                               f"  ICP mapping: {'Yes' if icp_mapping else 'No'}\n"
+                               f"  Cycle variables: {len(cycle_variables)}\n"
+                               f"  Campaign stubs:\n{campaign_summary}\n\n"
+                               f"Campaign IDs for phases: {json.dumps(campaign_stubs)}")]
+
+        except Exception as e:
+            conn.rollback()
+            return [TextContent(type="text", text=f"Error saving cycle scaffold: {str(e)}")]
+
+        finally:
+            cur.close()
+            conn.close()
+
+    elif name == "get_campaign_context":
+        job_id = arguments["job_id"]
+        campaign_number = arguments["campaign_number"]
+
+        # LOCAL MODE: Read from scaffold file
+        if LOCAL_MODE:
+            scaffold_path = LOCAL_OUTPUT_DIR / "jobs" / job_id / "cycle_scaffold.json"
+            if not scaffold_path.exists():
+                return [TextContent(type="text", text=f"Error: Scaffold not found at {scaffold_path}. "
+                                   f"Run save_cycle_scaffold first.")]
+
+            with open(scaffold_path, "r", encoding="utf-8") as f:
+                scaffold = json.load(f)
+
+            # Find the campaign stub
+            campaign_stub = None
+            for c in scaffold.get("campaigns", []):
+                if c.get("campaign_number") == campaign_number:
+                    campaign_stub = c
+                    break
+
+            if not campaign_stub:
+                return [TextContent(type="text", text=f"Error: Campaign {campaign_number} not found in scaffold")]
+
+            # Build context (in local mode, we don't have client context from DB)
+            context = {
+                "mode": "local",
+                "job_id": job_id,
+                "client_id": scaffold.get("client_id"),
+                "cycle_config": scaffold.get("cycle_config", {}),
+                "campaign": {
+                    "campaign_document_id": campaign_stub.get("campaign_document_id"),
+                    "campaign_number": campaign_number,
+                    "campaign_name": campaign_stub.get("campaign_name"),
+                    "angle": campaign_stub.get("angle"),
+                    "campaign_variables": campaign_stub.get("campaign_variables", [])
+                },
+                "note": "Local mode - use get_client_context for full client data"
+            }
+
+            return [TextContent(type="text", text=json.dumps(context, indent=2))]
+
+        # PRODUCTION MODE: Fetch from database
+        conn = get_db()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+
+        try:
+            # Get job info
+            cur.execute("""
+                SELECT client_id, cycle_id
+                FROM strategy_generation_jobs
+                WHERE id = %s
+            """, (job_id,))
+            job = cur.fetchone()
+
+            if not job:
+                return [TextContent(type="text", text=f"Error: Job {job_id} not found")]
+
+            if not job.get("cycle_id"):
+                return [TextContent(type="text", text=f"Error: Job {job_id} has no cycle_id. "
+                                   f"Run save_cycle_scaffold first.")]
+
+            client_id = str(job["client_id"])
+            cycle_id = str(job["cycle_id"])
+
+            # Get cycle config
+            cur.execute("""
+                SELECT icp_mapping, cycle_variables, strategic_focus, target_outcome
+                FROM cycle_strategy_config
+                WHERE cycle_id = %s
+            """, (cycle_id,))
+            cycle_config = cur.fetchone() or {}
+
+            # Get campaign document stub
+            cur.execute("""
+                SELECT id, document_name, angle, campaign_variables, icp_mapping,
+                       vertical, objective
+                FROM campaign_documents
+                WHERE cycle_id = %s AND campaign_number = %s
+            """, (cycle_id, campaign_number))
+            campaign = cur.fetchone()
+
+            if not campaign:
+                return [TextContent(type="text", text=f"Error: Campaign {campaign_number} not found for cycle {cycle_id}")]
+
+            # Get basic client info
+            cur.execute("""
+                SELECT c.id, c.name, c.industry, c.website
+                FROM clients c
+                WHERE c.id = %s
+            """, (client_id,))
+            client = cur.fetchone()
+
+            # Build context
+            context = {
+                "job_id": job_id,
+                "client": {
+                    "id": str(client["id"]) if client else client_id,
+                    "name": client["name"] if client else None,
+                    "industry": client.get("industry") if client else None,
+                    "website": client.get("website") if client else None
+                },
+                "cycle_config": {
+                    "cycle_id": cycle_id,
+                    "icp_mapping": cycle_config.get("icp_mapping"),
+                    "cycle_variables": cycle_config.get("cycle_variables", []),
+                    "strategic_focus": cycle_config.get("strategic_focus"),
+                    "target_outcome": cycle_config.get("target_outcome")
+                },
+                "campaign": {
+                    "campaign_document_id": str(campaign["id"]),
+                    "campaign_number": campaign_number,
+                    "campaign_name": campaign["document_name"],
+                    "angle": campaign["angle"],
+                    "campaign_variables": campaign.get("campaign_variables", []),
+                    "icp_mapping": campaign.get("icp_mapping"),
+                    "vertical": campaign.get("vertical"),
+                    "objective": campaign.get("objective")
+                }
+            }
+
+            return [TextContent(type="text", text=json.dumps(context, indent=2, default=str))]
+
+        finally:
+            cur.close()
+            conn.close()
+
+    elif name == "save_campaign_copy":
+        job_id = arguments["job_id"]
+        campaign_number = arguments["campaign_number"]
+        email_positions = arguments["email_positions"]
+        qa_scoring = arguments.get("qa_scoring")
+        strategy_notes = arguments.get("strategy_notes")
+        variable_schema = arguments.get("variable_schema")
+
+        # Count variants
+        variant_count = sum(len(pos.get("variants", [])) for pos in email_positions)
+
+        # LOCAL MODE: Update scaffold with email content
+        if LOCAL_MODE:
+            scaffold_path = LOCAL_OUTPUT_DIR / "jobs" / job_id / "cycle_scaffold.json"
+            if not scaffold_path.exists():
+                return [TextContent(type="text", text=f"Error: Scaffold not found at {scaffold_path}")]
+
+            with open(scaffold_path, "r", encoding="utf-8") as f:
+                scaffold = json.load(f)
+
+            # Find and update the campaign
+            campaign_found = False
+            for i, c in enumerate(scaffold.get("campaigns", [])):
+                if c.get("campaign_number") == campaign_number:
+                    scaffold["campaigns"][i]["email_positions"] = email_positions
+                    scaffold["campaigns"][i]["qa_scoring"] = qa_scoring
+                    scaffold["campaigns"][i]["strategy_notes"] = strategy_notes
+                    scaffold["campaigns"][i]["variable_schema"] = variable_schema
+                    scaffold["campaigns"][i]["completed_at"] = datetime.now().isoformat()
+                    campaign_found = True
+                    break
+
+            if not campaign_found:
+                return [TextContent(type="text", text=f"Error: Campaign {campaign_number} not found in scaffold")]
+
+            # Save updated scaffold
+            scaffold["last_updated"] = datetime.now().isoformat()
+            with open(scaffold_path, "w", encoding="utf-8") as f:
+                json.dump(scaffold, f, indent=2, ensure_ascii=False)
+
+            # Also save as separate campaign file for easy access
+            campaign_path = LOCAL_OUTPUT_DIR / "jobs" / job_id / f"campaign_{campaign_number}.json"
+            campaign_doc = scaffold["campaigns"][campaign_number - 1]
+            with open(campaign_path, "w", encoding="utf-8") as f:
+                json.dump(campaign_doc, f, indent=2, ensure_ascii=False)
+
+            return [TextContent(type="text", text=f"[LOCAL MODE] Saved campaign {campaign_number} copy:\n"
+                               f"  Scaffold updated: {scaffold_path}\n"
+                               f"  Campaign file: {campaign_path}\n"
+                               f"  Positions: {len(email_positions)}\n"
+                               f"  Total variants: {variant_count}\n"
+                               f"  QA Score: {qa_scoring.get('overall_score') if qa_scoring else 'N/A'}")]
+
+        # PRODUCTION MODE: Update campaign document in database
+        conn = get_db()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+
+        try:
+            # Get job and cycle info
+            cur.execute("""
+                SELECT cycle_id
+                FROM strategy_generation_jobs
+                WHERE id = %s
+            """, (job_id,))
+            job = cur.fetchone()
+
+            if not job or not job.get("cycle_id"):
+                return [TextContent(type="text", text=f"Error: Job {job_id} not found or has no cycle_id")]
+
+            cycle_id = str(job["cycle_id"])
+
+            # Get the campaign document
+            cur.execute("""
+                SELECT id, client_id
+                FROM campaign_documents
+                WHERE cycle_id = %s AND campaign_number = %s
+            """, (cycle_id, campaign_number))
+            campaign = cur.fetchone()
+
+            if not campaign:
+                return [TextContent(type="text", text=f"Error: Campaign {campaign_number} not found for cycle {cycle_id}")]
+
+            document_id = str(campaign["id"])
+
+            # Update campaign document with email content
+            cur.execute("""
+                UPDATE campaign_documents
+                SET email_positions = %s,
+                    qa_scoring = %s,
+                    strategy_notes = %s,
+                    variable_schema = %s,
+                    status = 'draft',
+                    updated_at = NOW()
+                WHERE id = %s
+            """, (Json(email_positions),
+                  Json(qa_scoring) if qa_scoring else None,
+                  Json(strategy_notes) if strategy_notes else None,
+                  Json(variable_schema) if variable_schema else None,
+                  document_id))
+
+            # Also insert individual variants into document_email_variants
+            for position_data in email_positions:
+                position = position_data.get("position", 1)
+                variants = position_data.get("variants", [])
+
+                for variant in variants:
+                    variant_id = str(uuid.uuid4())
+                    cur.execute("""
+                        INSERT INTO document_email_variants
+                        (id, document_id, email_position, variant_number, variant_name,
+                         is_recommended, subject_line, email_body, wait_days, thread_reply,
+                         word_count, them_us_ratio, score, angle, strategy, value_prop)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        ON CONFLICT (document_id, email_position, variant_number)
+                        DO UPDATE SET
+                            variant_name = EXCLUDED.variant_name,
+                            is_recommended = EXCLUDED.is_recommended,
+                            subject_line = EXCLUDED.subject_line,
+                            email_body = EXCLUDED.email_body,
+                            wait_days = EXCLUDED.wait_days,
+                            thread_reply = EXCLUDED.thread_reply,
+                            word_count = EXCLUDED.word_count,
+                            them_us_ratio = EXCLUDED.them_us_ratio,
+                            score = EXCLUDED.score,
+                            angle = EXCLUDED.angle,
+                            strategy = EXCLUDED.strategy,
+                            value_prop = EXCLUDED.value_prop
+                    """, (variant_id, document_id, position,
+                          variant.get("variant_number", 1),
+                          variant.get("variant_name"),
+                          variant.get("is_recommended", False),
+                          variant.get("subject_line"),
+                          variant.get("email_body", ""),
+                          variant.get("wait_days", 0),
+                          variant.get("thread_reply", False),
+                          variant.get("word_count"),
+                          variant.get("them_us_ratio"),
+                          variant.get("score"),
+                          variant.get("angle"),
+                          variant.get("strategy"),
+                          variant.get("value_prop")))
+
+            conn.commit()
+
+            qa_score = qa_scoring.get("overall_score") if qa_scoring else None
+
+            return [TextContent(type="text", text=f"Saved campaign {campaign_number} copy:\n"
+                               f"  Document ID: {document_id}\n"
+                               f"  Positions: {len(email_positions)}\n"
+                               f"  Total variants: {variant_count}\n"
+                               f"  QA Score: {qa_score or 'N/A'}")]
+
+        except Exception as e:
+            conn.rollback()
+            return [TextContent(type="text", text=f"Error saving campaign copy: {str(e)}")]
 
         finally:
             cur.close()
@@ -1118,6 +1936,39 @@ async def call_tool(name: str, arguments: dict):
         used_variables = arguments.get("used_variables", [])
         missing_variables = arguments.get("missing_variables", [])
 
+        # Count variants
+        variant_count = sum(len(pos.get("variants", [])) for pos in email_positions)
+
+        # LOCAL MODE: Save to filesystem instead of database
+        if LOCAL_MODE:
+            document = {
+                "document_id": str(uuid.uuid4()),
+                "job_id": job_id,
+                "document_name": document_name,
+                "vertical": vertical,
+                "objective": objective,
+                "icp_mapping": icp_mapping,
+                "variable_schema": variable_schema,
+                "email_positions": email_positions,
+                "sequence_summary": sequence_summary,
+                "qa_scoring": qa_scoring,
+                "strategy_notes": strategy_notes,
+                "used_variables": used_variables,
+                "missing_variables": missing_variables,
+                "created_at": datetime.now().isoformat()
+            }
+
+            output_path = save_locally(job_id, document)
+
+            return [TextContent(type="text", text=f"[LOCAL MODE] Saved campaign document: {document_name}\n"
+                               f"  Output file: {output_path}\n"
+                               f"  Positions: {len(email_positions)}\n"
+                               f"  Total variants: {variant_count}\n"
+                               f"  ICP mapping: {'Yes' if icp_mapping else 'No'}\n"
+                               f"  QA scoring: {'Yes' if qa_scoring else 'No'}\n\n"
+                               f"Run validation: python scripts/validate_output.py {output_path}")]
+
+        # PRODUCTION MODE: Save to database
         conn = get_db()
         cur = conn.cursor(cursor_factory=RealDictCursor)
 
@@ -1153,7 +2004,6 @@ async def call_tool(name: str, arguments: dict):
                   Json(strategy_notes) if strategy_notes else None))
 
             # Insert email variants for each position
-            variant_count = 0
             for position_data in email_positions:
                 position = position_data["position"]
                 variants = position_data.get("variants", [])
@@ -1181,7 +2031,6 @@ async def call_tool(name: str, arguments: dict):
                           variant.get("angle"),
                           variant.get("strategy"),
                           variant.get("value_prop")))
-                    variant_count += 1
 
                 # Insert subject line options
                 for idx, subj_opt in enumerate(subject_options):

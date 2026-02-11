@@ -1,16 +1,27 @@
-# Generate Strategy - Campaign Document with Variants
+# Generate Strategy - Full 4-Campaign Cycle Package
 
-You are generating a **single Campaign Document** containing **multiple variants per email position**. This replaces the old 4-campaigns approach with a stablekernel-style document that includes ICP mapping, variable schema, QA scoring, and strategy notes.
+You are generating a **complete Cycle Package** containing **4 distinct campaigns**, each with 4 email positions and 2-3 variants per position. This creates a 14-day outbound cycle with multiple angles for testing.
 
 ## Output Architecture
 
 | Aspect | Description |
 |--------|-------------|
-| Structure | 1 document with 4 email positions, each with 2-3 variants |
-| ICP Mapping | Target ICP, pain points by category, objections with preemption |
-| Variable Schema | Core, High-Signal, AI-Generated variables with sources |
-| QA Scoring | Detailed breakdown by dimension (25/25, 24/25, etc.) |
-| Strategy Notes | Callouts, data enrichment sources, A/B testing recommendations |
+| Structure | 1 Cycle → 4 Campaigns → 4 Emails per campaign → 2-3 variants per email |
+| Shared Config | ICP mapping, cycle variables, strategic focus (applies to all 4 campaigns) |
+| Campaign Angles | Custom Signal, Persona Pain, Case Study, Risk/Efficiency |
+| Total Emails | 16 emails (4 campaigns × 4 positions) |
+| Total Variants | ~40 variants across all campaigns |
+
+---
+
+## Campaign Angle Definitions
+
+| # | Angle | Focus | Primary Trigger | Campaign Variables |
+|---|-------|-------|-----------------|-------------------|
+| 1 | **Custom Signal** | Job postings, funding, tool adoption | Hiring for outbound roles, funding news | `{{job_signal}}`, `{{outbound_tool}}` |
+| 2 | **Persona Pain** | Role-specific overwhelm | Day-to-day frustrations of target persona | `{{persona_pain}}`, `{{team_size}}` |
+| 3 | **Case Study** | Social proof with specific results | Similar company success story | `{{case_study_company}}`, `{{case_study_result}}` |
+| 4 | **Risk/Efficiency** | Board pressure, ROI, efficiency | Need to do more with less | `{{efficiency_metric}}`, `{{roi_timeline}}` |
 
 ---
 
@@ -24,24 +35,14 @@ You are generating a **single Campaign Document** containing **multiple variants
 
 ---
 
-## The 4-Email Position Structure
+## The 4-Email Position Structure (Per Campaign)
 
 | Position | Timing | Subject | Thread | Variants |
 |----------|--------|---------|--------|----------|
-| 1 | Day 0 | New (2-4 words) | New | 3 variants: Custom Signal, Persona Pain, Case Study |
-| 2 | Day 3-4 | NONE | Threads to Email 1 | 1-2 variants: Creative Ideas |
-| 3 | Day 7-8 | New (fresh thread) | New | 2 variants: Whole Offer, Case Study Deep Dive |
-| 4 | Day 11-12 | Thread OR new | Optional | 2 variants: Redirect, Value Bomb |
-
----
-
-## The "3 Offers" Framework (Value Prop Rotation)
-
-Every email should lead with one of these, rotating through the sequence:
-
-1. **Save Time** — Efficiency, automation, less manual work
-2. **Make Money** — Increase revenue, conversions, pipeline
-3. **Save Money** — Reduce costs, better ROI, do more with same team
+| 1 | Day 0 | New (2-4 words) | New | 2-3 variants aligned to campaign angle |
+| 2 | Day 3-4 | NONE | Threads to Email 1 | 1-2 variants |
+| 3 | Day 7-8 | New (fresh thread) | New | 2 variants |
+| 4 | Day 11-12 | Thread OR new | Optional | 2 variants |
 
 ---
 
@@ -52,9 +53,10 @@ Every email should lead with one of these, rotating through the sequence:
 Call `get_client_context(client_id="{client_id}")` to retrieve:
 - Company info (name, industry, product)
 - Onboarding data (target customer, ICP, messaging)
-- **Segments and personas** (critical for variant targeting)
+- **Segments and personas** (critical for Persona Pain campaign)
 - **Competitors and key differentiators**
-- Case studies and ROI results
+- **Case studies and ROI results** (critical for Case Study campaign)
+- **Signals** (critical for Custom Signal campaign)
 - Previous suggestions and their status
 
 ### Step 2: Get Feedback Summary
@@ -64,16 +66,16 @@ Call `get_feedback_summary(client_id="{client_id}")` to learn:
 - Which were denied (patterns to avoid)
 - Revision requests (specific guidance)
 
-### Step 3: Develop ICP & Objection Mapping
+### Step 3: Develop Shared ICP & Objection Mapping
 
-Based on client context, create the ICP mapping section:
+This applies to ALL 4 campaigns in the cycle.
 
 **Target ICP:**
 ```json
 {
-  "role": "VP of Finance / CFO",
-  "company_type": "Regional Banks, Credit Unions, Community Banks",
-  "company_size": "$500M - $5B in assets"
+  "role": "VP Sales / Head of Growth / Founder-CEO",
+  "company_type": "B2B SaaS, Series A-C",
+  "company_size": "50-500 employees, scaling outbound"
 }
 ```
 
@@ -81,22 +83,26 @@ Based on client context, create the ICP mapping section:
 
 | Category | Label | Points |
 |----------|-------|--------|
-| Tech Debt | "Legacy System Constraints" | ["Core banking contracts lock innovation", "Mobile apps behind neobanks", ...] |
-| Talent | "Build vs Buy Dilemma" | ["In-house dev teams are expensive", "Hard to attract fintech talent", ...] |
-| Competition | "Competitive Pressure" | ["Neobanks offer instant account opening", "Big banks have deeper pockets", ...] |
-| Ops | "Operational Friction" | ["Branch + digital creates ops overhead", ...] |
+| Infrastructure | "Sending Infrastructure Problems" | ["Deliverability issues causing missed opportunities", "IP warmup takes months", ...] |
+| Ops | "Operational Overhead" | ["SDR time wasted on manual tasks", "No visibility into what's working", ...] |
+| Revenue | "Pipeline Pressure" | ["Miss quota from cold outreach", "High CAC from paid channels", ...] |
+| Talent | "Team Scaling Challenges" | ["Hard to hire experienced SDRs", "Training takes too long", ...] |
 
 **Top 3 Objections with Preemption:**
 
 | Objection | Preemption Strategy |
 |-----------|---------------------|
-| "We're already working with {{competitor}}" | Acknowledge competitor, show differentiation via specialization |
-| "We don't have budget this quarter" | Position as cost-saving, show ROI timeline |
-| "Our IT team is stretched thin" | Emphasize turnkey implementation, minimal IT burden |
+| "We're already using [competitor]" | Acknowledge, show differentiation via specialization |
+| "We don't have budget this quarter" | Position as pipeline ROI, show payback timeline |
+| "Our team is too small" | Emphasize turnkey approach, minimal lift required |
 
 ### Step 4: Define Variable Schema
 
-Document all variables used across the campaign:
+**Cycle Variables (Apply to ALL 4 campaigns):**
+| Variable | Description | Source |
+|----------|-------------|--------|
+| `{{competitor}}` | Main competitor they're considering | Onboarding form |
+| `{{industry_trend}}` | Relevant market trend | Research |
 
 **Core Variables (Always Available):**
 | Variable | Description |
@@ -105,451 +111,318 @@ Document all variables used across the campaign:
 | `{{company_name}}` | Their company |
 | `{{role_title}}` | Job title |
 
-**High-Signal Variables (From Enrichment):**
-| Variable | Description | Source |
-|----------|-------------|--------|
-| `{{core_vendor}}` | Current core banking vendor | ZoomInfo or LinkedIn |
-| `{{competitor_neobank}}` | Regional neobank competitor | Manual research |
-| `{{recent_announcement}}` | Recent news/PR about company | Google News |
+**Campaign-Specific Variables (defined per campaign):**
+- Campaign 1: `{{job_signal}}`, `{{outbound_tool}}`, `{{hiring_role}}`
+- Campaign 2: `{{persona_pain}}`, `{{team_size}}`, `{{daily_challenge}}`
+- Campaign 3: `{{case_study_company}}`, `{{case_study_result}}`, `{{case_study_timeline}}`
+- Campaign 4: `{{efficiency_metric}}`, `{{roi_timeline}}`, `{{board_pressure}}`
 
-**AI-Generated Variables:**
-| Variable | Description |
-|----------|-------------|
-| `{{ai_customer_type}}` | Inferred customer segment (e.g., "small business owners") |
-| `{{ai_pain_summary}}` | One-line pain point summary from research |
+### Step 5: Plan All 4 Campaigns
 
-### Step 5: ICP Role-Play
+Before drafting emails, outline each campaign's approach:
 
-Answer these 4 questions before drafting:
+| Campaign | Primary Hook | Email 1 Focus | Unique Variable |
+|----------|--------------|---------------|-----------------|
+| 1. Custom Signal | Hiring/tool adoption signal | "Noticed you're hiring..." | `{{hiring_role}}` |
+| 2. Persona Pain | Role-specific frustration | "Most [role] I talk to..." | `{{persona_pain}}` |
+| 3. Case Study | Social proof | "Quick story about [company]..." | `{{case_study_company}}` |
+| 4. Risk/Efficiency | Board/ROI pressure | "Given the pressure to..." | `{{efficiency_metric}}` |
 
-1. **How are they doing this now?** (Current state, tools, manual processes)
-2. **Why would they switch?** (What's broken? The "last straw" moment?)
-3. **What objections will they have?** ("We already have X", "No budget")
-4. **What's their personal benefit?** (Not company ROI—what do THEY get?)
+### Step 6: Draft All 16 Email Positions
 
-### Step 6: Draft Email Variants by Position
+Generate 4 complete campaigns, each with 4 email positions and 2-3 variants per position.
 
-Generate multiple variants for each email position:
+---
 
-#### Email Position 1 (Day 0) - 3 Variants
+#### CAMPAIGN 1: Custom Signal
 
-| Variant | Angle | Strategy | Value Prop | Mark |
-|---------|-------|----------|------------|------|
-| V1 | Custom Signal | Core vendor frustration | save_time | `is_recommended: true` |
-| V2 | Persona Pain | Hiring signal → backlog | make_money | |
-| V3 | Case Study | Proof-first opener | save_money | |
+**Campaign Variables:** `{{job_signal}}`, `{{outbound_tool}}`, `{{hiring_role}}`
 
-**Template for V1 (Custom Signal):**
+**Email 1 (Day 0) - 3 Variants:**
+
+| Variant | Angle | Strategy | Value Prop |
+|---------|-------|----------|------------|
+| V1 | Hiring Signal | Job posting → scaling pain | save_time |
+| V2 | Tool Signal | Using [tool] → limitation | make_money |
+| V3 | Funding Signal | Recent raise → growth pressure | save_time |
+
+**Template V1:**
 ```
-Subject: Quick question, {{first_name}}
+Subject: {{hiring_role}} hire?
 
-{{first_name}}—noticed {{company_name}} is on {{core_vendor}}.
+{{first_name}}—saw {{company_name}} is hiring a {{hiring_role}}.
 
-Most teams I talk to are stuck waiting 6+ months for simple features.
+When teams scale outbound, the usual blocker is infrastructure eating up SDR time.
 
-We help {{industry}} companies ship customer-facing apps in weeks, not quarters—without touching core.
+We handle the technical side so your reps focus on conversations, not deliverability.
 
-Worth exploring?
-```
-
-**Template for V2 (Persona Pain):**
-```
-Subject: {{role_title}} at {{company_name}}
-
-{{first_name}}—given {{company_name}}'s growth, curious how you're keeping up with feature requests.
-
-Most {{role_title}}s I talk to are drowning in a backlog their core vendor can't touch.
-
-We've helped similar teams ship 3x faster without adding headcount.
-
-Make sense to chat?
+Worth a quick look?
 ```
 
-**Template for V3 (Case Study):**
+**Email 2 (Day 3-4) - 1 Variant:**
+Subject: NONE (threads to Email 1)
+
+**Email 3 (Day 7-8) - 2 Variants:**
+New thread, different angle
+
+**Email 4 (Day 11-12) - 2 Variants:**
+Redirect or Value Bomb
+
+---
+
+#### CAMPAIGN 2: Persona Pain
+
+**Campaign Variables:** `{{persona_pain}}`, `{{team_size}}`, `{{daily_challenge}}`
+
+**Email 1 (Day 0) - 2 Variants:**
+
+| Variant | Angle | Strategy | Value Prop |
+|---------|-------|----------|------------|
+| V1 | SDR Overwhelm | Too many tools, not enough time | save_time |
+| V2 | Manager Pressure | Pipeline visibility gaps | make_money |
+
+**Template V1:**
+```
+Subject: SDR bandwidth
+
+{{first_name}}—most {{role_title}}s I talk to are drowning in manual work.
+
+Between list building, sequencing, and inbox management, actual selling gets squeezed.
+
+We automate the infrastructure so your team can focus on conversations.
+
+Make sense to explore?
+```
+
+---
+
+#### CAMPAIGN 3: Case Study
+
+**Campaign Variables:** `{{case_study_company}}`, `{{case_study_result}}`, `{{case_study_timeline}}`
+
+**Email 1 (Day 0) - 2 Variants:**
+
+| Variant | Angle | Strategy | Value Prop |
+|---------|-------|----------|------------|
+| V1 | Similar Company | Peer comparison | make_money |
+| V2 | Specific Result | Lead with number | save_money |
+
+**Template V1:**
 ```
 Subject: How {{case_study_company}} did it
 
 {{first_name}}—quick story:
 
-{{case_study_company}} was losing customers to {{competitor_neobank}} because of slow onboarding.
+{{case_study_company}} was struggling to scale outbound. Deliverability issues meant missed opportunities.
 
-We helped them launch a 5-minute account opening flow. They saw {{case_study_result}}.
+After working with us, they hit {{case_study_result}} in {{case_study_timeline}}.
 
-Given what {{company_name}} faces, figured this might resonate.
+Given what {{company_name}} is building, thought this might resonate.
 
-Worth a quick chat?
+Worth a chat?
 ```
 
-#### Email Position 2 (Day 3-4) - 1-2 Variants
+---
 
-**Subject**: NONE (threads to Email 1)
+#### CAMPAIGN 4: Risk/Efficiency
 
-| Variant | Angle | Strategy |
-|---------|-------|----------|
-| V1 | Creative Ideas | Specific ideas based on research |
+**Campaign Variables:** `{{efficiency_metric}}`, `{{roi_timeline}}`, `{{board_pressure}}`
 
-**Template:**
+**Email 1 (Day 0) - 2 Variants:**
+
+| Variant | Angle | Strategy | Value Prop |
+|---------|-------|----------|------------|
+| V1 | Do More With Less | Efficiency pressure | save_money |
+| V2 | Board Expectations | Growth without headcount | save_time |
+
+**Template V1:**
 ```
-{{first_name}}—I was back on your site today and had some ideas:
+Subject: Doing more with less
 
-• Mobile deposit UX could match what {{competitor_neobank}} offers
-• Self-service account opening would reduce branch load
-• Real-time notifications would improve engagement
+{{first_name}}—heard this from a few {{role_title}}s lately:
 
-But I wrote this without knowing your roadmap.
+"We need to 2x pipeline without 2x headcount."
 
-If it's interesting, happy to share what's working for other {{industry}} teams.
-```
-
-#### Email Position 3 (Day 7-8) - 2 Variants
-
-| Variant | Angle | Strategy | Value Prop | Mark |
-|---------|-------|----------|------------|------|
-| V1 | Whole Offer | Direct, drop AI | save_money | |
-| V2 | Results First | Case study deep dive | make_money | `is_recommended: true` |
-
-**Template for V1 (Whole Offer):**
-```
-Subject: Scaling digital at {{company_name}}
-
-{{first_name}},
-
-Most {{industry}} teams are stuck between "wait for core" and "build from scratch."
-
-We're a third option: ship customer-facing apps that sit on top of core, without replacing anything.
-
-Clients like {{case_study_company}} went from idea to live app in 8 weeks.
+We help teams hit {{efficiency_metric}} improvement in outbound efficiency—typically in {{roi_timeline}}.
 
 Worth exploring?
 ```
 
-**Template for V2 (Results First):**
-```
-Subject: {{case_study_result}} in 8 weeks
-
-{{first_name}},
-
-{{case_study_company}} was losing accounts to neobanks.
-
-8 weeks later, they had a mobile-first account opening flow that matched the competition.
-
-Result: {{case_study_result}}.
-
-Given {{company_name}}'s position, thought this might be relevant.
-
-Quick chat?
-```
-
-#### Email Position 4 (Day 11-12) - 2 Variants
-
-| Variant | Angle | Strategy | Mark |
-|---------|-------|----------|------|
-| V1 | Redirect | Colleague handoff | |
-| V2 | Value Bomb | Send actual asset | `is_recommended: true` |
-
-**Template for V1 (Redirect):**
-```
-{{first_name}}—let me know if {{employee_1}} or {{employee_2}} would be better to speak about digital roadmap.
-
-Either way, appreciate the time!
-```
-
-**Template for V2 (Value Bomb):**
-```
-{{first_name}}—last note.
-
-I put together a quick competitive teardown of what {{competitor_neobank}} is doing well.
-
-It's not a pitch deck—just observations that might be useful for your roadmap.
-
-Want me to send it over?
-```
+---
 
 ### Step 7: Apply 3-Pass Cutting to All Emails
 
-For all email variants:
+For all 16 email positions across 4 campaigns:
 1. Pass 1: Delete fluff (target 20% cut)
 2. Pass 2: Compress sentences (target 15% cut)
 3. Pass 3: Cut adjectives (target 10% cut)
 
 Target: 50-90 words per email.
 
-### Step 8: Run QA Scoring with Dimension Breakdown
+### Step 8: Run QA Scoring Per Campaign
 
-Score the recommended variants (lead variant per position) using this rubric:
+Score each campaign's recommended variants:
 
-| Dimension | Max | Score | Notes |
-|-----------|-----|-------|-------|
-| Situation Recognition | 25 | ? | Specific data about them in Email 1? |
-| Value Clarity | 25 | ? | Clear offer + proof? Reader knows what you do? |
-| Personalization Quality | 20 | ? | Custom signal OR AI insight? Not just {{name}}? |
-| CTA Effort | 15 | ? | Low friction across all 4 emails? |
-| Punchiness | 10 | ? | All emails 50-90 words? Good rotation? |
-| Subject Line | 5 | ? | Email 1 & 3 subjects intriguing? |
+| Dimension | Max | Notes |
+|-----------|-----|-------|
+| Situation Recognition | 25 | Specific data about them in Email 1? |
+| Value Clarity | 25 | Clear offer + proof? |
+| Personalization Quality | 20 | Custom signal OR insight? |
+| CTA Effort | 15 | Low friction across all 4 emails? |
+| Punchiness | 10 | All emails 50-90 words? |
+| Subject Line | 5 | Intriguing subjects? |
 
-**Verdict Thresholds:**
-- **90+** = "Ship it"
-- **75-89** = "One more pass"
-- **<75** = "Start over"
+**Per-Campaign Verdict:**
+- 90+ = Ship it
+- 75-89 = One more pass
+- <75 = Needs work
 
-### Step 9: Create Strategy Notes
+**Overall Cycle Score:** Average of 4 campaign scores
 
-Document strategic recommendations:
+### Step 9: Create Strategy Notes Per Campaign
 
-**Callouts** (type: recommendation, warning, or info):
+For each campaign, document:
+
+**Callouts:**
 ```json
 [
-  {"type": "recommendation", "text": "Lead with {{core_vendor}} signal—highest response rate trigger for this ICP"},
-  {"type": "warning", "text": "Avoid mentioning pricing in cold emails—their objection is 'no budget' so wait for call"},
-  {"type": "info", "text": "{{competitor_neobank}} recently launched in their market—topical hook opportunity"}
+  {"type": "recommendation", "text": "Lead with hiring signal for highest response rate"},
+  {"type": "warning", "text": "Avoid pricing mentions in cold emails"}
 ]
 ```
 
-**Data Enrichment Sources:**
-| Variable | Source |
-|----------|--------|
-| `{{core_vendor}}` | ZoomInfo or BuiltWith |
-| `{{competitor_neobank}}` | Manual research, LinkedIn |
-| `{{recent_announcement}}` | Google News alert |
-
 **A/B Testing Recommendations:**
-- Test V1 (Core Vendor) vs V3 (Case Study) openers in Position 1
-- Test short subject ("Quick q") vs specific ("How {{case_study_company}} did it")
-- Test Redirect vs Value Bomb in Position 4
+- Campaign 1: Test V1 (Hiring) vs V2 (Tool) openers
+- Campaign 3: Test V1 (Story) vs V2 (Number) openers
 
-### Step 10: Save Campaign Document
+### Step 10: Save Cycle Package
 
-Call `save_campaign_document` with the complete document structure:
+Call `save_cycle_package` with the complete 4-campaign structure:
 
 ```json
 {
   "job_id": "{job_id}",
-  "document_name": "{Client Name} {Vertical} Campaign v1",
-  "vertical": "Financial Services",
-  "objective": "Generate qualified meetings with VP/C-level at regional banks looking to modernize digital offerings",
-  "icp_mapping": {
-    "target_icp": {
-      "role": "VP of Finance / CFO",
-      "company_type": "Regional Banks, Credit Unions",
-      "company_size": "$500M - $5B in assets"
-    },
-    "pain_points": [
-      {
-        "category": "Tech Debt",
-        "label": "Legacy System Constraints",
-        "points": ["Core banking contracts lock innovation", "Mobile apps behind neobanks"]
+  "cycle_name": "{Client Name} Outbound Cycle v1",
+  "cycle_config": {
+    "icp_mapping": {
+      "target_icp": {
+        "role": "VP Sales / Head of Growth",
+        "company_type": "B2B SaaS, Series A-C",
+        "company_size": "50-500 employees"
       },
-      {
-        "category": "Talent",
-        "label": "Build vs Buy Dilemma",
-        "points": ["In-house dev teams expensive", "Hard to attract fintech talent"]
-      }
+      "pain_points": [
+        {"category": "Infrastructure", "label": "Sending Problems", "points": ["..."]},
+        {"category": "Ops", "label": "Operational Overhead", "points": ["..."]},
+        {"category": "Revenue", "label": "Pipeline Pressure", "points": ["..."]},
+        {"category": "Talent", "label": "Team Scaling", "points": ["..."]}
+      ],
+      "objections": [
+        {"objection": "Using competitor", "preemption": "Show differentiation"},
+        {"objection": "No budget", "preemption": "Position as ROI"},
+        {"objection": "Team too small", "preemption": "Emphasize turnkey"}
+      ]
+    },
+    "cycle_variables": [
+      {"name": "competitor", "description": "Main competitor", "source": "Onboarding"},
+      {"name": "industry_trend", "description": "Relevant trend", "source": "Research"}
     ],
-    "objections": [
-      {"objection": "We're already working with {{competitor}}", "preemption": "Acknowledge, show differentiation"},
-      {"objection": "No budget this quarter", "preemption": "Position as cost-saving, show ROI"},
-      {"objection": "IT team is stretched", "preemption": "Emphasize turnkey, minimal IT burden"}
-    ]
+    "strategic_focus": "Scale outbound pipeline without scaling headcount",
+    "target_outcome": "15+ qualified meetings per month from cold outreach",
+    "vertical": "B2B SaaS",
+    "objective": "Generate qualified pipeline from VP-level decision makers"
   },
-  "variable_schema": {
-    "core": [
-      {"name": "first_name", "description": "Prospect's first name"},
-      {"name": "company_name", "description": "Their company"},
-      {"name": "role_title", "description": "Job title"}
-    ],
-    "high_signal": [
-      {"name": "core_vendor", "description": "Current core banking vendor", "source": "ZoomInfo"},
-      {"name": "competitor_neobank", "description": "Regional neobank competitor", "source": "Manual research"}
-    ],
-    "ai_generated": [
-      {"name": "ai_customer_type", "description": "Inferred customer segment"}
-    ]
-  },
-  "email_positions": [
+  "campaigns": [
     {
-      "position": 1,
-      "title": "Email 1: Custom Signal — Day 0",
-      "variants": [
+      "campaign_number": 1,
+      "campaign_name": "Custom Signal Campaign",
+      "angle": "custom_signal",
+      "campaign_variables": [
+        {"name": "job_signal", "description": "Hiring signal from job postings"},
+        {"name": "outbound_tool", "description": "Current outbound tool"},
+        {"name": "hiring_role", "description": "Role they're hiring for"}
+      ],
+      "email_positions": [
         {
-          "variant_number": 1,
-          "variant_name": "Core Vendor Frustration",
-          "is_recommended": true,
-          "subject_line": "Quick question, {{first_name}}",
-          "email_body": "{{first_name}}—noticed {{company_name}} is on {{core_vendor}}...",
-          "wait_days": 0,
-          "thread_reply": false,
-          "word_count": 65,
-          "them_us_ratio": "4:1",
-          "score": 87,
-          "angle": "custom_signal",
-          "strategy": "Core vendor frustration",
-          "value_prop": "save_time"
-        },
-        {
-          "variant_number": 2,
-          "variant_name": "Hiring Signal → Backlog",
-          "is_recommended": false,
-          "subject_line": "{{role_title}} at {{company_name}}",
-          "email_body": "{{first_name}}—given {{company_name}}'s growth...",
-          "wait_days": 0,
-          "thread_reply": false,
-          "word_count": 58,
-          "them_us_ratio": "3:1",
-          "score": 82,
-          "angle": "persona_pain",
-          "value_prop": "make_money"
-        },
-        {
-          "variant_number": 3,
-          "variant_name": "Case Study Opener",
-          "is_recommended": false,
-          "subject_line": "How {{case_study_company}} did it",
-          "email_body": "{{first_name}}—quick story...",
-          "wait_days": 0,
-          "thread_reply": false,
-          "word_count": 72,
-          "them_us_ratio": "3:1",
-          "score": 85,
-          "angle": "case_study",
-          "value_prop": "save_money"
+          "position": 1,
+          "title": "Email 1: Hiring Signal — Day 0",
+          "variants": [
+            {
+              "variant_number": 1,
+              "variant_name": "Hiring Signal Opener",
+              "is_recommended": true,
+              "subject_line": "{{hiring_role}} hire?",
+              "email_body": "{{first_name}}—saw {{company_name}} is hiring...",
+              "wait_days": 0,
+              "thread_reply": false,
+              "word_count": 65,
+              "them_us_ratio": "4:1",
+              "score": 87,
+              "angle": "custom_signal",
+              "value_prop": "save_time"
+            }
+          ]
         }
       ],
-      "subject_options": [
-        {"subject_line": "Quick question, {{first_name}}", "rationale": "Curiosity gap, personal"},
-        {"subject_line": "{{core_vendor}} question", "rationale": "High-signal, specific"},
-        {"subject_line": "How {{case_study_company}} did it", "rationale": "Social proof, story-based"}
-      ]
+      "qa_scoring": {
+        "overall_score": 87,
+        "verdict": "Ship it",
+        "dimensions": [
+          {"name": "Situation Recognition", "score": "24/25", "notes": "Strong hiring signal"}
+        ]
+      },
+      "strategy_notes": {
+        "callouts": [{"type": "recommendation", "text": "Hiring signal = highest response"}],
+        "ab_testing": ["Test Hiring vs Tool signal in Position 1"]
+      }
     },
     {
-      "position": 2,
-      "title": "Email 2: Creative Ideas — Day 3-4",
-      "variants": [
-        {
-          "variant_number": 1,
-          "variant_name": "Specific Ideas",
-          "is_recommended": true,
-          "subject_line": null,
-          "email_body": "{{first_name}}—I was back on your site...",
-          "wait_days": 3,
-          "thread_reply": true,
-          "word_count": 62,
-          "them_us_ratio": "5:1",
-          "score": 84,
-          "strategy": "creative_ideas",
-          "value_prop": "make_money"
-        }
-      ]
+      "campaign_number": 2,
+      "campaign_name": "Persona Pain Campaign",
+      "angle": "persona_pain",
+      "campaign_variables": [
+        {"name": "persona_pain", "description": "Role-specific pain point"},
+        {"name": "team_size", "description": "SDR team size"},
+        {"name": "daily_challenge", "description": "Daily frustration"}
+      ],
+      "email_positions": [],
+      "qa_scoring": {"overall_score": 85, "verdict": "Ship it"},
+      "strategy_notes": {}
     },
     {
-      "position": 3,
-      "title": "Email 3: Whole Offer — Day 7-8",
-      "variants": [
-        {
-          "variant_number": 1,
-          "variant_name": "Direct Whole Offer",
-          "is_recommended": false,
-          "subject_line": "Scaling digital at {{company_name}}",
-          "email_body": "{{first_name}}, Most {{industry}} teams...",
-          "wait_days": 4,
-          "thread_reply": false,
-          "word_count": 58,
-          "them_us_ratio": "3:1",
-          "score": 80,
-          "strategy": "whole_offer",
-          "value_prop": "save_money"
-        },
-        {
-          "variant_number": 2,
-          "variant_name": "Results First",
-          "is_recommended": true,
-          "subject_line": "{{case_study_result}} in 8 weeks",
-          "email_body": "{{first_name}}, {{case_study_company}} was losing...",
-          "wait_days": 4,
-          "thread_reply": false,
-          "word_count": 55,
-          "them_us_ratio": "4:1",
-          "score": 88,
-          "strategy": "case_study",
-          "value_prop": "make_money"
-        }
-      ]
+      "campaign_number": 3,
+      "campaign_name": "Case Study Campaign",
+      "angle": "case_study",
+      "campaign_variables": [
+        {"name": "case_study_company", "description": "Reference customer"},
+        {"name": "case_study_result", "description": "Specific result achieved"},
+        {"name": "case_study_timeline", "description": "Time to achieve result"}
+      ],
+      "email_positions": [],
+      "qa_scoring": {"overall_score": 88, "verdict": "Ship it"},
+      "strategy_notes": {}
     },
     {
-      "position": 4,
-      "title": "Email 4: Value Bomb — Day 11-12",
-      "variants": [
-        {
-          "variant_number": 1,
-          "variant_name": "Redirect",
-          "is_recommended": false,
-          "subject_line": null,
-          "email_body": "{{first_name}}—let me know if {{employee_1}}...",
-          "wait_days": 4,
-          "thread_reply": true,
-          "word_count": 22,
-          "them_us_ratio": "5:1",
-          "score": 75,
-          "strategy": "redirect",
-          "value_prop": null
-        },
-        {
-          "variant_number": 2,
-          "variant_name": "Competitive Teardown",
-          "is_recommended": true,
-          "subject_line": null,
-          "email_body": "{{first_name}}—last note. I put together...",
-          "wait_days": 4,
-          "thread_reply": true,
-          "word_count": 45,
-          "them_us_ratio": "4:1",
-          "score": 86,
-          "strategy": "value_bomb",
-          "value_prop": null
-        }
-      ]
+      "campaign_number": 4,
+      "campaign_name": "Risk/Efficiency Campaign",
+      "angle": "risk_efficiency",
+      "campaign_variables": [
+        {"name": "efficiency_metric", "description": "Efficiency improvement target"},
+        {"name": "roi_timeline", "description": "Time to ROI"},
+        {"name": "board_pressure", "description": "Board/investor pressure point"}
+      ],
+      "email_positions": [],
+      "qa_scoring": {"overall_score": 84, "verdict": "One more pass"},
+      "strategy_notes": {}
     }
   ],
-  "sequence_summary": [
-    {"day": "Day 0", "title": "Email 1: Custom Signal", "description": "Lead with specific research about their situation"},
-    {"day": "Day 3-4", "title": "Email 2: Creative Ideas", "description": "Thread reply with specific, actionable ideas"},
-    {"day": "Day 7-8", "title": "Email 3: Fresh Thread", "description": "New subject, whole offer or case study"},
-    {"day": "Day 11-12", "title": "Email 4: Final Touch", "description": "Redirect or value bomb to close"}
-  ],
-  "qa_scoring": {
-    "overall_score": 87,
-    "verdict": "Ship it",
-    "dimensions": [
-      {"name": "Situation Recognition", "score": "24/25", "notes": "Strong core vendor signal in opener"},
-      {"name": "Value Clarity", "score": "23/25", "notes": "Clear 'ship in weeks' value prop"},
-      {"name": "Personalization Quality", "score": "18/20", "notes": "Good variable usage, could add more research signals"},
-      {"name": "CTA Effort", "score": "14/15", "notes": "All CTAs answerable in 5 words or less"},
-      {"name": "Punchiness", "score": "8/10", "notes": "Email 3 slightly long at 72 words"},
-      {"name": "Subject Line", "score": "5/5", "notes": "Intriguing without being clickbait"}
-    ]
-  },
-  "strategy_notes": {
-    "callouts": [
-      {"type": "recommendation", "text": "Lead with {{core_vendor}} signal—highest response rate trigger"},
-      {"type": "warning", "text": "Avoid pricing mentions—wait for discovery call"},
-      {"type": "info", "text": "{{competitor_neobank}} recently launched—topical hook available"}
-    ],
-    "data_enrichment": [
-      {"variable": "core_vendor", "source": "ZoomInfo or BuiltWith"},
-      {"variable": "competitor_neobank", "source": "Manual research"},
-      {"variable": "recent_announcement", "source": "Google News alert"}
-    ],
-    "ab_testing": [
-      "Test V1 vs V3 openers in Position 1",
-      "Test short subject vs specific subject",
-      "Test Redirect vs Value Bomb in Position 4"
-    ]
-  }
+  "overall_qa_score": 86,
+  "overall_verdict": "Ship it"
 }
 ```
 
 ### Step 11: Complete Job
 
-Call `complete_job(job_id="{job_id}")` when the document is saved.
+Call `complete_job(job_id="{job_id}")` when all 4 campaigns are saved.
 
 ---
 
@@ -613,19 +486,18 @@ Before including each email, verify:
 
 ## Parameters
 
-- `client_id`: The UUID of the client to generate the document for
-- `job_id`: The generation job ID to associate the document with
+- `client_id`: The UUID of the client to generate the cycle for
+- `job_id`: The generation job ID to associate the cycle with
 - `submission_id`: (Optional) Specific onboarding submission to use
 
 ---
 
 ## Quick Reference
 
-1. **1 document per generation** — with 4 email positions
-2. **2-3 variants per position** — different angles/strategies
-3. **Mark recommended variants** — `is_recommended: true` for best option
-4. **Include ICP mapping** — target, pain points, objections
-5. **Include variable schema** — core, high-signal, AI-generated
-6. **Include QA scoring** — dimension breakdown with notes
-7. **Include strategy notes** — callouts, enrichment, A/B testing
-8. **Use `save_campaign_document`** — NOT save_campaign_batch
+1. **1 cycle = 4 campaigns** — Custom Signal, Persona Pain, Case Study, Risk/Efficiency
+2. **4 emails per campaign** — 4 positions with threading rules
+3. **2-3 variants per email** — different angles/strategies
+4. **Shared ICP mapping** — applies to all 4 campaigns
+5. **Campaign-specific variables** — unique to each angle
+6. **Per-campaign QA scoring** — plus overall cycle score
+7. **Use `save_cycle_package`** — NOT save_campaign_document for full cycles
