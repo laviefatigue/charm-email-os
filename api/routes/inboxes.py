@@ -269,20 +269,51 @@ async def get_inbox_health(inbox_id: UUID):
 async def kill_inbox(inbox_id: UUID, request: InboxKillRequest):
     """Manually kill an inbox"""
     # Get inbox to verify it exists
-    inbox = await fetch_one("SELECT id, email_address, workspace_id FROM sender_accounts WHERE id = $1", inbox_id)
+    inbox = await fetch_one("""
+        SELECT id, email, workspace_id, domain_id
+        FROM sender_accounts
+        WHERE id = $1
+    """, inbox_id)
     if not inbox:
         raise HTTPException(status_code=404, detail="Inbox not found")
 
-    # Update inbox state (only inbox_state column exists)
+    # Update inbox state with kill metadata
     await execute("""
         UPDATE sender_accounts
         SET
             inbox_state = 'dead',
+            killed_at = NOW(),
+            kill_trigger = $2,
+            kill_reason = $3,
+            pool_tier = 'retired',
             updated_at = NOW()
         WHERE id = $1
-    """, inbox_id)
+    """, inbox_id, request.kill_trigger, request.reason)
 
-    return {"message": f"Inbox {inbox['email_address']} killed", "kill_trigger": request.kill_trigger}
+    # Log to kill_trigger_events table for historical tracking
+    domain = await fetch_one("SELECT domain_name FROM domains WHERE id = $1", inbox["domain_id"]) if inbox["domain_id"] else None
+
+    await execute("""
+        INSERT INTO kill_trigger_events (
+            workspace_id, inbox_id, inbox_email, domain_id, domain_name,
+            trigger_type, severity, value, threshold,
+            action_taken, resolved_at, resolved_by, notes
+        ) VALUES (
+            $1, $2, $3, $4, $5,
+            $6, 'instant', 1, 1,
+            'killed', NOW(), 'manual', $7
+        )
+    """,
+        inbox["workspace_id"],
+        inbox_id,
+        inbox["email"],
+        inbox["domain_id"],
+        domain["domain_name"] if domain else None,
+        request.kill_trigger,
+        request.reason
+    )
+
+    return {"message": f"Inbox {inbox['email']} killed", "kill_trigger": request.kill_trigger}
 
 
 @router.post("/{inbox_id}/approve", response_model=Inbox)

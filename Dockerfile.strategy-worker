@@ -82,8 +82,9 @@ RUN pip3 install --break-system-packages --no-cache-dir -r requirements-mcp.txt
 # Copy MCP server code
 COPY strategy_mcp/ /app/strategy_mcp/
 
-# Copy MCP configuration
+# Copy MCP configuration (both production and local mode configs)
 COPY strategy_mcp_config.json /app/
+COPY strategy_mcp_config_docker_local.json /app/
 
 # Copy Claude skill (embedded in prompt by worker)
 COPY .claude/ /app/.claude/

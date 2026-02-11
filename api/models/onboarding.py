@@ -4,7 +4,7 @@ Onboarding submission models.
 Pydantic models for comprehensive onboarding form data stored in client_onboarding_submissions.
 """
 
-from typing import Optional
+from typing import Optional, Any
 from datetime import datetime
 from pydantic import BaseModel, Field
 from uuid import UUID
@@ -50,6 +50,9 @@ class OnboardingSubmission(BaseModel):
     target_customer: Optional[str] = None
     acv: Optional[str] = None
     sales_cycle_length: Optional[str] = None
+    annual_revenue: Optional[str] = None
+    self_serve_pct: Optional[str] = None
+    industry: Optional[str] = None  # Vertical for campaign targeting
 
     # Section 3: Market Signals
     signals: list[str] = Field(default_factory=list)
@@ -58,20 +61,35 @@ class OnboardingSubmission(BaseModel):
     job_titles: list[str] = Field(default_factory=list)
     segments: list[ClientSegment] = Field(default_factory=list)
     personas: list[ClientPersona] = Field(default_factory=list)
+    competitors: list[str] = Field(default_factory=list)  # Who prospects compare against
+    key_differentiators: Optional[str] = None  # Competitive advantages
+    common_objections: Optional[str] = None  # Typical pushback from prospects
+    buying_triggers_global: Optional[str] = None  # What initiates buying behavior
 
     # Section 5: Process
     outbound_tools: list[str] = Field(default_factory=list)
     crm: Optional[str] = None
+    monthly_volume: Optional[str] = None  # Emails sent per month
+    current_open_rate: Optional[str] = None
+    current_reply_rate: Optional[str] = None
+    other_channels: Optional[str] = None  # Other outreach channels used
+    messages_worked: Optional[str] = None  # What messaging has worked
+    approaches_failed: Optional[str] = None  # What to avoid
 
     # Section 6: Messaging
     customer_voice: Optional[str] = None
     roi_results: Optional[str] = None
     tone_style: Optional[str] = None
+    case_studies: Optional[Any] = None  # Case study summaries (can be string or list of objects)
+    industry_jargon: Optional[str] = None  # Terms to use or avoid
+    core_vendors: list[str] = Field(default_factory=list)  # Tech vendors for targeting
 
     # Section 7: Goals
     primary_gtm_objective: Optional[str] = None
     success_metrics: list[str] = Field(default_factory=list)
     success_definition: Optional[str] = None
+    engagement_win: Optional[str] = None  # What success looks like
+    additional_context: Optional[str] = None  # Extra notes
 
     # Metadata
     submission_status: str = Field(default="submitted")
@@ -99,26 +117,46 @@ class OnboardingSubmissionUpdate(BaseModel):
     target_customer: Optional[str] = None
     acv: Optional[str] = None
     sales_cycle_length: Optional[str] = None
+    annual_revenue: Optional[str] = None
+    self_serve_pct: Optional[str] = None
+    industry: Optional[str] = None
 
     # Section 3: Market Signals
     signals: Optional[list[str]] = None
 
     # Section 4: Audience
     job_titles: Optional[list[str]] = None
+    segments: Optional[list[ClientSegment]] = None
+    personas: Optional[list[ClientPersona]] = None
+    competitors: Optional[list[str]] = None
+    key_differentiators: Optional[str] = None
+    common_objections: Optional[str] = None
+    buying_triggers_global: Optional[str] = None
 
     # Section 5: Process
     outbound_tools: Optional[list[str]] = None
     crm: Optional[str] = None
+    monthly_volume: Optional[str] = None
+    current_open_rate: Optional[str] = None
+    current_reply_rate: Optional[str] = None
+    other_channels: Optional[str] = None
+    messages_worked: Optional[str] = None
+    approaches_failed: Optional[str] = None
 
     # Section 6: Messaging
     customer_voice: Optional[str] = None
     roi_results: Optional[str] = None
     tone_style: Optional[str] = None
+    case_studies: Optional[Any] = None
+    industry_jargon: Optional[str] = None
+    core_vendors: Optional[list[str]] = None
 
     # Section 7: Goals
     primary_gtm_objective: Optional[str] = None
     success_metrics: Optional[list[str]] = None
     success_definition: Optional[str] = None
+    engagement_win: Optional[str] = None
+    additional_context: Optional[str] = None
 
 
 class OnboardingSubmissionList(BaseModel):

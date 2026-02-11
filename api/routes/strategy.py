@@ -309,6 +309,91 @@ async def create_strategy_job(client_id: UUID, request: Optional[StrategyJobCrea
     }
 
 
+@router.post("/cycles/{cycle_id}/generate")
+async def generate_cycle_campaigns(cycle_id: UUID, data: dict = None):
+    """
+    Generate campaigns for an existing cycle.
+
+    This creates a generation job specifically for populating campaigns
+    in an existing cycle (as opposed to creating a new cycle).
+    """
+    data = data or {}
+
+    # Get cycle and verify it exists
+    cycle = await fetch_one("""
+        SELECT cc.id, cc.client_id, cc.strategy_id, cc.cycle_number, c.name as client_name
+        FROM campaign_cycles cc
+        JOIN clients c ON c.id = cc.client_id
+        WHERE cc.id = $1
+    """, cycle_id)
+
+    if not cycle:
+        raise HTTPException(status_code=404, detail="Cycle not found")
+
+    # Check if there's already a pending/processing job for this cycle
+    existing_job = await fetch_one("""
+        SELECT id, status FROM strategy_generation_jobs
+        WHERE cycle_id = $1 AND status IN ('pending', 'processing')
+    """, cycle_id)
+
+    if existing_job:
+        return {
+            "job_id": str(existing_job["id"]),
+            "client_id": str(cycle["client_id"]),
+            "cycle_id": str(cycle_id),
+            "status": existing_job["status"],
+            "message": "Generation already in progress for this cycle"
+        }
+
+    # Get submission_id if provided, otherwise try to use client's most recent
+    submission_id = data.get("submission_id")
+    if not submission_id:
+        try:
+            latest_submission = await fetch_one("""
+                SELECT id FROM onboarding_submissions
+                WHERE client_id = $1
+                ORDER BY submitted_at DESC
+                LIMIT 1
+            """, cycle["client_id"])
+            if latest_submission:
+                submission_id = latest_submission["id"]
+        except Exception:
+            # Table might not exist in local/dev environments
+            submission_id = None
+
+    # Get current generation round
+    last_job = await fetch_one("""
+        SELECT generation_round FROM strategy_generation_jobs
+        WHERE client_id = $1
+        ORDER BY created_at DESC
+        LIMIT 1
+    """, cycle["client_id"])
+    generation_round = (last_job["generation_round"] + 1) if last_job else 1
+
+    # Create job linked to this cycle
+    job = await fetch_one("""
+        INSERT INTO strategy_generation_jobs
+        (client_id, submission_id, strategy_id, cycle_id, status, generation_round, job_type)
+        VALUES ($1, $2, $3, $4, 'pending', $5, 'cycle_campaigns')
+        RETURNING id, status, generation_round, created_at
+    """, cycle["client_id"], submission_id, cycle.get("strategy_id"), cycle_id, generation_round)
+
+    logger.info(f"Created cycle generation job {job['id']} for cycle {cycle_id} (round {generation_round})")
+
+    return {
+        "job_id": str(job["id"]),
+        "client_id": str(cycle["client_id"]),
+        "client_name": cycle["client_name"],
+        "cycle_id": str(cycle_id),
+        "cycle_number": cycle["cycle_number"],
+        "submission_id": str(submission_id) if submission_id else None,
+        "status": job["status"],
+        "generation_round": job["generation_round"],
+        "created_at": job["created_at"].isoformat(),
+        "message": "Job queued to generate campaigns for this cycle"
+    }
+
+
 @router.get("/jobs/{job_id}/status")
 async def get_job_status(job_id: UUID):
     """
@@ -336,6 +421,100 @@ async def get_job_status(job_id: UUID):
         started_at=job.get("started_at"),
         completed_at=job.get("completed_at"),
     )
+
+
+@router.get("/jobs/{job_id}/phases")
+async def get_job_phases(job_id: UUID):
+    """
+    Get detailed phase status for a phased generation job.
+
+    Returns:
+        - Job info with overall status
+        - List of phases with individual status
+        - Progress percentage and estimated time remaining
+
+    Phase types:
+        - scaffold: Creates ICP, variables, campaign stubs (phase 1)
+        - campaign_copy: Generates emails for one campaign (phases 2-5)
+
+    Phase statuses: pending, processing, completed, failed
+    """
+    # Get job info
+    job = await fetch_one("""
+        SELECT j.id, j.client_id, j.status, j.job_type, j.cycle_id,
+               j.error_message, j.created_at, j.started_at, j.completed_at,
+               c.name as client_name
+        FROM strategy_generation_jobs j
+        JOIN clients c ON c.id = j.client_id
+        WHERE j.id = $1
+    """, job_id)
+
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    # Get all phases for this job
+    phases = await fetch_all("""
+        SELECT id, phase_type, phase_number, campaign_document_id,
+               status, error_message, started_at, completed_at, created_at
+        FROM strategy_generation_phases
+        WHERE parent_job_id = $1
+        ORDER BY
+            CASE phase_type WHEN 'scaffold' THEN 0 ELSE 1 END,
+            phase_number NULLS FIRST
+    """, job_id)
+
+    # Calculate progress
+    total_phases = len(phases) if phases else 0
+    completed_phases = sum(1 for p in phases if p["status"] == "completed") if phases else 0
+    failed_phases = sum(1 for p in phases if p["status"] == "failed") if phases else 0
+    processing_phases = sum(1 for p in phases if p["status"] == "processing") if phases else 0
+
+    # Progress percentage
+    if total_phases == 0:
+        # No phases yet - job is in initial state
+        progress_percent = 0
+    else:
+        progress_percent = int((completed_phases / total_phases) * 100)
+
+    # Estimate time remaining (rough: ~3 min per phase)
+    pending_phases = total_phases - completed_phases - failed_phases - processing_phases
+    estimated_remaining_seconds = (pending_phases + processing_phases) * 180  # 3 min each
+
+    # Format phases for response
+    phase_list = []
+    for p in (phases or []):
+        phase_list.append({
+            "id": str(p["id"]),
+            "type": p["phase_type"],
+            "number": p["phase_number"],
+            "campaign_document_id": str(p["campaign_document_id"]) if p.get("campaign_document_id") else None,
+            "status": p["status"],
+            "error_message": p.get("error_message"),
+            "started_at": p["started_at"].isoformat() if p.get("started_at") else None,
+            "completed_at": p["completed_at"].isoformat() if p.get("completed_at") else None,
+        })
+
+    return {
+        "job_id": str(job["id"]),
+        "client_id": str(job["client_id"]),
+        "client_name": job["client_name"],
+        "job_status": job["status"],
+        "job_type": job.get("job_type", "full"),
+        "cycle_id": str(job["cycle_id"]) if job.get("cycle_id") else None,
+        "error_message": job.get("error_message"),
+        "created_at": job["created_at"].isoformat() if job.get("created_at") else None,
+        "started_at": job["started_at"].isoformat() if job.get("started_at") else None,
+        "completed_at": job["completed_at"].isoformat() if job.get("completed_at") else None,
+        "phases": phase_list,
+        "progress": {
+            "total_phases": total_phases,
+            "completed_phases": completed_phases,
+            "failed_phases": failed_phases,
+            "processing_phases": processing_phases,
+            "percent": progress_percent,
+            "estimated_remaining_seconds": estimated_remaining_seconds,
+        }
+    }
 
 
 @router.get("/jobs/client/{client_id}")
@@ -2101,3 +2280,424 @@ async def review_document(document_id: UUID, request: DocumentReviewRequest):
     logger.info(f"Document {document_id} reviewed: {new_status}")
 
     return {"status": new_status, "document_id": str(document_id)}
+
+
+# ============================================================================
+# Campaign Cycles (NEW - Phase 15 Implementation)
+# ============================================================================
+
+@router.get("/cycles/{client_id}")
+async def get_client_cycles(client_id: UUID, strategy_id: Optional[UUID] = None):
+    """
+    Get all campaign cycles for a client, optionally filtered by strategy.
+
+    Cycles represent 14-day periods, each containing 4 campaigns.
+    """
+    # Verify client exists
+    client = await fetch_one("SELECT id, name FROM clients WHERE id = $1", client_id)
+    if not client:
+        raise HTTPException(status_code=404, detail="Client not found")
+
+    # Build query
+    query = """
+        SELECT cc.id, cc.client_id, cc.strategy_id, cc.cycle_number, cc.cycle_name,
+               cc.status, cc.start_date, cc.end_date, cc.notes, cc.created_at, cc.updated_at,
+               (SELECT COUNT(*) FROM campaign_documents cd WHERE cd.cycle_id = cc.id) as campaign_count
+        FROM campaign_cycles cc
+        WHERE cc.client_id = $1
+    """
+    params = [client_id]
+    param_num = 2
+
+    if strategy_id:
+        query += f" AND cc.strategy_id = ${param_num}"
+        params.append(strategy_id)
+        param_num += 1
+
+    query += " ORDER BY cc.cycle_number DESC, cc.created_at DESC"
+
+    cycles = await fetch_all(query, *params)
+
+    return {
+        "client_id": str(client_id),
+        "cycles": [
+            {
+                "id": str(c["id"]),
+                "client_id": str(c["client_id"]),
+                "strategy_id": str(c["strategy_id"]) if c.get("strategy_id") else None,
+                "cycle_number": c.get("cycle_number", 1),
+                "cycle_name": c.get("cycle_name") or f"Cycle {c.get('cycle_number', 1)}",
+                "status": c.get("status", "draft"),
+                "start_date": c["start_date"].isoformat() if c.get("start_date") else None,
+                "end_date": c["end_date"].isoformat() if c.get("end_date") else None,
+                "notes": c.get("notes"),
+                "campaign_count": c.get("campaign_count", 0),
+                "target_campaigns": 4,  # Always 4 campaigns per cycle
+                "created_at": c["created_at"].isoformat() if c.get("created_at") else None,
+                "updated_at": c["updated_at"].isoformat() if c.get("updated_at") else None,
+            }
+            for c in (cycles or [])
+        ],
+        "total": len(cycles or [])
+    }
+
+
+@router.get("/cycles/detail/{cycle_id}")
+async def get_cycle_detail(cycle_id: UUID):
+    """
+    Get a specific cycle with its configuration and campaign count.
+    """
+    cycle = await fetch_one("""
+        SELECT cc.id, cc.client_id, cc.strategy_id, cc.cycle_number, cc.cycle_name,
+               cc.status, cc.start_date, cc.end_date, cc.notes, cc.created_at, cc.updated_at,
+               csc.icp_mapping, csc.cycle_variables, csc.strategic_focus, csc.target_outcome
+        FROM campaign_cycles cc
+        LEFT JOIN cycle_strategy_config csc ON csc.cycle_id = cc.id
+        WHERE cc.id = $1
+    """, cycle_id)
+
+    if not cycle:
+        raise HTTPException(status_code=404, detail="Cycle not found")
+
+    # Get campaign count
+    campaign_count = await fetch_one(
+        "SELECT COUNT(*) as count FROM campaign_documents WHERE cycle_id = $1",
+        cycle_id
+    )
+
+    return {
+        "id": str(cycle["id"]),
+        "client_id": str(cycle["client_id"]),
+        "strategy_id": str(cycle["strategy_id"]) if cycle.get("strategy_id") else None,
+        "cycle_number": cycle.get("cycle_number", 1),
+        "cycle_name": cycle.get("cycle_name") or f"Cycle {cycle.get('cycle_number', 1)}",
+        "status": cycle.get("status", "draft"),
+        "start_date": cycle["start_date"].isoformat() if cycle.get("start_date") else None,
+        "end_date": cycle["end_date"].isoformat() if cycle.get("end_date") else None,
+        "notes": cycle.get("notes"),
+        "campaign_count": campaign_count["count"] if campaign_count else 0,
+        "target_campaigns": 4,
+        "config": {
+            "icp_mapping": cycle.get("icp_mapping"),
+            "cycle_variables": cycle.get("cycle_variables"),
+            "strategic_focus": cycle.get("strategic_focus"),
+            "target_outcome": cycle.get("target_outcome"),
+        } if cycle.get("icp_mapping") else None,
+        "created_at": cycle["created_at"].isoformat() if cycle.get("created_at") else None,
+        "updated_at": cycle["updated_at"].isoformat() if cycle.get("updated_at") else None,
+    }
+
+
+@router.post("/cycles/{client_id}")
+async def create_cycle(client_id: UUID, data: dict = None):
+    """
+    Create a new campaign cycle for a client.
+    """
+    # Verify client exists
+    client = await fetch_one("SELECT id FROM clients WHERE id = $1", client_id)
+    if not client:
+        raise HTTPException(status_code=404, detail="Client not found")
+
+    # Get next cycle number
+    last_cycle = await fetch_one("""
+        SELECT cycle_number FROM campaign_cycles
+        WHERE client_id = $1
+        ORDER BY cycle_number DESC
+        LIMIT 1
+    """, client_id)
+    next_cycle_number = (last_cycle["cycle_number"] + 1) if last_cycle else 1
+
+    data = data or {}
+    cycle_name = data.get("cycle_name") or f"Cycle {next_cycle_number}"
+
+    cycle = await fetch_one("""
+        INSERT INTO campaign_cycles (client_id, strategy_id, cycle_number, cycle_name, status, notes)
+        VALUES ($1, $2, $3, $4, 'draft', $5)
+        RETURNING id, client_id, strategy_id, cycle_number, cycle_name, status, start_date, end_date, notes, created_at, updated_at
+    """, client_id, data.get("strategy_id"), next_cycle_number, cycle_name, data.get("notes"))
+
+    return {
+        "id": str(cycle["id"]),
+        "client_id": str(cycle["client_id"]),
+        "strategy_id": str(cycle["strategy_id"]) if cycle.get("strategy_id") else None,
+        "cycle_number": cycle["cycle_number"],
+        "cycle_name": cycle["cycle_name"],
+        "status": cycle["status"],
+        "start_date": cycle["start_date"].isoformat() if cycle.get("start_date") else None,
+        "end_date": cycle["end_date"].isoformat() if cycle.get("end_date") else None,
+        "notes": cycle.get("notes"),
+        "campaign_count": 0,
+        "target_campaigns": 4,
+        "created_at": cycle["created_at"].isoformat() if cycle.get("created_at") else None,
+        "updated_at": cycle["updated_at"].isoformat() if cycle.get("updated_at") else None,
+    }
+
+
+@router.put("/cycles/detail/{cycle_id}")
+async def update_cycle(cycle_id: UUID, data: dict):
+    """
+    Update a cycle's details.
+    """
+    cycle = await fetch_one("SELECT id FROM campaign_cycles WHERE id = $1", cycle_id)
+    if not cycle:
+        raise HTTPException(status_code=404, detail="Cycle not found")
+
+    # Build update query
+    updates = []
+    params = []
+    param_num = 1
+
+    for field in ["cycle_name", "status", "start_date", "end_date", "notes"]:
+        if field in data:
+            updates.append(f"{field} = ${param_num}")
+            params.append(data[field])
+            param_num += 1
+
+    if not updates:
+        raise HTTPException(status_code=400, detail="No fields to update")
+
+    updates.append("updated_at = NOW()")
+    params.append(cycle_id)
+
+    query = f"UPDATE campaign_cycles SET {', '.join(updates)} WHERE id = ${param_num} RETURNING *"
+    updated = await fetch_one(query, *params)
+
+    return {
+        "id": str(updated["id"]),
+        "client_id": str(updated["client_id"]),
+        "strategy_id": str(updated["strategy_id"]) if updated.get("strategy_id") else None,
+        "cycle_number": updated.get("cycle_number", 1),
+        "cycle_name": updated.get("cycle_name"),
+        "status": updated.get("status"),
+        "start_date": updated["start_date"].isoformat() if updated.get("start_date") else None,
+        "end_date": updated["end_date"].isoformat() if updated.get("end_date") else None,
+        "notes": updated.get("notes"),
+        "created_at": updated["created_at"].isoformat() if updated.get("created_at") else None,
+        "updated_at": updated["updated_at"].isoformat() if updated.get("updated_at") else None,
+    }
+
+
+@router.delete("/cycles/detail/{cycle_id}")
+async def delete_cycle(cycle_id: UUID):
+    """
+    Delete a cycle and its associated campaign documents.
+    """
+    cycle = await fetch_one("SELECT id, cycle_name FROM campaign_cycles WHERE id = $1", cycle_id)
+    if not cycle:
+        raise HTTPException(status_code=404, detail="Cycle not found")
+
+    # Delete associated campaign documents first
+    await execute("DELETE FROM campaign_documents WHERE cycle_id = $1", cycle_id)
+
+    # Delete the cycle
+    await execute("DELETE FROM campaign_cycles WHERE id = $1", cycle_id)
+
+    logger.info(f"Deleted cycle '{cycle['cycle_name']}' and its campaigns")
+
+    return {"message": f"Cycle deleted", "id": str(cycle_id)}
+
+
+@router.get("/cycles/{cycle_id}/campaigns")
+async def get_cycle_campaigns(cycle_id: UUID):
+    """
+    Get all campaigns (campaign_documents) for a specific cycle.
+
+    Returns campaign documents with their email positions and variants.
+    """
+    # Verify cycle exists
+    cycle = await fetch_one("SELECT id, client_id FROM campaign_cycles WHERE id = $1", cycle_id)
+    if not cycle:
+        raise HTTPException(status_code=404, detail="Cycle not found")
+
+    # Get all campaign documents for this cycle
+    documents = await fetch_all("""
+        SELECT d.id, d.job_id, d.client_id, d.strategy_id, d.cycle_id,
+               d.document_name, d.campaign_number, d.angle,
+               d.icp_mapping, d.variable_schema, d.campaign_variables,
+               d.email_positions, d.qa_scoring, d.strategy_notes,
+               d.status, d.human_comment, d.reviewed_by, d.reviewed_at,
+               d.created_at, d.updated_at
+        FROM campaign_documents d
+        WHERE d.cycle_id = $1
+        ORDER BY d.campaign_number ASC
+    """, cycle_id)
+
+    campaigns = []
+    for doc in (documents or []):
+        # Parse email_positions JSONB if present
+        email_positions = doc.get("email_positions") or []
+        email_count = sum(len(pos.get("variants", [])) for pos in email_positions) if email_positions else 0
+
+        campaigns.append({
+            "id": str(doc["id"]),
+            "job_id": str(doc["job_id"]) if doc.get("job_id") else None,
+            "client_id": str(doc["client_id"]),
+            "strategy_id": str(doc["strategy_id"]) if doc.get("strategy_id") else None,
+            "cycle_id": str(doc["cycle_id"]) if doc.get("cycle_id") else None,
+            "campaign_number": doc.get("campaign_number"),
+            "campaign_name": doc.get("document_name") or f"Campaign {doc.get('campaign_number', '')}",
+            "angle": doc.get("angle"),
+            "campaign_angle": doc.get("angle"),  # Frontend compatibility
+            "status": doc.get("status", "draft"),
+            "email_count": email_count,
+            "score": doc.get("qa_scoring", {}).get("overall_score") if doc.get("qa_scoring") else None,
+            "email_positions": email_positions,
+            "campaign_variables": doc.get("campaign_variables"),
+            "icp_mapping": doc.get("icp_mapping"),
+            "variable_schema": doc.get("variable_schema"),
+            "qa_scoring": doc.get("qa_scoring"),
+            "strategy_notes": doc.get("strategy_notes"),
+            "human_comment": doc.get("human_comment"),
+            "reviewed_by": doc.get("reviewed_by"),
+            "reviewed_at": doc["reviewed_at"].isoformat() if doc.get("reviewed_at") else None,
+            "created_at": doc["created_at"].isoformat() if doc.get("created_at") else None,
+            "updated_at": doc["updated_at"].isoformat() if doc.get("updated_at") else None,
+        })
+
+    return {
+        "cycle_id": str(cycle_id),
+        "client_id": str(cycle["client_id"]),
+        "campaigns": campaigns,
+        "total": len(campaigns)
+    }
+
+
+@router.get("/cycles/{cycle_id}/unified")
+async def get_cycle_unified(cycle_id: UUID):
+    """
+    Get unified cycle data including cycle info, config, and all 4 campaigns.
+
+    Returns the complete structure needed by UnifiedCycleView frontend component.
+    """
+    # Get cycle with config
+    cycle = await fetch_one("""
+        SELECT cc.id, cc.client_id, cc.strategy_id, cc.cycle_number, cc.cycle_name,
+               cc.status, cc.start_date, cc.end_date, cc.notes, cc.created_at, cc.updated_at,
+               csc.id as config_id, csc.icp_mapping, csc.cycle_variables,
+               csc.strategic_focus, csc.target_outcome,
+               csc.created_at as config_created_at, csc.updated_at as config_updated_at
+        FROM campaign_cycles cc
+        LEFT JOIN cycle_strategy_config csc ON csc.cycle_id = cc.id
+        WHERE cc.id = $1
+    """, cycle_id)
+
+    if not cycle:
+        raise HTTPException(status_code=404, detail="Cycle not found")
+
+    # Get all campaign documents for this cycle
+    documents = await fetch_all("""
+        SELECT d.id, d.job_id, d.client_id, d.strategy_id, d.cycle_id,
+               d.document_name, d.campaign_number, d.angle,
+               d.icp_mapping, d.variable_schema, d.campaign_variables,
+               d.email_positions, d.qa_scoring, d.strategy_notes,
+               d.status, d.human_comment, d.reviewed_by, d.reviewed_at,
+               d.created_at, d.updated_at
+        FROM campaign_documents d
+        WHERE d.cycle_id = $1
+        ORDER BY d.campaign_number ASC
+    """, cycle_id)
+
+    # Transform campaigns to unified format
+    campaigns = []
+    for doc in (documents or []):
+        email_positions = doc.get("email_positions") or []
+
+        # Transform email positions to unified emails
+        emails = []
+        for pos in email_positions:
+            variants = pos.get("variants", [])
+            recommended = next((v for v in variants if v.get("is_recommended")), variants[0] if variants else {})
+
+            emails.append({
+                "position": pos.get("position", len(emails) + 1),
+                "title": pos.get("title") or f"Email {pos.get('position', len(emails) + 1)}",
+                "wait_days": recommended.get("wait_days", 0),
+                "subject_line": recommended.get("subject_line"),
+                "email_body": recommended.get("email_body", ""),
+                "thread_reply": recommended.get("thread_reply", False),
+                "word_count": recommended.get("word_count"),
+                "score": recommended.get("score"),
+                "copy_variables": [],  # Extracted from variable_schema.core
+            })
+
+        # Extract campaign variables from variable_schema or campaign_variables
+        variable_schema = doc.get("variable_schema") or {}
+        campaign_vars = doc.get("campaign_variables") or variable_schema.get("high_signal", [])
+
+        campaigns.append({
+            "id": str(doc["id"]),
+            "cycle_id": str(doc["cycle_id"]) if doc.get("cycle_id") else None,
+            "campaign_number": doc.get("campaign_number", len(campaigns) + 1),
+            "angle": doc.get("angle") or "custom_signal",
+            "campaign_angle": doc.get("angle") or "custom_signal",  # Frontend compatibility
+            "document_name": doc.get("document_name") or f"Campaign {doc.get('campaign_number', '')}",
+            "status": doc.get("status", "draft"),
+            "campaign_variables": campaign_vars,
+            "emails": emails,
+            "qa_scoring": doc.get("qa_scoring"),
+            "score": doc.get("qa_scoring", {}).get("overall_score") if doc.get("qa_scoring") else None,
+            "revision_history": [],  # Could be populated from strategy_revision_requests
+            "reviewed_by": doc.get("reviewed_by"),
+            "reviewed_at": doc["reviewed_at"].isoformat() if doc.get("reviewed_at") else None,
+            "created_at": doc["created_at"].isoformat() if doc.get("created_at") else None,
+            "updated_at": doc["updated_at"].isoformat() if doc.get("updated_at") else None,
+        })
+
+    # Build the unified response
+    return {
+        "client_id": str(cycle["client_id"]),
+        "data": {
+            "cycle": {
+                "id": str(cycle["id"]),
+                "cycle_number": cycle.get("cycle_number", 1),
+                "start_date": cycle["start_date"].isoformat() if cycle.get("start_date") else None,
+                "end_date": cycle["end_date"].isoformat() if cycle.get("end_date") else None,
+                "status": cycle.get("status", "draft"),
+            },
+            "config": {
+                "id": str(cycle["config_id"]) if cycle.get("config_id") else f"config-{cycle['id']}",
+                "cycle_id": str(cycle["id"]),
+                "icp_mapping": cycle.get("icp_mapping") or {
+                    "target_icp": {"role": "", "company_type": "", "company_size": ""},
+                    "pain_points": [],
+                    "objections": [],
+                },
+                "cycle_variables": cycle.get("cycle_variables") or [],
+                "strategic_focus": cycle.get("strategic_focus") or "",
+                "target_outcome": cycle.get("target_outcome") or "",
+                "created_at": cycle["config_created_at"].isoformat() if cycle.get("config_created_at") else None,
+                "updated_at": cycle["config_updated_at"].isoformat() if cycle.get("config_updated_at") else None,
+            },
+            "campaigns": campaigns,
+        }
+    }
+
+
+@router.get("/clients/{client_id}/current-cycle")
+async def get_current_cycle(client_id: UUID):
+    """
+    Get the current (most recent active or latest) cycle for a client.
+
+    Convenience endpoint for UnifiedCycleView when no specific cycle is selected.
+    """
+    # Verify client exists
+    client = await fetch_one("SELECT id FROM clients WHERE id = $1", client_id)
+    if not client:
+        raise HTTPException(status_code=404, detail="Client not found")
+
+    # Get the most recent active cycle, or just the most recent cycle
+    cycle = await fetch_one("""
+        SELECT id FROM campaign_cycles
+        WHERE client_id = $1
+        ORDER BY
+            CASE WHEN status = 'active' THEN 0 ELSE 1 END,
+            cycle_number DESC,
+            created_at DESC
+        LIMIT 1
+    """, client_id)
+
+    if not cycle:
+        raise HTTPException(status_code=404, detail="No cycles found for this client")
+
+    # Delegate to the unified endpoint
+    return await get_cycle_unified(cycle["id"])

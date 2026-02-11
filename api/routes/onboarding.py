@@ -8,7 +8,7 @@ from fastapi import APIRouter, HTTPException
 from uuid import UUID, uuid4
 from datetime import datetime
 import logging
-from typing import Optional
+from typing import Optional, Any
 from pydantic import BaseModel
 
 from database import fetch_all, fetch_one, execute
@@ -23,6 +23,7 @@ from models.onboarding import (
 
 class OnboardingSubmissionCreate(BaseModel):
     """Create a new onboarding submission."""
+    # Section 1: Foundation
     company_name: str
     website: Optional[str] = None
     contact_name: Optional[str] = None
@@ -30,20 +31,51 @@ class OnboardingSubmissionCreate(BaseModel):
     employee_count: Optional[str] = None
     funding_stage: Optional[str] = None
     hq_location: Optional[str] = None
+
+    # Section 2: Offering
     core_product: Optional[str] = None
     target_customer: Optional[str] = None
     acv: Optional[str] = None
     sales_cycle_length: Optional[str] = None
+    annual_revenue: Optional[str] = None
+    self_serve_pct: Optional[str] = None
+    industry: Optional[str] = None
+
+    # Section 3: Market Signals
     signals: list[str] = []
+
+    # Section 4: Audience
     job_titles: list[str] = []
+    competitors: list[str] = []
+    key_differentiators: Optional[str] = None
+    common_objections: Optional[str] = None
+    buying_triggers_global: Optional[str] = None
+
+    # Section 5: Process
     outbound_tools: list[str] = []
     crm: Optional[str] = None
+    monthly_volume: Optional[str] = None
+    current_open_rate: Optional[str] = None
+    current_reply_rate: Optional[str] = None
+    other_channels: Optional[str] = None
+    messages_worked: Optional[str] = None
+    approaches_failed: Optional[str] = None
+
+    # Section 6: Messaging
     customer_voice: Optional[str] = None
     roi_results: Optional[str] = None
     tone_style: Optional[str] = None
+    case_studies: Optional[Any] = None
+    industry_jargon: Optional[str] = None
+    core_vendors: list[str] = []
+
+    # Section 7: Goals
     primary_gtm_objective: Optional[str] = None
     success_metrics: list[str] = []
     success_definition: Optional[str] = None
+    engagement_win: Optional[str] = None
+    additional_context: Optional[str] = None
+
     # Nested data
     segments: list[dict] = []
     personas: list[dict] = []
@@ -66,36 +98,54 @@ async def create_onboarding_submission(client_id: UUID, data: OnboardingSubmissi
     submission_id = uuid4()
     now = datetime.utcnow()
 
-    # Insert main submission
+    # Insert main submission with all fields
     await execute("""
         INSERT INTO client_onboarding_submissions (
             id, client_id, company_name, website, contact_name, contact_email,
             employee_count, funding_stage, hq_location,
             core_product, target_customer, acv, sales_cycle_length,
+            annual_revenue, self_serve_pct, industry,
             signals, job_titles,
+            competitors, key_differentiators, common_objections, buying_triggers_global,
             outbound_tools, crm,
+            monthly_volume, current_open_rate, current_reply_rate, other_channels,
+            messages_worked, approaches_failed,
             customer_voice, roi_results, tone_style,
+            case_studies, industry_jargon, core_vendors,
             primary_gtm_objective, success_metrics, success_definition,
+            engagement_win, additional_context,
             submission_status, submitted_at, created_at
         ) VALUES (
             $1, $2, $3, $4, $5, $6,
             $7, $8, $9,
             $10, $11, $12, $13,
-            $14, $15,
-            $16, $17,
-            $18, $19, $20,
-            $21, $22, $23,
-            $24, $25, $26
+            $14, $15, $16,
+            $17, $18,
+            $19, $20, $21, $22,
+            $23, $24,
+            $25, $26, $27, $28,
+            $29, $30,
+            $31, $32, $33,
+            $34, $35, $36,
+            $37, $38, $39,
+            $40, $41,
+            $42, $43, $44
         )
     """,
         submission_id, client_id,
         data.company_name, data.website, data.contact_name, data.contact_email,
         data.employee_count, data.funding_stage, data.hq_location,
         data.core_product, data.target_customer, data.acv, data.sales_cycle_length,
+        data.annual_revenue, data.self_serve_pct, data.industry,
         data.signals, data.job_titles,
+        data.competitors, data.key_differentiators, data.common_objections, data.buying_triggers_global,
         data.outbound_tools, data.crm,
+        data.monthly_volume, data.current_open_rate, data.current_reply_rate, data.other_channels,
+        data.messages_worked, data.approaches_failed,
         data.customer_voice, data.roi_results, data.tone_style,
+        data.case_studies, data.industry_jargon, data.core_vendors,
         data.primary_gtm_objective, data.success_metrics, data.success_definition,
+        data.engagement_win, data.additional_context,
         "submitted", now, now
     )
     logger.info(f"Created onboarding submission {submission_id} for client {client['name']}")
@@ -156,17 +206,22 @@ async def get_client_onboarding_submissions(client_id: UUID):
     if not client:
         raise HTTPException(status_code=404, detail="Client not found")
 
-    # Get all submissions for this client
-    # Note: Table schema from hirecharm-onboarding project
+    # Get all submissions for this client with all fields
     submissions_query = """
         SELECT
             id, client_id, company_name, website, contact_name, contact_email,
             employee_count, funding_stage, hq_location,
             core_product, target_customer, acv, sales_cycle_length,
+            annual_revenue, self_serve_pct, industry,
             signals, job_titles,
+            competitors, key_differentiators, common_objections, buying_triggers_global,
             outbound_tools, crm,
+            monthly_volume, current_open_rate, current_reply_rate, other_channels,
+            messages_worked, approaches_failed,
             customer_voice, roi_results, tone_style,
+            case_studies, industry_jargon, core_vendors,
             primary_gtm_objective, success_metrics, success_definition,
+            engagement_win, additional_context,
             submission_status, submitted_at, created_at
         FROM client_onboarding_submissions
         WHERE client_id = $1
@@ -215,6 +270,8 @@ async def get_client_onboarding_submissions(client_id: UUID):
         sub_dict["job_titles"] = sub_dict.get("job_titles") or []
         sub_dict["outbound_tools"] = sub_dict.get("outbound_tools") or []
         sub_dict["success_metrics"] = sub_dict.get("success_metrics") or []
+        sub_dict["competitors"] = sub_dict.get("competitors") or []
+        sub_dict["core_vendors"] = sub_dict.get("core_vendors") or []
 
         result.append(OnboardingSubmission(**sub_dict))
 
@@ -230,17 +287,23 @@ async def get_onboarding_submission(submission_id: UUID):
     """
     Get a single onboarding submission with all details.
     """
-    # Get submission
+    # Get submission with all fields
     submission = await fetch_one(
         """
         SELECT
             id, client_id, company_name, website, contact_name, contact_email,
             employee_count, funding_stage, hq_location,
             core_product, target_customer, acv, sales_cycle_length,
+            annual_revenue, self_serve_pct, industry,
             signals, job_titles,
+            competitors, key_differentiators, common_objections, buying_triggers_global,
             outbound_tools, crm,
+            monthly_volume, current_open_rate, current_reply_rate, other_channels,
+            messages_worked, approaches_failed,
             customer_voice, roi_results, tone_style,
+            case_studies, industry_jargon, core_vendors,
             primary_gtm_objective, success_metrics, success_definition,
+            engagement_win, additional_context,
             submission_status, submitted_at, created_at
         FROM client_onboarding_submissions
         WHERE id = $1
@@ -282,6 +345,8 @@ async def get_onboarding_submission(submission_id: UUID):
     sub_dict["job_titles"] = sub_dict.get("job_titles") or []
     sub_dict["outbound_tools"] = sub_dict.get("outbound_tools") or []
     sub_dict["success_metrics"] = sub_dict.get("success_metrics") or []
+    sub_dict["competitors"] = sub_dict.get("competitors") or []
+    sub_dict["core_vendors"] = sub_dict.get("core_vendors") or []
 
     return OnboardingSubmission(**sub_dict)
 
