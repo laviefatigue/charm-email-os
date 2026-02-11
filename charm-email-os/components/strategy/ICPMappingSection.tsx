@@ -1,40 +1,57 @@
 'use client';
 
-import { Badge } from '@/components/ui/badge';
-import { Users, Briefcase, Building2, AlertCircle, Shield } from 'lucide-react';
+import { Users, Briefcase, Building2 } from 'lucide-react';
 import type { ICPMapping, PainPoint, Objection } from '@/lib/types';
 import { cn } from '@/lib/utils';
+import { RequestRevisionButton } from './RequestRevisionButton';
 
 interface ICPMappingSectionProps {
   icpMapping: ICPMapping;
   className?: string;
+  onRequestRevisionTargetICP?: () => void;
+  onRequestRevisionPainPoints?: (category?: string) => void;
+  onRequestRevisionObjections?: (index?: number) => void;
+  isSubmitting?: {
+    targetICP?: boolean;
+    painPoints?: boolean;
+    objections?: boolean;
+  };
 }
 
-// Pain point category colors
-const CATEGORY_COLORS: Record<string, { bg: string; border: string; icon: string }> = {
-  'Tech Debt': { bg: 'bg-red-50', border: 'border-red-200', icon: 'text-red-500' },
-  'Talent': { bg: 'bg-blue-50', border: 'border-blue-200', icon: 'text-blue-500' },
-  'Competition': { bg: 'bg-purple-50', border: 'border-purple-200', icon: 'text-purple-500' },
-  'Ops': { bg: 'bg-amber-50', border: 'border-amber-200', icon: 'text-amber-500' },
-  'default': { bg: 'bg-gray-50', border: 'border-gray-200', icon: 'text-gray-500' },
-};
-
-function PainPointCard({ painPoint }: { painPoint: PainPoint }) {
-  const colors = CATEGORY_COLORS[painPoint.category] || CATEGORY_COLORS.default;
-
+function PainPointCard({
+  painPoint,
+  onRequestRevision,
+  isSubmitting,
+}: {
+  painPoint: PainPoint;
+  onRequestRevision?: () => void;
+  isSubmitting?: boolean;
+}) {
   return (
-    <div className={cn('rounded-lg border p-4', colors.bg, colors.border)}>
-      <div className="flex items-center gap-2 mb-2">
-        <Badge variant="outline" className="text-xs font-medium">
-          {painPoint.category}
-        </Badge>
-        <span className="text-sm font-medium text-foreground">{painPoint.label}</span>
+    <div className="rounded-lg border bg-card p-4 group">
+      <div className="flex items-center justify-between mb-3">
+        <div>
+          <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+            {painPoint.category}
+          </span>
+          <h5 className="text-sm font-semibold mt-0.5">{painPoint.label}</h5>
+        </div>
+        {onRequestRevision && (
+          <RequestRevisionButton
+            onClick={onRequestRevision}
+            isSubmitting={isSubmitting}
+            iconOnly
+            tooltip="Request revision"
+            className="opacity-0 group-hover:opacity-100 transition-opacity"
+            size="sm"
+          />
+        )}
       </div>
       <ul className="space-y-1.5">
         {painPoint.points.map((point, idx) => (
           <li key={idx} className="text-sm text-muted-foreground flex items-start gap-2">
-            <span className="text-muted-foreground/50 mt-1">-</span>
-            {point}
+            <span className="text-muted-foreground/40 select-none">•</span>
+            <span>{point}</span>
           </li>
         ))}
       </ul>
@@ -42,57 +59,85 @@ function PainPointCard({ painPoint }: { painPoint: PainPoint }) {
   );
 }
 
-function ObjectionRow({ objection }: { objection: Objection }) {
+function ObjectionCard({
+  objection,
+  onRequestRevision,
+  isSubmitting,
+}: {
+  objection: Objection;
+  onRequestRevision?: () => void;
+  isSubmitting?: boolean;
+}) {
   return (
-    <tr className="border-b last:border-0">
-      <td className="py-3 pr-4">
-        <div className="flex items-start gap-2">
-          <AlertCircle className="h-4 w-4 text-amber-500 mt-0.5 shrink-0" />
-          <span className="text-sm">{objection.objection}</span>
+    <div className="rounded-lg border bg-card p-4 group">
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex-1 min-w-0">
+          <p className="text-sm font-medium">{objection.objection}</p>
+          <p className="text-sm text-muted-foreground mt-2">{objection.preemption}</p>
         </div>
-      </td>
-      <td className="py-3">
-        <div className="flex items-start gap-2">
-          <Shield className="h-4 w-4 text-emerald-500 mt-0.5 shrink-0" />
-          <span className="text-sm text-muted-foreground">{objection.preemption}</span>
-        </div>
-      </td>
-    </tr>
+        {onRequestRevision && (
+          <RequestRevisionButton
+            onClick={onRequestRevision}
+            isSubmitting={isSubmitting}
+            iconOnly
+            tooltip="Request revision"
+            className="opacity-0 group-hover:opacity-100 transition-opacity shrink-0"
+            size="sm"
+          />
+        )}
+      </div>
+    </div>
   );
 }
 
-export function ICPMappingSection({ icpMapping, className }: ICPMappingSectionProps) {
+export function ICPMappingSection({
+  icpMapping,
+  className,
+  onRequestRevisionTargetICP,
+  onRequestRevisionPainPoints,
+  onRequestRevisionObjections,
+  isSubmitting,
+}: ICPMappingSectionProps) {
   const { targetIcp, painPoints, objections } = icpMapping;
 
   return (
     <div className={cn('space-y-6', className)}>
       {/* Target ICP */}
-      <div className="bg-primary/5 rounded-lg p-4 border border-primary/10">
-        <h4 className="text-sm font-semibold mb-3 flex items-center gap-2">
-          <Users className="h-4 w-4" />
-          Target ICP
-        </h4>
-        <div className="grid grid-cols-3 gap-4">
-          <div>
-            <div className="flex items-center gap-1.5 text-xs text-muted-foreground mb-1">
-              <Briefcase className="h-3 w-3" />
-              Role
+      <div>
+        <div className="flex items-center justify-between mb-3">
+          <h4 className="text-sm font-semibold">Target ICP</h4>
+          {onRequestRevisionTargetICP && (
+            <RequestRevisionButton
+              onClick={onRequestRevisionTargetICP}
+              isSubmitting={isSubmitting?.targetICP}
+              tooltip="Request revision"
+              iconOnly
+            />
+          )}
+        </div>
+        <div className="rounded-lg border bg-card p-4">
+          <div className="grid grid-cols-3 gap-6">
+            <div>
+              <div className="flex items-center gap-1.5 text-xs text-muted-foreground mb-1">
+                <Briefcase className="h-3.5 w-3.5" />
+                Role
+              </div>
+              <p className="text-sm font-medium">{targetIcp.role}</p>
             </div>
-            <p className="text-sm font-medium">{targetIcp.role}</p>
-          </div>
-          <div>
-            <div className="flex items-center gap-1.5 text-xs text-muted-foreground mb-1">
-              <Building2 className="h-3 w-3" />
-              Company Type
+            <div>
+              <div className="flex items-center gap-1.5 text-xs text-muted-foreground mb-1">
+                <Building2 className="h-3.5 w-3.5" />
+                Company Type
+              </div>
+              <p className="text-sm font-medium">{targetIcp.companyType}</p>
             </div>
-            <p className="text-sm font-medium">{targetIcp.companyType}</p>
-          </div>
-          <div>
-            <div className="flex items-center gap-1.5 text-xs text-muted-foreground mb-1">
-              <Users className="h-3 w-3" />
-              Company Size
+            <div>
+              <div className="flex items-center gap-1.5 text-xs text-muted-foreground mb-1">
+                <Users className="h-3.5 w-3.5" />
+                Company Size
+              </div>
+              <p className="text-sm font-medium">{targetIcp.companySize}</p>
             </div>
-            <p className="text-sm font-medium">{targetIcp.companySize}</p>
           </div>
         </div>
       </div>
@@ -100,10 +145,25 @@ export function ICPMappingSection({ icpMapping, className }: ICPMappingSectionPr
       {/* Pain Points */}
       {painPoints && painPoints.length > 0 && (
         <div>
-          <h4 className="text-sm font-semibold mb-3">Pain Points by Category</h4>
+          <div className="flex items-center justify-between mb-3">
+            <h4 className="text-sm font-semibold">Pain Points</h4>
+            {onRequestRevisionPainPoints && (
+              <RequestRevisionButton
+                onClick={() => onRequestRevisionPainPoints()}
+                isSubmitting={isSubmitting?.painPoints}
+                tooltip="Request revision for all"
+                iconOnly
+              />
+            )}
+          </div>
           <div className="grid grid-cols-2 gap-4">
             {painPoints.map((painPoint, idx) => (
-              <PainPointCard key={idx} painPoint={painPoint} />
+              <PainPointCard
+                key={idx}
+                painPoint={painPoint}
+                onRequestRevision={onRequestRevisionPainPoints ? () => onRequestRevisionPainPoints(painPoint.category) : undefined}
+                isSubmitting={isSubmitting?.painPoints}
+              />
             ))}
           </div>
         </div>
@@ -112,25 +172,26 @@ export function ICPMappingSection({ icpMapping, className }: ICPMappingSectionPr
       {/* Objections */}
       {objections && objections.length > 0 && (
         <div>
-          <h4 className="text-sm font-semibold mb-3">Objection Preemption</h4>
-          <div className="border rounded-lg overflow-hidden">
-            <table className="w-full">
-              <thead className="bg-muted/50">
-                <tr>
-                  <th className="text-left text-xs font-medium text-muted-foreground p-3 w-1/2">
-                    Objection
-                  </th>
-                  <th className="text-left text-xs font-medium text-muted-foreground p-3 w-1/2">
-                    Preemption Strategy
-                  </th>
-                </tr>
-              </thead>
-              <tbody>
-                {objections.map((objection, idx) => (
-                  <ObjectionRow key={idx} objection={objection} />
-                ))}
-              </tbody>
-            </table>
+          <div className="flex items-center justify-between mb-3">
+            <h4 className="text-sm font-semibold">Objection Handling</h4>
+            {onRequestRevisionObjections && (
+              <RequestRevisionButton
+                onClick={() => onRequestRevisionObjections()}
+                isSubmitting={isSubmitting?.objections}
+                tooltip="Request revision for all"
+                iconOnly
+              />
+            )}
+          </div>
+          <div className="grid grid-cols-1 gap-3">
+            {objections.map((objection, idx) => (
+              <ObjectionCard
+                key={idx}
+                objection={objection}
+                onRequestRevision={onRequestRevisionObjections ? () => onRequestRevisionObjections(idx) : undefined}
+                isSubmitting={isSubmitting?.objections}
+              />
+            ))}
           </div>
         </div>
       )}

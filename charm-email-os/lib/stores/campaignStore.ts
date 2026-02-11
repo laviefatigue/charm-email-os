@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { nanoid } from 'nanoid';
-import type { Campaign, Lead, CampaignStatus, LeadStatus, CampaignIdea } from '@/lib/types';
+import type { Campaign, Lead, OwnRBLCampaignStatus, LeadStatus, CampaignIdea } from '@/lib/types';
 import { api } from '@/lib/api';
 
 interface CampaignStore {
@@ -125,7 +125,7 @@ export const useCampaignStore = create<CampaignStore>((set, get) => ({
     // Optimistic update
     set((state) => ({
       campaigns: state.campaigns.map((campaign) =>
-        campaign.id === id ? { ...campaign, status: 'active' as CampaignStatus } : campaign
+        campaign.id === id ? { ...campaign, status: 'active' as OwnRBLCampaignStatus } : campaign
       ),
     }));
     try {
@@ -134,7 +134,7 @@ export const useCampaignStore = create<CampaignStore>((set, get) => ({
       // Rollback
       set((state) => ({
         campaigns: state.campaigns.map((campaign) =>
-          campaign.id === id ? { ...campaign, status: 'draft' as CampaignStatus } : campaign
+          campaign.id === id ? { ...campaign, status: 'draft' as OwnRBLCampaignStatus } : campaign
         ),
         error: (error as Error).message,
       }));
@@ -148,7 +148,7 @@ export const useCampaignStore = create<CampaignStore>((set, get) => ({
 
     set((state) => ({
       campaigns: state.campaigns.map((c) =>
-        c.id === id ? { ...c, status: 'paused' as CampaignStatus } : c
+        c.id === id ? { ...c, status: 'paused' as OwnRBLCampaignStatus } : c
       ),
     }));
     try {

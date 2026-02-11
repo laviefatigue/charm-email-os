@@ -14,6 +14,8 @@ import {
   ChevronDown,
   ChevronUp,
   Pencil,
+  Sparkles,
+  Loader2,
 } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -23,6 +25,10 @@ import { OnboardingEditModal } from './OnboardingEditModal';
 
 interface ComprehensiveOnboardingProps {
   clientId: string;
+  submissionId?: string | null;  // If provided, fetch this specific submission
+  onGenerate?: (submissionId: string) => void;
+  isGenerating?: boolean;
+  generationStatus?: string | null;
 }
 
 function formatDate(dateString?: string) {
@@ -34,6 +40,40 @@ function formatDate(dateString?: string) {
     hour: '2-digit',
     minute: '2-digit',
   });
+}
+
+function getStatusMessage(status?: string | null): string {
+  switch (status) {
+    case 'Starting generation...':
+      return 'Initializing AI worker...';
+    case 'pending':
+      return 'Queued - waiting for AI worker...';
+    case 'processing':
+      return 'Generating 4 campaigns with ICP mapping and variables...';
+    case 'review':
+      return 'Finalizing strategy output...';
+    case 'completed':
+      return 'Complete! Redirecting...';
+    default:
+      return status || 'Processing...';
+  }
+}
+
+function getProgressWidth(status?: string | null): string {
+  switch (status) {
+    case 'Starting generation...':
+      return '10%';
+    case 'pending':
+      return '20%';
+    case 'processing':
+      return '60%';
+    case 'review':
+      return '85%';
+    case 'completed':
+      return '100%';
+    default:
+      return '30%';
+  }
 }
 
 function Section({
@@ -97,7 +137,13 @@ function TagList({ items, emptyText = 'None specified' }: { items: string[]; emp
   );
 }
 
-export function ComprehensiveOnboarding({ clientId }: ComprehensiveOnboardingProps) {
+export function ComprehensiveOnboarding({
+  clientId,
+  submissionId,
+  onGenerate,
+  isGenerating,
+  generationStatus,
+}: ComprehensiveOnboardingProps) {
   const [submission, setSubmission] = useState<OnboardingSubmission | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -108,10 +154,20 @@ export function ComprehensiveOnboarding({ clientId }: ComprehensiveOnboardingPro
     async function fetchSubmission() {
       try {
         setLoading(true);
-        const response = await onboardingApi.getSubmissions(clientId);
-        // Get the most recent submission
-        if (response.submissions.length > 0) {
-          setSubmission(response.submissions[0]);
+        setError(null);
+
+        if (submissionId) {
+          // Fetch specific submission by ID
+          const response = await onboardingApi.getSubmission(submissionId);
+          setSubmission(response);
+        } else {
+          // Fallback: get the most recent submission
+          const response = await onboardingApi.getSubmissions(clientId);
+          if (response.submissions.length > 0) {
+            setSubmission(response.submissions[0]);
+          } else {
+            setSubmission(null);
+          }
         }
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Failed to load onboarding data');
@@ -121,7 +177,7 @@ export function ComprehensiveOnboarding({ clientId }: ComprehensiveOnboardingPro
     }
 
     fetchSubmission();
-  }, [clientId]);
+  }, [clientId, submissionId]);
 
   if (loading) {
     return (
@@ -179,6 +235,7 @@ export function ComprehensiveOnboarding({ clientId }: ComprehensiveOnboardingPro
   }
 
   return (
+    <>
     <Card>
       <CardHeader
         className="flex flex-row items-center justify-between space-y-0 pb-4 cursor-pointer hover:bg-muted/50 transition-colors"
@@ -377,5 +434,60 @@ export function ComprehensiveOnboarding({ clientId }: ComprehensiveOnboardingPro
         onSave={(updated) => setSubmission(updated)}
       />
     </Card>
+
+    {/* Generate Strategy Button / Loading State */}
+    {onGenerate && submission && (
+      <Card className={`mt-4 ${isGenerating ? 'border-blue-300 bg-blue-50' : 'border-primary/20 bg-primary/5'}`}>
+        <CardContent className="p-6">
+          {isGenerating ? (
+            /* Active Generation State */
+            <div className="space-y-4">
+              <div className="flex items-center gap-3">
+                <div className="relative">
+                  <Loader2 className="w-8 h-8 animate-spin text-blue-600" />
+                  <Sparkles className="w-4 h-4 text-blue-400 absolute -top-1 -right-1" />
+                </div>
+                <div>
+                  <h3 className="font-semibold text-lg text-blue-900">Generating Strategy...</h3>
+                  <p className="text-sm text-blue-700">
+                    {getStatusMessage(generationStatus)}
+                  </p>
+                </div>
+              </div>
+              {/* Progress bar */}
+              <div className="w-full bg-blue-200 rounded-full h-2 overflow-hidden">
+                <div
+                  className="h-full bg-blue-600 rounded-full animate-pulse transition-all duration-500"
+                  style={{ width: getProgressWidth(generationStatus) }}
+                />
+              </div>
+              <p className="text-xs text-blue-600 text-center">
+                This typically takes 2-5 minutes. You&apos;ll be redirected when complete.
+              </p>
+            </div>
+          ) : (
+            /* Ready to Generate State */
+            <div className="flex items-center justify-between">
+              <div>
+                <h3 className="font-semibold text-lg">Ready to Generate</h3>
+                <p className="text-sm text-muted-foreground">
+                  Generate strategy from <span className="font-medium">{submission.companyName}</span> submission
+                  <span className="text-xs ml-1">({formatDate(submission.submittedAt || submission.createdAt)})</span>
+                </p>
+              </div>
+              <Button
+                onClick={() => onGenerate(submission.id)}
+                size="lg"
+                className="gap-2"
+              >
+                <Sparkles className="w-4 h-4" />
+                Generate Strategy
+              </Button>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+    )}
+    </>
   );
 }

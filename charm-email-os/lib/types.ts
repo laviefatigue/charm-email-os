@@ -402,8 +402,8 @@ export interface CampaignIdea {
   generatedAt: Date;
 }
 
-// Campaign status enum (aligned with OwnRBL)
-export type CampaignStatus = 'draft' | 'active' | 'paused' | 'completed' | 'archived';
+// OwnRBL campaign status (for emailbison_campaigns table)
+export type OwnRBLCampaignStatus = 'draft' | 'active' | 'paused' | 'completed' | 'archived';
 
 // Campaign entity (from OwnRBL emailbison_campaigns table)
 export interface Campaign {
@@ -417,8 +417,8 @@ export interface Campaign {
   industry: string;
   segment: string;
   angle: string;
-  status: CampaignStatus;
-  campaignStatus?: CampaignStatus;  // OwnRBL field name
+  status: OwnRBLCampaignStatus;
+  campaignStatus?: OwnRBLCampaignStatus;  // OwnRBL field name
   // Lead counts
   leadsTotal: number;
   totalLeads?: number;  // OwnRBL field name
@@ -1097,3 +1097,162 @@ export const CALLOUT_COLORS: Record<string, { bg: string; border: string; icon: 
   warning: { bg: 'bg-amber-50', border: 'border-amber-300', icon: 'text-amber-600' },
   info: { bg: 'bg-cyan-50', border: 'border-cyan-300', icon: 'text-cyan-600' },
 };
+
+// ===== UNIFIED CYCLE TYPES (1 Cycle = 4 Campaigns = 16 Emails) =====
+
+// Campaign angles (4 per cycle)
+export type CampaignAngle = 'custom_signal' | 'persona_pain' | 'case_study' | 'risk_efficiency';
+
+export const CAMPAIGN_ANGLES: { value: CampaignAngle; label: string; description: string }[] = [
+  { value: 'custom_signal', label: 'Custom Signal', description: 'Trigger-based outreach using hiring signals, tech stack, etc.' },
+  { value: 'persona_pain', label: 'Persona Pain', description: 'Pain point focused messaging for target persona' },
+  { value: 'case_study', label: 'Case Study', description: 'Social proof driven with relevant case study' },
+  { value: 'risk_efficiency', label: 'Risk/Efficiency', description: 'Focus on reducing risk or improving efficiency' },
+];
+
+// Variable with source information
+export interface CycleVariable {
+  name: string;          // e.g., "{{competitor}}"
+  description: string;   // What this variable represents
+  value?: string;        // Default value if known
+  source?: string;       // Where to find data (e.g., "Onboarding form", "BuiltWith")
+  leadGenUse?: string;   // How this helps with lead filtering
+}
+
+// Cycle strategy configuration
+export interface CycleStrategyConfig {
+  id: string;
+  cycleId: string;
+  icpMapping?: ICPMapping;
+  cycleVariables: CycleVariable[];
+  strategicFocus?: string;
+  targetOutcome?: string;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+// Campaign status includes both approval and spintax workflow states
+export type CampaignStatus =
+  | 'draft'              // Initial state, awaiting review
+  | 'approved'           // Human approved, ready for spintax
+  | 'denied'             // Human rejected
+  | 'revision_requested' // Human requested changes
+  | 'spintax_pending'    // Spintax processing in progress
+  | 'spintaxed'          // Spintax complete, ready to push
+  | 'sent';              // Pushed to EmailBison
+
+// Campaign within a cycle (extends CampaignDocument)
+export interface UnifiedCampaign {
+  id: string;
+  cycleId: string;
+  campaignNumber: 1 | 2 | 3 | 4;
+  angle: CampaignAngle;
+  documentName: string;
+  status: CampaignStatus;
+  campaignVariables: CycleVariable[];  // Campaign-specific variables
+  emails: UnifiedEmail[];
+  spintaxedEmails?: UnifiedEmail[];    // Populated after spintax processing
+  qaScoring?: QAScoring;
+  revisionHistory?: RevisionEntry[];   // History of revision requests
+  reviewedBy?: string;
+  reviewedAt?: Date;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+// Revision history entry
+export interface RevisionEntry {
+  id: string;
+  instruction: string;
+  section: string;          // 'campaign', 'email', 'icp', 'variables'
+  scope?: string;           // Which specific item
+  status: 'pending' | 'processed';
+  createdAt: Date;
+  processedAt?: Date;
+}
+
+// Email within a campaign
+export interface UnifiedEmail {
+  position: 1 | 2 | 3 | 4;
+  title: string;           // e.g., "Poke the Bear"
+  waitDays: number;
+  subjectLine?: string;
+  emailBody: string;
+  threadReply: boolean;
+  wordCount?: number;
+  copyVariables: CycleVariable[];  // Variables used in this email
+  score?: number;
+}
+
+// Complete unified cycle data
+export interface UnifiedCycleData {
+  cycle: {
+    id: string;
+    cycleNumber: number;
+    startDate: Date;
+    endDate: Date;
+    status: 'planning' | 'active' | 'completed';
+  };
+  config: CycleStrategyConfig;
+  campaigns: UnifiedCampaign[];
+}
+
+// Response from unified cycle endpoint
+export interface UnifiedCycleResponse {
+  clientId: string;
+  data: UnifiedCycleData;
+}
+
+// Campaign angle colors
+export const ANGLE_COLORS: Record<CampaignAngle, { bg: string; text: string; border: string }> = {
+  custom_signal: { bg: 'bg-violet-50', text: 'text-violet-700', border: 'border-violet-200' },
+  persona_pain: { bg: 'bg-blue-50', text: 'text-blue-700', border: 'border-blue-200' },
+  case_study: { bg: 'bg-emerald-50', text: 'text-emerald-700', border: 'border-emerald-200' },
+  risk_efficiency: { bg: 'bg-amber-50', text: 'text-amber-700', border: 'border-amber-200' },
+};
+
+// Variable level for breadcrumb
+export type VariableLevel = 'cycle' | 'campaign' | 'copy';
+
+export const VARIABLE_LEVEL_COLORS: Record<VariableLevel, { bg: string; text: string }> = {
+  cycle: { bg: 'bg-purple-100', text: 'text-purple-800' },
+  campaign: { bg: 'bg-blue-100', text: 'text-blue-800' },
+  copy: { bg: 'bg-green-100', text: 'text-green-800' },
+};
+
+// ===== SECTION REGENERATION TYPES =====
+
+// Sections that can be regenerated
+export type RegenerationSection = 'header' | 'icp' | 'variables' | 'campaign' | 'email';
+
+// Sub-sections for ICP
+export type ICPSubSection = 'target_icp' | 'pain_points' | 'objections';
+
+// Regeneration scope options
+export interface RegenerationScope {
+  campaignNumber?: 1 | 2 | 3 | 4;
+  emailPosition?: 1 | 2 | 3 | 4;
+  variableLevel?: VariableLevel;
+  painPointCategory?: string;
+  objectionIndex?: number;
+}
+
+// Request to regenerate a section
+export interface CycleRegenerationRequest {
+  section: RegenerationSection;
+  subSection?: ICPSubSection;
+  scope?: RegenerationScope;
+  instruction: string;
+  preserveExisting?: boolean;
+}
+
+// Response from regeneration endpoint
+export interface CycleRegenerationResponse {
+  regenerationId: string;
+  jobId: string;
+  cycleId: string;
+  section: RegenerationSection;
+  status: 'queued' | 'processing' | 'completed' | 'failed';
+  message?: string;
+  estimatedDuration?: number;
+}

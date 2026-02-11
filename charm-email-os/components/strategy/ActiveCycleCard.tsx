@@ -39,6 +39,10 @@ function formatDate(dateString?: string) {
 
 // Status badge config
 const STATUS_CONFIG: Record<CampaignCycle['status'], { label: string; color: string }> = {
+  draft: {
+    label: 'Draft',
+    color: 'bg-yellow-100 text-yellow-700',
+  },
   planned: {
     label: 'Planned',
     color: 'bg-gray-100 text-gray-700',

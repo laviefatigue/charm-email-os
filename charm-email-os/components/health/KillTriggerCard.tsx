@@ -1,19 +1,31 @@
 'use client';
 
-import { AlertTriangle, Clock, Skull, CheckCircle } from 'lucide-react';
+import { AlertTriangle, Clock, Skull, CheckCircle, X } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
 import type { KillTrigger } from '@/lib/types/health';
 import { KILL_TRIGGER_THRESHOLDS } from '@/lib/types/health';
 import { cn } from '@/lib/utils';
 
 interface KillTriggerCardProps {
   trigger: KillTrigger;
+  onExecute?: (triggerId: string) => void;
+  onDismiss?: (triggerId: string) => void;
+  onRetest?: (triggerId: string) => void;
+  isExecuting?: boolean;
 }
 
-export function KillTriggerCard({ trigger }: KillTriggerCardProps) {
+export function KillTriggerCard({
+  trigger,
+  onExecute,
+  onDismiss,
+  onRetest,
+  isExecuting = false,
+}: KillTriggerCardProps) {
   const isInstant = trigger.severity === 'instant';
   const threshold = KILL_TRIGGER_THRESHOLDS[trigger.type];
   const isResolved = trigger.actionTaken === 'killed' || trigger.actionTaken === 'dismissed';
+  const isPending = trigger.actionTaken === 'pending';
 
   const formatTimeAgo = (date: Date) => {
     const now = new Date();
@@ -108,6 +120,59 @@ export function KillTriggerCard({ trigger }: KillTriggerCardProps) {
             <div className="mt-2 text-xs flex items-center gap-1 text-yellow-700">
               <Clock className="h-3 w-3" />
               {formatRetestTime(trigger.retestAt)}
+            </div>
+          )}
+
+          {/* Action buttons for pending triggers */}
+          {isPending && (
+            <div className="mt-3 flex flex-wrap items-center gap-2">
+              {isInstant ? (
+                // Instant kill triggers - primary action is Execute Kill
+                <Button
+                  variant="destructive"
+                  size="sm"
+                  onClick={() => onExecute?.(trigger.id)}
+                  disabled={isExecuting}
+                  className="h-8"
+                >
+                  <Skull className="h-3.5 w-3.5 mr-1.5" />
+                  {isExecuting ? 'Killing...' : 'Execute Kill'}
+                </Button>
+              ) : (
+                // Confirming triggers - multiple options
+                <>
+                  <Button
+                    variant="destructive"
+                    size="sm"
+                    onClick={() => onExecute?.(trigger.id)}
+                    disabled={isExecuting}
+                    className="h-8"
+                  >
+                    <Skull className="h-3.5 w-3.5 mr-1.5" />
+                    {isExecuting ? 'Killing...' : 'Kill Now'}
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => onRetest?.(trigger.id)}
+                    disabled={isExecuting}
+                    className="h-8"
+                  >
+                    <Clock className="h-3.5 w-3.5 mr-1.5" />
+                    Retest in 48h
+                  </Button>
+                </>
+              )}
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => onDismiss?.(trigger.id)}
+                disabled={isExecuting}
+                className="h-8 text-muted-foreground"
+              >
+                <X className="h-3.5 w-3.5 mr-1.5" />
+                Dismiss
+              </Button>
             </div>
           )}
         </div>

@@ -1748,7 +1748,7 @@ export interface CampaignCycle {
   durationDays: number;
   targetCampaigns: number;  // Target number of campaigns for this cycle
   actualCampaigns: number;
-  status: 'planned' | 'active' | 'completed';
+  status: 'draft' | 'planned' | 'active' | 'completed';
   notes?: string;
   createdAt: string;
   updatedAt: string;
@@ -2335,6 +2335,38 @@ export const strategyApi = {
       `/api/strategy/cycles/${cycleId}/campaigns`
     );
     return toCamelCase<{ campaigns: CampaignSequence[]; total: number }>(response);
+  },
+
+  /**
+   * Generate campaigns for an existing cycle
+   * Use this when a cycle exists but needs its campaigns generated/populated
+   */
+  async generateCycleCampaigns(
+    cycleId: string,
+    submissionId?: string
+  ): Promise<{
+    jobId: string;
+    clientId: string;
+    cycleId: string;
+    status: string;
+    message: string;
+  }> {
+    const body: Record<string, string> = {};
+    if (submissionId) body.submission_id = submissionId;
+    const response = await fetchApi<Record<string, unknown>>(
+      `/api/strategy/cycles/${cycleId}/generate`,
+      {
+        method: 'POST',
+        body: JSON.stringify(body),
+      }
+    );
+    return toCamelCase<{
+      jobId: string;
+      clientId: string;
+      cycleId: string;
+      status: string;
+      message: string;
+    }>(response);
   },
 };
 
