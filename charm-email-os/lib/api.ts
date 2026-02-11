@@ -32,6 +32,12 @@ import type {
   InventoryHealth,
   CampaignDocument,
   ClientDocumentsResponse,
+  UnifiedCycleData,
+  UnifiedCycleResponse,
+  CycleStrategyConfig,
+  CycleVariable,
+  CycleRegenerationRequest,
+  CycleRegenerationResponse,
 } from './types';
 
 // API base URL - use environment variable or default to deployed API
@@ -1624,6 +1630,39 @@ export interface StrategyJobResponse {
   message: string;
 }
 
+export interface GenerationPhase {
+  id: string;
+  type: 'scaffold' | 'campaign_copy';
+  number: number | null;
+  campaignDocumentId: string | null;
+  status: 'pending' | 'processing' | 'completed' | 'failed';
+  errorMessage?: string;
+  startedAt?: string;
+  completedAt?: string;
+}
+
+export interface JobPhasesResponse {
+  jobId: string;
+  clientId: string;
+  clientName: string;
+  jobStatus: string;
+  jobType: string;
+  cycleId?: string;
+  errorMessage?: string;
+  createdAt?: string;
+  startedAt?: string;
+  completedAt?: string;
+  phases: GenerationPhase[];
+  progress: {
+    totalPhases: number;
+    completedPhases: number;
+    failedPhases: number;
+    processingPhases: number;
+    percent: number;
+    estimatedRemainingSeconds: number;
+  };
+}
+
 export interface ClientSuggestionsResponse {
   clientId: string;
   suggestions: StrategySuggestion[];
@@ -1881,6 +1920,16 @@ export const strategyApi = {
       `/api/strategy/jobs/${jobId}/status`
     );
     return toCamelCase<StrategyJob>(response);
+  },
+
+  /**
+   * Get detailed phase status for a phased generation job
+   */
+  async getJobPhases(jobId: string): Promise<JobPhasesResponse> {
+    const response = await fetchApi<Record<string, unknown>>(
+      `/api/strategy/jobs/${jobId}/phases`
+    );
+    return toCamelCase<JobPhasesResponse>(response);
   },
 
   /**
@@ -2199,11 +2248,12 @@ export const strategyApi = {
   // ===== CAMPAIGN CYCLES =====
 
   /**
-   * Get all cycles for a client
+   * Get all cycles for a client, optionally filtered by strategy
    */
-  async getCycles(clientId: string): Promise<{ cycles: CampaignCycle[]; total: number }> {
+  async getCycles(clientId: string, strategyId?: string): Promise<{ cycles: CampaignCycle[]; total: number }> {
+    const query = strategyId ? `?strategy_id=${strategyId}` : '';
     const response = await fetchApi<Record<string, unknown>>(
-      `/api/strategy/cycles/${clientId}`
+      `/api/strategy/cycles/${clientId}${query}`
     );
     return toCamelCase<{ cycles: CampaignCycle[]; total: number }>(response);
   },
@@ -2465,6 +2515,42 @@ export const healthApi = {
   async getInventoryHealth(clientId: string): Promise<InventoryHealth> {
     const response = await fetchApi<Record<string, unknown>>(`/api/health/inventory/${clientId}`);
     return toCamelCase<InventoryHealth>(response);
+  },
+
+  /**
+   * Get EmailBison sending capacity data
+   */
+  async getEmailBisonCapacity(clientId: string, forceSync = false): Promise<{
+    liveInboxes: number;
+    totalInboxes: number;
+    dailySendLimit: number;
+    warmingInboxes: number;
+    deadInboxes: number;
+    warmupDistribution: {
+      range_0_25: number;
+      range_25_50: number;
+      range_50_75: number;
+      range_75_100: number;
+    };
+    lastSynced: string;
+  }> {
+    const response = await fetchApi<Record<string, unknown>>(
+      `/api/health/emailbison-capacity/${clientId}${forceSync ? '?force_sync=true' : ''}`
+    );
+    return toCamelCase<{
+      liveInboxes: number;
+      totalInboxes: number;
+      dailySendLimit: number;
+      warmingInboxes: number;
+      deadInboxes: number;
+      warmupDistribution: {
+        range_0_25: number;
+        range_25_50: number;
+        range_50_75: number;
+        range_75_100: number;
+      };
+      lastSynced: string;
+    }>(response);
   },
 };
 
@@ -2921,6 +3007,112 @@ export const campaignDocumentApi = {
   },
 };
 
+// ===== UNIFIED CYCLE API =====
+
+export const unifiedCycleApi = {
+  /**
+   * Get unified cycle data for a client (cycle + config + 4 campaigns + variables)
+   */
+  async getUnifiedCycle(clientId: string, cycleId?: string): Promise<UnifiedCycleResponse> {
+    const endpoint = cycleId
+      ? `/api/strategy/cycles/${cycleId}/unified`
+      : `/api/strategy/clients/${clientId}/current-cycle`;
+    const response = await fetchApi<Record<string, unknown>>(endpoint);
+    return toCamelCase<UnifiedCycleResponse>(response);
+  },
+
+  /**
+   * Get cycle strategy config
+   */
+  async getCycleConfig(cycleId: string): Promise<CycleStrategyConfig> {
+    const response = await fetchApi<Record<string, unknown>>(`/api/strategy/cycles/${cycleId}/config`);
+    return toCamelCase<CycleStrategyConfig>(response);
+  },
+
+  /**
+   * Update cycle strategy config
+   */
+  async updateCycleConfig(
+    cycleId: string,
+    data: Partial<CycleStrategyConfig>
+  ): Promise<{ success: boolean; message: string }> {
+    return fetchApi<{ success: boolean; message: string }>(
+      `/api/strategy/cycles/${cycleId}/config`,
+      {
+        method: 'PUT',
+        body: JSON.stringify(toSnakeCase(data as Record<string, unknown>)),
+      }
+    );
+  },
+
+  /**
+   * Add a cycle-level variable
+   */
+  async addCycleVariable(
+    cycleId: string,
+    variable: CycleVariable
+  ): Promise<{ success: boolean; message: string }> {
+    return fetchApi<{ success: boolean; message: string }>(
+      `/api/strategy/cycles/${cycleId}/config/variables`,
+      {
+        method: 'POST',
+        body: JSON.stringify(toSnakeCase(variable as unknown as Record<string, unknown>)),
+      }
+    );
+  },
+
+  /**
+   * Get all resolved variables for a campaign (inherited + campaign-specific)
+   */
+  async getResolvedVariables(
+    campaignId: string
+  ): Promise<{ cycleVariables: CycleVariable[]; campaignVariables: CycleVariable[]; copyVariables: CycleVariable[] }> {
+    const response = await fetchApi<Record<string, unknown>>(
+      `/api/strategy/campaigns/${campaignId}/resolved-variables`
+    );
+    return toCamelCase<{ cycleVariables: CycleVariable[]; campaignVariables: CycleVariable[]; copyVariables: CycleVariable[] }>(response);
+  },
+
+  /**
+   * List all cycles for a client
+   */
+  async listClientCycles(
+    clientId: string
+  ): Promise<{ cycles: Array<{ id: string; cycleNumber: number; startDate: string; endDate: string; status: string }> }> {
+    const response = await fetchApi<Record<string, unknown>>(`/api/strategy/clients/${clientId}/cycles`);
+    return toCamelCase<{ cycles: Array<{ id: string; cycleNumber: number; startDate: string; endDate: string; status: string }> }>(response);
+  },
+
+  /**
+   * Regenerate a specific section of the cycle strategy
+   */
+  async regenerateSection(
+    cycleId: string,
+    request: CycleRegenerationRequest
+  ): Promise<CycleRegenerationResponse> {
+    const response = await fetchApi<Record<string, unknown>>(
+      `/api/strategy/cycles/${cycleId}/regenerate`,
+      {
+        method: 'POST',
+        body: JSON.stringify(toSnakeCase(request as unknown as Record<string, unknown>)),
+      }
+    );
+    return toCamelCase<CycleRegenerationResponse>(response);
+  },
+
+  /**
+   * Check status of a regeneration job
+   */
+  async getRegenerationStatus(
+    jobId: string
+  ): Promise<CycleRegenerationResponse> {
+    const response = await fetchApi<Record<string, unknown>>(
+      `/api/strategy/regeneration/${jobId}/status`
+    );
+    return toCamelCase<CycleRegenerationResponse>(response);
+  },
+};
+
 // ===== COMBINED API EXPORT =====
 
 export const api = {
@@ -2937,6 +3129,7 @@ export const api = {
   strategy: strategyApi,
   subscriptions: subscriptionApi,
   campaignDocuments: campaignDocumentApi,
+  unifiedCycles: unifiedCycleApi,
 };
 
 export default api;

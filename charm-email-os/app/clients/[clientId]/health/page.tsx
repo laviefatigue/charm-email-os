@@ -1,7 +1,7 @@
 'use client';
 
-import { useEffect } from 'react';
-import { useParams } from 'next/navigation';
+import { useEffect, useState, useCallback } from 'react';
+import { useParams, useRouter } from 'next/navigation';
 import { RefreshCw, AlertTriangle, CheckCircle, XCircle, Loader2, AlertCircle } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
@@ -10,19 +10,27 @@ import { Alert, AlertDescription } from '@/components/ui/alert';
 import { ClientHeader, TabNavigation, PageContainer } from '@/components/layout';
 import {
   KillTriggerMonitor,
-  BackupCapacityGauge,
+  KillConfirmDialog,
   DomainHealthGrid,
   CampaignAttributionPanel,
   ListContaminationTracker,
   ESPHealthSummary,
-  RotationOverview,
+  RotationNeedsAttention,
+  EmailBisonCapacity,
 } from '@/components/health';
 import { useClientStore, useHealthStore } from '@/lib/stores';
 import { cn } from '@/lib/utils';
+import type { KillTrigger } from '@/lib/types/health';
 
 export default function HealthPage() {
   const params = useParams();
+  const router = useRouter();
   const clientId = params.clientId as string;
+
+  // Dialog state
+  const [confirmDialogOpen, setConfirmDialogOpen] = useState(false);
+  const [selectedTrigger, setSelectedTrigger] = useState<KillTrigger | null>(null);
+  const [executingTriggerIds, setExecutingTriggerIds] = useState<string[]>([]);
 
   const { getClient, selectClient, fetchClients, clients } = useClientStore();
   const isLoadingClients = useClientStore((state) => state.isLoading);
@@ -39,6 +47,8 @@ export default function HealthPage() {
     error,
     refreshHealth,
     lastRefresh,
+    executeKillTrigger,
+    dismissKillTrigger,
   } = useHealthStore();
 
   const client = getClient(clientId);
@@ -54,6 +64,9 @@ export default function HealthPage() {
   }, [clientId, selectClient, refreshHealth, fetchClients, clients.length]);
 
   const pendingTriggers = killTriggers.filter((t) => t.actionTaken === 'pending');
+  const instantPending = killTriggers.filter(
+    (t) => t.severity === 'instant' && t.actionTaken === 'pending'
+  );
 
   // Status indicator
   const statusConfig = {
@@ -69,6 +82,67 @@ export default function HealthPage() {
     refreshHealth(clientId);
     toast.success('Health data refreshed');
   };
+
+  // Kill trigger handlers
+  const handleExecuteClick = useCallback((triggerId: string) => {
+    const trigger = killTriggers.find((t) => t.id === triggerId);
+    if (trigger) {
+      setSelectedTrigger(trigger);
+      setConfirmDialogOpen(true);
+    }
+  }, [killTriggers]);
+
+  const handleConfirmKill = useCallback(async () => {
+    if (!selectedTrigger) return;
+
+    setExecutingTriggerIds((prev) => [...prev, selectedTrigger.id]);
+    setConfirmDialogOpen(false);
+
+    try {
+      await executeKillTrigger(selectedTrigger.id);
+      toast.success(`Inbox ${selectedTrigger.inboxEmail} has been killed`);
+      // Refresh to get updated data
+      refreshHealth(clientId);
+    } catch (error) {
+      toast.error(`Failed to kill inbox: ${(error as Error).message}`);
+    } finally {
+      setExecutingTriggerIds((prev) => prev.filter((id) => id !== selectedTrigger.id));
+      setSelectedTrigger(null);
+    }
+  }, [selectedTrigger, executeKillTrigger, refreshHealth, clientId]);
+
+  const handleDismiss = useCallback((triggerId: string) => {
+    dismissKillTrigger(triggerId);
+    toast.info('Trigger dismissed');
+  }, [dismissKillTrigger]);
+
+  const handleRetest = useCallback((triggerId: string) => {
+    // For now, just dismiss and show a message
+    // TODO: Implement proper retest scheduling
+    dismissKillTrigger(triggerId);
+    toast.info('Retest scheduled for 48 hours');
+  }, [dismissKillTrigger]);
+
+  const handleExecuteAll = useCallback(async () => {
+    // Execute all instant pending triggers
+    for (const trigger of instantPending) {
+      setExecutingTriggerIds((prev) => [...prev, trigger.id]);
+      try {
+        await executeKillTrigger(trigger.id);
+      } catch (error) {
+        toast.error(`Failed to kill ${trigger.inboxEmail}`);
+      }
+      setExecutingTriggerIds((prev) => prev.filter((id) => id !== trigger.id));
+    }
+    toast.success(`Killed ${instantPending.length} inbox${instantPending.length > 1 ? 'es' : ''}`);
+    refreshHealth(clientId);
+  }, [instantPending, executeKillTrigger, refreshHealth, clientId]);
+
+  // Rotation handlers
+  const handleOrderReplacement = useCallback((domainId: string) => {
+    // Navigate to inbox ordering page with domain pre-selected
+    router.push(`/clients/${clientId}/inboxes?action=order&domain=${domainId}`);
+  }, [router, clientId]);
 
   // Loading state
   if ((isLoading || isLoadingClients) && !overallSummary) {
@@ -169,33 +243,45 @@ export default function HealthPage() {
             </Card>
             <Card>
               <CardContent className="p-4">
-                <div className="text-2xl font-bold text-yellow-600">
+                <div className={cn(
+                  "text-2xl font-bold",
+                  pendingTriggers.length > 0 ? "text-red-600" : "text-green-600"
+                )}>
                   {pendingTriggers.length}
                 </div>
-                <div className="text-sm text-muted-foreground">Active Monitors</div>
+                <div className="text-sm text-muted-foreground">
+                  {pendingTriggers.length > 0 ? 'Action Required' : 'All Clear'}
+                </div>
               </CardContent>
             </Card>
           </div>
         )}
 
-        {/* Rotation Overview */}
-        <div className="mb-6">
-          <RotationOverview
-            domains={domainMetrics}
-            backupCapacity={backupCapacity}
-          />
-        </div>
-
-        {/* Main Dashboard Grid */}
+        {/* Main Dashboard Grid - Reorganized Layout */}
         <div className="grid grid-cols-12 gap-6">
-          {/* Kill Trigger Activity - Left Column */}
-          <div className="col-span-12 lg:col-span-6">
-            <KillTriggerMonitor triggers={killTriggers} />
+          {/* Kill Trigger Activity - Full Width (Priority 1: Action items) */}
+          <div className="col-span-12">
+            <KillTriggerMonitor
+              triggers={killTriggers}
+              onExecute={handleExecuteClick}
+              onDismiss={handleDismiss}
+              onRetest={handleRetest}
+              onExecuteAll={handleExecuteAll}
+              executingTriggerIds={executingTriggerIds}
+            />
           </div>
 
-          {/* Backup Capacity - Right Column */}
+          {/* EmailBison Capacity - Left Column (Priority 2: Sending health) */}
           <div className="col-span-12 lg:col-span-6">
-            <BackupCapacityGauge capacity={backupCapacity} />
+            <EmailBisonCapacity clientId={clientId} />
+          </div>
+
+          {/* Rotation Needs Attention - Right Column */}
+          <div className="col-span-12 lg:col-span-6">
+            <RotationNeedsAttention
+              domains={domainMetrics}
+              onOrderReplacement={handleOrderReplacement}
+            />
           </div>
 
           {/* Domain Health Grid - Full Width */}
@@ -203,22 +289,31 @@ export default function HealthPage() {
             <DomainHealthGrid domains={domainMetrics} />
           </div>
 
+          {/* ESP Health Summary - Half Width */}
+          <div className="col-span-12 lg:col-span-6">
+            <ESPHealthSummary summaries={espSummaries} />
+          </div>
+
           {/* Campaign Attribution - Half Width */}
           <div className="col-span-12 lg:col-span-6">
             <CampaignAttributionPanel campaigns={campaignMetrics} />
           </div>
 
-          {/* List Contamination - Half Width */}
-          <div className="col-span-12 lg:col-span-6">
-            <ListContaminationTracker sources={contaminationSources} />
-          </div>
-
-          {/* ESP Health Summary - Full Width */}
+          {/* List Contamination - Full Width (lower priority) */}
           <div className="col-span-12">
-            <ESPHealthSummary summaries={espSummaries} />
+            <ListContaminationTracker sources={contaminationSources} />
           </div>
         </div>
       </PageContainer>
+
+      {/* Kill Confirmation Dialog */}
+      <KillConfirmDialog
+        trigger={selectedTrigger}
+        open={confirmDialogOpen}
+        onOpenChange={setConfirmDialogOpen}
+        onConfirm={handleConfirmKill}
+        isExecuting={selectedTrigger ? executingTriggerIds.includes(selectedTrigger.id) : false}
+      />
     </>
   );
 }

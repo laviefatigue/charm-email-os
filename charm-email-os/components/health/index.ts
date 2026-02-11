@@ -1,5 +1,7 @@
 export { KillTriggerCard } from './KillTriggerCard';
 export { KillTriggerMonitor } from './KillTriggerMonitor';
+export { KillTriggerTable } from './KillTriggerTable';
+export { KillConfirmDialog } from './KillConfirmDialog';
 export { DomainHealthCard } from './DomainHealthCard';
 export { DomainHealthGrid } from './DomainHealthGrid';
 export { DomainPhaseBadge } from './DomainPhaseBadge';
@@ -11,3 +13,4 @@ export { ESPHealthSummary } from './ESPHealthSummary';
 export { RotationOverview } from './RotationOverview';
 export { DomainPhaseDistribution } from './DomainPhaseDistribution';
 export { RotationNeedsAttention } from './RotationNeedsAttention';
+export { EmailBisonCapacity } from './EmailBisonCapacity';

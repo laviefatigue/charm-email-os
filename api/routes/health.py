@@ -3,6 +3,7 @@ Health monitoring routes - Aggregated from OwnRBL metrics
 """
 
 from fastapi import APIRouter, HTTPException, Query
+from pydantic import BaseModel
 from typing import Optional
 from uuid import UUID
 from datetime import datetime, timezone, timedelta
@@ -1198,10 +1199,9 @@ async def get_full_dashboard(client_id: UUID):
 # ===== Real-Time Inventory Health from EmailBison =====
 
 from services.emailbison import EmailBisonService, WorkspaceHealthSummary
-from pydantic import BaseModel as PydanticBaseModel
 
 
-class InventoryHealthResponse(PydanticBaseModel):
+class InventoryHealthResponse(BaseModel):
     """Real-time inventory health from EmailBison + RBL data."""
     # Workspace identification
     client_id: str
@@ -1376,3 +1376,159 @@ async def get_inventory_health(client_id: UUID):
     response.attention_items.sort(key=lambda x: severity_order.get(x.get("severity", "info"), 99))
 
     return response
+
+
+# ===== EMAIL BISON CAPACITY ENDPOINT =====
+
+class EmailBisonCapacityResponse(BaseModel):
+    """EmailBison sending capacity data."""
+    live_inboxes: int = 0
+    total_inboxes: int = 0
+    daily_send_limit: int = 0
+    warming_inboxes: int = 0
+    dead_inboxes: int = 0
+    warmup_distribution: dict = {}
+    last_synced: datetime = None
+
+    class Config:
+        from_attributes = True
+
+
+@router.get("/emailbison-capacity/{client_id}", response_model=EmailBisonCapacityResponse)
+async def get_emailbison_capacity(
+    client_id: UUID,
+    force_sync: bool = Query(False, description="Force refresh from EmailBison API")
+):
+    """
+    Get EmailBison sending capacity data.
+
+    Returns live/total inbox counts, daily send limit based on warmup progress,
+    and warmup distribution buckets.
+    """
+    # Get client with workspace
+    client = await fetch_one("""
+        SELECT c.id, c.name, c.workspace_id, w.workspace_name
+        FROM clients c
+        LEFT JOIN workspaces w ON c.workspace_id = w.id
+        WHERE c.id = $1
+    """, client_id)
+
+    if not client:
+        raise HTTPException(status_code=404, detail="Client not found")
+
+    workspace_name = client["workspace_name"]
+
+    if not workspace_name:
+        return EmailBisonCapacityResponse(
+            last_synced=datetime.now(timezone.utc)
+        )
+
+    try:
+        async with EmailBisonService() as bison:
+            # Get workspace ID first
+            workspace_id = await bison._get_workspace_id(workspace_name)
+            if workspace_id is None:
+                return EmailBisonCapacityResponse(
+                    last_synced=datetime.now(timezone.utc)
+                )
+
+            # Switch to workspace
+            await bison._switch_workspace(workspace_id)
+
+            # Fetch all inboxes with pagination
+            all_inboxes = []
+            page = 1
+            while True:
+                response = await bison._client.get(
+                    f"{bison.base_url}/api/sender-emails",
+                    params={"page": page, "per_page": 100}
+                )
+                response.raise_for_status()
+                data = response.json()
+
+                inboxes = data.get("data", [])
+                if not inboxes:
+                    break
+
+                all_inboxes.extend(inboxes)
+
+                meta = data.get("meta", {})
+                last_page = meta.get("last_page", 1)
+                if page >= last_page:
+                    break
+                page += 1
+
+        # Process inbox data
+        total = len(all_inboxes)
+        live = 0
+        dead = 0
+        warming = 0
+        daily_limit = 0
+
+        # Warmup distribution buckets
+        warmup_distribution = {
+            "range_0_25": 0,
+            "range_25_50": 0,
+            "range_50_75": 0,
+            "range_75_100": 0
+        }
+
+        for inbox in all_inboxes:
+            # Check connection status
+            status = inbox.get("connection_status", inbox.get("status", "")).lower()
+            is_connected = status in ("connected", "active", "1", "true")
+
+            # Check if inbox is dead/paused
+            inbox_status = inbox.get("inbox_status", inbox.get("status", "")).lower()
+            if inbox_status in ("dead", "paused", "disabled", "deleted"):
+                dead += 1
+                continue
+
+            if not is_connected:
+                dead += 1
+                continue
+
+            # Connected inbox
+            live += 1
+
+            # Get warmup progress (0-100 scale)
+            warmup_progress = inbox.get("warmup_progress", inbox.get("warmup", 100))
+            if warmup_progress is None:
+                warmup_progress = 100
+
+            # Calculate daily send limit contribution based on warmup
+            # Assume max daily sends of 50 per fully warmed inbox
+            max_daily = 50
+            inbox_daily = int(max_daily * (warmup_progress / 100))
+            daily_limit += inbox_daily
+
+            # Track warming inboxes (not fully warmed)
+            if warmup_progress < 100:
+                warming += 1
+
+                # Distribution buckets
+                if warmup_progress < 25:
+                    warmup_distribution["range_0_25"] += 1
+                elif warmup_progress < 50:
+                    warmup_distribution["range_25_50"] += 1
+                elif warmup_progress < 75:
+                    warmup_distribution["range_50_75"] += 1
+                else:
+                    warmup_distribution["range_75_100"] += 1
+
+        return EmailBisonCapacityResponse(
+            live_inboxes=live,
+            total_inboxes=total,
+            daily_send_limit=daily_limit,
+            warming_inboxes=warming,
+            dead_inboxes=dead,
+            warmup_distribution=warmup_distribution,
+            last_synced=datetime.now(timezone.utc)
+        )
+
+    except Exception as e:
+        logger.error(f"Failed to fetch EmailBison capacity: {e}")
+        # Return zeros with error logged
+        return EmailBisonCapacityResponse(
+            last_synced=datetime.now(timezone.utc)
+        )

@@ -1,15 +1,80 @@
 'use client';
 
-import { Activity, CheckCircle, Skull, AlertCircle } from 'lucide-react';
+import { useState } from 'react';
+import { Activity, CheckCircle, Skull, AlertCircle, AlertTriangle, ChevronDown, ChevronRight } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { KillTriggerCard } from './KillTriggerCard';
+import { Button } from '@/components/ui/button';
+import { KillTriggerTable } from './KillTriggerTable';
 import type { KillTrigger } from '@/lib/types/health';
+import { cn } from '@/lib/utils';
 
 interface KillTriggerMonitorProps {
   triggers: KillTrigger[];
+  onExecute?: (triggerId: string) => void;
+  onDismiss?: (triggerId: string) => void;
+  onRetest?: (triggerId: string) => void;
+  onExecuteAll?: () => void;
+  executingTriggerIds?: string[];
 }
 
-export function KillTriggerMonitor({ triggers }: KillTriggerMonitorProps) {
+interface CollapsibleSectionProps {
+  title: string;
+  count: number;
+  icon: React.ReactNode;
+  iconColor: string;
+  defaultOpen?: boolean;
+  children: React.ReactNode;
+}
+
+function CollapsibleSection({
+  title,
+  count,
+  icon,
+  iconColor,
+  defaultOpen = true,
+  children,
+}: CollapsibleSectionProps) {
+  const [isOpen, setIsOpen] = useState(defaultOpen);
+
+  return (
+    <div className="border rounded-lg overflow-hidden">
+      <button
+        onClick={() => setIsOpen(!isOpen)}
+        className="w-full flex items-center justify-between px-4 py-2.5 bg-muted/30 hover:bg-muted/50 transition-colors"
+      >
+        <div className="flex items-center gap-2">
+          {isOpen ? (
+            <ChevronDown className="h-4 w-4 text-muted-foreground" />
+          ) : (
+            <ChevronRight className="h-4 w-4 text-muted-foreground" />
+          )}
+          <span className={iconColor}>{icon}</span>
+          <span className="font-medium text-sm">{title}</span>
+          <span className={cn(
+            "text-xs px-1.5 py-0.5 rounded-full",
+            count > 0 ? "bg-gray-200 text-gray-700" : "bg-gray-100 text-gray-500"
+          )}>
+            {count}
+          </span>
+        </div>
+      </button>
+      {isOpen && (
+        <div className="border-t">
+          {children}
+        </div>
+      )}
+    </div>
+  );
+}
+
+export function KillTriggerMonitor({
+  triggers,
+  onExecute,
+  onDismiss,
+  onRetest,
+  onExecuteAll,
+  executingTriggerIds = [],
+}: KillTriggerMonitorProps) {
   // Separate by status
   const recentKills = triggers.filter((t) => t.actionTaken === 'killed');
   const confirmingTriggers = triggers.filter(
@@ -20,6 +85,7 @@ export function KillTriggerMonitor({ triggers }: KillTriggerMonitorProps) {
   );
 
   const hasActivity = triggers.length > 0;
+  const hasPendingActions = instantPending.length > 0 || confirmingTriggers.length > 0;
 
   return (
     <Card>
@@ -29,18 +95,39 @@ export function KillTriggerMonitor({ triggers }: KillTriggerMonitorProps) {
             <Activity className="h-5 w-5" />
             Kill Trigger Activity
           </CardTitle>
-          <div className="flex items-center gap-3 text-sm">
-            {recentKills.length > 0 && (
-              <span className="flex items-center gap-1 text-gray-600">
-                <Skull className="h-4 w-4" />
-                {recentKills.length} killed
-              </span>
-            )}
-            {confirmingTriggers.length > 0 && (
-              <span className="flex items-center gap-1 text-yellow-600">
-                <AlertCircle className="h-4 w-4" />
-                {confirmingTriggers.length} monitoring
-              </span>
+          <div className="flex items-center gap-3">
+            {/* Summary badges */}
+            <div className="flex items-center gap-2 text-sm">
+              {instantPending.length > 0 && (
+                <span className="flex items-center gap-1 text-red-600">
+                  <Skull className="h-4 w-4" />
+                  {instantPending.length} critical
+                </span>
+              )}
+              {confirmingTriggers.length > 0 && (
+                <span className="flex items-center gap-1 text-yellow-600">
+                  <AlertCircle className="h-4 w-4" />
+                  {confirmingTriggers.length} reviewing
+                </span>
+              )}
+              {recentKills.length > 0 && (
+                <span className="flex items-center gap-1 text-gray-500">
+                  <Skull className="h-4 w-4" />
+                  {recentKills.length} killed
+                </span>
+              )}
+            </div>
+            {/* Bulk action */}
+            {onExecuteAll && instantPending.length > 1 && (
+              <Button
+                variant="destructive"
+                size="sm"
+                onClick={onExecuteAll}
+                disabled={executingTriggerIds.length > 0}
+              >
+                <Skull className="h-3.5 w-3.5 mr-1.5" />
+                Execute All ({instantPending.length})
+              </Button>
             )}
           </div>
         </div>
@@ -53,56 +140,59 @@ export function KillTriggerMonitor({ triggers }: KillTriggerMonitorProps) {
             <p className="text-sm mt-1">No kill trigger activity</p>
           </div>
         ) : (
-          <div className="space-y-6">
-            {/* Instant kills waiting to execute */}
+          <div className="space-y-4">
+            {/* Action Required - Instant kills */}
             {instantPending.length > 0 && (
-              <div>
-                <div className="flex items-center gap-2 mb-3">
-                  <Skull className="h-4 w-4 text-red-600" />
-                  <h4 className="font-semibold text-red-700">Executing Instant Kill</h4>
-                  <span className="text-xs text-muted-foreground">
-                    Auto-killing now
-                  </span>
-                </div>
-                <div className="space-y-3">
-                  {instantPending.map((trigger) => (
-                    <KillTriggerCard key={trigger.id} trigger={trigger} />
-                  ))}
-                </div>
-              </div>
+              <CollapsibleSection
+                title="Action Required"
+                count={instantPending.length}
+                icon={<AlertTriangle className="h-4 w-4" />}
+                iconColor="text-red-600"
+                defaultOpen={true}
+              >
+                <KillTriggerTable
+                  triggers={instantPending}
+                  onExecute={onExecute}
+                  onDismiss={onDismiss}
+                  onRetest={onRetest}
+                  executingTriggerIds={executingTriggerIds}
+                />
+              </CollapsibleSection>
             )}
 
-            {/* Confirming triggers being monitored */}
+            {/* Under Review - Confirming triggers */}
             {confirmingTriggers.length > 0 && (
-              <div>
-                <div className="flex items-center gap-2 mb-3">
-                  <AlertCircle className="h-4 w-4 text-yellow-600" />
-                  <h4 className="font-semibold text-yellow-700">Monitoring</h4>
-                  <span className="text-xs text-muted-foreground">
-                    Auto-retest in 48h
-                  </span>
-                </div>
-                <div className="space-y-3">
-                  {confirmingTriggers.map((trigger) => (
-                    <KillTriggerCard key={trigger.id} trigger={trigger} />
-                  ))}
-                </div>
-              </div>
+              <CollapsibleSection
+                title="Under Review"
+                count={confirmingTriggers.length}
+                icon={<AlertCircle className="h-4 w-4" />}
+                iconColor="text-yellow-600"
+                defaultOpen={true}
+              >
+                <KillTriggerTable
+                  triggers={confirmingTriggers}
+                  onExecute={onExecute}
+                  onDismiss={onDismiss}
+                  onRetest={onRetest}
+                  executingTriggerIds={executingTriggerIds}
+                />
+              </CollapsibleSection>
             )}
 
-            {/* Recent kills */}
+            {/* Recent Kills - Collapsed by default */}
             {recentKills.length > 0 && (
-              <div>
-                <div className="flex items-center gap-2 mb-3">
-                  <Skull className="h-4 w-4 text-gray-500" />
-                  <h4 className="font-semibold text-gray-600">Recent Kills</h4>
-                </div>
-                <div className="space-y-3">
-                  {recentKills.map((trigger) => (
-                    <KillTriggerCard key={trigger.id} trigger={trigger} />
-                  ))}
-                </div>
-              </div>
+              <CollapsibleSection
+                title="Recent Kills"
+                count={recentKills.length}
+                icon={<Skull className="h-4 w-4" />}
+                iconColor="text-gray-500"
+                defaultOpen={false}
+              >
+                <KillTriggerTable
+                  triggers={recentKills}
+                  executingTriggerIds={executingTriggerIds}
+                />
+              </CollapsibleSection>
             )}
           </div>
         )}
