@@ -452,15 +452,18 @@ async def get_job_phases(job_id: UUID):
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
 
-    # Get all phases for this job
+    # Get all phases for this job with campaign details
     phases = await fetch_all("""
-        SELECT id, phase_type, phase_number, campaign_document_id,
-               status, error_message, started_at, completed_at, created_at
-        FROM strategy_generation_phases
-        WHERE parent_job_id = $1
+        SELECT p.id, p.phase_type, p.phase_number, p.campaign_document_id,
+               p.status, p.error_message, p.started_at, p.completed_at, p.created_at,
+               cd.document_name as campaign_name,
+               cd.angle as campaign_angle
+        FROM strategy_generation_phases p
+        LEFT JOIN campaign_documents cd ON cd.id = p.campaign_document_id
+        WHERE p.parent_job_id = $1
         ORDER BY
-            CASE phase_type WHEN 'scaffold' THEN 0 ELSE 1 END,
-            phase_number NULLS FIRST
+            CASE p.phase_type WHEN 'scaffold' THEN 0 ELSE 1 END,
+            p.phase_number NULLS FIRST
     """, job_id)
 
     # Calculate progress
@@ -488,6 +491,8 @@ async def get_job_phases(job_id: UUID):
             "type": p["phase_type"],
             "number": p["phase_number"],
             "campaign_document_id": str(p["campaign_document_id"]) if p.get("campaign_document_id") else None,
+            "campaign_name": p.get("campaign_name"),
+            "campaign_angle": p.get("campaign_angle"),
             "status": p["status"],
             "error_message": p.get("error_message"),
             "started_at": p["started_at"].isoformat() if p.get("started_at") else None,

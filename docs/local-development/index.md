@@ -11,6 +11,8 @@ This hub documents the complete local development environment for Charm Email OS
 
 ## Quick Start
 
+See [[quick-start]] for complete setup instructions in under 15 minutes.
+
 ```bash
 # Navigate to project root
 cd D:\Work\charm-email-os
@@ -19,14 +21,17 @@ cd D:\Work\charm-email-os
 docker compose -f docker-compose.local.yml up -d
 
 # Verify services are running
-docker ps
+docker compose -f docker-compose.local.yml ps
 ```
 
 **Access Points:**
 - Frontend: http://localhost:3000
 - API: http://localhost:8000
 - API Docs: http://localhost:8000/docs
+- Onboarding Form: http://localhost:3004
 - Database: localhost:5433 (postgres/localdevpassword)
+
+**Test Client URL**: http://localhost:3000/clients/4bd07dc0-059a-448b-b6f4-3275d0c104a9
 
 ## Development Workflow
 
@@ -72,11 +77,19 @@ See [[development-workflow]] for detailed workflow instructions.
 
 | Document | Purpose |
 |----------|---------|
+| [[quick-start]] | **Start here** - Complete setup in 15 minutes |
 | [[architecture]] | System architecture and component relationships |
 | [[development-workflow]] | Step-by-step local → production workflow |
 | [[file-locations]] | Where all code, configs, and docker files live |
 | [[database-reference]] | Schema, tables, seed data, and migrations |
 | [[workers]] | AI workers (strategy, domain, spintax, purchase) |
+
+### Worker Documentation
+
+| Document | Purpose |
+|----------|---------|
+| [[strategy-worker-setup]] | Strategy worker setup and authentication |
+| [[emailbison-sync-worker]] | EmailBison data synchronization |
 
 ### Guides
 
@@ -119,6 +132,12 @@ D:\Work\charm-email-os\
 ├── strategy_mcp/           # Strategy MCP server
 ├── docs/                   # This documentation
 └── docker-compose*.yml     # Various compose configs
+
+D:\Work\hirecharm-onboarding\  # Client onboarding form (sibling project)
+├── index.html             # 7-section onboarding form
+├── api/main.py            # FastAPI submission handler
+├── Dockerfile             # nginx + FastAPI container
+└── nginx.conf             # Proxy configuration
 ```
 
 See [[file-locations]] for complete file reference.

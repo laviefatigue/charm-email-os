@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "strategy-generator": {
+      "command": "python3",
+      "args": ["/app/strategy_mcp/server.py"],
+      "env": {
+        "STRATEGY_LOCAL_MODE": "true",
+        "STRATEGY_OUTPUT_DIR": "/app/test-output"
+      }
+    }
+  }
+}

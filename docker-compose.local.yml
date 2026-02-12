@@ -251,6 +251,45 @@ services:
   #     retries: 3
   #     start_period: 10s
 
+  # ----- EMAILBISON SYNC: Daily Sync Worker -----
+  emailbison-sync:
+    build:
+      context: .
+      dockerfile: Dockerfile.emailbison-sync
+    container_name: charm-emailbison-sync
+    restart: unless-stopped
+    environment:
+      # Local PostgreSQL
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=localdevpassword
+      - POSTGRES_DB=postgres
+      # EmailBison API
+      - EMAILBISON_API_KEY=${EMAILBISON_API_KEY:-}
+      - EMAILBISON_API_URL=https://spellcast.hirecharm.com/api
+      # Sync intervals (seconds)
+      - SYNC_INTERVAL_EVENTS=300
+      - SYNC_INTERVAL_FULL=3600
+      - SYNC_INTERVAL_HEALTH=900
+      - SYNC_INTERVAL_KILL=1800
+      # Alerting
+      - SLACK_WEBHOOK_URL=${SLACK_WEBHOOK_URL:-}
+      # Retention (days)
+      - RETENTION_DAYS_AUDIT=90
+      - RETENTION_DAYS_BOUNCES=90
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - charm-network
+    healthcheck:
+      test: ["CMD", "pgrep", "-f", "python.*emailbison_sync_worker.py"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
   # ----- PURCHASE WORKER: Inbox Provisioning (HyperTide) -----
   # purchase-worker:
   #   build:
@@ -303,4 +342,10 @@ volumes:
 #
 # To connect with psql:
 #   psql -h localhost -p 5433 -U postgres -d postgres
+#
+# EmailBison Sync Worker:
+#   - Syncs accounts, campaigns, events from EmailBison
+#   - Runs health checks and kill trigger detection
+#   - Check logs: docker logs -f charm-emailbison-sync
+#   - Run single pass: docker exec charm-emailbison-sync python emailbison_sync_worker.py --once
 #

@@ -46,6 +46,23 @@ claude-credentials-local/
 backups/
 test-screenshots/
 tests/output/
+test-output/
 
 # CSV exports
 *.csv
+
+# Database dumps (temporary, not needed in repo)
+*.dump
+production_backup.sql
+full_data_dump.sql
+data_only.sql
+data_with_columns.sql
+missing_tables.sql
+critical_tables.sql
+local_sender_schema.sql
+prod_sender_schema.sql
+local_tables.txt
+prod_tables.txt
+
+# Example HTML files
+stablekernel-*.html
