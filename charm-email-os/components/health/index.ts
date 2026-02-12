@@ -14,3 +14,8 @@ export { RotationOverview } from './RotationOverview';
 export { DomainPhaseDistribution } from './DomainPhaseDistribution';
 export { RotationNeedsAttention } from './RotationNeedsAttention';
 export { EmailBisonCapacity } from './EmailBisonCapacity';
+
+// Inventory Management Components
+export { InventoryBarChart } from './InventoryBarChart';
+export { InventoryTable } from './InventoryTable';
+export { AutoKillToggle } from './AutoKillToggle';

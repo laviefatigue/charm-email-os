@@ -16,11 +16,21 @@ import {
   ListContaminationTracker,
   ESPHealthSummary,
   RotationNeedsAttention,
-  EmailBisonCapacity,
 } from '@/components/health';
+import { InventoryBarChart } from '@/components/health/InventoryBarChart';
+import { InventoryTable } from '@/components/health/InventoryTable';
+import { AutoKillToggle } from '@/components/health/AutoKillToggle';
 import { useClientStore, useHealthStore } from '@/lib/stores';
+import { inventoryApi } from '@/lib/api';
 import { cn } from '@/lib/utils';
 import type { KillTrigger } from '@/lib/types/health';
+import type {
+  InventoryOverview,
+  InventoryInbox,
+  AutoKillConfig,
+  InventoryPoolStatus,
+  InventoryLifecycleStatus,
+} from '@/lib/types/inventory';
 
 export default function HealthPage() {
   const params = useParams();
@@ -31,6 +41,20 @@ export default function HealthPage() {
   const [confirmDialogOpen, setConfirmDialogOpen] = useState(false);
   const [selectedTrigger, setSelectedTrigger] = useState<KillTrigger | null>(null);
   const [executingTriggerIds, setExecutingTriggerIds] = useState<string[]>([]);
+
+  // Inventory state
+  const [inventoryOverview, setInventoryOverview] = useState<InventoryOverview | null>(null);
+  const [inventoryInboxes, setInventoryInboxes] = useState<InventoryInbox[]>([]);
+  const [autoKillConfig, setAutoKillConfig] = useState<AutoKillConfig>({
+    enabled: false,
+    cooldownHours: 48,
+    autoReplace: true,
+    notifyOnKill: false,
+  });
+  const [isInventoryLoading, setIsInventoryLoading] = useState(false);
+  const [isAutoKillUpdating, setIsAutoKillUpdating] = useState(false);
+  const [poolStatusFilter, setPoolStatusFilter] = useState<InventoryPoolStatus | null>(null);
+  const [lifecycleStatusFilter, setLifecycleStatusFilter] = useState<InventoryLifecycleStatus | null>(null);
 
   const { getClient, selectClient, fetchClients, clients } = useClientStore();
   const isLoadingClients = useClientStore((state) => state.isLoading);
@@ -53,15 +77,35 @@ export default function HealthPage() {
 
   const client = getClient(clientId);
 
+  // Fetch inventory data
+  const fetchInventoryData = useCallback(async () => {
+    setIsInventoryLoading(true);
+    try {
+      const [overview, inboxes, config] = await Promise.all([
+        inventoryApi.getOverview(clientId),
+        inventoryApi.getInboxes(clientId),
+        inventoryApi.getAutoKillConfig(clientId),
+      ]);
+      setInventoryOverview(overview);
+      setInventoryInboxes(inboxes.items);
+      setAutoKillConfig(config);
+    } catch (error) {
+      console.error('Failed to fetch inventory data:', error);
+    } finally {
+      setIsInventoryLoading(false);
+    }
+  }, [clientId]);
+
   // Fetch all health data on mount via composite endpoint
   useEffect(() => {
     selectClient(clientId);
     refreshHealth(clientId);
+    fetchInventoryData();
     // Also fetch clients if not loaded
     if (clients.length === 0) {
       fetchClients();
     }
-  }, [clientId, selectClient, refreshHealth, fetchClients, clients.length]);
+  }, [clientId, selectClient, refreshHealth, fetchInventoryData, fetchClients, clients.length]);
 
   const pendingTriggers = killTriggers.filter((t) => t.actionTaken === 'pending');
   const instantPending = killTriggers.filter(
@@ -80,7 +124,56 @@ export default function HealthPage() {
 
   const handleRefresh = () => {
     refreshHealth(clientId);
+    fetchInventoryData();
     toast.success('Health data refreshed');
+  };
+
+  // Inventory handlers
+  const handleAutoKillConfigChange = async (config: AutoKillConfig) => {
+    setIsAutoKillUpdating(true);
+    try {
+      await inventoryApi.setAutoKillConfig(clientId, config);
+      setAutoKillConfig(config);
+      toast.success(config.enabled ? 'Auto-kill enabled' : 'Auto-kill disabled');
+    } catch (error) {
+      toast.error('Failed to update auto-kill settings');
+    } finally {
+      setIsAutoKillUpdating(false);
+    }
+  };
+
+  const handleKillAndReplace = async (inboxId: string, reason: string, autoReplace: boolean) => {
+    try {
+      const result = await inventoryApi.killAndReplace(inboxId, reason, autoReplace);
+      if (result.success) {
+        toast.success(
+          result.replacementInboxEmail
+            ? `Killed ${result.killedInboxEmail}, replaced with ${result.replacementInboxEmail}`
+            : `Killed ${result.killedInboxEmail}`
+        );
+        fetchInventoryData();
+        refreshHealth(clientId);
+      } else {
+        toast.error(result.message);
+      }
+    } catch (error) {
+      toast.error('Failed to kill inbox');
+    }
+  };
+
+  const handlePoolStatusClick = (status: InventoryPoolStatus) => {
+    setPoolStatusFilter(poolStatusFilter === status ? null : status);
+    setLifecycleStatusFilter(null);
+  };
+
+  const handleLifecycleStatusClick = (status: InventoryLifecycleStatus) => {
+    setLifecycleStatusFilter(lifecycleStatusFilter === status ? null : status);
+    setPoolStatusFilter(null);
+  };
+
+  const handleClearFilter = () => {
+    setPoolStatusFilter(null);
+    setLifecycleStatusFilter(null);
   };
 
   // Kill trigger handlers
@@ -202,6 +295,12 @@ export default function HealthPage() {
                 {overallSummary.statusMessage}
               </span>
             )}
+            {/* Auto-Kill Toggle */}
+            <AutoKillToggle
+              config={autoKillConfig}
+              onConfigChange={handleAutoKillConfigChange}
+              isUpdating={isAutoKillUpdating}
+            />
           </div>
           <div className="flex items-center gap-3">
             {lastRefresh && (
@@ -259,7 +358,34 @@ export default function HealthPage() {
 
         {/* Main Dashboard Grid - Reorganized Layout */}
         <div className="grid grid-cols-12 gap-6">
-          {/* Kill Trigger Activity - Full Width (Priority 1: Action items) */}
+          {/* Inventory Bar Chart - Full Width (Priority 1: Inventory health) */}
+          {inventoryOverview && (
+            <div className="col-span-12">
+              <InventoryBarChart
+                data={{
+                  deployed: inventoryOverview.deployedCount,
+                  warning: inventoryOverview.warningCount,
+                  reserve: inventoryOverview.reserveCount,
+                  total: inventoryOverview.totalInboxes,
+                  deployedTarget: inventoryOverview.deployedTarget,
+                  reserveTarget: inventoryOverview.reserveTarget,
+                  spareCapacity: inventoryOverview.spareCapacity,
+                  sparePercentage: inventoryOverview.sparePercentage,
+                  capacityStatus: inventoryOverview.capacityStatus,
+                }}
+                lifecycleCounts={{
+                  active: inventoryOverview.activeCount,
+                  incubating: inventoryOverview.incubatingCount,
+                  dead: inventoryOverview.deadCount,
+                }}
+                autoKillEnabled={inventoryOverview.autoKillEnabled}
+                onPoolStatusClick={handlePoolStatusClick}
+                onLifecycleStatusClick={handleLifecycleStatusClick}
+              />
+            </div>
+          )}
+
+          {/* Kill Trigger Activity - Full Width (Priority 2: Action items) */}
           <div className="col-span-12">
             <KillTriggerMonitor
               triggers={killTriggers}
@@ -271,12 +397,7 @@ export default function HealthPage() {
             />
           </div>
 
-          {/* EmailBison Capacity - Left Column (Priority 2: Sending health) */}
-          <div className="col-span-12 lg:col-span-6">
-            <EmailBisonCapacity clientId={clientId} />
-          </div>
-
-          {/* Rotation Needs Attention - Right Column */}
+          {/* Rotation Needs Attention - Half Width */}
           <div className="col-span-12 lg:col-span-6">
             <RotationNeedsAttention
               domains={domainMetrics}
@@ -284,9 +405,26 @@ export default function HealthPage() {
             />
           </div>
 
-          {/* Domain Health Grid - Full Width */}
-          <div className="col-span-12">
+          {/* Domain Health Grid - Half Width */}
+          <div className="col-span-12 lg:col-span-6">
             <DomainHealthGrid domains={domainMetrics} />
+          </div>
+
+          {/* Inventory Table - Full Width */}
+          <div className="col-span-12">
+            <Card>
+              <CardContent className="p-6">
+                <h3 className="text-lg font-semibold mb-4">Inbox Inventory</h3>
+                <InventoryTable
+                  inboxes={inventoryInboxes}
+                  isLoading={isInventoryLoading}
+                  poolStatusFilter={poolStatusFilter}
+                  lifecycleStatusFilter={lifecycleStatusFilter}
+                  onKillAndReplace={handleKillAndReplace}
+                  onClearFilter={handleClearFilter}
+                />
+              </CardContent>
+            </Card>
           </div>
 
           {/* ESP Health Summary - Half Width */}

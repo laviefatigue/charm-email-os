@@ -2586,6 +2586,128 @@ export const healthApi = {
   },
 };
 
+// ===== INVENTORY API =====
+
+import type {
+  InventoryOverview,
+  InventoryInbox,
+  InventoryInboxListResponse,
+  AutoKillConfig,
+  KillAndReplaceResponse,
+  InventoryAuditEvent,
+} from './types/inventory';
+
+export const inventoryApi = {
+  /**
+   * Get inventory overview with pool/lifecycle distribution
+   */
+  async getOverview(clientId: string): Promise<InventoryOverview> {
+    const response = await fetchApi<Record<string, unknown>>(`/api/inventory/overview/${clientId}`);
+    return toCamelCase<InventoryOverview>(response);
+  },
+
+  /**
+   * Get inboxes with inventory status
+   */
+  async getInboxes(
+    clientId: string,
+    params?: {
+      poolStatus?: string;
+      lifecycleStatus?: string;
+      limit?: number;
+      offset?: number;
+    }
+  ): Promise<InventoryInboxListResponse> {
+    const searchParams = new URLSearchParams();
+    if (params?.poolStatus) searchParams.set('pool_status', params.poolStatus);
+    if (params?.lifecycleStatus) searchParams.set('lifecycle_status', params.lifecycleStatus);
+    if (params?.limit) searchParams.set('limit', params.limit.toString());
+    if (params?.offset) searchParams.set('offset', params.offset.toString());
+
+    const query = searchParams.toString();
+    const response = await fetchApi<Record<string, unknown>>(
+      `/api/inventory/inboxes/${clientId}${query ? `?${query}` : ''}`
+    );
+    return toCamelCase<InventoryInboxListResponse>(response);
+  },
+
+  /**
+   * Get auto-kill configuration
+   */
+  async getAutoKillConfig(clientId: string): Promise<AutoKillConfig> {
+    const response = await fetchApi<Record<string, unknown>>(`/api/inventory/auto-kill/config/${clientId}`);
+    return toCamelCase<AutoKillConfig>(response);
+  },
+
+  /**
+   * Set auto-kill configuration
+   */
+  async setAutoKillConfig(clientId: string, config: AutoKillConfig): Promise<{ success: boolean; message: string }> {
+    const response = await fetchApi<Record<string, unknown>>(`/api/inventory/auto-kill/config/${clientId}`, {
+      method: 'POST',
+      body: JSON.stringify({
+        enabled: config.enabled,
+        cooldown_hours: config.cooldownHours,
+        auto_replace: config.autoReplace,
+        notify_on_kill: config.notifyOnKill,
+      }),
+    });
+    return toCamelCase<{ success: boolean; message: string }>(response);
+  },
+
+  /**
+   * Kill an inbox and optionally replace in campaigns
+   */
+  async killAndReplace(
+    inboxId: string,
+    killReason: string,
+    autoReplace = true
+  ): Promise<KillAndReplaceResponse> {
+    const response = await fetchApi<Record<string, unknown>>('/api/inventory/kill-and-replace', {
+      method: 'POST',
+      body: JSON.stringify({
+        inbox_id: inboxId,
+        kill_reason: killReason,
+        auto_replace: autoReplace,
+      }),
+    });
+    return toCamelCase<KillAndReplaceResponse>(response);
+  },
+
+  /**
+   * Process all pending auto-kills
+   */
+  async processAutoKills(clientId: string): Promise<{ processed: number; message: string }> {
+    const response = await fetchApi<Record<string, unknown>>(`/api/inventory/process-auto-kills/${clientId}`, {
+      method: 'POST',
+    });
+    return toCamelCase<{ processed: number; message: string }>(response);
+  },
+
+  /**
+   * Get inventory audit log
+   */
+  async getAuditLog(
+    clientId: string,
+    params?: {
+      eventType?: string;
+      limit?: number;
+      offset?: number;
+    }
+  ): Promise<{ items: InventoryAuditEvent[]; total: number }> {
+    const searchParams = new URLSearchParams();
+    if (params?.eventType) searchParams.set('event_type', params.eventType);
+    if (params?.limit) searchParams.set('limit', params.limit.toString());
+    if (params?.offset) searchParams.set('offset', params.offset.toString());
+
+    const query = searchParams.toString();
+    const response = await fetchApi<Record<string, unknown>>(
+      `/api/inventory/audit-log/${clientId}${query ? `?${query}` : ''}`
+    );
+    return toCamelCase<{ items: InventoryAuditEvent[]; total: number }>(response);
+  },
+};
+
 // ===== SUBSCRIPTION API =====
 
 export const subscriptionApi = {
@@ -3225,6 +3347,7 @@ export const api = {
   campaigns: campaignApi,
   leads: leadApi,
   health: healthApi,
+  inventory: inventoryApi,
   onboarding: onboardingApi,
   strategy: strategyApi,
   subscriptions: subscriptionApi,
