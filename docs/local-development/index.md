@@ -9,6 +9,8 @@ tags: [hub, local, development, docker]
 
 This hub documents the complete local development environment for Charm Email OS. Use this as your starting point when working on any feature or fix.
 
+> **Localhost-First**: This system runs entirely on localhost via Docker. Coolify/VPS deployments are deprecated and should not be used unless explicitly requested.
+
 ## Quick Start
 
 See [[quick-start]] for complete setup instructions in under 15 minutes.
@@ -35,7 +37,7 @@ docker compose -f docker-compose.local.yml ps
 
 ## Development Workflow
 
-**CRITICAL**: All changes start locally, then deploy to production.
+All development and testing happens locally via Docker.
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
@@ -45,8 +47,8 @@ docker compose -f docker-compose.local.yml ps
 │  1. LOCAL DEVELOPMENT                                            │
 │     ┌─────────────────────────────────────────────────────────┐ │
 │     │  docker-compose.local.yml                               │ │
-│     │  - Test changes against local PostgreSQL                │ │
-│     │  - Use seed data or connect to production DB for data   │ │
+│     │  - All services run locally via Docker                  │ │
+│     │  - Local PostgreSQL with seed data                      │ │
 │     │  - Hot reload for frontend/API development              │ │
 │     └─────────────────────────────────────────────────────────┘ │
 │                              │                                   │
@@ -56,14 +58,6 @@ docker compose -f docker-compose.local.yml ps
 │     │  git add && git commit && git push                      │ │
 │     │  - Run tests locally before pushing                     │ │
 │     │  - Verify database migrations work                      │ │
-│     └─────────────────────────────────────────────────────────┘ │
-│                              │                                   │
-│                              ▼                                   │
-│  3. PRODUCTION DEPLOYMENT (Coolify)                              │
-│     ┌─────────────────────────────────────────────────────────┐ │
-│     │  Auto-deploy: charm-api, charm-frontend                 │ │
-│     │  Manual deploy: All workers (via Coolify MCP)           │ │
-│     │  Dashboard: https://panel.laviefatigue.com              │ │
 │     └─────────────────────────────────────────────────────────┘ │
 │                                                                  │
 └─────────────────────────────────────────────────────────────────┘
@@ -154,16 +148,17 @@ The local environment uses the Charm client for testing. This ID matches product
 
 **Direct URL**: http://localhost:3000/clients/4bd07dc0-059a-448b-b6f4-3275d0c104a9
 
-## Production Reference
+## Production Reference (Deprecated)
 
-| Service | URL | Deployment |
-|---------|-----|------------|
-| Frontend | https://app.laviefatigue.com | Auto-deploy on push |
-| API | https://api.laviefatigue.com | Auto-deploy on push |
-| Coolify Dashboard | https://panel.laviefatigue.com | Manual access |
-| Database | OwnRBL (31.97.142.123) | Managed |
+> **⚠️ DEPRECATED**: Coolify/VPS deployments are no longer active. The system runs entirely on localhost. Only reference this section if explicitly asked to deploy to production.
 
-See [[../infrastructure/coolify]] for production deployment details.
+| Service | URL | Status |
+|---------|-----|--------|
+| Frontend | https://app.laviefatigue.com | Deprecated |
+| API | https://api.laviefatigue.com | Deprecated |
+| Coolify Dashboard | https://panel.laviefatigue.com | Deprecated |
+
+See [[../infrastructure/coolify]] for legacy reference only.
 
 ## Related
 

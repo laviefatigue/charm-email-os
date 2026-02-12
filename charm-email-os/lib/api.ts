@@ -3037,6 +3037,74 @@ export const campaignDocumentApi = {
       }
     );
   },
+
+  /**
+   * Add spintax to an approved campaign document
+   */
+  async addSpintax(documentId: string): Promise<{
+    documentId: string;
+    status: string;
+    emailCount: number;
+    message: string;
+  }> {
+    const response = await fetchApi<Record<string, unknown>>(
+      `/api/strategy/campaigns/${documentId}/spintax`,
+      { method: 'POST' }
+    );
+    return toCamelCase<{
+      documentId: string;
+      status: string;
+      emailCount: number;
+      message: string;
+    }>(response);
+  },
+
+  /**
+   * Push a campaign document to EmailBison
+   */
+  async pushToEmailBison(documentId: string): Promise<{
+    documentId: string;
+    clientId: string;
+    emailbisonCampaignId: number;
+    campaignName: string;
+    emailsPushed: number;
+    stepsCompleted: string[];
+    status: string;
+    message: string;
+    nextSteps: string[];
+  }> {
+    const response = await fetchApi<Record<string, unknown>>(
+      `/api/strategy/campaigns/${documentId}/push-to-emailbison`,
+      { method: 'POST' }
+    );
+    return toCamelCase<{
+      documentId: string;
+      clientId: string;
+      emailbisonCampaignId: number;
+      campaignName: string;
+      emailsPushed: number;
+      stepsCompleted: string[];
+      status: string;
+      message: string;
+      nextSteps: string[];
+    }>(response);
+  },
+
+  /**
+   * Update campaign document status
+   */
+  async updateStatus(
+    documentId: string,
+    status: string,
+    comment?: string
+  ): Promise<{ documentId: string; status: string; message: string }> {
+    const params = new URLSearchParams({ status });
+    if (comment) params.append('human_comment', comment);
+    return fetchApi<{ documentId: string; status: string; message: string }>(
+      `/api/strategy/campaigns/${documentId}/status?${params.toString()}`,
+      { method: 'PUT' }
+    );
+  },
 };
 
 // ===== UNIFIED CYCLE API =====

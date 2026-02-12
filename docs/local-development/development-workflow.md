@@ -1,23 +1,25 @@
 ---
-title: Development Workflow - Local to Production
+title: Development Workflow
 created: 2026-02-10
-updated: 2026-02-10
-tags: [workflow, development, deployment, git]
+updated: 2026-02-11
+tags: [workflow, development, localhost]
 ---
 
-# Development Workflow: Local to Production
+# Development Workflow
 
-This document describes the complete workflow for making changes to Charm Email OS, from local development through production deployment.
+This document describes the complete workflow for making changes to Charm Email OS.
 
-## Principle: Local First
+> **Localhost-First**: All development and testing happens locally via Docker. Coolify/VPS deployments are deprecated.
 
-**All changes start locally, then deploy to production.**
+## Principle: Everything Local
+
+**All development, testing, and running happens on localhost.**
 
 This ensures:
-1. Changes are tested before affecting real users
-2. Database migrations are validated locally first
+1. Full control over the environment
+2. Database migrations are validated locally
 3. Integration points are verified
-4. Rollback is simple (don't push)
+4. No dependency on external infrastructure
 
 ## Step 1: Set Up Local Environment
 
@@ -88,23 +90,6 @@ npm run dev
 
 **Pros**: Fast iteration with hot reload
 **Cons**: Slight env differences from production
-
-### Option C: Frontend Only (UI Development)
-
-Frontend runs locally, API points to production.
-
-```bash
-cd charm-email-os
-
-# Edit .env.local
-echo "NEXT_PUBLIC_API_URL=https://api.laviefatigue.com" > .env.local
-
-# Run frontend
-npm run dev
-```
-
-**Pros**: Real data, fast iteration
-**Cons**: Can't test API changes
 
 ## Step 3: Make Changes
 
@@ -238,79 +223,17 @@ Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>"
 git push origin main
 ```
 
-## Step 6: Production Deployment
+## Step 6: Restart Services
 
-### Automatic Deployments
-
-These services auto-deploy on push to `main`:
-
-| Service | Coolify UUID | Trigger |
-|---------|--------------|---------|
-| charm-api | `ccssgc4gowsog04wck400o0w` | Push to main |
-| charm-frontend | `jskswosswg80cg8wwk8g8kww` | Push to main |
-
-### Manual Worker Deployments
-
-Workers do NOT auto-deploy. When worker code changes:
+After making changes, rebuild and restart:
 
 ```bash
-# Via Coolify MCP (from Claude Code)
-# Use the coolify MCP tool to trigger deployment
+# Rebuild containers with latest code
+docker compose -f docker-compose.local.yml up -d --build
+
+# View logs to verify
+docker compose -f docker-compose.local.yml logs -f
 ```
-
-**Worker UUIDs:**
-
-| Worker | UUID |
-|--------|------|
-| strategy-worker | `qwgc8ws0wwk0wgg4s48ssg0w` |
-| domain-worker | `ew8cw0o00ksws8gg4gggws4k` |
-| spintax-worker | `roccs4g0gwkcs8ws8k8kgog4` |
-| purchase-worker | `xo4o4wcco0scgs8gskggw00k` |
-| price-checker | `ewskcsk0s0gw0kgc08kkoccg` |
-
-### Database Migrations (Production)
-
-**CAUTION**: Production migrations affect real data.
-
-```bash
-# Connect to production database
-psql -h 31.97.142.123 -p 5432 -U <user> -d <database>
-
-# Run migration
-\i migrations/018_your_change.sql
-
-# Verify
-\dt
-```
-
-## Step 7: Verify Production
-
-1. Check Coolify dashboard for deployment status
-2. Verify frontend at https://app.laviefatigue.com
-3. Verify API at https://api.laviefatigue.com/health
-4. Test the specific feature you changed
-
-## Rollback Procedures
-
-### Frontend/API Rollback
-
-```bash
-# Revert the commit locally
-git revert HEAD
-
-# Push the revert
-git push origin main
-
-# Coolify will auto-deploy the reverted version
-```
-
-### Database Rollback
-
-Write a reverse migration or restore from backup. Document rollback SQL in your migration file.
-
-### Worker Rollback
-
-Workers are pinned to specific commits. No auto-deploy means you can redeploy the previous working version from Coolify.
 
 ## Quick Reference
 
@@ -327,5 +250,5 @@ Workers are pinned to specific commits. No auto-deploy means you can redeploy th
 
 - [[index]] - Local development hub
 - [[file-locations]] - Where everything lives
-- [[../infrastructure/coolify]] - Production deployment details
+- [[docker-compose-reference]] - Docker compose configuration
 - [[troubleshooting]] - Common issues and solutions

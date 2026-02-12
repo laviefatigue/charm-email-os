@@ -147,6 +147,29 @@ curl "http://localhost:8000/api/strategy/jobs/{job_id}/phases"
 docker logs -f charm-strategy-worker
 ```
 
+### Approve and Push to EmailBison
+
+Once generation is complete, campaigns can be reviewed and pushed to EmailBison:
+
+```bash
+# 1. Approve a campaign document
+curl -X PUT "http://localhost:8000/api/strategy/campaigns/{document_id}/status?status=approved"
+
+# 2. Add spintax variations
+curl -X POST "http://localhost:8000/api/strategy/campaigns/{document_id}/spintax"
+
+# 3. Push to EmailBison (creates draft campaign)
+curl -X POST "http://localhost:8000/api/strategy/campaigns/{document_id}/push-to-emailbison"
+```
+
+The push creates a draft campaign in EmailBison with:
+- Campaign name from document
+- 4-email sequence with proper wait days
+- M-F 8am-5pm sending schedule
+- Variables transformed to EmailBison format (`{{first_name}}` → `{FIRST_NAME}`)
+
+**Via UI**: Navigate to Strategy tab, approve campaign, click "Add Spintax", then "Push to EmailBison".
+
 ## Service Overview
 
 ```

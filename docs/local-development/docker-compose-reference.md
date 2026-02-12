@@ -33,6 +33,7 @@ services:
   postgres:         # Local PostgreSQL database
   charm-api:        # FastAPI backend
   charm-frontend:   # Next.js frontend
+  onboarding:       # Client onboarding form
   # strategy-worker:  # (optional, uncomment to enable)
   # domain-worker:    # (optional, uncomment to enable)
   # spintax-worker:   # (optional, uncomment to enable)
@@ -134,6 +135,46 @@ charm-frontend:
 **Notes**:
 - API URL passed at build time via args
 - Waits for API to be healthy before starting
+
+#### onboarding
+
+```yaml
+onboarding:
+  build:
+    context: ../hirecharm-onboarding
+    dockerfile: Dockerfile
+  container_name: charm-onboarding
+  ports:
+    - "3004:80"
+  environment:
+    - POSTGRES_HOST=postgres
+    - POSTGRES_PORT=5432
+    - POSTGRES_DB=postgres
+    - POSTGRES_USER=postgres
+    - POSTGRES_PASSWORD=localdevpassword
+  depends_on:
+    postgres:
+      condition: service_healthy
+```
+
+**Notes**:
+- Builds from separate `hirecharm-onboarding` project (sibling directory)
+- Serves client onboarding form at http://localhost:3004
+- nginx (port 80) + FastAPI backend internally
+- Shares database with main Charm Email OS stack
+- Form data flows to `client_onboarding_submissions` table
+- Data consumed by strategy generation via `vw_campaign_generation_context` view
+
+**Project Location**: `D:\Work\hirecharm-onboarding`
+
+**Form Sections**:
+1. Foundation (company info, contact)
+2. Offering (product, pricing, sales cycle)
+3. Market Signals (triggers, events)
+4. Audience (segments, personas, job titles)
+5. Process (tools, CRM, volume)
+6. Messaging (voice, tone, case studies)
+7. Goals (GTM objectives, metrics)
 
 ## docker-compose.strategy-worker.yml
 

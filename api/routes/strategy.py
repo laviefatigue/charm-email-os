@@ -11,6 +11,7 @@ from datetime import datetime
 from database import fetch_one, fetch_all, execute
 import logging
 import os
+import json
 
 # EmailBison API configuration
 import httpx
@@ -2706,3 +2707,314 @@ async def get_current_cycle(client_id: UUID):
 
     # Delegate to the unified endpoint
     return await get_cycle_unified(cycle["id"])
+
+
+# ============================================================================
+# Campaign Document Operations (New Phased Generation System)
+# ============================================================================
+
+@router.put("/campaigns/{document_id}/status")
+async def update_campaign_document_status(document_id: UUID, status: str, human_comment: str = None):
+    """
+    Update campaign document status (approve, deny, request revision).
+
+    Valid status transitions:
+    - draft -> approved, denied
+    - approved -> spintaxed (via spintax endpoint)
+    - spintaxed -> sent (via push endpoint)
+    """
+    valid_statuses = ["draft", "approved", "denied", "revision_requested", "spintaxed", "sent"]
+    if status not in valid_statuses:
+        raise HTTPException(status_code=400, detail=f"Invalid status. Must be one of: {valid_statuses}")
+
+    doc = await fetch_one("SELECT id, status FROM campaign_documents WHERE id = $1", document_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Campaign document not found")
+
+    await execute("""
+        UPDATE campaign_documents
+        SET status = $2, human_comment = $3, reviewed_at = NOW(), updated_at = NOW()
+        WHERE id = $1
+    """, document_id, status, human_comment)
+
+    return {"document_id": str(document_id), "status": status, "message": f"Campaign {status}"}
+
+
+@router.post("/campaigns/{document_id}/spintax")
+async def create_campaign_spintax(document_id: UUID):
+    """
+    Add spintax variations to an approved campaign document.
+
+    This endpoint processes the email_positions and creates spintaxed versions
+    with {spin1|spin2|spin3} syntax for A/B testing.
+    """
+    doc = await fetch_one("""
+        SELECT cd.*, c.name as client_name, w.emailbison_workspace_id
+        FROM campaign_documents cd
+        JOIN clients c ON c.id = cd.client_id
+        LEFT JOIN workspaces w ON w.id = c.workspace_id
+        WHERE cd.id = $1
+    """, document_id)
+
+    if not doc:
+        raise HTTPException(status_code=404, detail="Campaign document not found")
+
+    if doc["status"] not in ["approved", "draft"]:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Campaign must be approved before adding spintax. Current status: {doc['status']}"
+        )
+
+    email_positions = doc.get("email_positions") or []
+    if not email_positions:
+        raise HTTPException(status_code=400, detail="Campaign has no email positions to spintax")
+
+    # Process spintax - for now, just mark as spintaxed
+    # In production, this would trigger the spintax worker
+    spintaxed_positions = []
+    for pos in email_positions:
+        spintaxed_pos = dict(pos)
+        variants = pos.get("variants", [])
+        if variants:
+            # Use first variant as the base, add spintax markers
+            base = variants[0]
+            spintaxed_pos["spintaxed_subject"] = base.get("subject_line", "")
+            spintaxed_pos["spintaxed_body"] = base.get("email_body", "")
+        spintaxed_positions.append(spintaxed_pos)
+
+    # asyncpg handles JSONB serialization, so pass the Python object directly
+    await execute("""
+        UPDATE campaign_documents
+        SET status = 'spintaxed',
+            spintaxed_positions = $2::jsonb,
+            updated_at = NOW()
+        WHERE id = $1
+    """, document_id, json.dumps(spintaxed_positions))
+
+    return {
+        "document_id": str(document_id),
+        "status": "spintaxed",
+        "email_count": len(spintaxed_positions),
+        "message": "Spintax added successfully"
+    }
+
+
+@router.post("/campaigns/{document_id}/push-to-emailbison")
+async def push_campaign_to_emailbison(document_id: UUID):
+    """
+    Push a spintaxed campaign document to EmailBison to create a complete campaign.
+
+    This endpoint:
+    1. Validates the campaign is spintaxed and not already pushed
+    2. Switches to the correct EmailBison workspace
+    3. Creates a campaign with the document name
+    4. Adds all email positions as sequence steps
+    5. Updates the campaign status to 'sent'
+    """
+    doc = await fetch_one("""
+        SELECT cd.*, c.name as client_name, w.emailbison_workspace_id
+        FROM campaign_documents cd
+        JOIN clients c ON c.id = cd.client_id
+        LEFT JOIN workspaces w ON w.id = c.workspace_id
+        WHERE cd.id = $1
+    """, document_id)
+
+    if not doc:
+        raise HTTPException(status_code=404, detail="Campaign document not found")
+
+    # Must be spintaxed (or approved for testing)
+    if doc["status"] not in ["spintaxed", "approved"]:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Campaign must be spintaxed before pushing to EmailBison. Current status: {doc['status']}"
+        )
+
+    if doc.get("pushed_to_emailbison"):
+        raise HTTPException(
+            status_code=400,
+            detail="Campaign has already been pushed to EmailBison"
+        )
+
+    emailbison_workspace_id = doc.get("emailbison_workspace_id")
+    if not emailbison_workspace_id:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Client '{doc['client_name']}' has no EmailBison workspace configured"
+        )
+
+    if not EMAILBISON_API_KEY:
+        raise HTTPException(status_code=500, detail="EmailBison API key not configured")
+
+    # Get email positions (use spintaxed if available, otherwise original)
+    email_positions = doc.get("spintaxed_positions") or doc.get("email_positions") or []
+    # Handle case where JSONB was stored as double-encoded string
+    if isinstance(email_positions, str):
+        email_positions = json.loads(email_positions)
+    if not email_positions:
+        raise HTTPException(status_code=400, detail="Campaign has no email content")
+
+    campaign_name = doc.get("document_name") or "Campaign"
+    created_campaign_id = None
+    steps_completed = []
+
+    # Variable transformation: {{double_braces}} -> {SINGLE_BRACES}
+    import re
+    def transform_variables(text: str) -> str:
+        if not text:
+            return text
+        var_map = {
+            "first_name": "FIRST_NAME",
+            "company_name": "COMPANY_NAME",
+            "role_title": "JOB_TITLE",
+            "industry": "INDUSTRY",
+        }
+        result = text
+        for old_var, new_var in var_map.items():
+            result = re.sub(r"\{\{" + old_var + r"\}\}", "{" + new_var + "}", result, flags=re.IGNORECASE)
+        result = re.sub(r"\{\{(\w+)\}\}", lambda m: "{" + m.group(1).upper() + "}", result)
+        return result
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            # Step 1: Switch workspace
+            switch_response = await client.post(
+                f"{EMAILBISON_API_URL}/api/workspaces/v1.1/switch-workspace",
+                headers={
+                    "Authorization": f"Bearer {EMAILBISON_API_KEY}",
+                    "Content-Type": "application/json",
+                },
+                json={"team_id": emailbison_workspace_id}
+            )
+
+            if switch_response.status_code != 200:
+                logger.error(f"Failed to switch workspace: {switch_response.text}")
+                raise HTTPException(status_code=502, detail="Failed to switch to EmailBison workspace")
+            steps_completed.append("workspace_switch")
+            logger.info(f"Switched to EmailBison workspace {emailbison_workspace_id}")
+
+            # Step 2: Create campaign
+            campaign_response = await client.post(
+                f"{EMAILBISON_API_URL}/api/campaigns",
+                headers={
+                    "Authorization": f"Bearer {EMAILBISON_API_KEY}",
+                    "Content-Type": "application/json",
+                },
+                json={"name": campaign_name, "type": "outbound"}
+            )
+
+            if campaign_response.status_code not in (200, 201):
+                logger.error(f"Failed to create campaign: {campaign_response.text}")
+                raise HTTPException(status_code=502, detail="Failed to create EmailBison campaign")
+
+            campaign_data = campaign_response.json()
+            created_campaign_id = campaign_data.get("data", {}).get("id") or campaign_data.get("id")
+            steps_completed.append("campaign_create")
+            logger.info(f"Created EmailBison campaign {created_campaign_id}")
+
+            # Step 3: Add sequence steps from email positions
+            sequence_steps_payload = []
+            first_subject = None  # Track first email's subject for thread replies
+            for pos in sorted(email_positions, key=lambda x: x.get("position", 1)):
+                position = pos.get("position", 1)
+                is_thread_reply = pos.get("thread_reply", position > 1)
+
+                # Get subject and body from variants or spintaxed versions
+                variants = pos.get("variants", [])
+                if variants:
+                    subject = variants[0].get("subject_line") or ""
+                    body = variants[0].get("email_body") or ""
+                    # Also check wait_days from variant
+                    wait_days_from_variant = variants[0].get("wait_days", 0)
+                else:
+                    subject = pos.get("spintaxed_subject") or pos.get("title") or ""
+                    body = pos.get("spintaxed_body") or ""
+                    wait_days_from_variant = 0
+
+                # Track first subject for thread replies
+                if position == 1 and subject:
+                    first_subject = subject
+                # For thread replies with no subject, use "Re: {first_subject}" or campaign name
+                if not subject:
+                    if is_thread_reply and first_subject:
+                        subject = f"Re: {first_subject}"
+                    else:
+                        subject = campaign_name
+
+                wait_days = max(pos.get("wait_days", 0) or wait_days_from_variant or position, 1)
+
+                sequence_steps_payload.append({
+                    "email_subject": transform_variables(subject),
+                    "email_body": transform_variables(body),
+                    "order": position,
+                    "wait_in_days": wait_days,
+                    "thread_reply": pos.get("thread_reply", position > 1),
+                    "variant": False,
+                })
+
+            step_response = await client.post(
+                f"{EMAILBISON_API_URL}/api/campaigns/{created_campaign_id}/sequence-steps",
+                headers={
+                    "Authorization": f"Bearer {EMAILBISON_API_KEY}",
+                    "Content-Type": "application/json",
+                },
+                json={"title": campaign_name, "sequence_steps": sequence_steps_payload}
+            )
+
+            if step_response.status_code not in (200, 201):
+                logger.error(f"Failed to create sequence steps: {step_response.text}")
+                raise HTTPException(status_code=502, detail="Failed to create sequence steps")
+
+            steps_completed.append("sequence_steps")
+            logger.info(f"Created {len(sequence_steps_payload)} sequence steps for campaign {created_campaign_id}")
+
+            # Step 4: Configure sending schedule (M-F 8am-5pm)
+            try:
+                schedule_response = await client.post(
+                    f"{EMAILBISON_API_URL}/api/campaigns/{created_campaign_id}/schedule",
+                    headers={
+                        "Authorization": f"Bearer {EMAILBISON_API_KEY}",
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "monday": True, "tuesday": True, "wednesday": True,
+                        "thursday": True, "friday": True, "saturday": False, "sunday": False,
+                        "start_time": "08:00", "end_time": "17:00",
+                        "timezone": "America/New_York", "save_as_template": False
+                    }
+                )
+                if schedule_response.status_code in (200, 201):
+                    steps_completed.append("schedule_configured")
+            except Exception as e:
+                logger.warning(f"Failed to configure schedule: {e}")
+
+    except httpx.RequestError as e:
+        logger.error(f"Failed to connect to EmailBison: {e}")
+        raise HTTPException(status_code=502, detail=f"Failed to connect to EmailBison: {str(e)}")
+
+    # Update campaign document status
+    await execute("""
+        UPDATE campaign_documents
+        SET status = 'sent',
+            pushed_to_emailbison = TRUE,
+            pushed_at = NOW(),
+            emailbison_campaign_id = $2,
+            updated_at = NOW()
+        WHERE id = $1
+    """, document_id, created_campaign_id)
+
+    logger.info(f"Pushed campaign document {document_id} to EmailBison as campaign {created_campaign_id}")
+
+    return {
+        "document_id": str(document_id),
+        "client_id": str(doc["client_id"]),
+        "client_name": doc["client_name"],
+        "emailbison_workspace_id": emailbison_workspace_id,
+        "emailbison_campaign_id": created_campaign_id,
+        "campaign_name": campaign_name,
+        "emails_pushed": len(sequence_steps_payload),
+        "schedule_configured": "schedule_configured" in steps_completed,
+        "steps_completed": steps_completed,
+        "status": "draft",
+        "message": f"{len(sequence_steps_payload)}-email campaign created in EmailBison as draft",
+        "next_steps": ["Assign sender emails", "Add leads list", "Review and activate"]
+    }

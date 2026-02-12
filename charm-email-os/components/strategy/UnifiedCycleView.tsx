@@ -557,61 +557,39 @@ export function UnifiedCycleView({ clientId, cycleId, className }: UnifiedCycleV
     }
   }, [updateCampaignStatus]);
 
-  // Spintax handler
+  // Spintax handler - uses new campaign documents API
   const handleTriggerSpintax = useCallback(async (campaignId: string) => {
     setSpintaxingCampaignId(campaignId);
     updateCampaignStatus(campaignId, 'spintax_pending');
 
     try {
-      const response = await strategyApi.createSpintaxJob(campaignId);
-      const jobId = response.jobId;
-
-      // Poll for completion
-      const pollSpintax = async () => {
-        try {
-          const status = await strategyApi.getSpintaxJobStatus(jobId);
-          if (status.status === 'completed') {
-            updateCampaignStatus(campaignId, 'spintaxed');
-            toast.success('Spintax complete! Ready to push to EmailBison.');
-            setSpintaxingCampaignId(null);
-          } else if (status.status === 'failed') {
-            updateCampaignStatus(campaignId, 'approved');
-            toast.error('Spintax failed. Please try again.');
-            setSpintaxingCampaignId(null);
-          } else {
-            // Still processing, continue polling
-            setTimeout(pollSpintax, 3000);
-          }
-        } catch {
-          // Polling error, stop polling
-          updateCampaignStatus(campaignId, 'spintaxed');
-          toast.success('Spintax complete! (mock mode)');
-          setSpintaxingCampaignId(null);
-        }
-      };
-
-      setTimeout(pollSpintax, 2000);
-    } catch (error) {
-      // Mock mode - simulate success
-      setTimeout(() => {
+      // Use new campaign document spintax endpoint
+      const response = await campaignDocumentApi.addSpintax(campaignId);
+      if (response.status === 'spintaxed') {
         updateCampaignStatus(campaignId, 'spintaxed');
-        toast.success('Spintax complete! (mock mode)');
-        setSpintaxingCampaignId(null);
-      }, 2000);
+        toast.success('Spintax complete! Ready to push to EmailBison.');
+      }
+    } catch (error) {
+      console.error('Spintax error:', error);
+      // Revert to approved status on error
+      updateCampaignStatus(campaignId, 'approved');
+      toast.error('Spintax failed. Please try again.');
+    } finally {
+      setSpintaxingCampaignId(null);
     }
   }, [updateCampaignStatus]);
 
-  // Push to EmailBison handler
+  // Push to EmailBison handler - uses new campaign documents API
   const handlePushToEmailBison = useCallback(async (campaignId: string) => {
     setPushingCampaignId(campaignId);
     try {
-      await strategyApi.pushSequenceToEmailBison(campaignId);
+      // Use new campaign document push endpoint
+      const response = await campaignDocumentApi.pushToEmailBison(campaignId);
       updateCampaignStatus(campaignId, 'sent');
-      toast.success('Campaign pushed to EmailBison!');
+      toast.success(`Campaign pushed to EmailBison! ${response.emailsPushed} emails created.`);
     } catch (error) {
-      // Mock mode
-      updateCampaignStatus(campaignId, 'sent');
-      toast.success('Campaign pushed to EmailBison! (mock mode)');
+      console.error('Push to EmailBison error:', error);
+      toast.error('Failed to push to EmailBison. Please try again.');
     } finally {
       setPushingCampaignId(null);
     }
