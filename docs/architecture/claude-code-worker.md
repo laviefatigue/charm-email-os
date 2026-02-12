@@ -1,7 +1,7 @@
 ---
 title: Claude Code Worker Architecture
 created: 2026-01-16
-updated: 2026-01-20
+updated: 2026-02-04
 tags: [architecture, claude-code, worker, mcp]
 ---
 
@@ -351,38 +351,42 @@ OAuth credentials persist in the Docker named volume `charm-claude-credentials`:
 
 ## Purchase Worker (Hypertide Browser Automation)
 
-**Status:** Testing (2026-01-29)
+**Status:** Production (2026-02-04)
 
-The purchase worker follows the same Claude Code + MCP pattern but adds **Playwright browser automation** for navigating the Hypertide web UI (which has no API). See [[purchase-worker]] for full architecture documentation.
+> **Architecture Change (v2.0):** The purchase worker **no longer uses Claude Code or MCP**. It was migrated to a deterministic Playwright script (`hypertide_playwright.py`) that runs directly as a Python subprocess. This eliminates LLM inference overhead, Claude OAuth dependency, and MCP protocol complexity. See [[purchase-worker]] for the current architecture.
+
+### Why It Diverged
+
+The purchase flow is fully deterministic — the same steps execute in the same order every time. Unlike domain/strategy generation (which benefit from LLM creativity), browser automation doesn't need AI reasoning. Direct Playwright is faster (~2 min vs ~5 min), more reliable, and has no OAuth token to manage.
 
 ### Key Differences from Domain/Strategy Workers
 
-| Aspect | Domain/Strategy Workers | Purchase Worker |
-|--------|------------------------|-----------------|
+| Aspect | Domain/Strategy Workers | Purchase Worker (v2) |
+|--------|------------------------|----------------------|
+| Execution engine | Claude Code CLI + MCP | Direct Python subprocess (Playwright) |
+| AI involved | Yes (LLM generates content) | No (deterministic script) |
 | Output method | Database writes (suggestions) | Browser automation (form filling) |
-| MCP tools | DB-only (get_context, save_suggestion) | DB + Browser (navigate, click, fill, screenshot) |
 | External service | None | Hypertide (app2.hypertide.io) |
-| Credentials | None (uses DB context) | ENV vars (Hypertide, Bison, Stripe) |
+| Credentials | None (uses DB context) | ENV vars (Hypertide, Bison) |
 | Audit trail | Job status only | Screenshot at every step |
-| Container extras | Standard | Xvfb + Chromium + Playwright |
+| Container extras | Claude CLI + Node.js | Xvfb + Chromium + Playwright only |
+| OAuth required | Yes (Claude Max subscription) | No |
 | Deployment target | Local Docker Desktop | Coolify (production) |
 
 ### Files
 
 | File | Purpose | Status |
 |------|---------|--------|
-| `purchase_worker.py` | Main worker daemon | Working |
-| `purchase_mcp/server.py` | MCP tools server (browser + DB) | Working |
-| `purchase_mcp_config.json` | MCP server configuration | Working |
-| `.claude/skills/execute-purchase.md` | 14-step purchase skill | Working |
-| `Dockerfile.purchase-worker` | Docker image (Debian + Claude + Playwright + Xvfb) | Working |
-| `docker-compose.purchase-worker.yml` | Coolify production compose | Working |
-| `docker-compose.purchase-test.yml` | Local testing compose | Working |
+| `purchase_worker.py` | Main worker daemon | Production |
+| `hypertide_playwright.py` | Deterministic Playwright automation | Production |
+| `Dockerfile.purchase-worker` | Docker image (Debian + Playwright + Xvfb) | Production |
+| `docker-compose.purchase-worker.yml` | Coolify production compose | Production |
+| `requirements-purchase-worker.txt` | Python deps (psycopg2, playwright, dotenv) | Production |
 
 ### Deployment
 
-- **Local testing:** `docker-compose.purchase-test.yml` with step-by-step control (`--stop-after-step N`)
 - **Production:** Coolify application `xo4o4wcco0scgs8gskggw00k` — see [[../deployment/purchase-worker-coolify]]
+- **Testing:** `--single-job <UUID> --stop-after-step N` for step-by-step control
 
 ## Related
 

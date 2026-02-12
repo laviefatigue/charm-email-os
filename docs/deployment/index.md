@@ -1,7 +1,7 @@
 ---
 title: Deployment Documentation
 created: 2026-01-16
-updated: 2026-01-20
+updated: 2026-02-10
 tags: [deployment, index]
 ---
 
@@ -9,8 +9,19 @@ tags: [deployment, index]
 
 Documentation for deploying Charm Email OS components.
 
+## Development Workflow
+
+**IMPORTANT**: All changes start locally, then deploy to production.
+
+```
+LOCAL DEVELOPMENT → TEST → COMMIT → PRODUCTION (Coolify)
+```
+
+See [[../local-development/development-workflow]] for the complete workflow.
+
 ## Deployment Guides
 
+- [[../local-development/index]] - **Start here** - Local development hub
 - [[local-docker]] - **Local Docker development** (recommended for testing)
 - [[ai-component]] - Charm Strategy AI container architecture and usage
 - [[strategy-worker-vps]] - Strategy worker deployment on VPS
@@ -84,5 +95,7 @@ See [[../infrastructure/index]] for infrastructure details:
 
 ## Related
 
+- [[../local-development/index]] - Local development hub
+- [[../local-development/development-workflow]] - Local → production workflow
 - [[../architecture/index]] - System architecture
 - [[../features/index]] - Feature documentation

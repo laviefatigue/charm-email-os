@@ -1,7 +1,7 @@
 ---
 title: Purchase Worker Coolify Deployment
 created: 2026-01-29
-updated: 2026-01-29
+updated: 2026-02-04
 tags: [deployment, purchase, coolify, docker, production]
 ---
 
@@ -14,34 +14,33 @@ Deploying the purchase worker to production via Coolify self-hosted PaaS.
 - Coolify dashboard access: `https://panel.laviefatigue.com`
 - Purchase worker Coolify application UUID: `xo4o4wcco0scgs8gskggw00k`
 - GitHub repository pushed to `master` branch
-- Claude Code authentication set up in the container
 
 ## Architecture
 
 ```
-┌──────────────────────────────────────────────────────────┐
-│  Coolify (panel.laviefatigue.com)                         │
-│  VPS: 31.97.142.123                                      │
-│                                                          │
-│  ┌────────────────────────────────────────────────────┐  │
-│  │ charm-api (ccssgc4gowsog04wck400o0w)               │  │
-│  │ FastAPI → POST /api/inbox-purchasing/smart-order    │  │
-│  │ Creates: inbox_purchase_jobs (status=pending)       │  │
-│  └────────────────────────┬───────────────────────────┘  │
-│                           │                               │
-│               PostgreSQL (31.97.142.123:5432)             │
-│                           │                               │
-│  ┌────────────────────────▼───────────────────────────┐  │
-│  │ charm-purchase-worker (xo4o4wcco0scgs8gskggw00k)   │  │
-│  │ Polls DB → Spawns Claude Code → Browser automation  │  │
-│  │ Volume: claude-credentials-purchase                 │  │
-│  └────────────────────────────────────────────────────┘  │
-│                                                          │
-│  ┌────────────────────────────────────────────────────┐  │
-│  │ charm-frontend (jskswosswg80cg8wwk8g8kww)          │  │
-│  │ Next.js → Polls /status/{job_id} for progress      │  │
-│  └────────────────────────────────────────────────────┘  │
-└──────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────┐
+│  Coolify (panel.laviefatigue.com)                             │
+│  VPS: 31.97.142.123                                          │
+│                                                              │
+│  ┌────────────────────────────────────────────────────┐      │
+│  │ charm-api (ccssgc4gowsog04wck400o0w)               │      │
+│  │ FastAPI → POST /api/inbox-purchasing/smart-order    │      │
+│  │ Creates: inbox_purchase_jobs (status=pending)       │      │
+│  └────────────────────────┬───────────────────────────┘      │
+│                           │                                   │
+│               PostgreSQL (31.97.142.123:5432)                 │
+│                           │                                   │
+│  ┌────────────────────────▼───────────────────────────┐      │
+│  │ charm-purchase-worker (xo4o4wcco0scgs8gskggw00k)   │      │
+│  │ Polls DB → Spawns hypertide_playwright.py           │      │
+│  │ Direct Playwright automation (no LLM dependency)    │      │
+│  └────────────────────────────────────────────────────┘      │
+│                                                              │
+│  ┌────────────────────────────────────────────────────┐      │
+│  │ charm-frontend (jskswosswg80cg8wwk8g8kww)          │      │
+│  │ Next.js → Polls /status/{job_id} for progress      │      │
+│  └────────────────────────────────────────────────────┘      │
+└──────────────────────────────────────────────────────────────┘
 ```
 
 ## Deployment Steps
@@ -52,8 +51,9 @@ The purchase worker code is in the main `charm-email-os` repository. Push all ch
 
 ```bash
 cd D:\Work\charm-email-os
-git add purchase_worker.py purchase_mcp/ Dockerfile.purchase-worker \
-       docker-compose.purchase-worker.yml .claude/skills/execute-purchase.md
+git add purchase_worker.py hypertide_playwright.py \
+       Dockerfile.purchase-worker docker-compose.purchase-worker.yml \
+       requirements-purchase-worker.txt
 git commit -m "Purchase worker: <description>"
 git push origin master
 ```
@@ -89,11 +89,11 @@ Add these variables:
 | Variable | Value |
 |----------|-------|
 | `POLL_INTERVAL` | `10` |
-| `JOB_TIMEOUT` | `600` |
-| `CLAUDE_ACCOUNT` | *(leave empty or set profile name)* |
+| `JOB_TIMEOUT` | `1800` |
+| `JOB_COOLDOWN` | `30` |
 | `ALERT_WEBHOOK_URL` | *(Discord/Slack webhook, optional)* |
 
-#### Global Credentials (Injected by MCP Server)
+#### Credentials (Injected via ENV)
 
 | Variable | Value | Notes |
 |----------|-------|-------|
@@ -104,27 +104,7 @@ Add these variables:
 | `BISON_URL` | `https://spellcast.hirecharm.com` | EmailBison instance |
 | `EMAILBISON_API_KEY` | `17\|MJ4B2ye...` | Workspace fetch API key |
 
-#### Stripe Payment (When Ready)
-
-| Variable | Value |
-|----------|-------|
-| `STRIPE_CARD_NUMBER` | *(card number)* |
-| `STRIPE_CARD_EXP` | *(MM/YY)* |
-| `STRIPE_CARD_CVC` | *(CVC)* |
-| `STRIPE_CARD_ZIP` | *(billing ZIP)* |
-
-### 4. Configure Volume for Claude Credentials
-
-The worker needs persistent Claude Code OAuth credentials. In Coolify, ensure the volume is configured:
-
-```yaml
-volumes:
-  - claude-credentials-purchase:/home/claude/.claude
-```
-
-This named volume persists across container restarts and redeployments.
-
-### 5. Deploy
+### 4. Deploy
 
 **Via Coolify Dashboard:**
 Coolify → Application → click **Deploy**
@@ -137,32 +117,17 @@ mcp__coolify__trigger_deployment(
 )
 ```
 
-### 6. Authenticate Claude Code (First Time Only)
+### 5. Pinned Commit SHA
 
-After the container starts for the first time, Claude Code needs OAuth authentication:
+If the application has `git_commit_sha` pinned, update it to the latest commit. Use the **full 40-character SHA** (Coolify's shallow clone cannot resolve short SHAs):
 
-```bash
-# SSH into the VPS
-ssh root@31.97.142.123
-
-# Find the container
-docker ps --filter "name=purchase-worker"
-
-# Authenticate Claude Code interactively
-docker exec -it <container_id> claude /login
-
-# Select "Claude account with subscription"
-# Complete OAuth flow in browser
+```python
+mcp__coolify__update_application(
+    application_uuid="xo4o4wcco0scgs8gskggw00k",
+    git_commit_sha="<full-40-char-sha>",
+    confirm=True
+)
 ```
-
-The credentials persist in the `claude-credentials-purchase` volume and survive container restarts. Re-authentication is only needed when:
-
-| Scenario | Re-Auth? |
-|----------|----------|
-| Container restart / redeploy | No |
-| Volume deleted | Yes |
-| 30+ days inactive | Yes (refresh token expired) |
-| Claude Max subscription changes | Possibly |
 
 ## Connecting to Frontend and Backend
 
@@ -173,54 +138,26 @@ The frontend triggers purchases via the API. The connection chain:
 ```
 Frontend (charm-frontend)
     │
-    ├─ User clicks "Purchase Inboxes" in client infrastructure page
+    ├─ User selects domains in "Setup Inboxes" table
+    ├─ InboxProvisionModal shows preview (provider, orders, cost)
     │
     ├─ POST /api/inbox-purchasing/smart-order
-    │   Body: { client_id, domain_ids, provider_type, use_worker: true }
+    │   Body: { client_id, domain_ids, provider_type, override_age_check }
     │
     ├─ Receives: { job_id, status: 'pending' }
     │
-    └─ Polls: GET /api/inbox-purchasing/status/{job_id}
-       Every 2-5 seconds until status is 'completed' or 'failed'
-       Displays: current_step, progress, errors
+    ├─ Polls: GET /api/inbox-purchasing/status/{job_id}
+    │   Every 3 seconds until status is terminal
+    │   Shows: current_step, progress bar, order count
+    │
+    ├─ On 'awaiting_checkout':
+    │   Shows "Payment Required" card with "Open Stripe Checkout" button
+    │
+    └─ On 'completed' or 'failed':
+       Shows final status with toast notification
 ```
 
 The frontend does NOT communicate directly with the purchase worker. It only talks to the API, which writes to the database. The worker picks up jobs from the same database.
-
-### Backend (API) Connection
-
-The API creates purchase jobs in the database. The worker reads from the same database.
-
-**API creates job:**
-```sql
-INSERT INTO inbox_purchase_jobs (
-    id, client_id, workspace_id, status, provider_type,
-    domain_ids, domain_names, orders_total, order_count,
-    worker_mode, company_name, forwarding_domain,
-    bison_workspace_name, sender_names, use_saved_payment
-) VALUES (...)
--- Note: NO credentials in the INSERT — they come from ENV
-```
-
-**Worker picks up job:**
-```sql
-SELECT * FROM inbox_purchase_jobs
-WHERE status = 'pending' AND worker_mode = 'worker'
-ORDER BY created_at ASC LIMIT 1
-```
-
-**Worker updates status:**
-```sql
-UPDATE inbox_purchase_jobs SET status = 'processing', started_at = NOW() WHERE id = ?
--- ... during execution ...
-UPDATE inbox_purchase_jobs SET status = 'completed', hypertide_order_id = ? WHERE id = ?
-```
-
-**Frontend polls status:**
-```sql
-SELECT id, status, current_step, errors, orders_completed
-FROM inbox_purchase_jobs WHERE id = ?
-```
 
 ### Database Connection
 
@@ -264,6 +201,23 @@ healthcheck:
   retries: 3
 ```
 
+### What Good Logs Look Like
+
+```
+INFO - Purchase Worker starting...
+INFO - Database: 31.97.142.123:5432/postgres
+INFO - Poll interval: 10 seconds
+INFO - Job timeout: 1800 seconds
+INFO - Playwright script: /app/hypertide_playwright.py
+INFO - Purchase tables ready
+INFO - No stale jobs found
+INFO - Worker ready - polling for purchase jobs...
+INFO - Processing job <UUID> for <Company> (entra, N domains)
+INFO - Spawning Playwright script for job <UUID>...
+INFO - Job <UUID> completed (exit 0)
+INFO - Job cooldown: waiting 30s before next poll...
+```
+
 ### Check Job Status
 
 ```bash
@@ -289,8 +243,8 @@ conn.close()
 
 1. **Container running?** Check Coolify dashboard or `docker ps`
 2. **Pending jobs exist?** Query `inbox_purchase_jobs WHERE status='pending' AND worker_mode='worker'`
-3. **OAuth expired?** Check logs for "Invalid API key". Re-auth: `docker exec -it <id> claude /login`
-4. **ENV vars set?** Check: `docker exec <id> env | grep HYPERTIDE`
+3. **ENV vars set?** Check: `docker exec <id> env | grep HYPERTIDE`
+4. **Stale jobs blocking?** Worker logs will show "Cleaned up N stale job(s)" on restart
 
 ### Job Stuck in Processing
 
@@ -300,8 +254,10 @@ SELECT id, status, started_at, NOW() - started_at as duration
 FROM inbox_purchase_jobs
 WHERE status = 'processing';
 
--- If stuck > JOB_TIMEOUT, the worker should have timed out.
--- Reset to pending for retry:
+-- If stuck > JOB_TIMEOUT, restart the worker container.
+-- cleanup_stale_jobs() will recover them automatically.
+
+-- Manual reset to pending for retry:
 UPDATE inbox_purchase_jobs
 SET status = 'pending', current_step = NULL, started_at = NULL
 WHERE id = '<job_id>';
@@ -319,31 +275,31 @@ DELETE FROM purchase_job_steps WHERE job_id = '<job_id>';
 ### Workspace Not Found
 
 - Verify `bison_workspace_name` in the job matches an actual workspace in EmailBison
-- Check `EMAILBISON_API_KEY` is valid — try fetching workspaces manually via the EmailBison API
+- Check `EMAILBISON_API_KEY` is valid
 - Ensure `BISON_URL` is `https://spellcast.hirecharm.com`
 
 ### Credential ENV Vars Not Working
 
-The MCP server injects ENV vars at runtime. Verify inside the container:
+Verify inside the container:
 
 ```bash
-docker exec <id> env | grep -E 'HYPERTIDE|BISON|EMAILBISON|STRIPE'
+docker exec <id> env | grep -E 'HYPERTIDE|BISON|EMAILBISON'
 ```
 
 If values are empty, check that they're configured in Coolify's Environment Variables section for this application.
 
 ## Updating Credentials
 
-When credentials change (new password, new card, etc.):
+When credentials change (new password, etc.):
 
 1. Update the ENV variable in Coolify → Application → Environment Variables
 2. Redeploy the application (Coolify rebuilds the container with new ENV)
-3. No code changes needed — the MCP server reads ENV at runtime
+3. No code changes needed — the script reads ENV at runtime
 
 ## Related
 
 - [[../architecture/purchase-worker]] - Purchase worker architecture
 - [[../architecture/claude-code-worker]] - Worker pattern overview
-- [[local-docker]] - Local Docker development (testing)
+- [[../concepts/inbox-provisioning]] - Inbox provisioning concepts
 - [[../infrastructure/coolify]] - Coolify platform
 - [[index]] - Deployment overview

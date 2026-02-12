@@ -1,13 +1,43 @@
 ---
 title: Charm Email OS Documentation
 created: 2026-01-22
-updated: 2026-01-22
+updated: 2026-02-10
 tags: [hub, index]
 ---
 
 # Charm Email OS
 
 Cold email infrastructure management platform for managing domains, inboxes, and campaigns.
+
+## Getting Started
+
+**Start Here** - If you're a Claude agent or developer new to this codebase:
+
+| Document | Purpose |
+|----------|---------|
+| [[local-development/index]] | **Local development hub** - Start here! |
+| [[local-development/development-workflow]] | Local → production workflow |
+| [[local-development/file-locations]] | Where all code and configs live |
+| [[local-development/architecture]] | System architecture and components |
+
+### Quick Start
+
+```bash
+cd D:\Work\charm-email-os
+docker compose -f docker-compose.local.yml up -d
+# Frontend: http://localhost:3000
+# API: http://localhost:8000
+```
+
+## Local Development
+
+- [[local-development/index]] - **Start here** - Complete local dev hub
+- [[local-development/development-workflow]] - Local → production workflow
+- [[local-development/file-locations]] - Where everything lives
+- [[local-development/architecture]] - System architecture
+- [[local-development/database-reference]] - Database schema and queries
+- [[local-development/workers]] - AI workers (strategy, domain, spintax)
+- [[local-development/troubleshooting]] - Common issues and solutions
 
 ## Architecture
 

@@ -1,0 +1,41 @@
+services:
+  project-assistant:
+    build:
+      context: .
+      dockerfile: Dockerfile.project-assistant
+    image: charm-email-os-assistant:latest
+    container_name: charm-email-os-assistant
+    stop_grace_period: 20s
+    ports:
+      - "3001:3000"
+    volumes:
+      - claude-credentials:/home/claude/.claude
+      - //d/Work/charm-email-os:/app/project:ro
+      - assistant-logs:/app/logs
+      # Notes directory (read-write - team can submit notes)
+      - //d/Work/charm-email-os/.notes:/app/notes
+    environment:
+      - MCP_TRANSPORT=http
+      - FASTMCP_HOST=0.0.0.0
+      - FASTMCP_PORT=3000
+      - PROJECT_DIR=/app/project
+      - LOG_DB=/app/logs/queries.db
+      - CLAUDE_MAX_TURNS=6
+      - QUERY_TIMEOUT=30
+      - SEARCH_TIMEOUT=15
+      - REQUEST_TIMEOUT=95
+      - ASSISTANT_API_KEY=V453ekL8U4aKdJRllyO_Q0vTeUXoOmcQRdD9hALQDMI
+      - NOTES_DIR=/app/notes
+    restart: unless-stopped
+    networks:
+      - assistant-network
+
+volumes:
+  claude-credentials:
+    external: true
+    name: linkedin-scanner_claude-credentials
+  assistant-logs:
+
+networks:
+  assistant-network:
+    external: true

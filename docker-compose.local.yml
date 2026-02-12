@@ -1,0 +1,306 @@
+# Charm Email OS - Local Development Environment
+# Mirror of production: Frontend + API + PostgreSQL + Workers
+#
+# Usage:
+#   docker compose -f docker-compose.local.yml up -d
+#
+#   # View logs
+#   docker compose -f docker-compose.local.yml logs -f
+#
+#   # Rebuild after code changes
+#   docker compose -f docker-compose.local.yml up -d --build
+#
+#   # Tear down (preserves data)
+#   docker compose -f docker-compose.local.yml down
+#
+#   # Tear down and reset database
+#   docker compose -f docker-compose.local.yml down -v
+
+version: '3.8'
+
+services:
+  # =============================================================
+  # DATABASE: Local PostgreSQL (matches OwnRBL schema)
+  # =============================================================
+  postgres:
+    image: postgres:15-alpine
+    container_name: charm-postgres
+    ports:
+      - "5433:5432"  # Use 5433 to avoid conflicts with local postgres
+    environment:
+      POSTGRES_DB: postgres
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: localdevpassword
+    volumes:
+      # Persist data between restarts
+      - charm-postgres-data:/var/lib/postgresql/data
+      # Initialize schema and seed data on first run
+      - ./docker/init:/docker-entrypoint-initdb.d:ro
+    networks:
+      - charm-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+
+  # =============================================================
+  # BACKEND: FastAPI Application
+  # =============================================================
+  charm-api:
+    build:
+      context: ./api
+      dockerfile: Dockerfile
+    container_name: charm-api
+    ports:
+      - "8000:8000"
+    environment:
+      # Local PostgreSQL
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=postgres
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=localdevpassword
+      - POSTGRES_SCHEMA=public
+      # API Configuration
+      - API_TITLE=Charm Email OS API (LOCAL)
+      - API_VERSION=1.0.0-local
+      - DEBUG=true
+      # CORS - allow local frontend
+      - CORS_ORIGINS=["http://localhost:3000","http://charm-frontend:3000"]
+      # EmailBison (optional - leave blank for local testing)
+      - EMAILBISON_API_KEY=${EMAILBISON_API_KEY:-}
+      - EMAILBISON_API_URL=${EMAILBISON_API_URL:-https://spellcast.hirecharm.com}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - charm-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import httpx; httpx.get('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # =============================================================
+  # FRONTEND: Next.js Application
+  # =============================================================
+  charm-frontend:
+    build:
+      context: ./charm-email-os
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: http://localhost:8000
+    container_name: charm-frontend
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - NEXT_PUBLIC_API_URL=http://localhost:8000
+    depends_on:
+      charm-api:
+        condition: service_healthy
+    networks:
+      - charm-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  # =============================================================
+  # AI WORKERS
+  # =============================================================
+  # Workers require Claude Code OAuth credentials.
+  # First time setup:
+  #   docker exec -it charm-strategy-worker bash
+  #   claude /login
+  #   # Follow OAuth flow in browser
+  # =============================================================
+
+  # ----- STRATEGY WORKER: AI Strategy Generation -----
+  strategy-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.strategy-worker
+    container_name: charm-strategy-worker
+    restart: unless-stopped
+    environment:
+      # Local PostgreSQL (NO LOCAL_MODE - writes to database)
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=postgres
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=localdevpassword
+      # Worker configuration
+      - POLL_INTERVAL=5
+      - CLAUDE_ACCOUNT=ClaudeCodeMax
+      - OAUTH_CHECK_INTERVAL=3600
+      # Explicitly disable local mode - use database
+      - STRATEGY_LOCAL_MODE=false
+      # Enable 4-campaign phased generation
+      - STRATEGY_PHASED_MODE=true
+    volumes:
+      # Mount Claude credentials from Windows user profile
+      - ${USERPROFILE}/.claude:/home/claude/.claude
+      # Mount skill files for live editing
+      - ./.claude/skills:/app/.claude/skills:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - charm-network
+    healthcheck:
+      test: ["CMD", "pgrep", "-f", "python3.*strategy_worker.py"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # =============================================================
+  # ONBOARDING: Client Onboarding Form
+  # =============================================================
+  onboarding:
+    build:
+      context: ../hirecharm-onboarding
+      dockerfile: Dockerfile
+    container_name: charm-onboarding
+    ports:
+      - "3004:80"
+    environment:
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=postgres
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=localdevpassword
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - charm-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # ----- DOMAIN WORKER: AI Domain Generation -----
+  # domain-worker:
+  #   build:
+  #     context: .
+  #     dockerfile: Dockerfile.domain-worker
+  #   container_name: charm-domain-worker
+  #   restart: unless-stopped
+  #   environment:
+  #     - POSTGRES_HOST=postgres
+  #     - POSTGRES_PORT=5432
+  #     - POSTGRES_DB=postgres
+  #     - POSTGRES_USER=postgres
+  #     - POSTGRES_PASSWORD=localdevpassword
+  #     - POLL_INTERVAL=5
+  #     - CLAUDE_ACCOUNT=ClaudeCodeMax
+  #     - OAUTH_CHECK_INTERVAL=3600
+  #   volumes:
+  #     - charm-claude-credentials:/home/claude/.claude
+  #   depends_on:
+  #     postgres:
+  #       condition: service_healthy
+  #   networks:
+  #     - charm-network
+  #   healthcheck:
+  #     test: ["CMD", "pgrep", "-f", "python3.*domain_generator_worker.py"]
+  #     interval: 30s
+  #     timeout: 10s
+  #     retries: 3
+  #     start_period: 10s
+
+  # ----- SPINTAX WORKER: Spintax Processing -----
+  # spintax-worker:
+  #   build:
+  #     context: .
+  #     dockerfile: Dockerfile.spintax-worker
+  #   container_name: charm-spintax-worker
+  #   restart: unless-stopped
+  #   environment:
+  #     - POSTGRES_HOST=postgres
+  #     - POSTGRES_PORT=5432
+  #     - POSTGRES_DB=postgres
+  #     - POSTGRES_USER=postgres
+  #     - POSTGRES_PASSWORD=localdevpassword
+  #     - POLL_INTERVAL=5
+  #     - CLAUDE_ACCOUNT=ClaudeCodeMax
+  #     - OAUTH_CHECK_INTERVAL=3600
+  #   volumes:
+  #     - charm-claude-credentials:/home/claude/.claude
+  #   depends_on:
+  #     postgres:
+  #       condition: service_healthy
+  #   networks:
+  #     - charm-network
+  #   healthcheck:
+  #     test: ["CMD", "pgrep", "-f", "python3.*spintax_worker.py"]
+  #     interval: 30s
+  #     timeout: 10s
+  #     retries: 3
+  #     start_period: 10s
+
+  # ----- PURCHASE WORKER: Inbox Provisioning (HyperTide) -----
+  # purchase-worker:
+  #   build:
+  #     context: .
+  #     dockerfile: Dockerfile.purchase-worker
+  #   container_name: charm-purchase-worker
+  #   restart: unless-stopped
+  #   environment:
+  #     - POSTGRES_HOST=postgres
+  #     - POSTGRES_PORT=5432
+  #     - POSTGRES_DB=postgres
+  #     - POSTGRES_USER=postgres
+  #     - POSTGRES_PASSWORD=localdevpassword
+  #     - POLL_INTERVAL=10
+  #   volumes:
+  #     - charm-claude-credentials:/home/claude/.claude
+  #   depends_on:
+  #     postgres:
+  #       condition: service_healthy
+  #   networks:
+  #     - charm-network
+  #   healthcheck:
+  #     test: ["CMD", "pgrep", "-f", "python3.*purchase_worker.py"]
+  #     interval: 30s
+  #     timeout: 10s
+  #     retries: 3
+  #     start_period: 10s
+
+networks:
+  charm-network:
+    driver: bridge
+    name: charm-network-local
+
+volumes:
+  charm-postgres-data:
+    name: charm-postgres-data
+  # Note: Claude credentials mounted directly from ${USERPROFILE}/.claude
+
+# =============================================================
+# QUICK REFERENCE
+# =============================================================
+#
+# Frontend: http://localhost:3000
+# API: http://localhost:8000
+# API Docs: http://localhost:8000/docs
+# Onboarding Form: http://localhost:3004
+# Database: localhost:5433 (postgres/localdevpassword)
+#
+# Default test client ID: 4bd07dc0-059a-448b-b6f4-3275d0c104a9 (Charm)
+#
+# To connect with psql:
+#   psql -h localhost -p 5433 -U postgres -d postgres
+#

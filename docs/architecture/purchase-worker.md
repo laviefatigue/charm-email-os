@@ -1,26 +1,35 @@
 ---
 title: Purchase Worker Architecture
 created: 2026-01-29
-updated: 2026-01-30
-tags: [architecture, purchase, worker, mcp, browser-automation, hypertide]
+updated: 2026-02-04
+tags: [architecture, purchase, worker, browser-automation, hypertide, playwright]
 ---
 
 # Purchase Worker Architecture
 
-How the purchase worker automates Hypertide inbox provisioning using Claude Code, Playwright browser automation, and MCP tools.
+How the purchase worker automates Hypertide inbox provisioning using deterministic Playwright browser automation.
 
 ## Overview
 
-Hypertide (app2.hypertide.io) has **no API** for purchasing email inboxes. The purchase worker solves this by using Claude Code as an autonomous browser operator: it reads job data from the database, navigates the Hypertide web UI with Playwright, fills forms, selects workspaces, and completes orders — all without human intervention.
+Hypertide (app2.hypertide.io) has **no API** for purchasing email inboxes. The purchase worker solves this with a deterministic Python script (`hypertide_playwright.py`) that reads job data from the database, launches a headed Chromium browser via Playwright, navigates the Hypertide web UI, fills forms, selects workspaces, and reaches the Stripe checkout — all without human intervention.
 
-### Why Browser Automation?
+### Why Direct Playwright (Not Claude Code)?
 
-| Approach | Feasibility |
-|----------|-------------|
-| REST API | None exists |
-| Direct DB access | No access to Hypertide internals |
+The purchase worker originally used Claude Code + MCP for browser automation. In v2.0, this was replaced with a deterministic Playwright script:
+
+| Approach | Trade-offs |
+|----------|------------|
+| REST API | None exists for Hypertide |
 | Manual human clicks | Does not scale, error-prone |
-| **Claude Code + Playwright** | **Autonomous, auditable, resilient** |
+| Claude Code + MCP (v1) | Worked but slow (~5 min/job), required OAuth, LLM inference overhead |
+| **Direct Playwright script (v2)** | **Fast (~2 min/job), deterministic, no LLM dependency** |
+
+### Architecture Change (v1 → v2)
+
+```
+v1: purchase_worker.py → subprocess: claude -p <prompt> --mcp-config ... → MCP server → Playwright
+v2: purchase_worker.py → subprocess: python3 hypertide_playwright.py --job-id <ID> → Playwright directly
+```
 
 ## System Architecture
 
@@ -28,6 +37,8 @@ Hypertide (app2.hypertide.io) has **no API** for purchasing email inboxes. The p
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                         FRONTEND (Next.js)                                   │
 │  POST /api/inbox-purchasing/smart-order { client_id, domain_ids, ...}       │
+│  Polls GET /api/inbox-purchasing/status/{job_id} every 3 seconds            │
+│  Shows: InboxProvisionModal with progress, checkout card on completion      │
 └────────────────────────────────┬────────────────────────────────────────────┘
                                  │
                                  ▼
@@ -37,8 +48,6 @@ Hypertide (app2.hypertide.io) has **no API** for purchasing email inboxes. The p
 │  INSERT INTO inbox_purchase_jobs (job-specific data only)                    │
 │  Returns: { job_id, status: 'pending' }                                     │
 └────────────────────────────────┬────────────────────────────────────────────┘
-                                 │
-              Frontend polls GET /api/inbox-purchasing/status/{job_id}
                                  │
                                  ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -52,40 +61,33 @@ Hypertide (app2.hypertide.io) has **no API** for purchasing email inboxes. The p
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │               Purchase Worker Daemon (purchase_worker.py)                    │
 │  Docker container: charm-purchase-worker                                     │
-│  - Polls DB for pending jobs                                                │
-│  - Loads skill from .claude/skills/execute-purchase.md                       │
-│  - Builds prompt with skill + job parameters                                │
-│  - Spawns: claude -p <prompt> --dangerously-skip-permissions                │
-│  - Timeout: 600s (configurable via JOB_TIMEOUT)                             │
+│  - Polls DB for pending jobs (worker_mode='worker')                         │
+│  - Spawns: python3 hypertide_playwright.py --job-id <UUID>                  │
+│  - Passes DB credentials via environment                                    │
+│  - Timeout: 1800s (configurable via JOB_TIMEOUT)                            │
+│  - Guard pattern: checks if script already handled status transition        │
+│  - Cooldown: 30s between jobs (JOB_COOLDOWN)                                │
 └────────────────────────────────┬────────────────────────────────────────────┘
                                  │ subprocess.run()
                                  ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                       Claude Code CLI                                        │
-│  Reads embedded skill instructions (14 steps)                               │
-│  Executes steps sequentially using MCP tools                                │
-│  Max turns: 225 (production), (step * 15) + 15 (testing)                    │
-└────────────────────────────────┬────────────────────────────────────────────┘
-                                 │ MCP Protocol (stdio)
-                                 ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│               MCP Server (purchase_mcp/server.py)                            │
+│            Playwright Script (hypertide_playwright.py)                       │
 │                                                                             │
-│  Browser Tools (Playwright):     Database Tools (psycopg2):                 │
-│  - navigate(url)                 - get_purchase_job(job_id)                  │
-│  - click(selector)               - update_job_status(job_id, status)        │
-│  - fill(selector, value)         - log_step(job_id, step_name, notes)       │
-│  - wait_for_text(text)           - complete_job(job_id, order_id)           │
-│  - screenshot()                  - fail_job(job_id, error, step)            │
-│  - get_page_text()                                                          │
-│  - scroll_down(pixels)                                                      │
-│  - select_dropdown(...)                                                     │
+│  Deterministic step-by-step browser automation:                             │
+│  - Reads job from DB (psycopg2)                                             │
+│  - Reads credentials from ENV                                               │
+│  - Launches headed Chromium on Xvfb virtual display                         │
+│  - Navigates Hypertide UI step by step                                      │
+│  - Updates job status + logs steps to purchase_job_steps table              │
+│  - Captures Stripe checkout URL → sets awaiting_checkout                    │
+│  - On failure: calls fail_job() with error categorization                   │
 └────────────────────────────────┬────────────────────────────────────────────┘
                                  │ Playwright (headed Chromium on Xvfb)
                                  ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                    Hypertide Web UI (app2.hypertide.io)                      │
 │                    EmailBison API (spellcast.hirecharm.com)                  │
+│                    Stripe Checkout (checkout.stripe.com)                     │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -93,19 +95,16 @@ Hypertide (app2.hypertide.io) has **no API** for purchasing email inboxes. The p
 
 | File | Purpose |
 |------|---------|
-| `purchase_worker.py` | Main daemon — polls DB, spawns Claude Code subprocess |
-| `purchase_mcp/server.py` | MCP server — browser automation + database tools |
-| `purchase_mcp_config.json` | MCP server launch configuration (Docker) |
-| `purchase_mcp_config_local.json` | MCP server launch configuration (Windows) |
-| `.claude/skills/execute-purchase.md` | 14-step skill instructions embedded in prompt |
-| `Dockerfile.purchase-worker` | Docker image (Debian + Claude Code + Playwright + Xvfb) |
+| `purchase_worker.py` | Main daemon — polls DB, spawns Playwright script subprocess |
+| `hypertide_playwright.py` | Deterministic Playwright automation script |
+| `Dockerfile.purchase-worker` | Docker image (Debian + Python + Playwright + Xvfb) |
 | `docker-compose.purchase-worker.yml` | Production deployment (Coolify) |
-| `docker-compose.purchase-test.yml` | Local testing (Docker Desktop) |
+| `requirements-purchase-worker.txt` | Python deps: psycopg2-binary, playwright, python-dotenv |
 | `tests/insert_test_purchase_job.py` | Test job inserter + status/reset utilities |
 
 ## Credential Management
 
-Global credentials are stored as **ENV variables** on the worker container, not in the database. The MCP server's `get_purchase_job()` handler merges ENV credentials into the response dict, so Claude Code receives a unified data shape regardless of source.
+Global credentials are stored as **ENV variables** on the worker container, not in the database. The Playwright script reads credentials from `os.getenv()` at startup.
 
 ### What Goes Where
 
@@ -115,46 +114,19 @@ Global credentials are stored as **ENV variables** on the worker container, not 
 | Bison username/password | ENV (`BISON_USERNAME`, `BISON_PASSWORD`) | Same account for all jobs |
 | Bison URL | ENV (`BISON_URL`) | Always `https://spellcast.hirecharm.com` |
 | EmailBison API key | ENV (`EMAILBISON_API_KEY`) | Same key for workspace fetch |
-| Stripe card info | ENV (`STRIPE_CARD_*`) | Same payment method |
 | Workspace name | Database (`bison_workspace_name`) | Different per client |
 | Domain names | Database (`domain_names`) | Different per job |
 | Provider type | Database (`provider_type`) | `entra` or `google` per job |
 | Company name | Database (`company_name`) | Different per client |
 | Sender names | Database (`sender_names`) | Different per job |
 
-### Merge Logic (server.py)
+## Purchase Flow Steps
 
-```python
-# After building result dict from DB row:
-env_credentials = {
-    "hypertide_email": os.getenv("HYPERTIDE_EMAIL", ""),
-    "hypertide_password": os.getenv("HYPERTIDE_PASSWORD", ""),
-    "bison_username": os.getenv("BISON_USERNAME", ""),
-    "bison_password": os.getenv("BISON_PASSWORD", ""),
-    "bison_url": os.getenv("BISON_URL", "https://spellcast.hirecharm.com"),
-    "bison_api_key": os.getenv("EMAILBISON_API_KEY", ""),
-}
-for key, env_value in env_credentials.items():
-    if env_value:  # ENV set -> use it; else keep DB value (backwards compat)
-        result[key] = env_value
-```
-
-### Backwards Compatibility
-
-| Scenario | Behavior |
-|----------|----------|
-| Old DB row WITH credentials + ENV set | ENV wins (override) |
-| Old DB row WITH credentials + ENV not set | DB value used (fallback) |
-| New DB row WITHOUT credentials + ENV set | ENV provides credentials |
-| New DB row WITHOUT credentials + ENV not set | Empty credentials, job fails at login |
-
-## 14-Step Purchase Flow
-
-The skill file (`.claude/skills/execute-purchase.md`) defines these steps:
+The `hypertide_playwright.py` script executes these steps sequentially:
 
 | Step | Name | What Happens |
 |------|------|-------------|
-| 1 | Load Job Data | `get_purchase_job(job_id)` fetches all parameters |
+| 1 | Load Job Data | Read job from DB via psycopg2, merge ENV credentials |
 | 2 | Login to Hypertide | Navigate to signin, fill email/password, verify dashboard |
 | 3 | Start New Order | Click "Place New Order" |
 | 4 | Select Provider | Click Entra or Google option |
@@ -165,9 +137,7 @@ The skill file (`.claude/skills/execute-purchase.md`) defines these steps:
 | 9 | Outbound Settings | Accept defaults |
 | 10 | User Configuration | Add sender names (firstName/lastName) |
 | 11 | Review Order | Verify domain count, provider, pricing |
-| 12 | Checkout / Payment | Select saved payment or enter card |
-| 13 | Capture Confirmation | Extract order ID, take screenshot |
-| 14 | Complete Job | `complete_job(job_id, order_id)` updates DB |
+| 12 | **Checkout Handoff** | Capture Stripe checkout URL, set job to `awaiting_checkout` |
 
 ### Step 7 Detail: Bison Workspace Selection
 
@@ -177,21 +147,55 @@ This is the most critical step — incorrect workspace selection causes cross-co
 Hypertide Form: "Step 2) Connect Your Email Automation Tool"
     │
     ├─ Select "Bison" radio button
-    ├─ Fill Username (bison_username)
-    ├─ Fill Password (bison_password)
+    ├─ Fill Username (bison_username from ENV)
+    ├─ Fill Password (bison_password from ENV)
     ├─ Fill Bison URL (bison_url = https://spellcast.hirecharm.com)
     │
     ├─ Click Workspace dropdown → Opens modal
     │   ├─ "Bison URL" field (pre-filled)
-    │   ├─ "API Key (Global)" field → Fill with bison_api_key
+    │   ├─ "API Key (Global)" field → Fill with bison_api_key from ENV
     │   ├─ Click "Fetch Workspaces"
     │   ├─ Wait for workspace list to populate
-    │   └─ Select EXACT bison_workspace_name
+    │   └─ Select EXACT bison_workspace_name from DB
     │
     └─ Click "Move on without saving"
 ```
 
 **Safety:** If the exact workspace name is NOT found in the dropdown, the job fails immediately to prevent cross-contamination.
+
+### Step 12: Checkout Handoff
+
+Instead of completing payment automatically, the script captures the Stripe checkout URL and hands off to the user:
+
+```python
+# Script captures checkout URL from Stripe redirect
+checkout_url = page.url  # e.g., https://checkout.stripe.com/c/pay/cs_live_...
+
+# Updates job in DB
+UPDATE inbox_purchase_jobs
+SET status = 'awaiting_checkout',
+    checkout_url = $1,
+    current_step = 'awaiting_manual_checkout'
+WHERE id = $2
+```
+
+The frontend displays a "Payment Required" card with an "Open Stripe Checkout" button.
+
+## Job Status Lifecycle
+
+```
+pending → processing → executing → awaiting_checkout → completed
+                                 ↘ failed
+```
+
+| Status | Set By | Meaning |
+|--------|--------|---------|
+| `pending` | API | Job created, waiting for worker |
+| `processing` | Worker | Worker picked up job, spawning script |
+| `executing` | Script | Playwright is actively automating |
+| `awaiting_checkout` | Script | Stripe URL captured, waiting for manual payment |
+| `completed` | API | Payment confirmed via confirm-checkout endpoint |
+| `failed` | Script/Worker | Error occurred, see `error_type` and `errors` |
 
 ## Domain Locking
 
@@ -203,58 +207,28 @@ SET purchase_job_id = $1, purchase_job_status = 'pending'
 WHERE id = ANY($2)
 ```
 
-### Lock Conflict Detection
-
-Before creating a job, `_check_domain_lock_conflicts()` queries for domains already locked to another active job. If conflicts are found, the request returns 409 Conflict.
-
 ### Lock Release
 
 Locks are released by `_release_domain_locks()`:
 
-```sql
-UPDATE domains
-SET purchase_job_id = NULL, purchase_job_status = NULL
-WHERE purchase_job_id = $1
-```
-
-This happens when:
-- Job is **cancelled** (`DELETE /api/inbox-purchasing/jobs/{job_id}`)
-- Job **completes** successfully
-- Job **fails** (on retry, domains remain locked to the same job)
-
-### Frontend Cancel Flow
-
-1. User clicks trash icon on a failed/pending job in the Jobs tab
-2. Frontend calls `inboxProvisioningApi.cancelJob(jobId)` → `DELETE /jobs/{job_id}`
-3. API calls `_release_domain_locks(job_id)` → unlocks domains
-4. API calls `_update_job_status(job_id, 'cancelled', 'Cancelled by user')`
-5. Frontend refreshes job list and parent domain data
+| Trigger | What Happens |
+|---------|-------------|
+| Job **cancelled** | `DELETE /jobs/{job_id}` → domains unlocked |
+| Job **completed** | `confirm-checkout` → domains unlocked, status → active |
+| Job **failed** | Script's `fail_job()` releases locks; on retry, domains remain locked |
 
 ## Safety and Rate Limiting
 
-### Server-Side Enforcement
-
 | Protection | Implementation | Purpose |
 |------------|---------------|---------|
-| Login guard | `_login_completed` flag; navigate handler blocks signin URLs after login | Prevent double login |
-| Step dedup | DB query before INSERT into `purchase_job_steps` | Prevent duplicate audit entries |
-| Navigation dedup | Skip navigate() if already on the same URL | Reduce unnecessary page loads |
-| Navigation rate limit | 3-second cooldown between navigate() calls | Prevent hammering Hypertide |
+| Workspace guard | Script fails if workspace name not found | Prevent cross-contamination |
+| Login dedup | `_login_completed` flag | Prevent double login |
 | Slow motion | `slow_mo=100` on Playwright browser | Pace all browser actions |
-| Post-click tracking | Detect URL change after click, wait for domcontentloaded | Reliable page transitions |
-| Max turns | 225 (production), `(step * 15) + 15` (testing) | Prevent runaway execution |
-| Job timeout | 600s default (configurable via `JOB_TIMEOUT`) | Hard time limit |
-
-### Skill-Level Safety Rules
-
-1. Only use data from the job record — never invent values
-2. Log every step exactly once via `log_step`
-3. If workspace name not found: fail immediately
-4. If unexpected content: fail with screenshot
-5. If payment fails: fail, never retry payment
-6. Never navigate away from Hypertide
-7. Login once and only once
-8. Execute steps in strict sequential order
+| Navigation waits | `wait_for_load_state('networkidle')` | Reliable page transitions |
+| Step logging | Each step logged to `purchase_job_steps` with screenshot | Full audit trail |
+| Job timeout | 1800s default (configurable via `JOB_TIMEOUT`) | Hard time limit |
+| Stale job recovery | `cleanup_stale_jobs()` on worker startup | Recover from crashes |
+| Guard pattern | Worker checks if script already set final status before double-failing | Prevent status clobbering |
 
 ## Audit Trail
 
@@ -263,12 +237,10 @@ Every job execution produces a full audit trail in the `purchase_job_steps` tabl
 | Column | Type | Description |
 |--------|------|-------------|
 | `job_id` | UUID | FK to inbox_purchase_jobs |
-| `step_name` | TEXT | e.g. `login_page`, `bison_config`, `confirmation` |
+| `step_name` | TEXT | e.g. `login_page`, `bison_config`, `checkout_handoff` |
 | `screenshot_base64` | TEXT | Auto-captured screenshot at each step |
 | `notes` | TEXT | Human-readable description of what happened |
 | `created_at` | TIMESTAMP | When the step was recorded |
-
-Steps are deduplicated at the database level — if a step_name already exists for a job, the INSERT is rejected with a warning message telling Claude to continue forward.
 
 ## Docker Container Architecture
 
@@ -276,26 +248,24 @@ Steps are deduplicated at the database level — if a step_name already exists f
 ┌─────────────────────────────────────────────────────────────────┐
 │  charm-purchase-worker Container (Debian bookworm-slim)          │
 │                                                                 │
-│  User: claude (non-root, required for --dangerously-skip-perms) │
+│  User: worker (non-root)                                        │
 │                                                                 │
 │  ┌───────────────┐  ┌────────────────┐  ┌──────────────────┐   │
-│  │ Xvfb :99      │  │ purchase_      │  │ Claude Code CLI  │   │
-│  │ Virtual display│  │ worker.py      │  │ (subprocess)     │   │
-│  │ 1280x900x24   │  │ (main daemon)  │  │                  │   │
+│  │ Xvfb :99      │  │ purchase_      │  │ hypertide_       │   │
+│  │ Virtual display│  │ worker.py      │  │ playwright.py    │   │
+│  │ 1280x900x24   │  │ (main daemon)  │  │ (subprocess)     │   │
 │  └───────────────┘  └───────┬────────┘  └────────┬─────────┘   │
 │                              │                     │            │
-│                              │ spawns              │ stdio      │
+│                              │ spawns              │ Playwright  │
 │                              └─────────────────────┘            │
 │                                        │                        │
 │                              ┌─────────▼──────────┐            │
-│                              │ purchase_mcp/       │            │
-│                              │ server.py           │            │
-│                              │ (Playwright +       │            │
-│                              │  psycopg2)          │            │
+│                              │ Chromium (headed)   │            │
+│                              │ via Playwright      │            │
 │                              └─────────────────────┘            │
 │                                                                 │
-│  Volume: /home/claude/.claude (Claude OAuth credentials)        │
-│  ENV: HYPERTIDE_*, BISON_*, EMAILBISON_*, STRIPE_*, POSTGRES_* │
+│  No volumes needed (no Claude OAuth)                            │
+│  ENV: HYPERTIDE_*, BISON_*, EMAILBISON_*, POSTGRES_*            │
 │  shm_size: 256m (Chromium shared memory)                        │
 └─────────────────────────────────────────────────────────────────┘
 ```
@@ -309,15 +279,15 @@ Hypertide is a React SPA. Headless Chromium fails to render some dynamic content
 ### Test Modes
 
 ```bash
-# Insert a test job (no credentials in DB row)
+# Insert a test job
 python tests/insert_test_purchase_job.py
 
-# Run single job, stop after step 2 (login only)
-docker exec -e JOB_TIMEOUT=300 charm-purchase-worker-test \
-    python3 /app/purchase_worker.py --single-job <JOB_ID> --stop-after-step 2
+# Run single job, stop after step 4 (provider selection)
+docker exec charm-purchase-worker \
+    python3 /app/purchase_worker.py --single-job <JOB_ID> --stop-after-step 4
 
 # Run single job, stop after step 7 (Bison workspace selection)
-docker exec -e JOB_TIMEOUT=900 charm-purchase-worker-test \
+docker exec charm-purchase-worker \
     python3 /app/purchase_worker.py --single-job <JOB_ID> --stop-after-step 7
 
 # Check job status and audit trail
@@ -326,15 +296,6 @@ python tests/insert_test_purchase_job.py --status <JOB_ID>
 # Reset job for re-testing
 python tests/insert_test_purchase_job.py --reset <JOB_ID>
 ```
-
-### 4-Layer Testing Strategy
-
-| Layer | Tests | Scope |
-|-------|-------|-------|
-| 1 | Windows browser + DB | Playwright connects, DB reads/writes work |
-| 2 | Claude Code + MCP on Windows | MCP tools respond correctly to Claude |
-| 3 | Docker container (isolated) | Full flow inside container, step-by-step |
-| 4 | Production Coolify | Live deployment end-to-end |
 
 ## Environment Variables
 
@@ -346,24 +307,19 @@ python tests/insert_test_purchase_job.py --reset <JOB_ID>
 | `POSTGRES_USER` | Yes | - | Database user |
 | `POSTGRES_PASSWORD` | Yes | - | Database password |
 | `POLL_INTERVAL` | No | `10` | Seconds between DB polls |
-| `JOB_TIMEOUT` | No | `600` | Max seconds per job |
-| `CLAUDE_ACCOUNT` | No | - | Claude profile name |
+| `JOB_TIMEOUT` | No | `1800` | Max seconds per job |
+| `JOB_COOLDOWN` | No | `30` | Seconds between jobs |
 | `HYPERTIDE_EMAIL` | Yes | - | Hypertide login email |
 | `HYPERTIDE_PASSWORD` | Yes | - | Hypertide login password |
 | `BISON_USERNAME` | Yes | - | EmailBison login email |
 | `BISON_PASSWORD` | Yes | - | EmailBison login password |
 | `BISON_URL` | No | `https://spellcast.hirecharm.com` | EmailBison instance URL |
 | `EMAILBISON_API_KEY` | Yes | - | API key for workspace fetch |
-| `STRIPE_CARD_NUMBER` | No | - | Card number for checkout |
-| `STRIPE_CARD_EXP` | No | - | Card expiry (MM/YY) |
-| `STRIPE_CARD_CVC` | No | - | Card CVC |
-| `STRIPE_CARD_ZIP` | No | - | Card billing ZIP |
 | `ALERT_WEBHOOK_URL` | No | - | Discord/Slack webhook for alerts |
 
 ## Related
 
-- [[claude-code-worker]] - Domain and strategy worker architecture (same pattern)
+- [[claude-code-worker]] - Domain and strategy worker architecture (still uses Claude Code)
 - [[../deployment/purchase-worker-coolify]] - Coolify deployment guide
-- [[../deployment/local-docker]] - Local Docker development
-- [[../infrastructure/coolify]] - Coolify platform
+- [[../concepts/inbox-provisioning]] - Inbox provisioning concepts
 - [[data-flow]] - System data flow

@@ -1,0 +1,51 @@
+# Local Strategy Worker for Testing
+# Usage:
+#   docker compose -f docker-compose.strategy-local.yml up -d --build
+#
+# This configuration runs in LOCAL_MODE which:
+# - Saves output to local filesystem instead of production database
+# - Uses SQLite for job tracking only
+# - Mounts skill files for live editing
+#
+# Testing workflow:
+# 1. Start: docker compose -f docker-compose.strategy-local.yml up -d
+# 2. Create job: python scripts/test_strategy_generation.py
+# 3. Monitor: docker logs -f charm-strategy-test
+# 4. Validate: python scripts/validate_output.py
+
+services:
+  strategy-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.strategy-worker
+    container_name: charm-strategy-test
+    restart: "no"  # Don't restart for testing
+    environment:
+      # LOCAL MODE - saves to filesystem, not production database
+      - STRATEGY_LOCAL_MODE=true
+      - STRATEGY_OUTPUT_DIR=/app/test-output
+      # SQLite for job tracking only (still need DB connection for client context)
+      - SQLITE_DB_PATH=/app/test-output/jobs.db
+      # Production DB for READ-ONLY client context
+      - POSTGRES_HOST=31.97.142.123
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=postgres
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=ZEN3hMv6UpA0hfd8OcAUSiJWgpY33q5V
+      # Worker configuration
+      - POLL_INTERVAL=5
+      - CLAUDE_ACCOUNT=ClaudeCodeMax
+      # OAuth health monitoring
+      - OAUTH_CHECK_INTERVAL=3600
+    volumes:
+      # Mount local output directory for test results
+      - ./test-output:/app/test-output
+      # Mount Claude credentials for OAuth
+      - ${USERPROFILE}/.claude:/home/claude/.claude
+      # Mount skill files for live editing (read-only)
+      - ./.claude/skills:/app/.claude/skills:ro
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"

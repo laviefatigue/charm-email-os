@@ -1,0 +1,81 @@
+# Project Directory Assistant Configuration
+# Charm Email OS -- cold email infrastructure management platform
+# Customized from scaffold.py auto-detection.
+
+project:
+  name: charm-email-os
+  display_name: "Charm Email OS"
+  description: "AI-powered cold email infrastructure platform with autonomous workers, MCP servers, FastAPI backend, and Next.js frontend."
+  slug: charm-email-os
+
+detected:
+  type: mixed
+  framework: FastAPI
+  has_git: true
+  entry_points: ["api/main.py", "domain_worker.py", "strategy_worker.py", "purchase_worker.py", "spintax_worker.py", "price_checker_worker.py"]
+
+context_areas:
+  general: "Search broadly across the entire project."
+  api: "FastAPI backend in api/ -- routes, models, services, database.py, config.py. Key routes: clients, domains, onboarding, strategy, subscriptions, inbox-purchasing."
+  frontend: "Next.js frontend in charm-email-os/ -- React components, app router pages, Zustand stores, TypeScript types."
+  workers: "Autonomous Claude Code workers: domain_worker.py, strategy_worker.py, purchase_worker.py, spintax_worker.py, price_checker_worker.py. Each polls a job table and spawns Claude Code with MCP tools."
+  mcp: "MCP tool servers in domain_mcp/, strategy_mcp/, purchase_mcp/, spintax_mcp/. Each provides database + domain-specific tools for workers."
+  database: "PostgreSQL schema, migrations/ directory, api/database.py connection pool."
+  deployment: "Docker deployment: 7 docker-compose files, Dockerfiles for each worker, Coolify on VPS, Prefect orchestration."
+  config: "Configuration: .env files, MCP config JSONs, prefect.yaml, requirements files."
+  docs: "Foam documentation in docs/ -- architecture, concepts, database, deployment, features, ADRs, infrastructure."
+
+database:
+  enabled: false
+  engine: postgres
+  path: ""
+  primary_table: ""
+  description: "PostgreSQL on Supabase (external, not accessible from container). Use docs/database/schema.md for schema reference."
+  read_only: true
+  query_timeout: 30
+  max_rows: 1000
+
+static_docs:
+  architecture:
+    doc_path: "docs/architecture/index.md"
+    tool_description: "Get the project architecture overview including tech stack, service topology, and data flow."
+  schema:
+    doc_path: "docs/database/schema.md"
+    tool_description: "Get the complete PostgreSQL database schema with all tables, columns, and relationships."
+  endpoints:
+    doc_path: "docs/architecture/api-endpoints.md"
+    tool_description: "Get the API endpoints reference for the FastAPI backend."
+  workers:
+    doc_path: "docs/architecture/claude-code-worker.md"
+    tool_description: "Get the Claude Code worker architecture -- how autonomous AI workers poll jobs and execute via MCP tools."
+  deployment:
+    doc_path: "docs/deployment/index.md"
+    tool_description: "Get the deployment overview -- Docker, Coolify, VPS setup."
+  features:
+    doc_path: "docs/features/index.md"
+    tool_description: "Get the feature index -- domain generation, purchasing, strategy, inbox provisioning."
+  data_flow:
+    doc_path: "docs/architecture/data-flow.md"
+    tool_description: "Get the data flow diagram showing how data moves through the system."
+  domain_lifecycle:
+    doc_path: "docs/concepts/domain-lifecycle.md"
+    tool_description: "Get the domain lifecycle documentation -- status flow from suggestion to active."
+  project_status:
+    doc_path: "docs/concepts/project-status.md"
+    tool_description: "Get the current project status and phase tracking."
+  infrastructure:
+    doc_path: "docs/infrastructure/index.md"
+    tool_description: "Get the infrastructure overview -- Coolify, Supabase, VPS."
+
+docker:
+  image_name: charm-email-os-assistant
+  container_name: charm-email-os-assistant
+  host_project_path: "//d/Work/charm-email-os"
+  port: 3001
+  api_key: V453ekL8U4aKdJRllyO_Q0vTeUXoOmcQRdD9hALQDMI
+
+timeouts:
+  query: 30
+  search: 15
+  request: 95
+  claude_max_turns: 6

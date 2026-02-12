@@ -1,7 +1,7 @@
 ---
 title: Inbox Provisioning
 created: 2026-01-22
-updated: 2026-01-30
+updated: 2026-02-04
 tags: [concept, inbox, infrastructure, hypertide]
 ---
 
@@ -22,9 +22,9 @@ After domains are purchased, they need inboxes (email accounts) created. This is
 
 | Metric | Value |
 |--------|-------|
-| Inboxes per domain | 52 |
+| Inboxes per domain | 50 |
 | Domains per order | 2 |
-| Inboxes per order | 104 |
+| Inboxes per order | 100 |
 | Cost per order | $50/month |
 
 ### Google Workspace
@@ -36,47 +36,52 @@ After domains are purchased, they need inboxes (email accounts) created. This is
 | Inboxes per order | 15 |
 | Cost per order | $50/month |
 
-## InboxPurchaseWizard
+## Frontend Purchase Flow
 
-The frontend wizard (`components/purchasing/InboxPurchaseWizard.tsx`) guides users through inbox setup.
+### Domain Selection (Setup Inboxes Table)
 
-### Wizard Steps
+The **Setup Inboxes** table (`DomainsNeedingSetupTable`) shows purchased domains ready for provisioning:
 
-1. **Domains** - Select purchased domains to provision
-   - Pre-selects domains from DomainsNeedingSetupTable
-   - Choose provider: Entra (recommended), Google, or Mixed
-   - Real-time order preview with costs
+- Domains must be **30+ days old** before provisioning (age validation)
+- Young domains show remaining days with amber badge
+- **Admin override**: Clicking a young domain's checkbox opens a "Domain Age Warning" dialog allowing force-selection
+- Force-selected domains show amber checkboxes instead of green
+- Locked domains (already in an active job) show "Queued" badge and disabled checkboxes
 
-2. **Names** - Configure inbox account names
-   - Load from onboarding personas (if available)
-   - Generate random names
-   - Add custom names manually
-   - Format: `first.last@domain.com`
+### InboxProvisionModal
 
-3. **Review** - Confirm configuration
-   - Shows domains, orders, inboxes, cost
-   - Provider breakdown
+The modal (`components/purchasing/InboxProvisionModal.tsx`) handles the purchase confirmation and progress tracking. It replaced the earlier multi-step wizard with a streamlined single-confirmation flow.
 
-4. **Execute** - Run HyperTide automation
-   - Progress tracking
-   - Order-by-order completion
-   - Error handling
+**Preview Phase** — shows before confirmation:
 
-### Key Props
+| Field | Source |
+|-------|--------|
+| Provider | Auto-detected from domain configuration (Entra or Google) |
+| Domains | Count of selected domains |
+| Orders | Calculated from `ceil(domains / domains_per_order)` |
+| Total Inboxes | `orders × inboxes_per_order` |
+| Monthly Cost | `orders × $50` |
+| Sender Name | Auto-configured from onboarding data |
+| Prefixes | Generated from name list |
+| Forwarding Domain | Client's forwarding domain |
 
-```typescript
-interface InboxPurchaseWizardProps {
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-  clientId: string;
-  clientName: string;
-  forwardingDomain: string;
-  domains: Domain[];              // Purchased domains available
-  selectedDomainIds?: string[];   // Pre-selected from setup table
-  onboardingData?: OnboardingData;
-  onComplete?: (totalInboxes: number) => void;
-}
-```
+**Progress Phase** — shows after "Confirm Purchase":
+
+- Polls `GET /api/inbox-purchasing/status/{job_id}` every 3 seconds
+- Shows progress bar with `orders_completed / orders_total`
+- Displays `current_step` from the worker
+
+**Checkout Handoff** — on `awaiting_checkout` status:
+
+- Shows "Payment Required" amber card
+- Displays "Open Stripe Checkout" button linking to captured `checkout_url`
+- User completes payment manually on Stripe
+- After payment, calls `POST /api/inbox-purchasing/confirm-checkout` to finalize
+
+**Terminal States:**
+
+- `completed` → Success toast, domains marked active
+- `failed` → Error display with retry option
 
 ## Provider Selection Logic
 
@@ -186,13 +191,25 @@ DELETE /api/inbox-purchasing/jobs/{job_id}
 ```
 Cancels a pending or failed job and releases domain locks. Cannot cancel jobs with status `executing` (active HyperTide automation).
 
-## Post-Provisioning
+## Checkout and Post-Provisioning
 
-After successful provisioning:
+### Checkout Flow
+
+The purchase worker automates everything up to payment, then hands off to the user:
+
+1. Worker reaches Stripe checkout → captures URL → sets `awaiting_checkout`
+2. Frontend shows "Payment Required" card with Stripe link
+3. User completes payment on Stripe
+4. User clicks "Confirm & Finalize" in the modal
+5. API calls `POST /api/inbox-purchasing/confirm-checkout` → sets `completed`
+
+### After Completion
+
 1. Domain status updated from `purchased` → `active`
 2. Inbox records created in `sender_accounts` table
 3. Inboxes uploaded to EmailBison workspace
 4. Domains appear in Current Inventory tab
+5. Domain locks released (`purchase_job_id` → NULL)
 
 ## Job Management (Jobs Tab)
 
@@ -200,7 +217,7 @@ The **Jobs tab** (`PurchaseJobsTable.tsx`) displays purchase job history with:
 
 | Column | Description |
 |--------|-------------|
-| Status | `pending`, `processing`, `executing`, `completed`, `failed`, `cancelled` |
+| Status | `pending`, `processing`, `executing`, `awaiting_checkout`, `completed`, `failed`, `cancelled` |
 | Provider | `entra`, `google`, `mixed`, or `unknown` |
 | Domains | Count of domains in the job |
 | Inboxes | Total inboxes created (with email icon for completed) |
@@ -225,9 +242,10 @@ The **Jobs tab** (`PurchaseJobsTable.tsx`) displays purchase job history with:
 
 | Error | Cause | Resolution |
 |-------|-------|------------|
-| HyperTide not available | Module import failed | Check Hypertide/automation installation |
-| Browser access required | No display for Playwright | Run in headless mode or configure display |
-| Payment failed | Stripe issue | Check saved payment method |
+| Login failed | Hypertide credentials expired or changed | Update `HYPERTIDE_EMAIL`/`HYPERTIDE_PASSWORD` ENV in Coolify |
+| Workspace not found | Bison workspace name mismatch | Verify `bison_workspace_name` in job matches EmailBison |
+| Browser crash | Chromium OOM or Xvfb issue | Restart worker container, check `shm_size` |
+| Job timeout | Automation exceeded `JOB_TIMEOUT` | Check Hypertide UI changes, review step screenshots |
 | Domain DNS not ready | Nameservers not propagated | Wait 24-48 hours, retry |
 | Lock conflict (409) | Domain already locked to another job | Cancel the existing job first |
 
@@ -237,4 +255,6 @@ The **Jobs tab** (`PurchaseJobsTable.tsx`) displays purchase job history with:
 - [[domain-lifecycle]] - Domain status flow
 - [[package-templates]] - Starter/Growth packages
 - [[hypertide]] - Automation service details
+- [[../architecture/purchase-worker]] - Purchase worker architecture (Playwright automation)
+- [[../deployment/purchase-worker-coolify]] - Coolify deployment guide
 - [[adr-003-wizard-redesign]] - Recent UX improvements
