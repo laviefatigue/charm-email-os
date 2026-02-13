@@ -34,6 +34,7 @@ from sync_modules import (
     HealthCheckModule,
     KillProcessor,
     RetentionManager,
+    OAuthSyncModule,
 )
 
 # Configuration from environment
@@ -48,6 +49,8 @@ POLL_INTERVAL_EVENTS = int(os.getenv('SYNC_INTERVAL_EVENTS', 300))      # 5 min
 POLL_INTERVAL_FULL = int(os.getenv('SYNC_INTERVAL_FULL', 3600))         # 1 hour
 POLL_INTERVAL_HEALTH = int(os.getenv('SYNC_INTERVAL_HEALTH', 900))      # 15 min
 POLL_INTERVAL_KILL = int(os.getenv('SYNC_INTERVAL_KILL', 1800))         # 30 min
+POLL_INTERVAL_OAUTH_QUEUE = int(os.getenv('SYNC_INTERVAL_OAUTH_QUEUE', 300))  # 5 min (queue processing)
+POLL_INTERVAL_OAUTH_VERIFY = int(os.getenv('SYNC_INTERVAL_OAUTH_VERIFY', 30 * 24 * 3600))  # 30 days (verification)
 
 # Slack webhook for alerts
 SLACK_WEBHOOK_URL = os.getenv('SLACK_WEBHOOK_URL', '')
@@ -68,13 +71,16 @@ class SyncOrchestrator:
         self.last_health_check: Optional[datetime] = None
         self.last_kill_check: Optional[datetime] = None
         self.last_retention_cleanup: Optional[datetime] = None
+        self.last_daily_counter_reset: Optional[datetime] = None
+        self.last_oauth_queue_check: Optional[datetime] = None
+        self.last_oauth_verify: Optional[datetime] = None
 
     async def start(self, single_pass: bool = False):
         """Initialize connections and start the sync worker."""
         print(f"[{datetime.now()}] EmailBison Sync Worker starting...")
         print(f"  Database: {POSTGRES_HOST}:{POSTGRES_PORT}/{POSTGRES_DB}")
         print(f"  Slack alerts: {'Enabled' if SLACK_WEBHOOK_URL else 'Disabled'}")
-        print(f"  Intervals: events={POLL_INTERVAL_EVENTS}s, full={POLL_INTERVAL_FULL}s, health={POLL_INTERVAL_HEALTH}s, kill={POLL_INTERVAL_KILL}s")
+        print(f"  Intervals: events={POLL_INTERVAL_EVENTS}s, full={POLL_INTERVAL_FULL}s, health={POLL_INTERVAL_HEALTH}s, kill={POLL_INTERVAL_KILL}s, oauth_queue={POLL_INTERVAL_OAUTH_QUEUE}s")
 
         try:
             # Initialize database connection pool
@@ -152,6 +158,21 @@ class SyncOrchestrator:
                 if self._should_run_daily(self.last_retention_cleanup):
                     await self.run_retention_cleanup()
                     self.last_retention_cleanup = now
+
+                # Daily 24h counter reset (CRITICAL: prevents false positives)
+                if self._should_run_daily(self.last_daily_counter_reset):
+                    await self.run_daily_counter_reset()
+                    self.last_daily_counter_reset = now
+
+                # OAuth queue processing - every 5 min (for new workspaces)
+                if self._should_run(self.last_oauth_queue_check, POLL_INTERVAL_OAUTH_QUEUE):
+                    await self.run_oauth_queue()
+                    self.last_oauth_queue_check = now
+
+                # OAuth monthly verification - every 30 days
+                if self._should_run(self.last_oauth_verify, POLL_INTERVAL_OAUTH_VERIFY):
+                    await self.run_oauth_verification()
+                    self.last_oauth_verify = now
 
                 # Sleep until next poll interval
                 await asyncio.sleep(POLL_INTERVAL_EVENTS)
@@ -261,6 +282,57 @@ class SyncOrchestrator:
 
         if result.records_processed > 0:
             print(f"  Retention: {result.records_processed} records cleaned up")
+
+    async def run_daily_counter_reset(self):
+        """Reset 24h bounce counters at midnight.
+
+        CRITICAL: This prevents false positives in kill triggers.
+        Without this reset, hard_bounces_24h accumulates forever,
+        causing legitimate inboxes to trigger the ≥2 threshold.
+        """
+        print(f"[{datetime.now()}] Daily counter reset...")
+
+        health_module = HealthCheckModule(
+            db=self.db,
+            audit_logger=self.audit_logger,
+            alerter=self.alerter
+        )
+        await health_module.reset_daily_counters()
+
+        print(f"  24h counters reset for all active inboxes")
+
+    async def run_oauth_queue(self):
+        """Process OAuth sync queue (newly created workspaces)."""
+        oauth_module = OAuthSyncModule(
+            db=self.db,
+            audit_logger=self.audit_logger,
+            alerter=self.alerter
+        )
+        results = await oauth_module.process_queue()
+
+        if results:
+            total_processed = sum(r.records_processed for r in results)
+            failed_count = sum(1 for r in results if not r.success)
+            if total_processed > 0:
+                status = 'FAILED' if failed_count > 0 else 'OK'
+                print(f"[{datetime.now()}] OAuth Queue: {len(results)} workspaces processed [{status}]")
+
+    async def run_oauth_verification(self):
+        """Run monthly OAuth config verification."""
+        print(f"[{datetime.now()}] OAuth verification...")
+
+        oauth_module = OAuthSyncModule(
+            db=self.db,
+            audit_logger=self.audit_logger,
+            alerter=self.alerter
+        )
+        results = await oauth_module.verify_existing_configs()
+
+        if results:
+            total_verified = sum(r.records_processed for r in results)
+            changes_detected = sum(1 for r in results if r.metadata and r.metadata.get('changed'))
+            status = 'CHANGES DETECTED' if changes_detected > 0 else 'OK'
+            print(f"  OAuth: {total_verified} configs verified [{status}]")
 
     def _should_run(self, last_run: Optional[datetime], interval: int) -> bool:
         """Check if enough time has passed since last run."""

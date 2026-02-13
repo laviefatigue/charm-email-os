@@ -13,6 +13,7 @@ Modules:
 - health_checks: Inbox and domain health evaluation
 - kill_processor: Kill queue processing with 24hr tagging
 - retention: Data retention/cleanup logic
+- sync_oauth: OAuth config scraping from EmailBison UI
 """
 
 from .emailbison_client import EmailBisonClient
@@ -24,6 +25,7 @@ from .sync_events import EventSyncModule
 from .health_checks import HealthCheckModule
 from .kill_processor import KillProcessor
 from .retention import RetentionManager
+from .sync_oauth import OAuthSyncModule
 
 __all__ = [
     'EmailBisonClient',
@@ -36,4 +38,5 @@ __all__ = [
     'HealthCheckModule',
     'KillProcessor',
     'RetentionManager',
+    'OAuthSyncModule',
 ]

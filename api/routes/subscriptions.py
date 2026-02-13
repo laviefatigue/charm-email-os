@@ -115,12 +115,13 @@ async def get_client_subscription(client_id: UUID):
             usage["current_active_domains"] = domain_counts["active_domains"] or 0
 
         # Count inboxes by status (approximation based on domain status)
-        # In practice, we'd query sender_accounts with health status
+        # Count inboxes by status - only count LIVE inboxes (not dead)
         inbox_counts = await fetch_one("""
             SELECT
-                COUNT(*) FILTER (WHERE d.approval_status IN ('active', 'legacy')) as active_inboxes,
-                COUNT(*) FILTER (WHERE d.approval_status = 'warming') as warming_inboxes,
-                COUNT(*) FILTER (WHERE d.approval_status = 'flagged') as flagged_inboxes
+                COUNT(*) FILTER (WHERE d.approval_status IN ('active', 'legacy') AND sa.inbox_state = 'live') as active_inboxes,
+                COUNT(*) FILTER (WHERE d.approval_status = 'warming' AND sa.inbox_state = 'live') as warming_inboxes,
+                COUNT(*) FILTER (WHERE d.approval_status = 'flagged' AND sa.inbox_state = 'live') as flagged_inboxes,
+                COUNT(*) FILTER (WHERE sa.inbox_state = 'dead') as dead_inboxes
             FROM sender_accounts sa
             JOIN domains d ON SPLIT_PART(sa.email_address, '@', 2) = d.domain_name
                 AND sa.workspace_id = d.workspace_id

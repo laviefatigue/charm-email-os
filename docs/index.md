@@ -1,13 +1,15 @@
 ---
 title: Charm Email OS Documentation
 created: 2026-01-22
-updated: 2026-02-10
+updated: 2026-02-12
 tags: [hub, index]
 ---
 
 # Charm Email OS
 
 Cold email infrastructure management platform for managing domains, inboxes, and campaigns.
+
+> **Note**: This system runs **localhost-first**. All Coolify/VPS deployments are deprecated. See [[local-development/index]] for the primary development environment.
 
 ## Getting Started
 
@@ -56,11 +58,18 @@ docker compose -f docker-compose.local.yml up -d
 - [[guide-domain-purchase]] - How to purchase domains
 - [[guide-inbox-setup]] - Setting up inboxes via HyperTide wizard
 
+## Health & Kill Triggers
+
+- [[features/health-monitoring]] - Database-driven health monitoring
+- [[concepts/kill-triggers]] - Automated inbox termination system
+- [[local-development/emailbison-sync-worker]] - Sync worker configuration
+
 ## Architecture Decisions
 
 - [[adr-001-domain-status-lifecycle]] - Domain status model
 - [[adr-002-legacy-status]] - Handling pre-existing infrastructure
 - [[adr-003-wizard-redesign]] - InboxPurchaseWizard UX improvements
+- [[adr-005-differentiated-bounce-thresholds]] - Kill trigger bounce thresholds
 
 ## Components
 

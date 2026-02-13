@@ -146,15 +146,25 @@ export function DomainSourcingWizard({
   const handleGenerateDomains = async () => {
     setIsGenerating(true);
     try {
-      // Create a generation job
-      const job = await domainSourcingApi.createGenerationJob(clientId, 10);
-      setGenerationJobId(job.jobId);
-      toast.success('Domain generation started');
+      // Create a generation job (fill_package=true by default)
+      const job = await domainSourcingApi.createGenerationJob(clientId, 10, true);
+
+      // Handle skipped status (package capacity already reached)
+      if (job.status === 'skipped' || !job.jobId) {
+        toast.info(job.message || 'Package capacity reached - no domains needed');
+        setIsGenerating(false);
+        return;
+      }
+
+      // At this point, jobId is guaranteed non-null
+      const jobId = job.jobId;
+      setGenerationJobId(jobId);
+      toast.success(`Generating ${job.count} domains to fill package capacity...`);
 
       // Poll for job completion
       const pollInterval = setInterval(async () => {
         try {
-          const status = await domainSourcingApi.getJobStatus(job.jobId);
+          const status = await domainSourcingApi.getJobStatus(jobId);
           if (status.status === 'completed') {
             clearInterval(pollInterval);
             setIsGenerating(false);

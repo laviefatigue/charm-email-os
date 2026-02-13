@@ -67,11 +67,22 @@ function VariableGroup({
             </code>
             <div className="flex-1 min-w-0">
               <p className="text-sm text-muted-foreground">{variable.description}</p>
-              {showSource && variable.source && (
-                <p className="text-xs text-muted-foreground/70 mt-0.5">
-                  Source: {variable.source}
-                </p>
-              )}
+              <div className="flex items-center gap-2 mt-0.5">
+                {showSource && variable.source && (
+                  <span className="text-xs text-muted-foreground/70">
+                    Source: {variable.source}
+                  </span>
+                )}
+                {variable.usedIn && variable.usedIn.length > 0 && (
+                  <span className="text-xs text-muted-foreground/70 flex items-center gap-1">
+                    Used in: {variable.usedIn.map((pos) => (
+                      <Badge key={pos} variant="outline" className="text-[10px] px-1 py-0 h-4">
+                        E{pos}
+                      </Badge>
+                    ))}
+                  </span>
+                )}
+              </div>
             </div>
           </div>
         ))}

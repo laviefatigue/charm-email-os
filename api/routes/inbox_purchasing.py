@@ -137,6 +137,25 @@ async def _release_domain_locks(job_id: str) -> None:
     )
 
 
+async def _check_ns_verification(domain_ids: list) -> list[dict]:
+    """Check if all domains have verified nameservers. Returns list of unverified domains."""
+    unverified = []
+    rows = await fetch_all(
+        """SELECT id, domain_name, nameserver_status
+           FROM domains
+           WHERE id = ANY($1)
+           AND (nameserver_status IS NULL OR nameserver_status != 'verified')""",
+        [UUID(str(d)) for d in domain_ids]
+    )
+    for row in rows:
+        unverified.append({
+            "domain_id": str(row["id"]),
+            "domain_name": row.get("domain_name", ""),
+            "nameserver_status": row.get("nameserver_status") or "pending",
+        })
+    return unverified
+
+
 async def _transfer_domain_locks(old_job_id: str, new_job_id: str) -> None:
     """Transfer domain locks from an old job to a new one (used on retry)."""
     await execute(
@@ -1739,9 +1758,41 @@ async def execute_smart_order(
                 }
             )
 
+        # Check nameserver verification status before allowing order
+        ns_unverified = await _check_ns_verification(request.domain_ids)
+        if ns_unverified:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "Nameservers not verified",
+                    "unverified_domains": ns_unverified,
+                    "message": "All domains must have verified nameservers before ordering inboxes.",
+                }
+            )
+
+        # Fetch workspace for EmailBison workspace ID
+        workspace = await fetch_one(
+            "SELECT workspace_name, emailbison_workspace_id FROM workspaces WHERE id = $1",
+            client.get("workspace_id")
+        )
+
+        # Build sender display name from baseSenderNames (e.g., "Chris Booth")
+        base_names = onboarding_data.get("baseSenderNames", []) if onboarding_data else []
+        sender_display_name = ""
+        if base_names and len(base_names) > 0:
+            first_sender = base_names[0]
+            sender_display_name = f"{first_sender.get('firstName', '')} {first_sender.get('lastName', '')}".strip()
+
         # Create job with status='manual_processing' (sent to Slack immediately)
         job_id = str(uuid.uuid4())
         request_data = request.model_dump(mode="json")
+
+        # Enrich request_data with resolved client data for Slack message
+        request_data["company_name"] = client.get("name", "Unknown")
+        request_data["forwarding_domain"] = onboarding_data.get("primaryDomain", "") if onboarding_data else ""
+        request_data["bison_workspace_name"] = workspace.get("workspace_name", "") if workspace else ""
+        request_data["emailbison_workspace_id"] = workspace.get("emailbison_workspace_id", "") if workspace else ""
+        request_data["sender_display_name"] = sender_display_name
         await execute(
             """
             INSERT INTO inbox_purchase_jobs (
@@ -1795,14 +1846,28 @@ async def execute_smart_order(
         )
 
         # Send Slack notification immediately
-        slack_sent = await _send_slack_notification_for_job(job_id)
-        slack_msg = " Order sent to Slack." if slack_sent else " (Slack not configured)"
+        slack_result = await _send_slack_notification_for_job(job_id)
+        if not slack_result["success"]:
+            # Rollback: release domain locks and mark job as failed
+            await _release_domain_locks(job_id)
+            await execute(
+                "UPDATE inbox_purchase_jobs SET status = 'failed', errors = $1 WHERE id = $2",
+                [slack_result["error"]], UUID(job_id)
+            )
+            raise HTTPException(
+                status_code=502,
+                detail={
+                    "error": "Failed to send Slack notification",
+                    "slack_error": slack_result["error"],
+                    "job_id": job_id,
+                }
+            )
 
         return PurchaseJobResponse(
             job_id=job_id,
             client_id=request.client_id,
             status=OrderStatus.MANUAL_PROCESSING,
-            message=f"Order created for manual processing.{slack_msg} {order_count} order(s), {len(domain_names)} domains.",
+            message=f"Order sent to Slack. {order_count} order(s), {len(domain_names)} domains.",
             estimated_duration_seconds=0,  # No automation, manual processing
         )
 
@@ -1947,23 +2012,23 @@ import httpx
 SLACK_ORDERS_WEBHOOK_URL = os.getenv("SLACK_ORDERS_WEBHOOK_URL", "")
 
 
-async def _send_slack_notification_for_job(job_id: str) -> bool:
+async def _send_slack_notification_for_job(job_id: str) -> dict:
     """
     Send Slack notification for a job.
     Used for immediate notification on job creation (slack_only mode).
     Reuses existing _generate_slack_message formatting.
-    Returns True if notification sent successfully.
+    Returns {"success": bool, "error": str|None}
     """
     slack_webhook = os.getenv("SLACK_ORDERS_WEBHOOK_URL", "")
     if not slack_webhook:
-        logger.warning(f"SLACK_ORDERS_WEBHOOK_URL not configured - skipping Slack notification for job {job_id}")
-        return False
+        logger.error(f"SLACK_ORDERS_WEBHOOK_URL not configured - cannot send Slack notification for job {job_id}")
+        return {"success": False, "error": "SLACK_ORDERS_WEBHOOK_URL not configured in environment"}
 
     try:
         job = await _get_job_from_db(job_id)
         if not job:
             logger.error(f"Failed to fetch job {job_id} for Slack notification")
-            return False
+            return {"success": False, "error": f"Job {job_id} not found in database"}
 
         # Get client name
         client = await fetch_one(
@@ -1984,11 +2049,20 @@ async def _send_slack_notification_for_job(job_id: str) -> bool:
             response.raise_for_status()
 
         logger.info(f"Sent Slack notification for job {job_id}")
-        return True
+        return {"success": True, "error": None}
 
+    except httpx.HTTPStatusError as e:
+        error_msg = f"Slack API error {e.response.status_code}: {e.response.text[:200]}"
+        logger.error(f"Failed to send Slack notification for job {job_id}: {error_msg}")
+        return {"success": False, "error": error_msg}
+    except httpx.RequestError as e:
+        error_msg = f"Network error: {str(e)}"
+        logger.error(f"Failed to send Slack notification for job {job_id}: {error_msg}")
+        return {"success": False, "error": error_msg}
     except Exception as e:
-        logger.error(f"Failed to send Slack notification for job {job_id}: {e}")
-        return False
+        error_msg = f"Unexpected error: {str(e)}"
+        logger.error(f"Failed to send Slack notification for job {job_id}: {error_msg}")
+        return {"success": False, "error": error_msg}
 
 
 def _generate_order_summary_text(job: dict, client_name: str) -> str:
@@ -2109,25 +2183,26 @@ def _generate_slack_message(job: dict, client_name: str) -> dict:
     errors = job.get("errors", [])
     request_data = job.get("request_data", {})
 
-    # Parse sender names
-    sender_names_raw = request_data.get("sender_names") or []
-    if isinstance(sender_names_raw, str):
-        try:
-            sender_names_raw = json.loads(sender_names_raw)
-        except:
-            sender_names_raw = []
+    # Get sender display name (e.g., "Chris Booth") from enriched request_data
+    sender_display_name = request_data.get("sender_display_name", "")
+    if not sender_display_name:
+        # Fallback: try to extract from sender_names
+        sender_names_raw = request_data.get("sender_names") or []
+        if isinstance(sender_names_raw, str):
+            try:
+                sender_names_raw = json.loads(sender_names_raw)
+            except:
+                sender_names_raw = []
+        if sender_names_raw and isinstance(sender_names_raw, list) and len(sender_names_raw) > 0:
+            first = sender_names_raw[0]
+            if isinstance(first, dict):
+                sender_display_name = f"{first.get('firstName', '')} {first.get('lastName', '')}".strip()
 
-    sender_prefixes = []
-    for sn in sender_names_raw:
-        if isinstance(sn, dict) and sn.get("emailPrefix"):
-            sender_prefixes.append(sn["emailPrefix"])
-        elif isinstance(sn, str):
-            sender_prefixes.append(sn)
-
-    # Configuration
+    # Configuration from enriched request_data
     company_name = request_data.get("company_name") or client_name
     forwarding_domain = request_data.get("forwarding_domain", "")
-    bison_workspace = request_data.get("bison_workspace_name", "")
+    bison_workspace_name = request_data.get("bison_workspace_name", "")
+    bison_workspace_id = request_data.get("emailbison_workspace_id", "")
 
     # Group domains by order
     domains_per_order = 2 if provider_type == "entra" else 5
@@ -2184,7 +2259,7 @@ def _generate_slack_message(job: dict, client_name: str) -> dict:
         })
 
         # Sender names
-        sender_text = ", ".join(sender_prefixes) if sender_prefixes else "(use Hypertide defaults)"
+        sender_text = sender_display_name if sender_display_name else "(use Hypertide defaults)"
         blocks.append({
             "type": "section",
             "text": {
@@ -2204,13 +2279,26 @@ def _generate_slack_message(job: dict, client_name: str) -> dict:
         }
     })
 
+    # Show workspace NAME for Hypertide (they select by name in UI)
+    workspace_display = bison_workspace_name if bison_workspace_name else str(bison_workspace_id) if bison_workspace_id else ""
+
     blocks.append({
         "type": "section",
         "text": {
             "type": "mrkdwn",
-            "text": f"Company: `{company_name}`\nForwarding: `{forwarding_domain}`\nWorkspace: `{bison_workspace}`\nPayment: Saved card"
+            "text": f"Company: `{company_name}`\nForwarding: `{forwarding_domain}`\nEmailBison Workspace: `{workspace_display}`"
         }
     })
+
+    # For Google orders, include instructions to get Bison App ID
+    if provider_type == "google":
+        blocks.append({
+            "type": "context",
+            "elements": [{
+                "type": "mrkdwn",
+                "text": f":information_source: *Get Bison App ID:* Visit https://spellcast.hirecharm.com/sender-email-connect and switch workspace to `{workspace_display}`"
+            }]
+        })
 
     blocks.append({"type": "divider"})
 

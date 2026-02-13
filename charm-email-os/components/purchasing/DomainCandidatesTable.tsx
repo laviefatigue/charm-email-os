@@ -19,7 +19,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { Loader2, Check, X, DollarSign, ShoppingCart, RefreshCw, ArrowUpDown, Filter } from 'lucide-react';
+import { Loader2, Trash2, DollarSign, ShoppingCart, RefreshCw, ArrowUpDown, Filter } from 'lucide-react';
 import { domainSourcingApi } from '@/lib/api';
 import { toast } from 'sonner';
 import type { Domain } from '@/lib/types';
@@ -108,15 +108,13 @@ export function DomainCandidatesTable({
     }
   }, [domains]);
 
-  // Filter out purchased domains (they belong in DomainsNeedingSetupTable)
-  // Only show: pending, approved, rejected/denied
+  // Filter to only show available domains (generated, ready for purchase)
+  // Purchased/active domains belong in DomainsNeedingSetupTable
   const filteredDomains = useMemo(() => {
     return domains.filter(d =>
-      d.status === 'pending' ||
-      d.status === 'pending_approval' ||
-      d.status === 'approved' ||
-      d.status === 'rejected' ||
-      d.status === 'denied'
+      d.status === 'available' ||
+      d.status === 'pending' ||       // Legacy support
+      d.status === 'pending_approval' // Legacy support
     );
   }, [domains]);
 
@@ -144,26 +142,9 @@ export function DomainCandidatesTable({
 
   // Sort domains based on selected sort option
   const sortedDomains = useMemo(() => {
-    const statusOrder: Record<string, number> = {
-      pending: 0,
-      pending_approval: 0,
-      approved: 1,
-      rejected: 2,
-      denied: 2,
-    };
-
     return [...tldFilteredDomains].sort((a, b) => {
-      // Denied/rejected domains always at bottom regardless of sort
-      const aIsDenied = a.status === 'rejected' || a.status === 'denied';
-      const bIsDenied = b.status === 'rejected' || b.status === 'denied';
-      if (aIsDenied && !bIsDenied) return 1;
-      if (bIsDenied && !aIsDenied) return -1;
-
       if (sortBy === 'status') {
-        const aOrder = statusOrder[a.status] ?? 3;
-        const bOrder = statusOrder[b.status] ?? 3;
-        if (aOrder !== bOrder) return aOrder - bOrder;
-        // Same status — secondary sort by name
+        // All domains should be 'available' now, just sort by name
         return (a.domainName || a.domain || '').localeCompare(b.domainName || b.domain || '');
       }
 
@@ -185,16 +166,18 @@ export function DomainCandidatesTable({
 
   // Count domains that need price check (use filtered domains)
   const domainsNeedingPriceCheck = useMemo(() => {
-    return filteredDomains.filter(d => d.status === 'approved' && !prices[d.id]).length;
+    return filteredDomains.filter(d => !prices[d.id] && !d.cachedPrice).length;
   }, [filteredDomains, prices]);
 
-  // Get domains that qualify for purchase (approved, available, under threshold)
+  // Get domains that qualify for purchase (available with price under threshold)
   const qualifiedDomains = useMemo(() => {
     return filteredDomains.filter((d) => {
-      if (d.status !== 'approved') return false;
       const priceInfo = prices[d.id];
-      if (!priceInfo || !priceInfo.available) return false;
-      const priceNum = parseFloat(priceInfo.price);
+      // Check if we have price info either from state or cached in domain
+      const hasPrice = priceInfo?.available || d.cachedPrice;
+      if (!hasPrice) return false;
+      const priceNum = priceInfo?.price ? parseFloat(priceInfo.price) :
+                       (d.cachedPrice ? parseFloat(String(d.cachedPrice)) : Infinity);
       return !isNaN(priceNum) && priceNum <= PRICE_THRESHOLD;
     });
   }, [filteredDomains, prices]);
@@ -226,31 +209,12 @@ export function DomainCandidatesTable({
     });
   }, []);
 
-  const handleApprove = useCallback(async (domainId: string) => {
+  // Remove a domain candidate (user doesn't want to see it)
+  const handleRemove = useCallback(async (domainId: string) => {
     setDomainState(domainId, { loading: true, error: null });
     try {
-      await domainSourcingApi.approveDomain(domainId);
-      onDomainUpdate?.();
-    } catch (err) {
-      setDomainState(domainId, { loading: false, error: 'Failed to approve' });
-    }
-  }, [onDomainUpdate, setDomainState]);
-
-  const handleDeny = useCallback(async (domainId: string) => {
-    setDomainState(domainId, { loading: true, error: null });
-    try {
-      await domainSourcingApi.denyDomain(domainId);
-      onDomainUpdate?.();
-    } catch (err) {
-      setDomainState(domainId, { loading: false, error: 'Failed to deny' });
-    }
-  }, [onDomainUpdate, setDomainState]);
-
-  const handleUnapprove = useCallback(async (domainId: string) => {
-    setDomainState(domainId, { loading: true, error: null });
-    try {
-      await domainSourcingApi.unapproveDomain(domainId);
-      // Clear cached price when unapproving
+      await domainSourcingApi.removeDomain(domainId);
+      // Clear cached price
       setPrices((prev) => {
         const next = { ...prev };
         delete next[domainId];
@@ -263,8 +227,9 @@ export function DomainCandidatesTable({
         return next;
       });
       onDomainUpdate?.();
+      toast.success('Domain removed');
     } catch (err) {
-      setDomainState(domainId, { loading: false, error: 'Failed to unapprove' });
+      setDomainState(domainId, { loading: false, error: 'Failed to remove' });
     }
   }, [onDomainUpdate, setDomainState]);
 
@@ -295,12 +260,10 @@ export function DomainCandidatesTable({
     }
   }, [setDomainState]);
 
-  // Bulk check all approved domains
+  // Bulk check all available domains
   const handleCheckAllPrices = useCallback(async () => {
-    // Get all approved domains (check all, not just those without prices)
-    const approvedDomains = filteredDomains.filter(d => d.status === 'approved');
-    if (approvedDomains.length === 0) {
-      toast.info('No approved domains to check prices for');
+    if (filteredDomains.length === 0) {
+      toast.info('No domains to check prices for');
       return;
     }
 
@@ -396,15 +359,14 @@ export function DomainCandidatesTable({
 
   const getStatusBadge = (status: string) => {
     switch (status) {
-      case 'pending':
-      case 'pending_approval':
-        return <Badge variant="outline" className="text-yellow-600 border-yellow-600">Pending</Badge>;
-      case 'approved':
-        return <Badge variant="outline" className="text-blue-600 border-blue-600">Approved</Badge>;
-      case 'rejected':
-        return <Badge variant="outline" className="text-red-600 border-red-600">Rejected</Badge>;
+      case 'available':
+      case 'pending':        // Legacy
+      case 'pending_approval': // Legacy
+        return <Badge variant="outline" className="text-blue-600 border-blue-600">Available</Badge>;
       case 'purchased':
         return <Badge variant="outline" className="text-green-600 border-green-600">Purchased</Badge>;
+      case 'active':
+        return <Badge variant="outline" className="text-green-600 border-green-600">Active</Badge>;
       default:
         return <Badge variant="outline">{status}</Badge>;
     }
@@ -466,27 +428,13 @@ export function DomainCandidatesTable({
       );
     }
 
-    // Show check price button for approved domains
-    if (domain.status === 'approved') {
-      return (
-        <Button
-          size="sm"
-          variant="ghost"
-          className="h-7 px-2 text-xs"
-          onClick={() => handleCheckPrice(domain.id)}
-        >
-          <DollarSign className="h-3 w-3 mr-1" />
-          Check
-        </Button>
-      );
-    }
-
-    return <span className="text-muted-foreground">-</span>;
+    // Edge case fallback - domains without price shouldn't reach here
+    // (backend filters to only return priced domains)
+    return <span className="text-muted-foreground text-xs">Pending</span>;
   };
 
   const renderActions = (domain: Domain) => {
     const state = actionStates[domain.id] || { loading: false, error: null };
-    const priceInfo = prices[domain.id];
     const status = domain.status;
 
     if (state.loading) {
@@ -508,52 +456,21 @@ export function DomainCandidatesTable({
       );
     }
 
-    // Pending: Show Approve/Deny (centered)
-    if (status === 'pending' || status === 'pending_approval') {
-      return (
-        <div className="flex gap-2 justify-center">
-          <Button
-            size="sm"
-            variant="outline"
-            className="h-7 text-green-600 hover:text-green-700 hover:bg-green-50"
-            onClick={() => handleApprove(domain.id)}
-          >
-            <Check className="h-3 w-3 mr-1" />
-            Approve
-          </Button>
-          <Button
-            size="sm"
-            variant="outline"
-            className="h-7 text-red-600 hover:text-red-700 hover:bg-red-50"
-            onClick={() => handleDeny(domain.id)}
-          >
-            <X className="h-3 w-3 mr-1" />
-            Deny
-          </Button>
-        </div>
-      );
-    }
-
-    // Approved: Show Unapprove button to revert to pending
-    if (status === 'approved') {
+    // Available domain: Show remove button (to dismiss unwanted suggestions)
+    if (status === 'available' || status === 'pending' || status === 'pending_approval') {
       return (
         <div className="flex justify-center">
           <Button
             size="sm"
-            variant="outline"
-            className="h-7 text-orange-600 hover:text-orange-700 hover:bg-orange-50"
-            onClick={() => handleUnapprove(domain.id)}
+            variant="ghost"
+            className="h-7 text-muted-foreground hover:text-red-600 hover:bg-red-50"
+            onClick={() => handleRemove(domain.id)}
+            title="Remove this domain suggestion"
           >
-            <X className="h-3 w-3 mr-1" />
-            Unapprove
+            <Trash2 className="h-3 w-3" />
           </Button>
         </div>
       );
-    }
-
-    // Rejected: Just show dash (centered)
-    if (status === 'rejected') {
-      return <span className="text-sm text-muted-foreground block text-center">-</span>;
     }
 
     // Purchased: Show completed (centered)
@@ -565,10 +482,12 @@ export function DomainCandidatesTable({
   };
 
   const isQualified = (domain: Domain) => {
-    if (domain.status !== 'approved') return false;
     const priceInfo = prices[domain.id];
-    if (!priceInfo || !priceInfo.available) return false;
-    const priceNum = parseFloat(priceInfo.price);
+    // Check if we have price info either from state or cached in domain
+    const hasPrice = priceInfo?.available || domain.cachedPrice;
+    if (!hasPrice) return false;
+    const priceNum = priceInfo?.price ? parseFloat(priceInfo.price) :
+                     (domain.cachedPrice ? parseFloat(String(domain.cachedPrice)) : Infinity);
     return !isNaN(priceNum) && priceNum <= PRICE_THRESHOLD;
   };
 
@@ -635,7 +554,7 @@ export function DomainCandidatesTable({
         ) : (
           <div className="flex items-center justify-between">
             <span className="text-sm text-blue-700">
-              {sortedDomains.filter(d => d.status === 'approved').length} approved domain{sortedDomains.filter(d => d.status === 'approved').length !== 1 ? 's' : ''}
+              {sortedDomains.length} available domain{sortedDomains.length !== 1 ? 's' : ''}
               {domainsNeedingPriceCheck > 0 && ` · ${domainsNeedingPriceCheck} need pricing`}
             </span>
             <Button

@@ -49,12 +49,15 @@ import {
   LIFECYCLE_STATUS_CONFIG,
   formatCooldownTime,
 } from '@/lib/types/inventory';
+import type { HealthRange } from '@/lib/types/health';
+import { HEALTH_RANGE_THRESHOLDS } from '@/lib/types/health';
 
 interface InventoryTableProps {
   inboxes: InventoryInbox[];
   isLoading?: boolean;
   poolStatusFilter?: InventoryPoolStatus | null;
   lifecycleStatusFilter?: InventoryLifecycleStatus | null;
+  healthRangeFilter?: HealthRange | null;
   onKillAndReplace?: (inboxId: string, reason: string, autoReplace: boolean) => Promise<void>;
   onClearFilter?: () => void;
   className?: string;
@@ -65,6 +68,7 @@ export function InventoryTable({
   isLoading = false,
   poolStatusFilter,
   lifecycleStatusFilter,
+  healthRangeFilter,
   onKillAndReplace,
   onClearFilter,
   className,
@@ -94,6 +98,22 @@ export function InventoryTable({
     // Lifecycle status filter
     if (lifecycleStatusFilter && inbox.lifecycleStatus !== lifecycleStatusFilter) {
       return false;
+    }
+
+    // Health range filter (based on health score)
+    if (healthRangeFilter) {
+      const healthScore = inbox.healthScore ?? 0;
+      const { min, max } = HEALTH_RANGE_THRESHOLDS[healthRangeFilter];
+      if (healthScore < min || healthScore >= max) {
+        // Special case: critical includes 0-40, and healthy includes 100
+        if (healthRangeFilter === 'healthy' && healthScore === 100) {
+          // Allow exact 100
+        } else if (healthRangeFilter === 'critical' && healthScore >= 0 && healthScore < 40) {
+          // Already within range
+        } else {
+          return false;
+        }
+      }
     }
 
     return true;
@@ -143,7 +163,7 @@ export function InventoryTable({
         </div>
 
         {/* Active Filters */}
-        {(poolStatusFilter || lifecycleStatusFilter) && (
+        {(poolStatusFilter || lifecycleStatusFilter || healthRangeFilter) && (
           <div className="flex items-center gap-2">
             <Filter className="h-4 w-4 text-muted-foreground" />
             {poolStatusFilter && (
@@ -154,6 +174,11 @@ export function InventoryTable({
             {lifecycleStatusFilter && (
               <Badge variant="secondary" className="gap-1">
                 Lifecycle: {LIFECYCLE_STATUS_CONFIG[lifecycleStatusFilter].label}
+              </Badge>
+            )}
+            {healthRangeFilter && (
+              <Badge variant="secondary" className="gap-1">
+                Health: {HEALTH_RANGE_THRESHOLDS[healthRangeFilter].label}
               </Badge>
             )}
             <Button variant="ghost" size="sm" onClick={onClearFilter}>

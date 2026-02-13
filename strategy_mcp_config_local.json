@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "strategy-generator": {
+      "command": "python",
+      "args": ["D:\\Work\\charm-email-os\\strategy_mcp\\server.py"],
+      "env": {
+        "POSTGRES_HOST": "31.97.142.123",
+        "POSTGRES_PORT": "5432",
+        "POSTGRES_DB": "postgres",
+        "POSTGRES_USER": "postgres",
+        "POSTGRES_PASSWORD": "ZEN3hMv6UpA0hfd8OcAUSiJWgpY33q5V"
+      }
+    }
+  }
+}

@@ -3,21 +3,48 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Install system dependencies
+# Install system dependencies for Playwright/Chromium
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
+    # Playwright/Chromium dependencies
+    libnss3 \
+    libnspr4 \
+    libatk1.0-0 \
+    libatk-bridge2.0-0 \
+    libcups2 \
+    libdrm2 \
+    libxkbcommon0 \
+    libxcomposite1 \
+    libxdamage1 \
+    libxfixes3 \
+    libxrandr2 \
+    libgbm1 \
+    libasound2 \
+    libpango-1.0-0 \
+    libcairo2 \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements and install Python dependencies
 COPY requirements-sync.txt .
 RUN pip install --no-cache-dir -r requirements-sync.txt
 
+# Install Playwright browsers (Chromium only for smaller image)
+RUN playwright install chromium
+
 # Copy sync modules and worker
 COPY sync_modules/ ./sync_modules/
 COPY emailbison_sync_worker.py .
 
 # Create non-root user for security
-RUN useradd -m -u 1000 syncworker
+RUN useradd -m -u 1000 syncworker && \
+    chown -R syncworker:syncworker /app
+
+# Set Playwright browser path to be accessible by non-root user
+ENV PLAYWRIGHT_BROWSERS_PATH=/app/.playwright-browsers
+RUN mkdir -p /app/.playwright-browsers && \
+    playwright install chromium && \
+    chown -R syncworker:syncworker /app/.playwright-browsers
+
 USER syncworker
 
 # Environment defaults
@@ -30,8 +57,16 @@ ENV SYNC_INTERVAL_EVENTS=300
 ENV SYNC_INTERVAL_FULL=3600
 ENV SYNC_INTERVAL_HEALTH=900
 ENV SYNC_INTERVAL_KILL=1800
+ENV SYNC_INTERVAL_OAUTH_QUEUE=300
+ENV SYNC_INTERVAL_OAUTH_VERIFY=2592000
 ENV RETENTION_DAYS_AUDIT=90
 ENV RETENTION_DAYS_BOUNCES=90
+
+# EmailBison browser authentication (for OAuth scraping)
+# These should be provided at runtime via docker-compose or secrets
+ENV EMAILBISON_API_URL=https://spellcast.hirecharm.com
+# ENV EMAILBISON_BROWSER_EMAIL=
+# ENV EMAILBISON_BROWSER_PASSWORD=
 
 # Health check
 HEALTHCHECK --interval=60s --timeout=10s --start-period=30s --retries=3 \

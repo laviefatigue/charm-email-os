@@ -113,6 +113,33 @@ async def create_local_workspace(workspace_name: str, emailbison_workspace_id: i
         return None
 
 
+async def queue_oauth_sync(workspace_id: UUID, emailbison_workspace_id: int) -> bool:
+    """
+    Queue OAuth config discovery for a new workspace.
+
+    The sync worker polls the oauth_sync_queue table and uses browser automation
+    to scrape the Google OAuth Client ID from the EmailBison UI.
+
+    Args:
+        workspace_id: Local workspace UUID
+        emailbison_workspace_id: EmailBison workspace ID
+
+    Returns:
+        True if queued successfully, False otherwise
+    """
+    try:
+        await execute("""
+            INSERT INTO oauth_sync_queue (workspace_id, emailbison_workspace_id)
+            VALUES ($1, $2)
+            ON CONFLICT (workspace_id) DO NOTHING
+        """, workspace_id, emailbison_workspace_id)
+        logger.info(f"Queued OAuth sync for workspace {workspace_id} (EmailBison: {emailbison_workspace_id})")
+        return True
+    except Exception as e:
+        logger.warning(f"Failed to queue OAuth sync for workspace {workspace_id}: {e}")
+        return False
+
+
 @router.get("", response_model=ClientList)
 async def list_clients(
     page: int = Query(1, ge=1),
@@ -229,6 +256,8 @@ async def create_client(client: ClientCreate):
             if workspace_id:
                 workspace_name = client.name
                 logger.info(f"Auto-created workspace '{client.name}' (local: {workspace_id}, EmailBison: {eb_workspace_id})")
+                # Queue OAuth config discovery for the new workspace
+                await queue_oauth_sync(workspace_id, eb_workspace_id)
             else:
                 logger.warning(f"Failed to create local workspace for '{client.name}', client will be created without workspace")
         else:
@@ -488,6 +517,9 @@ async def create_workspace_for_client(client_id: UUID):
         client_id
     )
 
+    # 4. Queue OAuth config discovery
+    await queue_oauth_sync(workspace_id, eb_workspace_id)
+
     logger.info(f"Created and linked workspace '{client_name}' for client {client_id} (local: {workspace_id}, EmailBison: {eb_workspace_id})")
 
     return await get_client(client_id)
@@ -569,6 +601,9 @@ async def import_emailbison_workspace(client_id: UUID, request: ImportWorkspaceR
         workspace_id,
         client_id
     )
+
+    # Queue OAuth config discovery for the imported workspace
+    await queue_oauth_sync(workspace_id, request.emailbison_workspace_id)
 
     logger.info(f"Linked client {client_id} to workspace {workspace_id}")
 

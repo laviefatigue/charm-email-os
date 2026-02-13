@@ -260,8 +260,8 @@ async def list_tools():
         ),
         Tool(
             name="save_domain_suggestion",
-            description="""Save a single domain suggestion for human review.
-            Each domain can be independently approved or denied by the user.
+            description="""Save a single domain suggestion as available for purchase.
+            Each domain will be immediately available for the user to select and buy.
             Call this once per domain - don't batch them.
 
             STRICT TLD POLICY: Only .com, .co, and .info domains are allowed.
@@ -497,12 +497,12 @@ async def call_tool(name: str, arguments: dict):
 
             # TLD already extracted above for validation
 
-            # Insert new domain
+            # Insert new domain as 'available' - ready for user to select and purchase
             domain_id = str(uuid.uuid4())
             cur.execute("""
                 INSERT INTO domains (id, workspace_id, domain_name, notes, rationale,
                                      legitimacy_score, approval_status, created_at)
-                VALUES (%s, %s, %s, %s, %s, %s, 'pending', NOW())
+                VALUES (%s, %s, %s, %s, %s, %s, 'available', NOW())
             """, (domain_id, workspace_id, domain_name,
                   f"AI generated: {rationale}", rationale, legitimacy_score))
 

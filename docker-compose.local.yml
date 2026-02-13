@@ -71,7 +71,12 @@ services:
       - DEBUG=true
       # CORS - allow local frontend
       - CORS_ORIGINS=["http://localhost:3000","http://charm-frontend:3000"]
-      # EmailBison - loaded from .env.local via env_file
+      # Slack webhook for manual order notifications
+      - SLACK_ORDERS_WEBHOOK_URL=${SLACK_ORDERS_WEBHOOK_URL:-}
+      # API keys loaded from .env.local via env_file:
+      # - EMAILBISON_API_KEY
+      # - DYNADOT_API_KEY
+      # - PORKBUN_API_KEY, PORKBUN_API_SECRET (if configured)
     depends_on:
       postgres:
         condition: service_healthy
@@ -145,6 +150,8 @@ services:
       - STRATEGY_LOCAL_MODE=false
       # Enable 4-campaign phased generation
       - STRATEGY_PHASED_MODE=true
+      # Use Opus model for strategy generation
+      - CLAUDE_MODEL=opus
     volumes:
       # Mount Claude credentials from Windows user profile
       - ${USERPROFILE}/.claude:/home/claude/.claude
@@ -192,6 +199,7 @@ services:
       start_period: 10s
 
   # ----- DOMAIN WORKER: AI Domain Generation -----
+  # Uncomment to enable Claude Code-powered domain generation
   # domain-worker:
   #   build:
   #     context: .
@@ -207,8 +215,10 @@ services:
   #     - POLL_INTERVAL=5
   #     - CLAUDE_ACCOUNT=ClaudeCodeMax
   #     - OAUTH_CHECK_INTERVAL=3600
+  #     # Auto-trigger price check after domain generation
+  #     - API_BASE_URL=http://charm-api:8000
   #   volumes:
-  #     - charm-claude-credentials:/home/claude/.claude
+  #     - ${USERPROFILE}/.claude:/home/claude/.claude
   #   depends_on:
   #     postgres:
   #       condition: service_healthy
@@ -258,6 +268,8 @@ services:
       dockerfile: Dockerfile.emailbison-sync
     container_name: charm-emailbison-sync
     restart: unless-stopped
+    env_file:
+      - .env.local
     environment:
       # Local PostgreSQL
       - POSTGRES_HOST=postgres
@@ -265,14 +277,18 @@ services:
       - POSTGRES_USER=postgres
       - POSTGRES_PASSWORD=localdevpassword
       - POSTGRES_DB=postgres
-      # EmailBison API
-      - EMAILBISON_API_KEY=${EMAILBISON_API_KEY:-}
+      # EmailBison API (EMAILBISON_API_KEY loaded from .env.local)
       - EMAILBISON_API_URL=https://spellcast.hirecharm.com/api
       # Sync intervals (seconds)
       - SYNC_INTERVAL_EVENTS=300
       - SYNC_INTERVAL_FULL=3600
       - SYNC_INTERVAL_HEALTH=900
       - SYNC_INTERVAL_KILL=1800
+      - SYNC_INTERVAL_OAUTH_QUEUE=300
+      - SYNC_INTERVAL_OAUTH_VERIFY=2592000
+      # OAuth scraping credentials (loaded from .env.local):
+      # - EMAILBISON_BROWSER_EMAIL
+      # - EMAILBISON_BROWSER_PASSWORD
       # Alerting
       - SLACK_WEBHOOK_URL=${SLACK_WEBHOOK_URL:-}
       # Retention (days)
@@ -290,33 +306,77 @@ services:
       retries: 3
       start_period: 30s
 
-  # ----- PURCHASE WORKER: Inbox Provisioning (HyperTide) -----
-  # purchase-worker:
-  #   build:
-  #     context: .
-  #     dockerfile: Dockerfile.purchase-worker
-  #   container_name: charm-purchase-worker
-  #   restart: unless-stopped
-  #   environment:
-  #     - POSTGRES_HOST=postgres
-  #     - POSTGRES_PORT=5432
-  #     - POSTGRES_DB=postgres
-  #     - POSTGRES_USER=postgres
-  #     - POSTGRES_PASSWORD=localdevpassword
-  #     - POLL_INTERVAL=10
-  #   volumes:
-  #     - charm-claude-credentials:/home/claude/.claude
-  #   depends_on:
-  #     postgres:
-  #       condition: service_healthy
-  #   networks:
-  #     - charm-network
-  #   healthcheck:
-  #     test: ["CMD", "pgrep", "-f", "python3.*purchase_worker.py"]
-  #     interval: 30s
-  #     timeout: 10s
-  #     retries: 3
-  #     start_period: 10s
+  # ----- PRICE CHECKER: Background Domain Price Checking -----
+  price-checker:
+    build:
+      context: .
+      dockerfile: Dockerfile.price-checker
+    container_name: charm-price-checker
+    restart: unless-stopped
+    env_file:
+      - .env.local
+    environment:
+      # Local PostgreSQL
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=postgres
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=localdevpassword
+      # Price checker configuration
+      - CHECK_INTERVAL=12
+      - STALE_HOURS=24
+      # API keys loaded from .env.local via env_file:
+      # - DYNADOT_API_KEY
+      # - PORKBUN_API_KEY, PORKBUN_API_SECRET (if configured)
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - charm-network
+    healthcheck:
+      test: ["CMD", "pgrep", "-f", "python.*price_checker_worker.py"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # ----- HYPERTIDE WORKER: Domain Purchases & Inbox Provisioning -----
+  hypertide-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.hypertide-worker
+    container_name: charm-hypertide-worker
+    restart: unless-stopped
+    env_file:
+      - .env.local
+    environment:
+      # Local PostgreSQL
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=postgres
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=localdevpassword
+      # Worker configuration
+      - POLL_INTERVAL=10
+      - STALE_JOB_MINUTES=30
+      - WORKER_ID=local-hypertide-1
+      # Hypertide settings
+      - HYPERTIDE_HEADLESS=true
+      # API keys loaded from .env.local via env_file:
+      # - DYNADOT_API_KEY
+      # - PORKBUN_API_KEY, PORKBUN_API_SECRET
+      # - HYPERTIDE_SESSION_B64
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - charm-network
+    healthcheck:
+      test: ["CMD", "pgrep", "-f", "python.*hypertide_worker.py"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
 
 networks:
   charm-network:

@@ -20,12 +20,10 @@ import {
   DomainEditModal,
   InboxEditModal,
   DomainInboxTree,
-  InventoryHealthDashboard,
 } from '@/components/inboxes';
 import { DomainCandidatesTable, DomainsNeedingSetupTable, InboxProvisionModal, PurchaseJobsTable, PackageFulfillmentDashboard } from '@/components/purchasing';
 import { useClientStore, useInfrastructureStore } from '@/lib/stores';
-import { domainSourcingApi, subscriptionApi, healthApi, type CanGenerateResponse, type GenerateForClientResponse } from '@/lib/api';
-import type { InventoryHealth } from '@/lib/types';
+import { domainSourcingApi, subscriptionApi, type CanGenerateResponse, type GenerateForClientResponse } from '@/lib/api';
 import type { Domain, Inbox, SubscriptionWithUsage } from '@/lib/types';
 
 export default function InboxesPage() {
@@ -70,9 +68,12 @@ export default function InboxesPage() {
     (d) => d.clientId === clientId && (d.status === 'active' || d.status === 'legacy' || d.status === 'warming' || d.status === 'flagged' || d.status === 'dead')
   ), [allDomains, clientId]);
 
-  // Purchase domains: pending, approved, rejected, purchased (need inbox setup), provisioning
+  // Purchase domains: available, pending, approved, rejected, purchased (need inbox setup), provisioning
+  // Only show candidates that have pricing (cachedPrice) - unpriced domains are hidden until background worker prices them
   const purchaseDomains = useMemo(() => allDomains.filter(
-    (d) => d.clientId === clientId && (d.status === 'pending' || d.status === 'pending_approval' || d.status === 'approved' || d.status === 'rejected' || d.status === 'purchased' || d.status === 'provisioning')
+    (d) => d.clientId === clientId
+      && (d.status === 'available' || d.status === 'pending' || d.status === 'pending_approval' || d.status === 'approved' || d.status === 'rejected' || d.status === 'purchased' || d.status === 'provisioning')
+      && (d.cachedPrice != null || d.status === 'purchased' || d.status === 'provisioning') // Show purchased/provisioning regardless of price
   ), [allDomains, clientId]);
 
   // Purchased domains needing inbox setup (bought but no inboxes yet)
@@ -98,8 +99,6 @@ export default function InboxesPage() {
   const [canGenerateInfo, setCanGenerateInfo] = useState<CanGenerateResponse | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
   const [subscription, setSubscription] = useState<SubscriptionWithUsage | null>(null);
-  const [inventoryHealth, setInventoryHealth] = useState<InventoryHealth | null>(null);
-  const [isLoadingHealth, setIsLoadingHealth] = useState(false);
 
   // Default tab: new clients (no inventory) → procurement, existing → inventory
   const [activeTab, setActiveTab] = useState<string>(() => {
@@ -141,22 +140,6 @@ export default function InboxesPage() {
     fetchSubscription();
   }, [clientId]);
 
-  // Fetch inventory health from EmailBison + RBL data
-  useEffect(() => {
-    const fetchInventoryHealth = async () => {
-      setIsLoadingHealth(true);
-      try {
-        const health = await healthApi.getInventoryHealth(clientId);
-        setInventoryHealth(health);
-      } catch (error) {
-        console.error('Failed to fetch inventory health:', error);
-      } finally {
-        setIsLoadingHealth(false);
-      }
-    };
-    fetchInventoryHealth();
-  }, [clientId]);
-
   const filteredInboxes = useMemo(() => {
     if (!selectedDomainId) return allInboxes;
     return allInboxes.filter((i) => i.domainId === selectedDomainId);
@@ -166,20 +149,6 @@ export default function InboxesPage() {
   const handleExpandDomain = useCallback((domainId: string) => {
     fetchInboxesForDomainLazy(domainId, clientId);
   }, [fetchInboxesForDomainLazy, clientId]);
-
-  // Refresh inventory health data
-  const handleRefreshHealth = useCallback(async () => {
-    setIsLoadingHealth(true);
-    try {
-      const health = await healthApi.getInventoryHealth(clientId);
-      setInventoryHealth(health);
-    } catch (error) {
-      console.error('Failed to refresh inventory health:', error);
-      toast.error('Failed to refresh health data');
-    } finally {
-      setIsLoadingHealth(false);
-    }
-  }, [clientId]);
 
   // Count pending approvals (use both 'pending' and legacy 'pending_approval')
   const pendingDomainsCount = domains.filter((d) => d.status === 'pending' || d.status === 'pending_approval').length;
@@ -248,14 +217,25 @@ export default function InboxesPage() {
     }
     setIsGenerating(true);
     try {
-      // Create a job for the Claude Code domain worker
-      const job = await domainSourcingApi.createGenerationJob(clientId, 10);
-      toast.success(`Domain generation job queued. Domains will appear shortly.`);
+      // Create a job for the Claude Code domain worker (fill_package=true by default)
+      const job = await domainSourcingApi.createGenerationJob(clientId, 10, true);
+
+      // Handle skipped status (package capacity already reached)
+      if (job.status === 'skipped' || !job.jobId) {
+        toast.info(job.message || 'Package capacity reached - no domains needed');
+        setIsGenerating(false);
+        return;
+      }
+
+      toast.success(`Generating ${job.count} domains to fill package capacity...`);
+
+      // At this point, jobId is guaranteed non-null (we returned early if skipped)
+      const jobId = job.jobId!;
 
       // Poll for job completion and refresh domains
       const pollInterval = setInterval(async () => {
         try {
-          const status = await domainSourcingApi.getJobStatus(job.jobId);
+          const status = await domainSourcingApi.getJobStatus(jobId);
           if (status.status === 'completed') {
             clearInterval(pollInterval);
             await fetchDomainsByClient(clientId);
@@ -463,16 +443,6 @@ export default function InboxesPage() {
 
           {/* Active Inventory Tab */}
           <TabsContent value="inventory">
-            {/* Inventory Health Dashboard */}
-            <div className="mb-6">
-              <InventoryHealthDashboard
-                health={inventoryHealth}
-                isLoading={isLoadingHealth}
-                onRefresh={handleRefreshHealth}
-                pendingInboxes={pendingInboxes}
-              />
-            </div>
-
             {/* Empty State for Inventory */}
             {inventoryDomains.length === 0 && (
               <Alert className="mb-6">

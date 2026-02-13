@@ -1,23 +1,31 @@
 ---
-title: Deployment Documentation
+title: Deployment Documentation (Deprecated)
 created: 2026-01-16
-updated: 2026-02-10
-tags: [deployment, index]
+updated: 2026-02-11
+tags: [deployment, index, deprecated]
 ---
 
-# Deployment Documentation
+# Deployment Documentation (DEPRECATED)
+
+> **⚠️ DEPRECATED**: Coolify/VPS production deployments are no longer active. The Charm Email OS system now runs entirely on **localhost via Docker**. This documentation is preserved for legacy reference only.
+>
+> **Use instead**: [[../local-development/index]] for the current localhost-first setup.
+
+---
+
+*Legacy documentation below - for reference only*
 
 Documentation for deploying Charm Email OS components.
 
 ## Development Workflow
 
-**IMPORTANT**: All changes start locally, then deploy to production.
+All development happens locally via Docker:
 
 ```
-LOCAL DEVELOPMENT → TEST → COMMIT → PRODUCTION (Coolify)
+LOCAL DEVELOPMENT → TEST → COMMIT
 ```
 
-See [[../local-development/development-workflow]] for the complete workflow.
+See [[../local-development/index]] for the complete local development guide.
 
 ## Deployment Guides
 

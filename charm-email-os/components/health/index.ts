@@ -19,3 +19,9 @@ export { EmailBisonCapacity } from './EmailBisonCapacity';
 export { InventoryBarChart } from './InventoryBarChart';
 export { InventoryTable } from './InventoryTable';
 export { AutoKillToggle } from './AutoKillToggle';
+
+// Infrastructure Health (Database-only)
+export { HealthDistributionPieChart } from './HealthDistributionPieChart';
+export type { HealthRange, HealthDistribution } from './HealthDistributionPieChart';
+export { LifecycleDistributionChart } from './LifecycleDistributionChart';
+export { InventorySegmentationChart } from './InventorySegmentationChart';

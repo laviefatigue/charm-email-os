@@ -49,6 +49,11 @@ POLL_INTERVAL = int(os.getenv("POLL_INTERVAL", "5"))
 CLAUDE_ACCOUNT = os.getenv("CLAUDE_ACCOUNT", "ClaudeCodeMax")
 OAUTH_CHECK_INTERVAL = int(os.getenv("OAUTH_CHECK_INTERVAL", "3600"))  # 1 hour default
 ALERT_WEBHOOK_URL = os.getenv("ALERT_WEBHOOK_URL", "")  # Optional webhook for alerts
+CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "opus")  # Claude model to use (opus recommended)
+
+# Direct mode: Eliminates MCP overhead by having worker handle DB operations directly
+# Worker reads context -> Claude returns JSON -> Worker saves to DB
+DIRECT_MODE = os.getenv("STRATEGY_DIRECT_MODE", "false").lower() == "true"
 
 # Path to this project (for MCP config)
 PROJECT_PATH = os.path.dirname(os.path.abspath(__file__))
@@ -345,6 +350,228 @@ def mark_job_failed(job_id: str, error: str):
 
 
 # =============================================================================
+# DIRECT MODE FUNCTIONS - Eliminates MCP by handling DB operations in worker
+# =============================================================================
+
+def fetch_client_context(client_id: str) -> dict:
+    """Fetch full client context for strategy generation (direct mode).
+
+    This replaces the MCP get_client_context tool, reading directly from DB.
+    """
+    conn = get_db()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+
+    try:
+        # Get client info
+        cur.execute("""
+            SELECT c.id, c.client_name, c.website, w.workspace_name
+            FROM clients c
+            LEFT JOIN workspaces w ON c.workspace_id = w.id
+            WHERE c.id = %s
+        """, (client_id,))
+        client = cur.fetchone()
+        if not client:
+            return {"error": f"Client {client_id} not found"}
+
+        # Get onboarding submission
+        cur.execute("""
+            SELECT * FROM client_onboarding_submissions
+            WHERE client_id = %s
+            ORDER BY created_at DESC
+            LIMIT 1
+        """, (client_id,))
+        submission = cur.fetchone()
+
+        # Get segments
+        cur.execute("""
+            SELECT * FROM onboarding_segments
+            WHERE submission_id = (
+                SELECT id FROM client_onboarding_submissions
+                WHERE client_id = %s
+                ORDER BY created_at DESC
+                LIMIT 1
+            )
+        """, (client_id,))
+        segments = cur.fetchall()
+
+        # Get personas
+        cur.execute("""
+            SELECT * FROM onboarding_personas
+            WHERE submission_id = (
+                SELECT id FROM client_onboarding_submissions
+                WHERE client_id = %s
+                ORDER BY created_at DESC
+                LIMIT 1
+            )
+        """, (client_id,))
+        personas = cur.fetchall()
+
+        return {
+            "client": dict(client) if client else {},
+            "submission": dict(submission) if submission else {},
+            "segments": [dict(s) for s in segments] if segments else [],
+            "personas": [dict(p) for p in personas] if personas else [],
+        }
+    except Exception as e:
+        logger.error(f"Failed to fetch client context: {e}")
+        return {"error": str(e)}
+    finally:
+        cur.close()
+        conn.close()
+
+
+def fetch_campaign_context(job_id: str, campaign_number: int) -> dict:
+    """Fetch campaign context including scaffold data (direct mode).
+
+    This replaces the MCP get_campaign_context tool.
+    """
+    conn = get_db()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+
+    try:
+        # Get job info
+        cur.execute("""
+            SELECT j.*, c.client_name
+            FROM strategy_generation_jobs j
+            JOIN clients c ON j.client_id = c.id
+            WHERE j.id = %s
+        """, (job_id,))
+        job = cur.fetchone()
+        if not job:
+            return {"error": f"Job {job_id} not found"}
+
+        # Get cycle config
+        cur.execute("""
+            SELECT csc.*
+            FROM cycle_strategy_config csc
+            JOIN campaign_cycles cc ON csc.cycle_id = cc.id
+            JOIN strategy_generation_jobs j ON j.cycle_id = cc.id
+            WHERE j.id = %s
+        """, (job_id,))
+        cycle_config = cur.fetchone()
+
+        # Get campaign document stub
+        cur.execute("""
+            SELECT cd.*
+            FROM campaign_documents cd
+            JOIN strategy_generation_jobs j ON cd.cycle_id = j.cycle_id
+            WHERE j.id = %s AND cd.campaign_number = %s
+        """, (job_id, campaign_number))
+        campaign = cur.fetchone()
+
+        # Get client context
+        client_context = fetch_client_context(str(job["client_id"]))
+
+        return {
+            "client_context": client_context,
+            "cycle_config": dict(cycle_config) if cycle_config else {},
+            "campaign": dict(campaign) if campaign else {},
+            "campaign_number": campaign_number,
+        }
+    except Exception as e:
+        logger.error(f"Failed to fetch campaign context: {e}")
+        return {"error": str(e)}
+    finally:
+        cur.close()
+        conn.close()
+
+
+def save_campaign_copy_direct(job_id: str, campaign_number: int, email_positions: list,
+                               qa_scoring: dict, strategy_notes: dict, variable_schema: dict = None) -> dict:
+    """Save generated campaign copy to database (direct mode).
+
+    This replaces the MCP save_campaign_copy tool.
+    """
+    conn = get_db()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+
+    try:
+        from psycopg2.extras import Json
+
+        # Get the campaign document ID
+        cur.execute("""
+            SELECT cd.id
+            FROM campaign_documents cd
+            JOIN strategy_generation_jobs j ON cd.cycle_id = j.cycle_id
+            WHERE j.id = %s AND cd.campaign_number = %s
+        """, (job_id, campaign_number))
+        result = cur.fetchone()
+
+        if not result:
+            return {"error": f"Campaign document not found for job {job_id} campaign {campaign_number}"}
+
+        campaign_doc_id = result["id"]
+
+        # Update campaign document with generated content
+        cur.execute("""
+            UPDATE campaign_documents
+            SET email_positions = %s,
+                qa_scoring = %s,
+                strategy_notes = %s,
+                variable_schema = %s,
+                status = 'generated',
+                updated_at = NOW()
+            WHERE id = %s
+            RETURNING id
+        """, (
+            Json(email_positions),
+            Json(qa_scoring),
+            Json(strategy_notes),
+            Json(variable_schema) if variable_schema else None,
+            campaign_doc_id
+        ))
+
+        conn.commit()
+
+        return {
+            "success": True,
+            "campaign_document_id": str(campaign_doc_id),
+            "email_count": sum(len(p.get("variants", [])) for p in email_positions),
+            "qa_score": qa_scoring.get("overall_score") if qa_scoring else None
+        }
+    except Exception as e:
+        logger.error(f"Failed to save campaign copy: {e}")
+        conn.rollback()
+        return {"error": str(e)}
+    finally:
+        cur.close()
+        conn.close()
+
+
+def parse_claude_json_response(output: str) -> dict:
+    """Parse JSON from Claude's response (direct mode).
+
+    Claude returns the campaign data as JSON. This extracts and parses it.
+    """
+    import re
+
+    # Try to find JSON in the output
+    # Look for ```json ... ``` blocks first
+    json_match = re.search(r'```json\s*([\s\S]*?)\s*```', output)
+    if json_match:
+        try:
+            return json.loads(json_match.group(1))
+        except json.JSONDecodeError:
+            pass
+
+    # Try to find raw JSON object
+    json_match = re.search(r'\{[\s\S]*"email_positions"[\s\S]*\}', output)
+    if json_match:
+        try:
+            return json.loads(json_match.group(0))
+        except json.JSONDecodeError:
+            pass
+
+    # Try the entire output as JSON
+    try:
+        return json.loads(output.strip())
+    except json.JSONDecodeError:
+        pass
+
+    return {"error": "Could not parse JSON from Claude response", "raw_output": output[:1000]}
+
+
+# =============================================================================
 # PHASED GENERATION FUNCTIONS
 # =============================================================================
 
@@ -601,10 +828,14 @@ def process_campaign_phase(phase: dict, skill_content: str):
     job_id = str(phase["parent_job_id"])
     campaign_number = phase["phase_number"]
 
-    logger.info(f"Processing CAMPAIGN {campaign_number} phase {phase_id} for job {job_id}")
+    logger.info(f"Processing CAMPAIGN {campaign_number} phase {phase_id} for job {job_id} (direct_mode={DIRECT_MODE})")
 
-    # Build prompt for campaign copy generation
-    prompt = f"""You are generating email copy for Campaign {campaign_number} - Phase 2 of generation.
+    if DIRECT_MODE:
+        # DIRECT MODE: Worker handles DB operations, Claude just returns JSON
+        success = process_campaign_phase_direct(job_id, phase_id, campaign_number, skill_content)
+    else:
+        # MCP MODE: Claude calls MCP tools for DB operations
+        prompt = f"""You are generating email copy for Campaign {campaign_number} - Phase 2 of generation.
 
 {skill_content}
 
@@ -626,8 +857,7 @@ Execute these steps:
 DO NOT call complete_job - the worker handles completion automatically.
 Generate emails that match the campaign's assigned angle."""
 
-    # Run Claude Code
-    success = run_claude_for_phase(job_id, phase_id, prompt)
+        success = run_claude_for_phase(job_id, phase_id, prompt)
 
     if success:
         mark_phase_complete(phase_id)
@@ -637,6 +867,151 @@ Generate emails that match the campaign's assigned angle."""
 
     # Check if all phases are done
     check_all_phases_complete(job_id)
+
+
+def process_campaign_phase_direct(job_id: str, phase_id: str, campaign_number: int, skill_content: str) -> bool:
+    """Process campaign phase in direct mode - no MCP, worker handles DB.
+
+    Flow:
+    1. Worker fetches context from DB
+    2. Worker builds prompt with context embedded
+    3. Claude runs without MCP, returns JSON
+    4. Worker parses JSON and saves to DB
+    """
+    # 1. Fetch context from DB
+    context = fetch_campaign_context(job_id, campaign_number)
+    if "error" in context:
+        logger.error(f"Failed to fetch context: {context['error']}")
+        return False
+
+    # Serialize context for prompt (handle datetime objects)
+    def json_serializer(obj):
+        if hasattr(obj, 'isoformat'):
+            return obj.isoformat()
+        raise TypeError(f"Type {type(obj)} not serializable")
+
+    context_json = json.dumps(context, indent=2, default=json_serializer)
+
+    # 2. Build prompt with context embedded
+    prompt = f"""You are generating email copy for Campaign {campaign_number}.
+
+{skill_content}
+
+---
+
+CONTEXT (read from database):
+{context_json}
+
+---
+
+Generate the campaign emails and return ONLY a valid JSON object with this structure:
+
+```json
+{{
+  "email_positions": [
+    {{
+      "position": 1,
+      "title": "Custom Signal",
+      "day": 0,
+      "thread_behavior": "new_thread",
+      "variants": [
+        {{
+          "variant_number": 1,
+          "variant_name": "Variant Name",
+          "is_recommended": true,
+          "subject_line": "Subject here",
+          "email_body": "Email body here (50-90 words)",
+          "word_count": 65,
+          "them_us_ratio": "3:1",
+          "score": 88
+        }}
+      ]
+    }}
+  ],
+  "qa_scoring": {{
+    "overall_score": 87,
+    "verdict": "Ship it",
+    "dimensions": [
+      {{"name": "Situation Recognition", "score": "24/25", "max": 25, "notes": "..."}}
+    ]
+  }},
+  "strategy_notes": {{
+    "callouts": [{{"type": "recommendation", "text": "..."}}],
+    "data_enrichment": [{{"variable": "core_vendor", "source": "ZoomInfo"}}],
+    "ab_testing": ["Test V1 vs V3 as openers"]
+  }},
+  "variable_schema": {{
+    "core": [{{"name": "first_name", "description": "Prospect first name"}}],
+    "highSignal": [{{"name": "core_vendor", "description": "...", "source": "..."}}],
+    "aiGenerated": []
+  }}
+}}
+```
+
+Requirements:
+- Generate 4 email positions with 2-3 variants each
+- Each email body MUST be 50-90 words
+- Apply them:us ratio of at least 3:1
+- Include QA scoring with 6 dimensions
+- Return ONLY the JSON, no other text"""
+
+    # 3. Run Claude without MCP
+    cmd = [
+        CLAUDE_CMD,
+        "-p", prompt,
+        "--dangerously-skip-permissions",
+        "--model", CLAUDE_MODEL,
+        "--output-format", "text",
+    ]
+
+    try:
+        subprocess_env = {**os.environ}
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=600,  # 10 minutes
+            cwd=PROJECT_PATH,
+            env=subprocess_env
+        )
+
+        if result.returncode != 0:
+            error_msg = result.stderr or result.stdout or "Unknown error"
+            logger.error(f"Direct mode failed: {error_msg[:500]}")
+            return False
+
+        # 4. Parse JSON from output
+        output = result.stdout
+        campaign_data = parse_claude_json_response(output)
+
+        if "error" in campaign_data:
+            logger.error(f"Failed to parse JSON: {campaign_data['error']}")
+            logger.debug(f"Raw output: {campaign_data.get('raw_output', 'N/A')}")
+            return False
+
+        # 5. Save to DB
+        save_result = save_campaign_copy_direct(
+            job_id=job_id,
+            campaign_number=campaign_number,
+            email_positions=campaign_data.get("email_positions", []),
+            qa_scoring=campaign_data.get("qa_scoring", {}),
+            strategy_notes=campaign_data.get("strategy_notes", {}),
+            variable_schema=campaign_data.get("variable_schema")
+        )
+
+        if "error" in save_result:
+            logger.error(f"Failed to save: {save_result['error']}")
+            return False
+
+        logger.info(f"Direct mode success: saved {save_result['email_count']} emails, score={save_result['qa_score']}")
+        return True
+
+    except subprocess.TimeoutExpired:
+        logger.error(f"Direct mode timed out after 10 minutes")
+        return False
+    except Exception as e:
+        logger.error(f"Direct mode error: {e}")
+        return False
 
 
 def run_claude_for_phase(job_id: str, phase_id: str, prompt: str) -> bool:
@@ -652,6 +1027,7 @@ def run_claude_for_phase(job_id: str, phase_id: str, prompt: str) -> bool:
         "-p", prompt,
         "--dangerously-skip-permissions",
         "--mcp-config", mcp_config,
+        "--model", CLAUDE_MODEL,
     ]
 
     try:
@@ -810,6 +1186,7 @@ The output MUST match the stablekernel HTML format - a single document with ICP 
         "-p", prompt,
         "--dangerously-skip-permissions",  # Allow MCP tool calls without confirmation
         "--mcp-config", mcp_config,
+        "--model", CLAUDE_MODEL,
     ]
 
     try:

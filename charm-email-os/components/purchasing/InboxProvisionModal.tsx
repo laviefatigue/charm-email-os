@@ -209,7 +209,7 @@ export function InboxProvisionModal({
     setError(null);
 
     try {
-      const result = await inboxProvisioningApi.executeSmartOrder({
+      await inboxProvisioningApi.executeSmartOrder({
         clientId,
         domainIds: selectedDomainIds,
         providerType,
@@ -217,22 +217,58 @@ export function InboxProvisionModal({
         customPurchase,
       });
 
-      // Initialize job state
-      setJobState({
-        jobId: result.jobId,
-        status: 'pending',
-        currentStep: 'Starting purchase...',
-        ordersCompleted: 0,
-        ordersTotal: preview.orderCount,
-        totalInboxes: 0,
-        errors: [],
+      // Slack-only mode: show success toast and close immediately
+      // Order is sent to Slack for manual processing - no job polling needed
+      toast.success('Order sent to Slack for processing', {
+        description: `${preview.orderCount} order(s), ${preview.domains.length} domains`,
       });
 
-      // Start polling for status
-      startPolling(result.jobId);
+      onSuccess(); // Refresh domain list
+      onOpenChange(false); // Close modal
 
     } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : 'Failed to execute order';
+      // Handle structured error responses from backend
+      let message = 'Failed to create order';
+
+      if (err && typeof err === 'object') {
+        const errObj = err as Record<string, unknown>;
+
+        // API error with detail object (e.g., 409 Conflict with locked domains)
+        if (errObj.detail && typeof errObj.detail === 'object') {
+          const detail = errObj.detail as Record<string, unknown>;
+          if (detail.error && typeof detail.error === 'string') {
+            message = detail.error;
+          }
+          if (detail.locked_domains && Array.isArray(detail.locked_domains)) {
+            const lockedNames = (detail.locked_domains as Array<{ domain_name: string }>)
+              .map((d) => d.domain_name)
+              .join(', ');
+            message += `: ${lockedNames}`;
+          }
+        }
+        // NS verification error
+        else if (errObj.unverified_domains && Array.isArray(errObj.unverified_domains)) {
+          const domains = (errObj.unverified_domains as Array<{ domain_name: string }>)
+            .map((d) => d.domain_name)
+            .join(', ');
+          message = `Nameservers not verified: ${domains}`;
+        }
+        // Slack notification error
+        else if (errObj.slack_error) {
+          message = `Slack notification failed: ${errObj.slack_error}`;
+        }
+        // Generic error message
+        else if (errObj.message && typeof errObj.message === 'string') {
+          message = errObj.message;
+        }
+        // Error from Error object
+        else if (err instanceof Error) {
+          message = err.message;
+        }
+      } else if (err instanceof Error) {
+        message = err.message;
+      }
+
       setError(message);
       toast.error(message);
     } finally {
@@ -433,8 +469,8 @@ export function InboxProvisionModal({
           </DialogTitle>
           <DialogDescription>
             {jobState
-              ? 'Tracking Hypertide automation progress'
-              : 'Configure inbox provisioning via Hypertide'
+              ? 'Order progress'
+              : 'Order will be sent to Slack for manual processing'
             }
           </DialogDescription>
         </DialogHeader>
@@ -681,12 +717,12 @@ export function InboxProvisionModal({
                 {isExecuting ? (
                   <>
                     <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                    Starting...
+                    Sending...
                   </>
                 ) : (
                   <>
                     <Server className="h-4 w-4 mr-2" />
-                    Confirm Purchase - ${preview?.monthlyCost ?? 0}/mo
+                    Send to Slack - ${preview?.monthlyCost ?? 0}/mo
                   </>
                 )}
               </Button>

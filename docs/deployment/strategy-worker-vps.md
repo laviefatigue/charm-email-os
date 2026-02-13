@@ -1,4 +1,10 @@
-# Strategy Worker VPS Deployment Guide
+# Strategy Worker VPS Deployment Guide (DEPRECATED)
+
+> **⚠️ DEPRECATED**: VPS deployments are no longer active. The strategy worker now runs locally via Docker. See [[../local-development/workers]] for the current localhost-first setup.
+
+---
+
+*Legacy documentation below - for reference only*
 
 Deploy the AI-powered strategy generation worker on a remote VPS using Docker (ClaudeBox) and Prefect.
 

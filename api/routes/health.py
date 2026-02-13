@@ -16,6 +16,7 @@ from models.health import (
     FullDashboardResponse, OverallSummaryResponse, KillTriggerItem,
     BackupCapacityResponse, BackupTierStatus, DomainGridItem,
     CampaignAttributionItem, ContaminationSourceItem, ESPSummaryItem,
+    InfrastructureHealthResponse, ProviderMetrics, HealthDistribution, LifecycleDistribution,
 )
 
 router = APIRouter()
@@ -419,6 +420,7 @@ async def _build_kill_triggers(workspace_id: UUID) -> list[KillTriggerItem]:
             COALESCE(sa.hard_bounces_24h, 0) as hard_bounces_24h,
             COALESCE(sa.hard_bounces_7d, 0) as hard_bounces_7d,
             COALESCE(sa.total_sends_7d, 0) as total_sends_7d,
+            COALESCE(sa.complaints_lifetime, 0) as complaints_lifetime,
             CASE WHEN COALESCE(sa.total_sends_7d, 0) > 0
                 THEN (COALESCE(sa.hard_bounces_7d, 0)::float / sa.total_sends_7d * 100)
                 ELSE 0
@@ -430,14 +432,15 @@ async def _build_kill_triggers(workspace_id: UUID) -> list[KillTriggerItem]:
         WHERE sa.workspace_id = $1
             AND sa.inbox_state = 'live'
             AND (
-                COALESCE(sa.hard_bounces_24h, 0) >= 2
+                COALESCE(sa.complaints_lifetime, 0) >= 1
+                OR COALESCE(sa.hard_bounces_24h, 0) >= 2
                 OR (COALESCE(sa.total_sends_7d, 0) >= 50 AND
                     COALESCE(sa.hard_bounces_7d, 0)::float / NULLIF(sa.total_sends_7d, 0) > 0.005)
                 OR (COALESCE(sa.total_sends_7d, 0) > 0 AND
                     COALESCE(sa.hard_bounces_7d, 0)::float / NULLIF(sa.total_sends_7d, 0) > 0.05)
                 OR (COALESCE(sa.hard_bounces_24h, 0) >= 1 AND sa.created_at > NOW() - INTERVAL '14 days')
             )
-        ORDER BY COALESCE(sa.hard_bounces_24h, 0) DESC
+        ORDER BY COALESCE(sa.complaints_lifetime, 0) DESC, COALESCE(sa.hard_bounces_24h, 0) DESC
         LIMIT 200
     """, workspace_id)
 
@@ -448,8 +451,25 @@ async def _build_kill_triggers(workspace_id: UUID) -> list[KillTriggerItem]:
         hard_bounces_24h = row["hard_bounces_24h"]
         hard_bounces_7d = row["hard_bounces_7d"]
         total_sends_7d = row["total_sends_7d"]
+        complaints_lifetime = row["complaints_lifetime"]
         bounce_rate_7d = row["bounce_rate_7d"]
         age_days = row["age_days"] or 0
+
+        # Spam complaint - HIGHEST PRIORITY (v3 spec: 1 complaint = death)
+        if complaints_lifetime >= 1:
+            triggers.append(KillTriggerItem(
+                id=f"trigger-{inbox_id}-spam_complaint",
+                inbox_id=inbox_id,
+                inbox_email=row["email_address"],
+                domain_id=row["domain_id"],
+                domain_name=row["domain_name"],
+                type="spam_complaint",
+                severity="instant",
+                value=float(complaints_lifetime),
+                threshold=1.0,
+                detected_at=now,
+                action_taken="pending",
+            ))
 
         if hard_bounces_24h >= 2:
             triggers.append(KillTriggerItem(
@@ -566,43 +586,12 @@ async def _build_kill_triggers(workspace_id: UUID) -> list[KillTriggerItem]:
             resolved_at=now - offset + timedelta(minutes=2),
         ))
 
-    # --- Mock confirming triggers from random live inboxes ---
-    confirming_rows = await fetch_all("""
-        SELECT
-            sa.id as inbox_id,
-            sa.email_address,
-            d.id as domain_id,
-            d.domain_name
-        FROM sender_accounts sa
-        LEFT JOIN domains d ON SPLIT_PART(sa.email_address, '@', 2) = d.domain_name
-            AND sa.workspace_id = d.workspace_id
-        WHERE sa.workspace_id = $1
-            AND sa.inbox_state = 'live'
-            AND COALESCE(sa.hard_bounces_24h, 0) = 0
-        ORDER BY sa.total_sends_7d DESC NULLS LAST
-        LIMIT 2
-    """, workspace_id)
-
-    confirming_types = [
-        ("low_inbox_placement", "confirming", 78.0, 85.0),
-        ("degrading_trend", "confirming", 3.0, 3.0),
-    ]
-    for i, row in enumerate(confirming_rows):
-        ctype, sev, val, thresh = confirming_types[i]
-        triggers.append(KillTriggerItem(
-            id=f"confirm-{row['inbox_id']}-{ctype}",
-            inbox_id=row["inbox_id"],
-            inbox_email=row["email_address"],
-            domain_id=row["domain_id"],
-            domain_name=row["domain_name"],
-            type=ctype,
-            severity=sev,
-            value=val,
-            threshold=thresh,
-            detected_at=now - timedelta(hours=6),
-            action_taken="pending",
-            retest_at=now + timedelta(hours=42),
-        ))
+    # TODO: Implement real confirming kill triggers
+    # Requires: placement testing integration, trend tracking over 3+ days
+    # See v3 spec Section 3.2 for confirming trigger requirements:
+    # - low_inbox_placement: <85% placement (2 consecutive failures)
+    # - high_spam_placement: >5% spam folder (2 consecutive failures)
+    # - degrading_trend: 3 days of declining metrics
 
     return triggers
 
@@ -1232,9 +1221,176 @@ class InventoryHealthResponse(BaseModel):
     rbl_last_check: Optional[datetime] = None
 
 
+@router.get("/infrastructure/{client_id}", response_model=InfrastructureHealthResponse)
+async def get_infrastructure_health(client_id: UUID):
+    """
+    Get infrastructure health from LOCAL DATABASE only.
+    No live EmailBison API calls - data refreshed by sync worker.
+
+    This is the preferred endpoint for the Health page. Data comes from:
+    - sender_accounts table (synced every 15-60 minutes)
+    - domains table (synced every 15-60 minutes)
+    """
+    # Get client with workspace
+    client = await fetch_one("""
+        SELECT c.id, c.name, c.workspace_id
+        FROM clients c
+        WHERE c.id = $1
+    """, client_id)
+
+    if not client:
+        raise HTTPException(status_code=404, detail="Client not found")
+
+    workspace_id = client["workspace_id"]
+
+    if not workspace_id:
+        return InfrastructureHealthResponse(
+            client_id=client_id,
+            total_inboxes=0,
+            live_inboxes=0,
+            dead_inboxes=0,
+            avg_health_score=0.0,
+            providers=[],
+            health_distribution=HealthDistribution(
+                healthy=0, good=0, warning=0, critical=0, total=0
+            ),
+            total_domains=0,
+            clean_domains=0,
+            flagged_domains=0,
+            sync_source="database"
+        )
+
+    # Get inbox summary stats from sender_accounts
+    inbox_stats = await fetch_one("""
+        SELECT
+            COUNT(*) as total,
+            COUNT(*) FILTER (WHERE inbox_state = 'live') as live,
+            COUNT(*) FILTER (WHERE inbox_state = 'dead') as dead,
+            COALESCE(AVG(health_score) FILTER (WHERE inbox_state = 'live'), 0) as avg_health
+        FROM sender_accounts
+        WHERE workspace_id = $1
+    """, workspace_id)
+
+    # Get health distribution for pie chart (0-40, 40-60, 60-80, 80-100)
+    health_dist = await fetch_one("""
+        SELECT
+            COUNT(*) FILTER (WHERE health_score >= 80) as healthy,
+            COUNT(*) FILTER (WHERE health_score >= 60 AND health_score < 80) as good,
+            COUNT(*) FILTER (WHERE health_score >= 40 AND health_score < 60) as warning,
+            COUNT(*) FILTER (WHERE health_score < 40 OR health_score IS NULL) as critical,
+            COUNT(*) as total
+        FROM sender_accounts
+        WHERE workspace_id = $1 AND inbox_state = 'live'
+    """, workspace_id)
+
+    # Get lifecycle distribution for inventory visibility
+    # Lifecycle: incubating (< 14 days old), active (mature), dead
+    # Pool: deployed (in campaigns), reserve (ready), warning (has bounces)
+    lifecycle_dist = await fetch_one("""
+        SELECT
+            -- Lifecycle states
+            COUNT(*) FILTER (WHERE inbox_state = 'live' AND created_at > NOW() - INTERVAL '14 days') as incubating,
+            COUNT(*) FILTER (WHERE inbox_state = 'live' AND created_at <= NOW() - INTERVAL '14 days') as active,
+            COUNT(*) FILTER (WHERE inbox_state = 'dead') as dead,
+            -- Pool status (live inboxes only)
+            COUNT(*) FILTER (
+                WHERE inbox_state = 'live'
+                AND EXISTS (SELECT 1 FROM campaign_inboxes ci WHERE ci.sender_account_id = sender_accounts.id AND ci.is_active = TRUE)
+            ) as deployed,
+            COUNT(*) FILTER (
+                WHERE inbox_state = 'live'
+                AND (COALESCE(hard_bounces_24h, 0) >= 1 OR COALESCE(hard_bounces_7d, 0) >= 3)
+            ) as warning,
+            COUNT(*) FILTER (
+                WHERE inbox_state = 'live'
+                AND COALESCE(hard_bounces_24h, 0) = 0 AND COALESCE(hard_bounces_7d, 0) < 3
+                AND NOT EXISTS (SELECT 1 FROM campaign_inboxes ci WHERE ci.sender_account_id = sender_accounts.id AND ci.is_active = TRUE)
+            ) as reserve,
+            -- Total live for pie chart
+            COUNT(*) FILTER (WHERE inbox_state = 'live') as total_live
+        FROM sender_accounts
+        WHERE workspace_id = $1
+    """, workspace_id)
+
+    # Get provider breakdown from sender_accounts.esp
+    provider_stats = await fetch_all("""
+        SELECT
+            COALESCE(esp, 'other') as provider,
+            COUNT(*) as total,
+            COUNT(*) FILTER (WHERE inbox_state = 'live') as live,
+            COUNT(*) FILTER (WHERE inbox_state = 'dead') as dead,
+            COALESCE(AVG(health_score) FILTER (WHERE inbox_state = 'live'), 0) as avg_health
+        FROM sender_accounts
+        WHERE workspace_id = $1
+        GROUP BY COALESCE(esp, 'other')
+        ORDER BY total DESC
+    """, workspace_id)
+
+    # Get domain stats
+    domain_stats = await fetch_one("""
+        SELECT
+            COUNT(*) as total,
+            COUNT(*) FILTER (WHERE is_clean = true OR COALESCE(latest_blacklist_count, 0) = 0) as clean,
+            COUNT(*) FILTER (WHERE is_clean = false OR COALESCE(latest_blacklist_count, 0) > 0) as flagged
+        FROM domains
+        WHERE workspace_id = $1
+    """, workspace_id)
+
+    # Get last sync time (use updated_at as proxy for last sync)
+    last_sync = await fetch_one("""
+        SELECT MAX(updated_at) as last_sync
+        FROM sender_accounts
+        WHERE workspace_id = $1
+    """, workspace_id)
+
+    # Build provider metrics
+    providers = [
+        ProviderMetrics(
+            name=p["provider"],
+            count=p["total"],
+            live_count=p["live"],
+            dead_count=p["dead"],
+            avg_health_score=float(p["avg_health"] or 0)
+        )
+        for p in provider_stats
+    ]
+
+    return InfrastructureHealthResponse(
+        client_id=client_id,
+        total_inboxes=inbox_stats["total"] if inbox_stats else 0,
+        live_inboxes=inbox_stats["live"] if inbox_stats else 0,
+        dead_inboxes=inbox_stats["dead"] if inbox_stats else 0,
+        avg_health_score=float(inbox_stats["avg_health"] if inbox_stats else 0),
+        providers=providers,
+        health_distribution=HealthDistribution(
+            healthy=health_dist["healthy"] if health_dist else 0,
+            good=health_dist["good"] if health_dist else 0,
+            warning=health_dist["warning"] if health_dist else 0,
+            critical=health_dist["critical"] if health_dist else 0,
+            total=health_dist["total"] if health_dist else 0,
+        ),
+        lifecycle_distribution=LifecycleDistribution(
+            incubating=lifecycle_dist["incubating"] if lifecycle_dist else 0,
+            active=lifecycle_dist["active"] if lifecycle_dist else 0,
+            dead=lifecycle_dist["dead"] if lifecycle_dist else 0,
+            deployed=lifecycle_dist["deployed"] if lifecycle_dist else 0,
+            reserve=lifecycle_dist["reserve"] if lifecycle_dist else 0,
+            warning=lifecycle_dist["warning"] if lifecycle_dist else 0,
+            total_live=lifecycle_dist["total_live"] if lifecycle_dist else 0,
+        ),
+        total_domains=domain_stats["total"] if domain_stats else 0,
+        clean_domains=domain_stats["clean"] if domain_stats else 0,
+        flagged_domains=domain_stats["flagged"] if domain_stats else 0,
+        last_sync=last_sync["last_sync"] if last_sync else None,
+        sync_source="database"
+    )
+
+
 @router.get("/inventory/{client_id}", response_model=InventoryHealthResponse)
 async def get_inventory_health(client_id: UUID):
     """
+    DEPRECATED: Use /infrastructure/{client_id} instead.
+
     Get real-time inventory health combining EmailBison metrics with RBL data.
 
     This endpoint fetches live data from EmailBison API for:

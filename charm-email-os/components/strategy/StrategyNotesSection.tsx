@@ -1,7 +1,7 @@
 'use client';
 
 import { Badge } from '@/components/ui/badge';
-import { Lightbulb, AlertTriangle, Info, Database, FlaskConical } from 'lucide-react';
+import { Lightbulb, AlertTriangle, Info, Database, FlaskConical, StopCircle } from 'lucide-react';
 import type { StrategyNotes, StrategyCallout, DataEnrichment } from '@/lib/types';
 import { CALLOUT_COLORS } from '@/lib/types';
 import { cn } from '@/lib/utils';
@@ -110,6 +110,17 @@ export function StrategyNotesSection({ notes, className }: StrategyNotesSectionP
               </li>
             ))}
           </ul>
+        </div>
+      )}
+
+      {/* After Sequence Note */}
+      {notes.afterSequenceNote && (
+        <div className="flex items-start gap-3 p-4 rounded-lg border-l-4 bg-slate-50 border-slate-300">
+          <StopCircle className="h-5 w-5 shrink-0 mt-0.5 text-slate-600" />
+          <div>
+            <p className="text-sm font-medium text-slate-700 mb-1">Post-Sequence Guidance</p>
+            <p className="text-sm text-slate-600">{notes.afterSequenceNote}</p>
+          </div>
         </div>
       )}
     </div>

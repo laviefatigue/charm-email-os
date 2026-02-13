@@ -2,7 +2,7 @@
 title: EmailBison Sync Worker
 created: 2026-02-12
 updated: 2026-02-12
-tags: [worker, emailbison, sync, health]
+tags: [worker, emailbison, sync, health, database, kill-triggers]
 ---
 
 # EmailBison Sync Worker
@@ -72,6 +72,14 @@ The EmailBison Sync Worker keeps the local database synchronized with EmailBison
 | `SLACK_WEBHOOK_URL` | - | Optional Slack alerts |
 | `RETENTION_DAYS_AUDIT` | 90 | Days to keep audit logs |
 | `RETENTION_DAYS_BOUNCES` | 90 | Days to keep bounce messages |
+| `KILL_THRESHOLD_SPAM` | 1 | Spam complaints to trigger kill (v3: 1 = death) |
+| `KILL_THRESHOLD_HARD_BLOCKED_24H` | 1 | Spam/policy rejections in 24h (reputation damage) |
+| `KILL_THRESHOLD_HARD_UNKNOWN_24H` | 3 | Bad addresses in 24h (list quality issue) |
+| `KILL_THRESHOLD_HARD_BOUNCES_24H` | 2 | Combined hard bounces fallback threshold |
+| `KILL_THRESHOLD_HARD_BOUNCE_RATE` | 0.005 | Hard bounce rate threshold (0.5%) |
+| `KILL_THRESHOLD_TOTAL_BOUNCE_RATE` | 0.05 | Total bounce rate threshold (5%) |
+| `KILL_THRESHOLD_MIN_SENDS` | 50 | Min sends before rate triggers apply |
+| `KILL_THRESHOLD_FRESH_INBOX_DAYS` | 14 | Days before inbox is "not fresh" |
 
 ### Docker Compose Configuration
 
@@ -82,13 +90,14 @@ emailbison-sync:
     dockerfile: Dockerfile.emailbison-sync
   container_name: charm-emailbison-sync
   restart: unless-stopped
+  env_file:
+    - .env.local  # EMAILBISON_API_KEY loaded from here
   environment:
     - POSTGRES_HOST=postgres
     - POSTGRES_PORT=5432
     - POSTGRES_USER=postgres
     - POSTGRES_PASSWORD=localdevpassword
     - POSTGRES_DB=postgres
-    - EMAILBISON_API_KEY=${EMAILBISON_API_KEY:-}
     - EMAILBISON_API_URL=https://spellcast.hirecharm.com/api
     - SYNC_INTERVAL_EVENTS=300
     - SYNC_INTERVAL_FULL=3600
@@ -100,6 +109,8 @@ emailbison-sync:
   networks:
     - charm-network
 ```
+
+> **Note**: The `EMAILBISON_API_KEY` is loaded from `.env.local` via `env_file`. This ensures the API key persists across container restarts without needing to set it in the shell environment.
 
 ## Database Tables
 
@@ -156,9 +167,52 @@ docker logs charm-emailbison-sync --tail 50
 Syncs sender accounts from all EmailBison workspaces:
 
 - Creates missing accounts in local DB
-- Updates health scores, bounce rates, status
+- **Calculates health scores locally** (EmailBison API doesn't return health_score)
+- Updates bounce rates, status, warmup progress
 - Marks stale accounts as inactive
 - Links accounts to domains
+
+#### Health Score Calculation
+
+The sync worker calculates health scores using this formula:
+
+```
+Health Score (0-100) = Connection (40) + Bounces (20) + Spam (20) + Replies (10) + Limits (10)
+
+Connection (40 points):
+- Connected: 40
+- Not connected: 0
+- Other: 20
+
+Bounce Rate (20 points):
+- <2%: 20
+- <5%: 15
+- <10%: 10
+- >=10%: 0
+
+Spam Rate (20 points):
+- <1%: 20
+- <3%: 15
+- <5%: 10
+- >=5%: 0
+
+Reply Rate (10 points):
+- >10%: 10
+- >5%: 7
+- >2%: 5
+- <=2%: 3
+
+Daily Limit (10 points):
+- Warmup enabled: 10
+- Has daily limit: 7
+- No limit: 5
+```
+
+Health ranges:
+- **Healthy**: 80-100
+- **Good**: 60-80
+- **Warning**: 40-60
+- **Critical**: 0-40
 
 ### Campaign Sync Module
 
@@ -170,11 +224,72 @@ Syncs campaign data and metrics:
 
 ### Event Sync Module
 
-Syncs replies and bounces with full message content:
+Syncs replies, bounces, and spam complaints with full message content:
 
 - Fetches from inbox/bounced folders
 - Classifies bounces (hard_unknown, hard_blocked, soft_full, soft_temp)
+- **Detects spam complaints** from lead response text and FBL patterns in bounces
+- Increments `complaints_lifetime` when spam complaint detected
 - Stores full message body in `response_messages`
+
+#### Spam Complaint Detection
+
+Spam complaints are detected through analyzing response content:
+
+1. **Inbox response text analysis**: When a lead replies to our email, we scan the response body for phrases indicating they marked us as spam:
+   - "marked as spam", "reported as spam", "flagged as spam"
+   - "moved to spam", "sent to spam", "goes to spam"
+   - "marked as junk", "reported as junk", "moved to junk" (Outlook)
+   - "reported to google", "reported to microsoft", etc.
+   - "filing a spam complaint", "spam complaint"
+
+2. **FBL patterns in bounces**: Bounce messages containing Feedback Loop indicators:
+   - `feedback-type:`, `abuse report`, `marked as spam`, `reported as junk`
+   - ARF (Abuse Reporting Format) headers
+   - Microsoft Junk Mail Reporting headers (X-HMXMROriginalRecipient)
+   - Google FBL headers (Feedback-ID)
+
+3. **SMTP codes**: Bounce codes like 550 5.7.51 (user reported spam) combined with complaint keywords
+
+**Note**: We do NOT fetch from a separate "spam" API folder. Spam detection is based on analyzing the TEXT of lead responses in the inbox folder.
+
+#### Bounce Reason & SMTP Code Extraction
+
+When a lead's inbox bounces our email, EmailBison returns the bounce message in the `bounced` folder. The API does **NOT** provide a separate `bounce_reason` field - instead, the SMTP error codes and reason text are embedded in the message body.
+
+**How we extract bounce information:**
+
+1. **Fetch bounce messages** from `/campaigns/{id}/replies?folder=bounced`
+2. **Parse message body** (`text_body` or `html_body`) for SMTP codes and keywords
+3. **Extract SMTP codes** using regex: `[45]\d{2}\s*[45]\.\d+\.\d+`
+4. **Classify bounce type** based on code + keywords
+
+**SMTP Code Reference:**
+
+| Code | Extended | Meaning | Classification |
+|------|----------|---------|----------------|
+| 550 | 5.1.1 | User unknown / mailbox doesn't exist | `hard_unknown` |
+| 550 | 5.1.0 | Address rejected | `hard_unknown` |
+| 550 | 5.7.1 | Policy rejection (spam/block) | `hard_blocked` |
+| 550 | 5.7.51 | User reported as spam (Microsoft) | `hard_blocked` + spam complaint |
+| 552 | 5.2.2 | Mailbox full | `soft_full` |
+| 452 | 4.2.2 | Mailbox full (temporary) | `soft_full` |
+| 421 | 4.7.0 | Temporary failure | `soft_temp` |
+
+**Example bounce message parsing:**
+
+```
+Subject: "Undeliverable: Re: GTM motion stuck?"
+Body: "Your message to john@example.com couldn't be delivered.
+       john wasn't found at example.com.
+       Unknown To address"
+
+Extracted:
+- bounce_reason: "user unknown | not found"
+- bounce_type: "hard_unknown"
+```
+
+**Important**: The `bounce_reason` field stored in `response_messages` is populated by our `extract_bounce_reason()` function, not by the EmailBison API.
 
 ### Health Check Module
 
@@ -182,19 +297,26 @@ Detects kill triggers and health issues:
 
 | Trigger | Threshold | Action |
 |---------|-----------|--------|
-| Hard bounces (24h) | >= 2 | Queue for kill |
+| **Spam complaint** | >= 1 | Queue for kill (v3: 1 = death) |
+| **Hard blocked (24h)** | >= 1 | Queue for kill (reputation damage) |
+| Hard unknown (24h) | >= 3 | Queue for kill (list quality) |
+| Hard bounces combined (24h) | >= 2 | Queue for kill (fallback) |
 | Hard bounce rate (7d) | > 0.5% | Queue for kill |
 | Total bounce rate (7d) | > 5% | Queue for kill |
 | Fresh inbox hard bounce | 1 (if <14 days old) | Queue for kill |
+
+See [[../concepts/kill-triggers]] for detailed documentation on kill trigger evaluation.
 
 ### Kill Processor
 
 Implements 24-hour kill queue:
 
-1. **Pending** → Tag inbox in EmailBison with `delete_queue_YYYYMMDD`
+1. **Pending** → Tag inbox in EmailBison with `delete_queue`
 2. **Tagged** → Wait 24 hours
 3. **Delete** → Remove from EmailBison after 24 hours
 4. **Update** → Mark `sender_accounts.inbox_state = 'dead'`
+
+> **Note**: The `delete_queue` tag must exist in each workspace. When provisioning new workspaces, create this tag to prevent 422 errors during kill processing.
 
 ### Retention Manager
 

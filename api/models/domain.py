@@ -9,11 +9,12 @@ from uuid import UUID
 
 
 DomainStatus = Literal[
-    "pending",           # Generated, waiting for approval
-    "pending_approval",  # Alias for pending
-    "approved",          # Approved, ready to purchase
-    "rejected",          # Legacy: denied, won't purchase
-    "denied",            # Auto-denied (unavailable) or manually denied
+    "available",         # Generated, ready for purchase (replaces pending/approved)
+    "pending",           # Legacy: alias for available
+    "pending_approval",  # Legacy: alias for available
+    "approved",          # Legacy: alias for available
+    "rejected",          # Legacy: deprecated
+    "denied",            # Legacy: deprecated
     "purchasing",        # Purchase in progress
     "purchased",         # Domain bought, no inboxes yet
     "provisioning",      # Inboxes being created in Hypertide

@@ -23,6 +23,83 @@ ESP_MAP = {
 }
 
 
+def calculate_health_score(account: Dict) -> int:
+    """
+    Calculate a 0-100 health score for an inbox.
+
+    Factors:
+    - Connection status (40 points)
+    - Bounce rate (20 points)
+    - Spam rate (20 points)
+    - Reply rate (10 points)
+    - Daily limit usage (10 points)
+
+    Matches the calculation used by EmailBison MCP analytics.
+    """
+    score = 0
+
+    # Connection status (40 points)
+    status = account.get("status", "")
+    if status == "Connected":
+        score += 40
+    elif status == "Not connected":
+        score += 0
+    else:
+        score += 20  # Unknown/other status
+
+    # Get email stats (flat fields from EmailBison API)
+    sent = account.get("emails_sent_count", 0) or 1  # Avoid division by zero
+    bounced = account.get("bounced_count", 0)
+    replied = account.get("total_replied_count", 0)
+
+    # Bounce rate (20 points) - lower is better
+    bounce_rate = bounced / max(sent, 1)
+    if bounce_rate < 0.02:  # < 2%
+        score += 20
+    elif bounce_rate < 0.05:  # 2-5%
+        score += 15
+    elif bounce_rate < 0.10:  # 5-10%
+        score += 10
+    # else: > 10% = 0 points
+
+    # Spam rate (20 points) - assume low spam if not tracking
+    warmup_spam = account.get("warmup_spam_count", 0)
+    spam_rate = warmup_spam / max(sent, 1) if warmup_spam else 0
+    if spam_rate < 0.01:  # < 1%
+        score += 20
+    elif spam_rate < 0.03:  # 1-3%
+        score += 15
+    elif spam_rate < 0.05:  # 3-5%
+        score += 10
+    # else: > 5% = 0 points
+
+    # Reply rate (10 points) - higher is better
+    reply_rate = replied / max(sent, 1)
+    if reply_rate > 0.10:  # > 10%
+        score += 10
+    elif reply_rate > 0.05:  # 5-10%
+        score += 7
+    elif reply_rate > 0.02:  # 2-5%
+        score += 5
+    else:  # < 2%
+        score += 3
+
+    # Daily limit usage (10 points) - warmup inboxes get bonus
+    warmup_enabled = account.get("warmup_enabled", False)
+    if warmup_enabled:
+        # Warmup inboxes get full points (they're being managed)
+        score += 10
+    else:
+        # Non-warmup: give partial points based on activity
+        daily_limit = account.get("daily_limit", 0)
+        if daily_limit > 0:
+            score += 7
+        else:
+            score += 5
+
+    return min(100, max(0, score))
+
+
 class AccountSyncModule:
     """Synchronizes sender accounts and domains from EmailBison."""
 
@@ -175,7 +252,8 @@ class AccountSyncModule:
                     break
 
         # Extract metrics
-        health_score = account.get('health_score')
+        # Calculate health score from account data (EmailBison API doesn't return health_score directly)
+        health_score = calculate_health_score(account)
         bounce_rate = account.get('bounce_rate', 0) or 0
 
         result = await self.db.fetchrow("""
@@ -189,11 +267,12 @@ class AccountSyncModule:
                 esp,
                 health_score,
                 bounce_rate_7d,
+                complaints_lifetime,
                 is_active,
                 first_seen_at,
                 last_seen_at,
                 last_synced_at
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW(), NOW(), NOW())
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW(), NOW(), NOW())
             ON CONFLICT (workspace_id, email_address) DO UPDATE SET
                 emailbison_account_id = EXCLUDED.emailbison_account_id,
                 display_name = COALESCE(EXCLUDED.display_name, sender_accounts.display_name),
@@ -205,6 +284,10 @@ class AccountSyncModule:
                 esp = COALESCE(EXCLUDED.esp, sender_accounts.esp),
                 health_score = EXCLUDED.health_score,
                 bounce_rate_7d = EXCLUDED.bounce_rate_7d,
+                complaints_lifetime = GREATEST(
+                    COALESCE(EXCLUDED.complaints_lifetime, 0),
+                    COALESCE(sender_accounts.complaints_lifetime, 0)
+                ),
                 is_active = EXCLUDED.is_active,
                 last_seen_at = NOW(),
                 last_synced_at = NOW(),
@@ -220,6 +303,7 @@ class AccountSyncModule:
             esp,
             health_score,
             bounce_rate,
+            account.get('warmup_spam_count', 0) or 0,  # complaints_lifetime from EmailBison
             inbox_state == 'live'
         )
 

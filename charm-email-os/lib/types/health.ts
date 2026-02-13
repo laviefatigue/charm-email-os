@@ -415,3 +415,80 @@ export function getRotationAttentionItems(domains: DomainHealthMetrics[]): Rotat
     }))
     .sort((a, b) => b.ageInDays - a.ageInDays); // Oldest first
 }
+
+// ===== HEALTH DISTRIBUTION (PIE CHART) =====
+
+export type HealthRange = 'healthy' | 'good' | 'warning' | 'critical';
+
+export interface HealthDistribution {
+  healthy: number;   // 80-100
+  good: number;      // 60-80
+  warning: number;   // 40-60
+  critical: number;  // 0-40
+  total: number;
+}
+
+export const HEALTH_RANGE_THRESHOLDS: Record<HealthRange, { min: number; max: number; label: string }> = {
+  healthy: { min: 80, max: 100, label: 'Healthy (80-100)' },
+  good: { min: 60, max: 80, label: 'Good (60-80)' },
+  warning: { min: 40, max: 60, label: 'Warning (40-60)' },
+  critical: { min: 0, max: 40, label: 'Critical (0-40)' },
+};
+
+// ===== LIFECYCLE DISTRIBUTION (INVENTORY VISIBILITY) =====
+
+export type LifecycleStatus = 'incubating' | 'active' | 'dead';
+export type PoolStatus = 'deployed' | 'reserve' | 'warning';
+
+export interface LifecycleDistribution {
+  // Lifecycle states (mutually exclusive)
+  incubating: number;  // < 14 days old or on warming domain
+  active: number;      // Mature, ready for deployment
+  dead: number;        // Killed/deactivated
+
+  // Pool status (for live inboxes only)
+  deployed: number;    // Currently assigned to active campaigns
+  reserve: number;     // Ready pool, not in campaigns
+  warning: number;     // Has recent bounces, needs cooldown
+
+  // Total for display (excludes dead by default in pie chart)
+  totalLive: number;   // incubating + active (or deployed + reserve + warning for live only)
+}
+
+export const LIFECYCLE_STATUS_CONFIG: Record<LifecycleStatus, { label: string; color: string; bgColor: string }> = {
+  incubating: { label: 'Incubating', color: 'rgb(59, 130, 246)', bgColor: 'rgb(219, 234, 254)' },  // blue
+  active: { label: 'Active', color: 'rgb(34, 197, 94)', bgColor: 'rgb(220, 252, 231)' },           // green
+  dead: { label: 'Dead', color: 'rgb(107, 114, 128)', bgColor: 'rgb(243, 244, 246)' },             // gray
+};
+
+export const POOL_STATUS_CONFIG: Record<PoolStatus, { label: string; color: string; bgColor: string }> = {
+  deployed: { label: 'Deployed', color: 'rgb(34, 197, 94)', bgColor: 'rgb(220, 252, 231)' },       // green
+  reserve: { label: 'Reserve', color: 'rgb(59, 130, 246)', bgColor: 'rgb(219, 234, 254)' },        // blue
+  warning: { label: 'Warning', color: 'rgb(249, 115, 22)', bgColor: 'rgb(255, 237, 213)' },        // orange
+};
+
+// ===== INFRASTRUCTURE HEALTH (DATABASE-ONLY) =====
+
+export interface ProviderMetrics {
+  name: string;  // gmail, microsoft, other
+  count: number;
+  liveCount: number;
+  deadCount: number;
+  avgHealthScore: number;
+}
+
+export interface InfrastructureHealthResponse {
+  clientId: string;
+  totalInboxes: number;
+  liveInboxes: number;
+  deadInboxes: number;
+  avgHealthScore: number;
+  providers: ProviderMetrics[];
+  healthDistribution: HealthDistribution;
+  lifecycleDistribution?: LifecycleDistribution;  // Optional for backwards compatibility
+  totalDomains: number;
+  cleanDomains: number;
+  flaggedDomains: number;
+  lastSync: string | null;
+  syncSource: string;
+}

@@ -165,7 +165,7 @@ class ConfiguredRegistrarsResponse(BaseModel):
 
 class GenerateForClientRequest(BaseModel):
     """Request to generate domains for a client using their onboarding data."""
-    count: int = Field(default=10, ge=1, le=50, description="Number of domains to generate")
+    count: int = Field(default=10, ge=1, le=100, description="Number of domains to generate (ignored if fill_package=True)")
     ai_provider: str = Field(default="openai", description="AI provider (openai, anthropic, ollama)")
     ai_model: str = Field(default="gpt-4", description="AI model name")
     preferred_tlds: list[TLDPreferenceRequest] = Field(
@@ -174,6 +174,10 @@ class GenerateForClientRequest(BaseModel):
             TLDPreferenceRequest(tld="io", priority=2, max_price=35.0),
             TLDPreferenceRequest(tld="co", priority=3, max_price=25.0),
         ]
+    )
+    fill_package: bool = Field(
+        default=True,
+        description="If True, auto-calculate count to fill package capacity (minus existing domains)"
     )
 
 
@@ -192,12 +196,17 @@ class GenerateForClientResponse(BaseModel):
     client_id: UUID
     client_name: str
     industry: str
-    generated_domains: list[GeneratedDomainResult]
-    filtered_count: int = Field(description="Number of candidates filtered as duplicates")
-    total_candidates: int = Field(description="Total candidates generated before filtering")
-    provider_used: str
-    model_used: str
+    generated_domains: list[GeneratedDomainResult] = Field(default_factory=list)
+    filtered_count: int = Field(default=0, description="Number of candidates filtered as duplicates")
+    total_candidates: int = Field(default=0, description="Total candidates generated before filtering")
+    provider_used: str = ""
+    model_used: str = ""
     generated_at: datetime = Field(default_factory=datetime.utcnow)
+    message: Optional[str] = Field(default=None, description="Optional status message")
+    package_target: Optional[int] = Field(default=None, description="Package domain target if fill_package was used")
+    existing_count: Optional[int] = Field(default=None, description="Existing domain count if fill_package was used")
+    prices_checked: int = Field(default=0, description="Number of domains with prices auto-checked")
+    available_count: int = Field(default=0, description="Number of domains still available after price check")
 
 
 class DomainCandidateModel(BaseModel):

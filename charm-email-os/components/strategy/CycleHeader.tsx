@@ -5,7 +5,6 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Calendar, Target, TrendingUp } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { RequestRevisionButton } from './RequestRevisionButton';
 
 interface CycleHeaderProps {
   cycleNumber: number;
@@ -15,8 +14,6 @@ interface CycleHeaderProps {
   strategicFocus?: string;
   targetOutcome?: string;
   className?: string;
-  onRequestRevision?: () => void;
-  isSubmitting?: boolean;
 }
 
 const STATUS_STYLES: Record<string, { bg: string; text: string; label: string }> = {
@@ -35,8 +32,6 @@ export function CycleHeader({
   strategicFocus,
   targetOutcome,
   className,
-  onRequestRevision,
-  isSubmitting,
 }: CycleHeaderProps) {
   const statusStyle = STATUS_STYLES[status] || STATUS_STYLES.draft;
 
@@ -50,20 +45,11 @@ export function CycleHeader({
               {statusStyle.label}
             </Badge>
           </CardTitle>
-          <div className="flex items-center gap-3">
-            {onRequestRevision && (
-              <RequestRevisionButton
-                onClick={onRequestRevision}
-                isSubmitting={isSubmitting}
-                tooltip="Request revision for strategic focus and target outcome"
-              />
-            )}
-            <div className="flex items-center gap-2 text-sm text-muted-foreground">
-              <Calendar className="h-4 w-4" />
-              <span>
-                {format(new Date(startDate), 'MMM d')} - {format(new Date(endDate), 'MMM d, yyyy')}
-              </span>
-            </div>
+          <div className="flex items-center gap-2 text-sm text-muted-foreground">
+            <Calendar className="h-4 w-4" />
+            <span>
+              {format(new Date(startDate), 'MMM d')} - {format(new Date(endDate), 'MMM d, yyyy')}
+            </span>
           </div>
         </div>
       </CardHeader>

@@ -110,7 +110,7 @@ export function PackageFulfillmentDashboard({
     }
     if (totalDomainsNeeded === 0 && subscription.inboxesRemaining <= 0) {
       return {
-        message: `Package fully fulfilled — ${inventoryDomainsCount} domains, ${totalInboxesCount} inboxes active`,
+        message: `Package fully fulfilled — ${inventoryDomainsCount} domains, ${subscription.currentActiveInboxes} inboxes active`,
         action: null,
         icon: CheckCircle2,
         variant: 'outline' as const,
@@ -144,7 +144,7 @@ export function PackageFulfillmentDashboard({
               </div>
               <Progress value={subscription.totalDomains > 0 ? (inventoryDomainsCount / subscription.totalDomains) * 100 : 0} className="h-2" />
             </div>
-            {/* Inboxes progress */}
+            {/* Inboxes progress - use subscription data (more reliable than lazy-loaded frontend count) */}
             <div className="space-y-1">
               <div className="flex items-center justify-between text-xs">
                 <span className="flex items-center gap-1 text-muted-foreground">
@@ -152,10 +152,10 @@ export function PackageFulfillmentDashboard({
                   Inboxes
                 </span>
                 <span className="font-medium">
-                  {totalInboxesCount} / {subscription.totalInboxes}
+                  {subscription.currentActiveInboxes} / {subscription.totalInboxes}
                 </span>
               </div>
-              <Progress value={subscription.totalInboxes > 0 ? (totalInboxesCount / subscription.totalInboxes) * 100 : 0} className="h-2" />
+              <Progress value={subscription.totalInboxes > 0 ? (subscription.currentActiveInboxes / subscription.totalInboxes) * 100 : 0} className="h-2" />
             </div>
           </div>
         </div>

@@ -1,5 +1,7 @@
 # Charm Strategy AI Component
 
+> **Note**: This component runs locally via `docker-compose.local.yml`. VPS/Coolify deployments are deprecated.
+
 Purpose-built Docker container for autonomous email strategy generation.
 
 ## Overview

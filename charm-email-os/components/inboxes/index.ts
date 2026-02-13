@@ -7,4 +7,4 @@ export { DomainEditModal } from './DomainEditModal';
 export { InboxEditModal } from './InboxEditModal';
 export { DomainInboxTree } from './DomainInboxTree';
 export { SenderNamesTab } from './SenderNamesTab';
-export { InventoryHealthDashboard } from './InventoryHealthDashboard';
+// InventoryHealthDashboard removed - infrastructure health moved to Health page (database-only)

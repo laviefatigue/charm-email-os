@@ -1,8 +1,8 @@
 ---
 title: Environment Variables Reference
 created: 2026-02-10
-updated: 2026-02-10
-tags: [environment, config, reference]
+updated: 2026-02-12
+tags: [environment, config, reference, emailbison, slack]
 ---
 
 # Environment Variables Reference
@@ -47,12 +47,30 @@ Complete reference for all environment variables used in Charm Email OS.
 | `OAUTH_CHECK_INTERVAL` | `3600` | Seconds between OAuth checks |
 | `ALERT_WEBHOOK_URL` | (empty) | Webhook for alerts |
 
+### EmailBison Sync
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `EMAILBISON_API_KEY` | **Required** | EmailBison API token (format: `17\|xxx...`) |
+| `EMAILBISON_API_URL` | `https://spellcast.hirecharm.com/api` | EmailBison API URL |
+| `SYNC_INTERVAL_EVENTS` | `300` | Events sync interval (seconds) |
+| `SYNC_INTERVAL_FULL` | `3600` | Full account sync interval (seconds) |
+| `SYNC_INTERVAL_HEALTH` | `900` | Health check interval (seconds) |
+| `SYNC_INTERVAL_KILL` | `1800` | Kill queue processing interval (seconds) |
+
+> **Important**: The `EMAILBISON_API_KEY` must be set in `.env.local` for the sync worker to function. Without it, health scores will be NULL and infrastructure health data will be incomplete.
+
+### Slack Integration
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SLACK_ORDERS_WEBHOOK_URL` | **Required for Slack orders** | Webhook for inbox provisioning orders (#hypertide-orders) |
+| `SLACK_WEBHOOK_URL` | (empty) | Webhook for sync alerts |
+
 ### Optional Services
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `EMAILBISON_API_KEY` | (empty) | EmailBison API key |
-| `EMAILBISON_API_URL` | `https://spellcast.hirecharm.com` | EmailBison API URL |
 | `ANTHROPIC_API_KEY` | (empty) | Anthropic API key (alternative to OAuth) |
 
 ## Production Environment
@@ -121,10 +139,20 @@ NEXT_PUBLIC_API_URL=http://localhost:8000
 POLL_INTERVAL=5
 CLAUDE_ACCOUNT=ClaudeCodeMax
 
-# External Services (optional)
-EMAILBISON_API_KEY=
+# EmailBison Sync (REQUIRED for health monitoring)
+EMAILBISON_API_KEY=17|YOUR_TOKEN_HERE
 EMAILBISON_API_URL=https://spellcast.hirecharm.com
+
+# Slack Integration (REQUIRED for inbox provisioning)
+SLACK_ORDERS_WEBHOOK_URL=https://hooks.slack.com/services/xxx/xxx/xxx
+
+# Optional Services
+SLACK_WEBHOOK_URL=
 ```
+
+> **Note**: Get your EmailBison API key from the EmailBison dashboard under Settings > API.
+>
+> **Note**: The `SLACK_ORDERS_WEBHOOK_URL` webhook should point to your #hypertide-orders channel. Without it, inbox provisioning orders will fail.
 
 ## Variable Usage by Service
 

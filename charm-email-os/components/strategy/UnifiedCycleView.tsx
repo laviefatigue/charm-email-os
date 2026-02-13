@@ -17,7 +17,6 @@ import type {
   UnifiedCampaign,
   UnifiedEmail,
   CycleVariable,
-  VariableLevel,
   RegenerationSection,
   ICPSubSection,
   RegenerationScope,
@@ -420,65 +419,6 @@ export function UnifiedCycleView({ clientId, cycleId, className }: UnifiedCycleV
   }, [regeneration, cycleData]);
 
   // Handler generators for each section
-  const handleRequestRevisionHeader = useCallback(() => {
-    openRegenerationModal('header', {
-      title: 'Request Revision for Strategic Direction',
-      description: 'Update the strategic focus and target outcome for this cycle.',
-      placeholder: 'E.g., Focus more on enterprise accounts, make the target more aggressive...',
-      currentContent: cycleData?.config.strategicFocus && cycleData?.config.targetOutcome
-        ? `Strategic Focus: ${cycleData.config.strategicFocus}\n\nTarget Outcome: ${cycleData.config.targetOutcome}`
-        : undefined,
-    });
-  }, [cycleData, openRegenerationModal]);
-
-  const handleRequestRevisionTargetICP = useCallback(() => {
-    openRegenerationModal('icp', {
-      title: 'Request Revision for Target ICP',
-      description: 'Refine the ideal customer profile definition.',
-      placeholder: 'E.g., Target smaller companies, focus on a different role...',
-      currentContent: cycleData?.config.icpMapping?.targetIcp
-        ? `Role: ${cycleData.config.icpMapping.targetIcp.role}\nCompany Type: ${cycleData.config.icpMapping.targetIcp.companyType}\nSize: ${cycleData.config.icpMapping.targetIcp.companySize}`
-        : undefined,
-    }, 'target_icp');
-  }, [cycleData, openRegenerationModal]);
-
-  const handleRequestRevisionPainPoints = useCallback((category?: string) => {
-    openRegenerationModal('icp', {
-      title: category ? `Request Revision for ${category} Pain Points` : 'Request Revision for All Pain Points',
-      description: category
-        ? `Update pain points for the ${category} category.`
-        : 'Generate new pain points for all categories.',
-      placeholder: 'E.g., Add more security-focused concerns, make them more specific to mid-market...',
-      showPreserveOption: !category,
-      preserveLabel: 'Keep existing categories, add new pain points',
-    }, 'pain_points', category ? { painPointCategory: category } : undefined);
-  }, [openRegenerationModal]);
-
-  const handleRequestRevisionObjections = useCallback((index?: number) => {
-    const objection = index !== undefined ? cycleData?.config.icpMapping?.objections?.[index] : undefined;
-    openRegenerationModal('icp', {
-      title: index !== undefined ? 'Request Revision for Objection Response' : 'Request Revision for All Objections',
-      description: index !== undefined
-        ? `Update the preemption strategy for this objection.`
-        : 'Generate new objection-preemption pairs.',
-      placeholder: 'E.g., Make the response more data-driven, add a specific case study reference...',
-      currentContent: objection ? `Objection: ${objection.objection}\n\nCurrent Response: ${objection.preemption}` : undefined,
-      showPreserveOption: index === undefined,
-      preserveLabel: 'Keep existing objections, add new ones',
-    }, 'objections', index !== undefined ? { objectionIndex: index } : undefined);
-  }, [cycleData, openRegenerationModal]);
-
-  const handleRequestRevisionVariables = useCallback((level: VariableLevel) => {
-    const levelLabel = level.charAt(0).toUpperCase() + level.slice(1);
-    openRegenerationModal('variables', {
-      title: `Request Revision for ${levelLabel} Variables`,
-      description: `Update the ${level}-level variables used for personalization.`,
-      placeholder: 'E.g., Add variables for competitive differentiation, include company size segmentation...',
-      showPreserveOption: true,
-      preserveLabel: 'Keep existing variables, add new ones',
-    }, undefined, { variableLevel: level });
-  }, [openRegenerationModal]);
-
   const handleRequestRevisionCampaign = useCallback((campaignNumber: 1 | 2 | 3 | 4) => {
     const campaign = cycleData?.campaigns.find(c => c.campaignNumber === campaignNumber);
     openRegenerationModal('campaign', {
@@ -634,7 +574,6 @@ export function UnifiedCycleView({ clientId, cycleId, className }: UnifiedCycleV
         status={cycleData.cycle.status}
         strategicFocus={cycleData.config.strategicFocus}
         targetOutcome={cycleData.config.targetOutcome}
-        onRequestRevision={handleRequestRevisionHeader}
       />
 
       {/* Cycle Variables Panel */}
@@ -658,7 +597,6 @@ export function UnifiedCycleView({ clientId, cycleId, className }: UnifiedCycleV
                 cycleVariables={allVariables.cycle}
                 campaignVariables={allVariables.campaign}
                 copyVariables={allVariables.copy}
-                onRequestRevision={handleRequestRevisionVariables}
               />
             </CardContent>
           </CollapsibleContent>
@@ -682,9 +620,6 @@ export function UnifiedCycleView({ clientId, cycleId, className }: UnifiedCycleV
               <CardContent className="pt-0">
                 <ICPMappingSection
                   icpMapping={cycleData.config.icpMapping}
-                  onRequestRevisionTargetICP={handleRequestRevisionTargetICP}
-                  onRequestRevisionPainPoints={handleRequestRevisionPainPoints}
-                  onRequestRevisionObjections={handleRequestRevisionObjections}
                 />
               </CardContent>
             </CollapsibleContent>

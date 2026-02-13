@@ -74,7 +74,7 @@ def get_next_domain_to_check() -> Optional[dict]:
     1. Domains missing Porkbun price (porkbun_price IS NULL)
     2. Domains with stale prices (last_price_check > STALE_HOURS ago)
 
-    Only checks domains in pending/approved status (not purchased/denied).
+    Only checks 'available' status domains (not purchased/active/etc).
     """
     conn = get_db_connection()
     try:
@@ -86,7 +86,7 @@ def get_next_domain_to_check() -> Optional[dict]:
         cur.execute("""
             SELECT id, domain_name, workspace_id
             FROM domains
-            WHERE approval_status IN ('pending', 'approved', 'pending_approval')
+            WHERE approval_status = 'available'
             AND (
                 -- Missing Porkbun price (primary target - Porkbun is rate-limited)
                 porkbun_price IS NULL
@@ -190,17 +190,15 @@ def mark_domain_unavailable(domain_id: str):
             pb_avail = row.get('porkbun_available')
             dd_avail = row.get('dynadot_available')
 
-            # If both checked and both unavailable, auto-deny
+            # If both checked and both unavailable, auto-remove the domain
             if pb_avail is False and dd_avail is False:
                 cur.execute("""
-                    UPDATE domains
-                    SET approval_status = 'denied',
-                        updated_at = NOW()
+                    DELETE FROM domains
                     WHERE id = %s
-                    AND approval_status IN ('pending', 'approved', 'pending_approval')
+                    AND approval_status = 'available'
                 """, (domain_id,))
                 conn.commit()
-                logger.info(f"Auto-denied unavailable domain {domain_id}")
+                logger.info(f"Auto-removed unavailable domain {domain_id}")
                 return True
 
         return False

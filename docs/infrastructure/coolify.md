@@ -1,11 +1,19 @@
 ---
-title: Coolify Deployment Platform
+title: Coolify Deployment Platform (Deprecated)
 created: 2026-01-16
-updated: 2026-02-02
-tags: [infrastructure, coolify, deployment, docker, disk-management]
+updated: 2026-02-11
+tags: [infrastructure, coolify, deployment, docker, deprecated]
 ---
 
-# Coolify
+# Coolify (DEPRECATED)
+
+> **⚠️ DEPRECATED**: Coolify/VPS deployments are no longer active. The Charm Email OS system now runs entirely on **localhost via Docker**. This documentation is preserved for legacy reference only. Do not deploy to Coolify unless explicitly requested.
+>
+> **Use instead**: [[../local-development/index]] for the current localhost-first setup.
+
+---
+
+*Legacy documentation below - for reference only*
 
 Self-hosted PaaS for deploying and managing Docker containers.
 

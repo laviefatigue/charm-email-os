@@ -101,8 +101,17 @@ async def list_domains(
         params.append(workspace_id)
         param_idx += 1
 
-    # Note: status column doesn't exist in DB, skip filtering by status
-    # The status parameter is accepted but not used in the query
+    # Filter by approval_status if provided
+    if status:
+        if status == "available":
+            # For available domains, also require pricing (at least one provider)
+            # This ensures only purchasable domains are returned
+            conditions.append(f"d.approval_status IN ('available', 'pending')")
+            conditions.append(f"d.cached_price IS NOT NULL")
+        elif status in ("purchased", "active", "legacy", "warming"):
+            conditions.append(f"d.approval_status = ${param_idx}")
+            params.append(status)
+            param_idx += 1
 
     where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
 

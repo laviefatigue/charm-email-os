@@ -25,9 +25,9 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
-import { Loader2, Settings, Server, Clock, CheckCircle2, AlertCircle, RefreshCw, ShieldCheck, ShieldAlert, ShieldQuestion, Wrench, Calendar, AlertTriangle, Cloud, Mail, Lock } from 'lucide-react';
+import { Loader2, Settings, Server, Clock, CheckCircle2, AlertCircle, RefreshCw, ShieldCheck, ShieldAlert, ShieldQuestion, Wrench, Calendar, AlertTriangle, Lock } from 'lucide-react';
 import type { Domain, NameserverStatus } from '@/lib/types';
-import { isDnsReady, hoursUntilDnsReady, isDomainAgeEligible } from '@/lib/types';
+import { isDomainAgeEligible } from '@/lib/types';
 import { toast } from 'sonner';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000/api/v1';
@@ -580,9 +580,7 @@ export function DomainsNeedingSetupTable({
             <TableHead className="w-[60px] text-center">TLD</TableHead>
             <TableHead className="w-[110px] text-center">Status</TableHead>
             <TableHead className="w-[100px] text-center">NS Verified</TableHead>
-            <TableHead className="w-[100px] text-center">DNS Ready</TableHead>
             <TableHead className="w-20 text-center">Age</TableHead>
-            <TableHead className="w-[90px] text-center">Infra Type</TableHead>
             <TableHead className="w-[90px] text-center">Registrar</TableHead>
             <TableHead className="w-[120px]">Purchased</TableHead>
           </TableRow>
@@ -595,8 +593,6 @@ export function DomainsNeedingSetupTable({
             const isPurchased = domain.status === 'purchased';
             const isProvisioning = domain.status === 'provisioning';
             const isSelected = selectedDomains.has(domain.id);
-            const dnsReady = isDnsReady(domain);
-            const hoursRemaining = hoursUntilDnsReady(domain);
 
             return (
               <TableRow
@@ -679,89 +675,8 @@ export function DomainsNeedingSetupTable({
                 <TableCell className="w-[100px] text-center">
                   {getNsStatusBadge(domain)}
                 </TableCell>
-                <TableCell className="w-[100px] text-center">
-                  {domain.nameserversUpdatedAt ? (
-                    dnsReady ? (
-                      <Tooltip>
-                        <TooltipTrigger>
-                          <Badge variant="outline" className="text-green-600 border-green-600">
-                            <CheckCircle2 className="h-3 w-3 mr-1" />
-                            Ready
-                          </Badge>
-                        </TooltipTrigger>
-                        <TooltipContent>
-                          DNS propagated. Ready for Hypertide setup.
-                        </TooltipContent>
-                      </Tooltip>
-                    ) : (
-                      <Tooltip>
-                        <TooltipTrigger>
-                          <Badge variant="outline" className="text-amber-600 border-amber-600">
-                            <Clock className="h-3 w-3 mr-1" />
-                            {hoursRemaining}h left
-                          </Badge>
-                        </TooltipTrigger>
-                        <TooltipContent>
-                          DNS propagating. ~{hoursRemaining} hours until ready.
-                          <br />
-                          Started: {new Date(domain.nameserversUpdatedAt).toLocaleString()}
-                        </TooltipContent>
-                      </Tooltip>
-                    )
-                  ) : (
-                    <Tooltip>
-                      <TooltipTrigger>
-                        <Badge variant="outline" className="text-red-600 border-red-600">
-                          <AlertCircle className="h-3 w-3 mr-1" />
-                          No NS
-                        </Badge>
-                      </TooltipTrigger>
-                      <TooltipContent>
-                        Nameservers not set. This domain needs DNS configuration.
-                      </TooltipContent>
-                    </Tooltip>
-                  )}
-                </TableCell>
                 <TableCell className="w-20 text-center">
                   {getAgeBadge(domain)}
-                </TableCell>
-                <TableCell className="w-[90px] text-center">
-                  {domain.infrastructureType ? (
-                    <Tooltip>
-                      <TooltipTrigger>
-                        <Badge
-                          variant="outline"
-                          className={
-                            domain.infrastructureType === 'entra'
-                              ? 'text-blue-600 border-blue-600'
-                              : 'text-red-600 border-red-600'
-                          }
-                        >
-                          {domain.infrastructureType === 'entra' ? (
-                            <Cloud className="h-3 w-3 mr-1" />
-                          ) : (
-                            <Mail className="h-3 w-3 mr-1" />
-                          )}
-                          {domain.infrastructureType === 'entra' ? 'Entra' : 'Google'}
-                        </Badge>
-                      </TooltipTrigger>
-                      <TooltipContent>
-                        {domain.infrastructureType === 'entra'
-                          ? 'Microsoft Entra (50 inboxes/domain)'
-                          : 'Google Workspace (3 inboxes/domain)'}
-                        {domain.infrastructureSetAt && (
-                          <>
-                            <br />
-                            Set: {new Date(domain.infrastructureSetAt).toLocaleDateString()}
-                          </>
-                        )}
-                      </TooltipContent>
-                    </Tooltip>
-                  ) : (
-                    <Badge variant="outline" className="text-gray-400 border-gray-300">
-                      —
-                    </Badge>
-                  )}
                 </TableCell>
                 <TableCell className="w-[90px] text-center">
                   <Badge variant="outline" className="text-xs capitalize">

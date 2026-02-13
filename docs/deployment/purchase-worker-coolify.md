@@ -1,11 +1,17 @@
 ---
-title: Purchase Worker Coolify Deployment
+title: Purchase Worker Coolify Deployment (Deprecated)
 created: 2026-01-29
-updated: 2026-02-04
-tags: [deployment, purchase, coolify, docker, production]
+updated: 2026-02-11
+tags: [deployment, purchase, coolify, docker, deprecated]
 ---
 
-# Purchase Worker Coolify Deployment
+# Purchase Worker Coolify Deployment (DEPRECATED)
+
+> **⚠️ DEPRECATED**: Coolify deployments are no longer active. Workers now run locally via Docker. See [[../local-development/workers]] for the current localhost-first setup.
+
+---
+
+*Legacy documentation below - for reference only*
 
 Deploying the purchase worker to production via Coolify self-hosted PaaS.
 

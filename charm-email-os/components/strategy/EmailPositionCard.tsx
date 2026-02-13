@@ -14,44 +14,91 @@ import {
 import { Textarea } from '@/components/ui/textarea';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { Star, Edit2, Copy, Clock, MessageSquare, Mail } from 'lucide-react';
-import type { EmailPosition, EmailVariant } from '@/lib/types';
+import { Star, Edit2, Copy, Clock, MessageSquare, Mail, Link2, Calendar, RefreshCw } from 'lucide-react';
+import type { EmailPosition, EmailVariant, VariableSchema } from '@/lib/types';
 import { campaignDocumentApi } from '@/lib/api';
 import { toast } from 'sonner';
 import { cn } from '@/lib/utils';
+import { RequestRevisionButton } from './RequestRevisionButton';
+
+// Core variables that are always purple
+const CORE_VARIABLE_NAMES = ['first_name', 'company_name', 'role_title'];
 
 interface EmailPositionCardProps {
   position: EmailPosition;
   documentId: string;
   onSelectVariant: (position: number, variantNumber: number) => void;
   onRefresh: () => void;
+  variableSchema?: VariableSchema;
+  onRequestRevision?: (emailPosition: number, variantNumber: number) => void;
+  isRevising?: boolean;
 }
 
-// Highlight variables in email body
-function highlightVariables(text: string): React.ReactNode {
+// Determine variable type for coloring
+function getVariableType(variableName: string, schema?: VariableSchema): 'core' | 'high_signal' | 'campaign' | 'ai_generated' {
+  // Strip {{ }} if present
+  const name = variableName.replace(/^\{\{|\}\}$/g, '');
+
+  // Core variables are always purple
+  if (CORE_VARIABLE_NAMES.includes(name)) {
+    return 'core';
+  }
+
+  if (schema) {
+    // Check high-signal variables (emerald)
+    if (schema.highSignal?.some(v => v.name === name || v.name === `{{${name}}}`)) {
+      return 'high_signal';
+    }
+    // Check AI-generated variables (blue)
+    if (schema.aiGenerated?.some(v => v.name === name || v.name === `{{${name}}}`)) {
+      return 'ai_generated';
+    }
+    // Check core schema variables (purple)
+    if (schema.core?.some(v => v.name === name || v.name === `{{${name}}}`)) {
+      return 'core';
+    }
+  }
+
+  // Default to campaign variable (blue)
+  return 'campaign';
+}
+
+// Variable type to color mapping
+const VARIABLE_COLORS = {
+  core: 'bg-purple-100 text-purple-800',        // Core variables - purple
+  high_signal: 'bg-emerald-100 text-emerald-800', // High-signal - emerald
+  campaign: 'bg-blue-100 text-blue-800',        // Campaign variables - blue
+  ai_generated: 'bg-sky-100 text-sky-800',      // AI generated - sky blue
+  spintax: 'bg-amber-100 text-amber-800',       // Spintax - amber
+  liquid: 'bg-slate-100 text-slate-800',        // Liquid tags - slate
+};
+
+// Highlight variables in email body with schema-aware colors
+function highlightVariables(text: string, schema?: VariableSchema): React.ReactNode {
   const parts = text.split(/(\{\{[^}]+\}\}|\{[^}|]+(?:\|[^}]+)*\}|{%[^%]+%})/g);
 
   return parts.map((part, idx) => {
     if (part.match(/^\{\{[^}]+\}\}$/)) {
-      // {{variable}} - green highlight
+      // {{variable}} - color based on variable type
+      const varType = getVariableType(part, schema);
       return (
-        <span key={idx} className="bg-emerald-100 text-emerald-800 px-1 rounded font-mono text-sm">
+        <span key={idx} className={cn('px-1 rounded font-mono text-sm', VARIABLE_COLORS[varType])}>
           {part}
         </span>
       );
     }
     if (part.match(/^\{[^}|]+(?:\|[^}]+)*\}$/)) {
-      // {spintax|options} - purple highlight
+      // {spintax|options} - amber highlight
       return (
-        <span key={idx} className="bg-purple-100 text-purple-800 px-1 rounded font-mono text-sm">
+        <span key={idx} className={cn('px-1 rounded font-mono text-sm', VARIABLE_COLORS.spintax)}>
           {part}
         </span>
       );
     }
     if (part.match(/^{%[^%]+%}$/)) {
-      // {% liquid %} - blue highlight
+      // {% liquid %} - slate highlight
       return (
-        <span key={idx} className="bg-blue-100 text-blue-800 px-1 rounded font-mono text-sm">
+        <span key={idx} className={cn('px-1 rounded font-mono text-sm', VARIABLE_COLORS.liquid)}>
           {part}
         </span>
       );
@@ -66,12 +113,18 @@ function VariantContent({
   position,
   onSelectVariant,
   onRefresh,
+  variableSchema,
+  onRequestRevision,
+  isRevising,
 }: {
   variant: EmailVariant;
   documentId: string;
   position: number;
   onSelectVariant: (position: number, variantNumber: number) => void;
   onRefresh: () => void;
+  variableSchema?: VariableSchema;
+  onRequestRevision?: (position: number, variantNumber: number) => void;
+  isRevising?: boolean;
 }) {
   const [isEditing, setIsEditing] = useState(false);
   const [editSubject, setEditSubject] = useState(variant.editedSubjectLine || variant.subjectLine || '');
@@ -158,45 +211,55 @@ function VariantContent({
             <Mail className="h-3 w-3" />
             Subject Line
           </div>
-          <p className="font-medium">{highlightVariables(displaySubject)}</p>
+          <p className="font-medium">{highlightVariables(displaySubject, variableSchema)}</p>
         </div>
       )}
 
       {/* Email Body */}
       <div className="bg-background rounded-lg p-4 border whitespace-pre-wrap text-sm leading-relaxed">
-        {highlightVariables(displayBody)}
+        {highlightVariables(displayBody, variableSchema)}
       </div>
 
-      {/* Stats Row */}
-      <div className="flex items-center gap-4 text-xs text-muted-foreground">
-        {variant.wordCount && (
-          <span className="flex items-center gap-1">
-            <MessageSquare className="h-3 w-3" />
-            {variant.wordCount} words
-          </span>
-        )}
-        {variant.themUsRatio && (
-          <span>Them:Us {variant.themUsRatio}</span>
-        )}
-        {variant.score && (
-          <span className={cn(
-            'font-medium',
-            variant.score >= 85 ? 'text-emerald-600' :
-            variant.score >= 70 ? 'text-amber-600' : 'text-red-600'
-          )}>
-            Score: {variant.score}
-          </span>
-        )}
-        {variant.waitDays > 0 && (
-          <span className="flex items-center gap-1">
-            <Clock className="h-3 w-3" />
-            +{variant.waitDays} days
-          </span>
-        )}
-        {variant.threadReply && (
-          <Badge variant="outline" className="text-xs">
-            Thread Reply
-          </Badge>
+      {/* Stats Row + Revision Button */}
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-4 text-xs text-muted-foreground">
+          {variant.wordCount && (
+            <span className="flex items-center gap-1">
+              <MessageSquare className="h-3 w-3" />
+              {variant.wordCount} words
+            </span>
+          )}
+          {variant.themUsRatio && (
+            <span>Them:Us {variant.themUsRatio}</span>
+          )}
+          {variant.score && (
+            <span className={cn(
+              'font-medium',
+              variant.score >= 85 ? 'text-emerald-600' :
+              variant.score >= 70 ? 'text-amber-600' : 'text-red-600'
+            )}>
+              Score: {variant.score}
+            </span>
+          )}
+          {variant.waitDays > 0 && (
+            <span className="flex items-center gap-1">
+              <Clock className="h-3 w-3" />
+              +{variant.waitDays} days
+            </span>
+          )}
+          {variant.threadReply && (
+            <Badge variant="outline" className="text-xs">
+              Thread Reply
+            </Badge>
+          )}
+        </div>
+        {onRequestRevision && (
+          <RequestRevisionButton
+            onClick={() => onRequestRevision(position, variant.variantNumber)}
+            isSubmitting={isRevising}
+            label="Revise Email"
+            tooltip={`Request revision for ${variant.variantName || `Variant ${variant.variantNumber}`}`}
+          />
         )}
       </div>
 
@@ -246,6 +309,9 @@ export function EmailPositionCard({
   documentId,
   onSelectVariant,
   onRefresh,
+  variableSchema,
+  onRequestRevision,
+  isRevising,
 }: EmailPositionCardProps) {
   const [activeVariant, setActiveVariant] = useState(
     position.variants.find(v => v.isRecommended)?.variantNumber.toString() ||
@@ -256,8 +322,25 @@ export function EmailPositionCard({
   return (
     <div className="border rounded-lg overflow-hidden">
       {/* Position Header */}
-      <div className="bg-muted/50 px-4 py-3 border-b">
-        <h4 className="font-semibold">{position.title}</h4>
+      <div className="bg-muted/50 px-4 py-3 border-b flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <h4 className="font-semibold">{position.title}</h4>
+          {position.day !== undefined && (
+            <Badge variant="outline" className="text-xs flex items-center gap-1">
+              <Calendar className="h-3 w-3" />
+              Day {position.day}
+            </Badge>
+          )}
+        </div>
+        {position.threadBehavior && (
+          <Badge
+            variant={position.threadBehavior === 'new_thread' ? 'secondary' : 'outline'}
+            className="text-xs flex items-center gap-1"
+          >
+            <Link2 className="h-3 w-3" />
+            {position.threadBehavior === 'new_thread' ? 'New Thread' : position.threadBehavior.replace('threads_to_position_', 'Threads to #')}
+          </Badge>
+        )}
       </div>
 
       {/* Variant Tabs */}
@@ -283,6 +366,9 @@ export function EmailPositionCard({
                 position={position.position}
                 onSelectVariant={onSelectVariant}
                 onRefresh={onRefresh}
+                variableSchema={variableSchema}
+                onRequestRevision={onRequestRevision}
+                isRevising={isRevising}
               />
             </TabsContent>
           ))}
@@ -295,20 +381,24 @@ export function EmailPositionCard({
             position={position.position}
             onSelectVariant={onSelectVariant}
             onRefresh={onRefresh}
+            variableSchema={variableSchema}
+            onRequestRevision={onRequestRevision}
+            isRevising={isRevising}
           />
         </div>
       )}
 
-      {/* Subject Options (if present) */}
-      {position.subjectOptions && position.subjectOptions.length > 0 && (
+      {/* Subject Options (if present) - handles both subjectOptions and subjectLineOptions */}
+      {((position.subjectOptions && position.subjectOptions.length > 0) ||
+        (position.subjectLineOptions && position.subjectLineOptions.length > 0)) && (
         <div className="border-t bg-muted/30 p-4">
           <h5 className="text-xs font-semibold text-muted-foreground mb-2">Subject Line Options</h5>
           <div className="space-y-2">
-            {position.subjectOptions.map((option, idx) => (
+            {(position.subjectOptions || position.subjectLineOptions || []).map((option, idx) => (
               <div key={idx} className="flex items-start gap-2 text-sm">
                 <Badge variant="outline" className="shrink-0">{idx + 1}</Badge>
                 <div>
-                  <p className="font-medium">{highlightVariables(option.subjectLine)}</p>
+                  <p className="font-medium">{highlightVariables(option.subjectLine, variableSchema)}</p>
                   <p className="text-xs text-muted-foreground">{option.rationale}</p>
                 </div>
               </div>

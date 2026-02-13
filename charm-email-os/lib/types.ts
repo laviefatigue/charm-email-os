@@ -113,13 +113,14 @@ export interface OnboardingData {
 }
 
 // Domain status enum (aligned with OwnRBL)
-// Flow: pending → approved → purchased → provisioning → active (with inboxes)
+// Simplified flow: available → purchased → active (with inboxes)
 export type DomainStatus =
-  | 'pending'      // Generated, waiting for approval
-  | 'pending_approval'  // Legacy alias for pending
-  | 'approved'    // Approved, ready to purchase
-  | 'rejected'    // Legacy: denied, won't purchase
-  | 'denied'      // Auto-denied (unavailable) or manually denied
+  | 'available'   // Generated, ready for purchase (price checking in progress)
+  | 'pending'     // Legacy: alias for available
+  | 'pending_approval'  // Legacy: alias for available
+  | 'approved'    // Legacy: alias for available (approval step removed)
+  | 'rejected'    // Legacy: deprecated (use remove instead)
+  | 'denied'      // Legacy: deprecated (use remove instead)
   | 'purchasing'  // Legacy: purchase in progress
   | 'purchased'   // Domain bought, no inboxes yet
   | 'provisioning' // Inboxes being created in Hypertide
@@ -127,7 +128,7 @@ export type DomainStatus =
   | 'warming'     // In warmup period (< 2 weeks)
   | 'flagged'     // OwnRBL: flagged for issues
   | 'dead'        // OwnRBL: dead/retired
-  | 'legacy';     // Pre-existing domains before new workflow (1/22/26) - needs audit
+  | 'legacy';     // Pre-existing domains before new workflow - needs audit
 
 // Domain entity (from OwnRBL domains table)
 // Nameserver verification status
@@ -962,6 +963,7 @@ export interface VariableDefinition {
   name: string;
   description: string;
   source?: string;
+  usedIn?: number[];  // Email positions where this variable is used (e.g., [1, 2, 4])
 }
 
 // Variable schema
@@ -1001,8 +1003,11 @@ export interface SubjectOption {
 export interface EmailPosition {
   position: number;
   title: string;
+  day?: number | string;  // Timing: 0, "3-4", "7-8", "11-12"
+  threadBehavior?: string;  // "new_thread" or "threads_to_position_N"
   variants: EmailVariant[];
   subjectOptions?: SubjectOption[];
+  subjectLineOptions?: SubjectOption[];  // Alternative name from skill output
 }
 
 // Sequence summary step
@@ -1015,7 +1020,8 @@ export interface SequenceSummaryStep {
 // QA scoring dimension
 export interface QADimension {
   name: string;
-  score: string;
+  max?: number;  // Maximum points for this dimension (e.g., 25)
+  score: string | number;  // Score as "24/25" string or just 24 number
   notes: string;
 }
 
@@ -1043,6 +1049,7 @@ export interface StrategyNotes {
   callouts: StrategyCallout[];
   dataEnrichment: DataEnrichment[];
   abTesting: string[];
+  afterSequenceNote?: string;  // Post-sequence guidance (e.g., "Stop after Email 4...")
 }
 
 // Complete campaign document (stablekernel format)

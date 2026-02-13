@@ -295,3 +295,71 @@ class FullDashboardResponse(BaseModel):
     campaign_attribution: list[CampaignAttributionItem]
     contamination_sources: list[ContaminationSourceItem] = []
     esp_summaries: list[ESPSummaryItem] = []
+
+
+# ===== Infrastructure Health Models (Database-Only) =====
+
+class ProviderMetrics(BaseModel):
+    """Provider breakdown metrics"""
+    name: str  # gmail, microsoft, other
+    count: int
+    live_count: int
+    dead_count: int
+    avg_health_score: float
+
+
+class HealthDistribution(BaseModel):
+    """Health score distribution for pie chart"""
+    healthy: int  # 80-100
+    good: int  # 60-80
+    warning: int  # 40-60
+    critical: int  # 0-40
+    total: int
+
+
+class LifecycleDistribution(BaseModel):
+    """Lifecycle distribution for inventory visibility - shows inbox maturity and pool status"""
+    # Lifecycle states (mutually exclusive)
+    incubating: int  # < 14 days old or on warming domain
+    active: int  # Mature, ready for deployment
+    dead: int  # Killed/deactivated
+
+    # Pool status (for live inboxes only)
+    deployed: int  # Currently assigned to active campaigns
+    reserve: int  # Ready pool, not in campaigns
+    warning: int  # Has recent bounces, needs cooldown
+
+    # Total for display (excludes dead by default in pie chart)
+    total_live: int  # incubating + active (or deployed + reserve + warning for live only)
+
+
+class InfrastructureHealthResponse(BaseModel):
+    """
+    Infrastructure health from LOCAL DATABASE only.
+    No live EmailBison API calls - data refreshed by sync worker.
+    """
+    client_id: UUID
+
+    # Summary metrics
+    total_inboxes: int
+    live_inboxes: int
+    dead_inboxes: int
+    avg_health_score: float
+
+    # Provider breakdown (from sender_accounts.esp)
+    providers: list[ProviderMetrics]
+
+    # Health distribution (for pie chart - health score based)
+    health_distribution: HealthDistribution
+
+    # Lifecycle distribution (for inventory visibility - shows all inboxes except dead)
+    lifecycle_distribution: Optional["LifecycleDistribution"] = None
+
+    # Domain metrics (from domains table)
+    total_domains: int
+    clean_domains: int
+    flagged_domains: int
+
+    # Data freshness
+    last_sync: Optional[datetime] = None
+    sync_source: str = "database"

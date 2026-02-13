@@ -1,7 +1,7 @@
 ---
 title: Docker Compose Reference
 created: 2026-02-10
-updated: 2026-02-10
+updated: 2026-02-12
 tags: [docker, compose, reference]
 ---
 
@@ -13,12 +13,37 @@ All docker-compose files in the Charm Email OS project and their purposes.
 
 | File | Purpose | When to Use |
 |------|---------|-------------|
-| `docker-compose.local.yml` | **Local development stack** | Daily development |
-| `docker-compose.yml` | Production reference | Coolify uses this |
+| `docker-compose.yml` | **Primary compose file** | Local dev and Coolify production |
+| `docker-compose.local.yml` | Local development stack (legacy) | Alternative local setup |
 | `docker-compose.strategy-worker.yml` | Standalone strategy worker | Worker-only testing |
 | `docker-compose.strategy-local.yml` | **Strategy worker local testing** | Skill development, safe testing |
 | `docker-compose.domain-worker.yml` | Standalone domain worker | Worker-only testing |
 | `docker-compose.spintax-worker.yml` | Standalone spintax worker | Worker-only testing |
+
+## docker-compose.yml (Primary)
+
+**Purpose**: Main compose file for both local development and production (Coolify).
+
+**Location**: `D:\Work\charm-email-os\docker-compose.yml`
+
+### Key Configuration
+
+```yaml
+services:
+  charm-frontend:
+    build:
+      args:
+        # Uses localhost for browser access (not internal Docker network)
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+    env_file:
+      - .env.local  # Load environment from .env.local
+
+  charm-api:
+    env_file:
+      - .env.local  # Load environment from .env.local
+```
+
+**Important**: The `NEXT_PUBLIC_API_URL` defaults to `http://localhost:8000` because the browser (running outside Docker) needs to access the API. Using `http://charm-api:8000` would fail since that hostname only resolves inside the Docker network.
 
 ## docker-compose.local.yml (Primary)
 

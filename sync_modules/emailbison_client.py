@@ -207,19 +207,33 @@ class EmailBisonClient:
         return await self.create_tag(name)
 
     async def tag_inbox(self, account_id: int, tag_id: int) -> Dict:
-        """Add tag to inbox."""
+        """Add tag to inbox.
+
+        Uses the bulk tagging endpoint: POST /tags/attach-to-sender-emails
+        Docs: https://docs.emailbison.com/tags/attaching-tags
+        """
         return await self._request(
-            'PATCH',
-            f'/sender-emails/{account_id}/tags',
-            json_data={'tag_ids': [tag_id]}
+            'POST',
+            '/tags/attach-to-sender-emails',
+            json_data={
+                'tag_ids': [tag_id],
+                'sender_email_ids': [account_id]
+            }
         )
 
     async def untag_inbox(self, account_id: int, tag_id: int) -> Dict:
-        """Remove tag from inbox."""
+        """Remove tag from inbox.
+
+        Uses the bulk tagging endpoint: DELETE /tags/attach-to-sender-emails
+        Docs: https://docs.emailbison.com/tags/removing-tags
+        """
         return await self._request(
             'DELETE',
-            f'/sender-emails/{account_id}/tags',
-            json_data={'tag_ids': [tag_id]}
+            '/tags/attach-to-sender-emails',
+            json_data={
+                'tag_ids': [tag_id],
+                'sender_email_ids': [account_id]
+            }
         )
 
     # =========================================================================

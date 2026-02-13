@@ -80,8 +80,7 @@ class KillProcessor:
             return 0
 
         tagged_count = 0
-        today = datetime.now().strftime('%Y%m%d')
-        tag_name = f"delete_queue_{today}"
+        tag_name = "delete_queue"  # Consistent tag - tagged_at timestamp stored in kill_queue table
 
         # Group by workspace for efficiency
         by_workspace = {}
@@ -119,7 +118,8 @@ class KillProcessor:
                         )
 
                         # Update queue status
-                        scheduled_delete = datetime.now(timezone.utc) + timedelta(hours=24)
+                        # Use naive datetime (no timezone) for PostgreSQL 'timestamp without time zone' column
+                        scheduled_delete = datetime.utcnow() + timedelta(hours=24)
                         await self.db.execute("""
                             UPDATE kill_queue
                             SET

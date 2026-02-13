@@ -24,6 +24,63 @@ logger = logging.getLogger(__name__)
 
 # ===== OVERVIEW =====
 
+async def _get_inventory_counts_from_view(workspace_id: UUID):
+    """Try to get inventory counts from the view"""
+    return await fetch_one("""
+        SELECT
+            COUNT(*) as total,
+            COUNT(*) FILTER (WHERE calculated_pool_status = 'deployed') as deployed,
+            COUNT(*) FILTER (WHERE calculated_pool_status = 'warning') as warning,
+            COUNT(*) FILTER (WHERE calculated_pool_status = 'reserve') as reserve,
+            COUNT(*) FILTER (WHERE calculated_lifecycle_status = 'active') as active,
+            COUNT(*) FILTER (WHERE calculated_lifecycle_status = 'incubating') as incubating,
+            COUNT(*) FILTER (WHERE calculated_lifecycle_status = 'dead') as dead
+        FROM v_inbox_inventory_status
+        WHERE workspace_id = $1
+    """, workspace_id)
+
+
+async def _get_inventory_counts_direct(workspace_id: UUID):
+    """Fallback: Calculate inventory counts directly from sender_accounts"""
+    logger.info(f"Using direct count fallback for workspace {workspace_id}")
+    return await fetch_one("""
+        WITH inbox_status AS (
+            SELECT
+                sa.id,
+                sa.inbox_state,
+                -- Calculate lifecycle status
+                CASE
+                    WHEN sa.inbox_state = 'dead' THEN 'dead'
+                    WHEN sa.created_at > NOW() - INTERVAL '14 days' THEN 'incubating'
+                    ELSE 'active'
+                END as lifecycle_status,
+                -- Calculate pool status
+                CASE
+                    WHEN sa.inbox_state = 'dead' THEN NULL
+                    WHEN COALESCE(sa.hard_bounces_24h, 0) >= 1
+                         OR COALESCE(sa.hard_bounces_7d, 0) >= 3 THEN 'warning'
+                    WHEN EXISTS (
+                        SELECT 1 FROM campaign_inboxes ci
+                        WHERE ci.sender_account_id = sa.id
+                        AND ci.is_active = TRUE
+                    ) THEN 'deployed'
+                    ELSE 'reserve'
+                END as pool_status
+            FROM sender_accounts sa
+            WHERE sa.workspace_id = $1
+        )
+        SELECT
+            COUNT(*) as total,
+            COUNT(*) FILTER (WHERE pool_status = 'deployed') as deployed,
+            COUNT(*) FILTER (WHERE pool_status = 'warning') as warning,
+            COUNT(*) FILTER (WHERE pool_status = 'reserve') as reserve,
+            COUNT(*) FILTER (WHERE lifecycle_status = 'active') as active,
+            COUNT(*) FILTER (WHERE lifecycle_status = 'incubating') as incubating,
+            COUNT(*) FILTER (WHERE lifecycle_status = 'dead') as dead
+        FROM inbox_status
+    """, workspace_id)
+
+
 @router.get("/overview/{client_id}", response_model=InventoryOverview)
 async def get_inventory_overview(client_id: UUID):
     """Get inventory overview with pool/lifecycle distribution for a client"""
@@ -54,19 +111,16 @@ async def get_inventory_overview(client_id: UUID):
 
     auto_kill_enabled = flag["flag_value"] if flag else False
 
-    # Get inventory counts using the view
-    counts = await fetch_one("""
-        SELECT
-            COUNT(*) as total,
-            COUNT(*) FILTER (WHERE calculated_pool_status = 'deployed') as deployed,
-            COUNT(*) FILTER (WHERE calculated_pool_status = 'warning') as warning,
-            COUNT(*) FILTER (WHERE calculated_pool_status = 'reserve') as reserve,
-            COUNT(*) FILTER (WHERE calculated_lifecycle_status = 'active') as active,
-            COUNT(*) FILTER (WHERE calculated_lifecycle_status = 'incubating') as incubating,
-            COUNT(*) FILTER (WHERE calculated_lifecycle_status = 'dead') as dead
-        FROM v_inbox_inventory_status
-        WHERE workspace_id = $1
-    """, workspace_id)
+    # Get inventory counts - try view first, fall back to direct query
+    counts = None
+    try:
+        counts = await _get_inventory_counts_from_view(workspace_id)
+    except Exception as e:
+        logger.warning(f"View count query failed, using direct fallback: {e}")
+        try:
+            counts = await _get_inventory_counts_direct(workspace_id)
+        except Exception as e2:
+            logger.error(f"Direct count query also failed: {e2}")
 
     if not counts:
         counts = {"total": 0, "deployed": 0, "warning": 0, "reserve": 0, "active": 0, "incubating": 0, "dead": 0}
@@ -109,30 +163,8 @@ async def get_inventory_overview(client_id: UUID):
 
 # ===== INBOX LIST =====
 
-@router.get("/inboxes/{client_id}", response_model=InventoryInboxListResponse)
-async def get_inventory_inboxes(
-    client_id: UUID,
-    pool_status: Optional[str] = Query(None, description="Filter by pool status: deployed, warning, reserve"),
-    lifecycle_status: Optional[str] = Query(None, description="Filter by lifecycle: active, incubating, dead"),
-    limit: int = Query(100, ge=1, le=500),
-    offset: int = Query(0, ge=0)
-):
-    """Get inboxes with inventory status, optionally filtered"""
-
-    # Get client's workspace
-    client = await fetch_one("""
-        SELECT c.id, c.workspace_id
-        FROM clients c
-        WHERE c.id = $1
-    """, client_id)
-
-    if not client:
-        raise HTTPException(status_code=404, detail="Client not found")
-
-    workspace_id = client["workspace_id"]
-    if not workspace_id:
-        raise HTTPException(status_code=400, detail="Client has no workspace linked")
-
+async def _get_inboxes_from_view(workspace_id: UUID, pool_status: Optional[str], lifecycle_status: Optional[str], limit: int, offset: int):
+    """Try to get inboxes from the v_inbox_inventory_status view"""
     # Build query with filters
     where_clauses = ["workspace_id = $1"]
     params = [workspace_id]
@@ -179,6 +211,164 @@ async def get_inventory_inboxes(
             v.health_score ASC NULLS LAST
         LIMIT ${param_idx} OFFSET ${param_idx + 1}
     """, *params, limit, offset)
+
+    return rows, total
+
+
+async def _get_inboxes_direct(workspace_id: UUID, pool_status: Optional[str], lifecycle_status: Optional[str], limit: int, offset: int):
+    """
+    Fallback: Get inboxes directly from sender_accounts with inline status calculation.
+    Used when the v_inbox_inventory_status view doesn't exist or fails.
+    """
+    logger.info(f"Using direct query fallback for workspace {workspace_id}")
+
+    # Build calculated status in the query
+    base_query = """
+        SELECT
+            sa.id,
+            sa.email_address,
+            sa.workspace_id,
+            sa.health_score,
+            sa.hard_bounces_24h,
+            sa.hard_bounces_7d,
+            sa.warning_reason,
+            sa.cooldown_ends_at,
+            sa.created_at,
+            sa.inbox_state,
+            SPLIT_PART(sa.email_address, '@', 2) as domain_name,
+            EXTRACT(DAY FROM NOW() - sa.created_at)::INTEGER as age_days,
+            -- Calculate lifecycle status inline
+            CASE
+                WHEN sa.inbox_state = 'dead' THEN 'dead'
+                WHEN sa.created_at > NOW() - INTERVAL '14 days' THEN 'incubating'
+                ELSE 'active'
+            END as calculated_lifecycle_status,
+            -- Calculate pool status inline
+            CASE
+                WHEN sa.inbox_state = 'dead' THEN NULL
+                WHEN COALESCE(sa.hard_bounces_24h, 0) >= 1
+                     OR COALESCE(sa.hard_bounces_7d, 0) >= 3 THEN 'warning'
+                WHEN EXISTS (
+                    SELECT 1 FROM campaign_inboxes ci
+                    WHERE ci.sender_account_id = sa.id
+                    AND ci.is_active = TRUE
+                ) THEN 'deployed'
+                ELSE 'reserve'
+            END as calculated_pool_status,
+            -- Get associated campaign IDs
+            (
+                SELECT ARRAY_AGG(DISTINCT ci.campaign_id)
+                FROM campaign_inboxes ci
+                WHERE ci.sender_account_id = sa.id
+                AND ci.is_active = TRUE
+                AND ci.campaign_id IS NOT NULL
+            ) as associated_campaign_ids
+        FROM sender_accounts sa
+        WHERE sa.workspace_id = $1
+    """
+
+    params = [workspace_id]
+    param_idx = 2
+
+    # Apply filters using a CTE to filter on calculated values
+    filter_clauses = []
+    if pool_status:
+        filter_clauses.append(f"calculated_pool_status = ${param_idx}")
+        params.append(pool_status)
+        param_idx += 1
+
+    if lifecycle_status:
+        filter_clauses.append(f"calculated_lifecycle_status = ${param_idx}")
+        params.append(lifecycle_status)
+        param_idx += 1
+
+    if filter_clauses:
+        full_query = f"""
+            WITH inbox_data AS ({base_query})
+            SELECT * FROM inbox_data
+            WHERE {' AND '.join(filter_clauses)}
+            ORDER BY
+                CASE calculated_pool_status
+                    WHEN 'warning' THEN 1
+                    WHEN 'deployed' THEN 2
+                    ELSE 3
+                END,
+                hard_bounces_24h DESC NULLS LAST,
+                health_score ASC NULLS LAST
+            LIMIT ${param_idx} OFFSET ${param_idx + 1}
+        """
+        count_query = f"""
+            WITH inbox_data AS ({base_query})
+            SELECT COUNT(*) as total FROM inbox_data
+            WHERE {' AND '.join(filter_clauses)}
+        """
+    else:
+        full_query = f"""
+            WITH inbox_data AS ({base_query})
+            SELECT * FROM inbox_data
+            ORDER BY
+                CASE calculated_pool_status
+                    WHEN 'warning' THEN 1
+                    WHEN 'deployed' THEN 2
+                    ELSE 3
+                END,
+                hard_bounces_24h DESC NULLS LAST,
+                health_score ASC NULLS LAST
+            LIMIT ${param_idx} OFFSET ${param_idx + 1}
+        """
+        count_query = f"""
+            WITH inbox_data AS ({base_query})
+            SELECT COUNT(*) as total FROM inbox_data
+        """
+
+    # Get total count
+    count_params = params[:-0] if not filter_clauses else params  # Don't include limit/offset
+    count_result = await fetch_one(count_query, *params[:-0] if filter_clauses else params[:1])
+    total = count_result["total"] if count_result else 0
+
+    # Get inbox list
+    rows = await fetch_all(full_query, *params, limit, offset)
+
+    return rows, total
+
+
+@router.get("/inboxes/{client_id}", response_model=InventoryInboxListResponse)
+async def get_inventory_inboxes(
+    client_id: UUID,
+    pool_status: Optional[str] = Query(None, description="Filter by pool status: deployed, warning, reserve"),
+    lifecycle_status: Optional[str] = Query(None, description="Filter by lifecycle: active, incubating, dead"),
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0)
+):
+    """Get inboxes with inventory status, optionally filtered"""
+
+    # Get client's workspace
+    client = await fetch_one("""
+        SELECT c.id, c.workspace_id
+        FROM clients c
+        WHERE c.id = $1
+    """, client_id)
+
+    if not client:
+        raise HTTPException(status_code=404, detail="Client not found")
+
+    workspace_id = client["workspace_id"]
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="Client has no workspace linked")
+
+    # Try to use the view first, fall back to direct query if it fails
+    rows = []
+    total = 0
+    try:
+        rows, total = await _get_inboxes_from_view(workspace_id, pool_status, lifecycle_status, limit, offset)
+    except Exception as e:
+        logger.warning(f"View query failed, using direct fallback: {e}")
+        try:
+            rows, total = await _get_inboxes_direct(workspace_id, pool_status, lifecycle_status, limit, offset)
+        except Exception as e2:
+            logger.error(f"Direct query also failed: {e2}")
+            # Return empty response rather than error
+            return InventoryInboxListResponse(items=[], total=0, filtered_by=None)
 
     # Build response items
     items = []

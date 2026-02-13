@@ -29,6 +29,7 @@ class OrderStatus(str, Enum):
     AWAITING_CHECKOUT = "awaiting_checkout"
     SUPERSEDED = "superseded"
     CANCELLED = "cancelled"
+    MANUAL_PROCESSING = "manual_processing"  # Sent to Slack for manual handling
 
 
 # =============================================================================

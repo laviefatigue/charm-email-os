@@ -77,6 +77,17 @@ class DomainInfoResult(BaseModel):
     error: Optional[str] = None
 
 
+class DomainListItem(BaseModel):
+    """A domain from the account's domain list."""
+    domain: str
+    expiration_date: Optional[datetime] = None
+    registration_date: Optional[datetime] = None
+    is_locked: bool = False
+    is_expired: bool = False
+    auto_renew: bool = False
+    nameservers: list[str] = []
+
+
 class DynadotService:
     """
     Standalone Dynadot API client.
@@ -761,3 +772,141 @@ class DynadotService:
                 success=False,
                 error=str(e),
             )
+
+    async def list_domains(self) -> list[DomainListItem]:
+        """
+        List all domains in the Dynadot account.
+
+        Dynadot API: GET ?command=list_domain
+
+        Returns:
+            List of DomainListItem objects for all domains in the account
+        """
+        # Check if API key is configured
+        if not self.api_key:
+            logger.warning("Dynadot API key not configured")
+            return []
+
+        try:
+            response = await self.client.get(
+                self.base_url,
+                params={
+                    "key": self.api_key,
+                    "command": "list_domain",
+                },
+            )
+            response.raise_for_status()
+
+            logger.info(f"Dynadot list_domain response (first 1000 chars): {response.text[:1000]}")
+
+            # Parse XML response
+            root = ET.fromstring(response.text)
+
+            # Check for error response
+            error_elem = root.find('.//Error')
+            if error_elem is not None and error_elem.text:
+                logger.error(f"Dynadot list_domain error: {error_elem.text}")
+                return []
+
+            domains = []
+
+            # Dynadot returns: <DomainInfoList><DomainInfo><Domain>...</Domain><Domain>...</Domain>...
+            # There is ONE DomainInfo element containing MULTIPLE Domain children
+            # Each Domain element contains the data for one domain
+            domain_elements = root.findall('.//DomainInfo/Domain')
+            if not domain_elements:
+                # Fallback: try .//Domain directly
+                domain_elements = root.findall('.//Domain')
+
+            for domain_elem in domain_elements:
+
+                domain_name = None
+
+                # Try to find domain name - it's in Domain/Name
+                name_elem = domain_elem.find('Name')
+                if name_elem is not None and name_elem.text:
+                    domain_name = name_elem.text.strip()
+                else:
+                    # Fallback paths
+                    name_elem = domain_elem.find('DomainName')
+                    if name_elem is not None and name_elem.text:
+                        domain_name = name_elem.text.strip()
+                    else:
+                        domain_name = domain_elem.get('name') or domain_elem.text
+
+                if not domain_name:
+                    continue
+
+                # Parse dates - also inside Domain element
+                expiration_date = None
+                exp_elem = domain_elem.find('Expiration')
+                if exp_elem is not None and exp_elem.text:
+                    try:
+                        date_str = exp_elem.text.strip()
+                        if date_str.isdigit():
+                            expiration_date = datetime.fromtimestamp(int(date_str) / 1000)
+                        else:
+                            expiration_date = datetime.fromisoformat(date_str.replace("Z", "+00:00"))
+                    except (ValueError, OSError):
+                        pass
+
+                registration_date = None
+                reg_elem = domain_elem.find('Registration') or domain_elem.find('CreateDate')
+                if reg_elem is not None and reg_elem.text:
+                    try:
+                        date_str = reg_elem.text.strip()
+                        if date_str.isdigit():
+                            registration_date = datetime.fromtimestamp(int(date_str) / 1000)
+                        else:
+                            registration_date = datetime.fromisoformat(date_str.replace("Z", "+00:00"))
+                    except (ValueError, OSError):
+                        pass
+
+                # Parse boolean flags
+                is_locked = False
+                lock_elem = domain_elem.find('Locked')
+                if lock_elem is not None:
+                    is_locked = lock_elem.text and lock_elem.text.lower() in ('yes', 'true', '1')
+
+                is_expired = False
+                expired_elem = domain_elem.find('Expired')
+                if expired_elem is not None:
+                    is_expired = expired_elem.text and expired_elem.text.lower() in ('yes', 'true', '1')
+
+                auto_renew = False
+                renew_elem = domain_elem.find('AutoRenew') or domain_elem.find('Renew')
+                if renew_elem is not None:
+                    auto_renew = renew_elem.text and renew_elem.text.lower() in ('yes', 'true', '1')
+
+                # Parse nameservers - inside NameServerSettings/NameServers/NameServer/ServerName
+                nameservers = []
+                ns_container = domain_elem.find('NameServerSettings') or domain_elem.find('NameServers')
+                if ns_container is not None:
+                    for ns_elem in ns_container.findall('.//ServerName'):
+                        if ns_elem.text:
+                            nameservers.append(ns_elem.text.strip())
+                    if not nameservers:
+                        for ns_elem in ns_container.findall('.//NameServer'):
+                            ns_name = ns_elem.findtext('ServerName') or ns_elem.text
+                            if ns_name:
+                                nameservers.append(ns_name.strip())
+
+                domains.append(DomainListItem(
+                    domain=domain_name.lower(),
+                    expiration_date=expiration_date,
+                    registration_date=registration_date,
+                    is_locked=is_locked,
+                    is_expired=is_expired,
+                    auto_renew=auto_renew,
+                    nameservers=nameservers,
+                ))
+
+            logger.info(f"Dynadot list_domain found {len(domains)} domains")
+            return domains
+
+        except ET.ParseError as e:
+            logger.error(f"Failed to parse Dynadot list_domain XML: {e}")
+            return []
+        except Exception as e:
+            logger.error(f"Dynadot list_domain error: {e}")
+            return []

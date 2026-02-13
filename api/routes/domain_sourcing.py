@@ -580,6 +580,60 @@ async def generate_domains_for_client(client_id: UUID, request: GenerateForClien
     workspace_id = client["workspace_id"]
     client_name = client["name"]
 
+    # Calculate domain count based on package if fill_package=True
+    generation_count = request.count
+    package_target = None
+    existing_count = 0
+
+    if request.fill_package:
+        # Get subscription to determine package target
+        subscription = await fetch_one("""
+            SELECT
+                s.id,
+                COALESCE(pt.total_domains,
+                         (s.entra_packages * s.entra_domains_per_package) +
+                         (s.google_packages * s.google_domains_per_package)) as total_domains
+            FROM client_subscriptions s
+            LEFT JOIN package_templates pt ON s.package_template_id = pt.id
+            WHERE s.client_id = $1 AND s.status = 'active'
+        """, client_id)
+
+        if subscription:
+            package_target = subscription["total_domains"]
+
+            # Count existing domains (available, purchased, active, legacy, warming)
+            # These are domains that are already in the pipeline or active
+            domain_counts = await fetch_one("""
+                SELECT COUNT(*) as total
+                FROM domains
+                WHERE workspace_id = $1
+                AND approval_status IN ('available', 'purchased', 'active', 'legacy', 'warming')
+            """, workspace_id)
+
+            existing_count = domain_counts["total"] if domain_counts else 0
+
+            # Calculate gap - how many more domains needed
+            gap = max(0, package_target - existing_count)
+
+            if gap == 0:
+                logger.info(f"Package capacity reached: {existing_count}/{package_target} domains")
+                # Return empty response - no domains needed
+                return GenerateForClientResponse(
+                    client_id=client_id,
+                    client_name=client_name,
+                    industry="",
+                    generated_domains=[],
+                    filtered_count=0,
+                    total_candidates=0,
+                    message=f"Package capacity reached. {existing_count} domains exist, target is {package_target}.",
+                    package_target=package_target,
+                    existing_count=existing_count
+                )
+
+            # Use the gap as the count (cap at 100 for safety)
+            generation_count = min(gap, 100)
+            logger.info(f"Package-based generation: need {gap} domains ({existing_count}/{package_target} exist)")
+
     # Parse onboarding data - check both simplified and comprehensive sources
     onboarding = {}
     if client["onboarding_data"]:
@@ -641,7 +695,7 @@ async def generate_domains_for_client(client_id: UUID, request: GenerateForClien
             brand_keywords=brand_keywords,
             target_audience=notes,
             avoid_words=avoid_words,
-            required_entra_domains=request.count * 2,
+            required_entra_domains=generation_count * 2,
             required_google_domains=0,
             preferred_tlds=tld_prefs,
         )
@@ -675,11 +729,12 @@ async def generate_domains_for_client(client_id: UUID, request: GenerateForClien
 
         # 5. Save unique candidates to DB (up to requested count)
         saved_domains = []
-        for candidate in unique_candidates[:request.count]:
+        saved_domain_ids: list[UUID] = []
+        for candidate in unique_candidates[:generation_count]:
             try:
                 result = await fetch_one("""
-                    INSERT INTO domains (workspace_id, domain_name, notes)
-                    VALUES ($1, $2, $3)
+                    INSERT INTO domains (workspace_id, domain_name, notes, approval_status)
+                    VALUES ($1, $2, $3, 'available')
                     RETURNING id, domain_name
                 """, workspace_id, candidate.domain_name, f"AI generated: {candidate.generation_rationale}")
 
@@ -692,11 +747,21 @@ async def generate_domains_for_client(client_id: UUID, request: GenerateForClien
                         rationale=candidate.generation_rationale,
                         legitimacy_score=candidate.legitimacy_score,
                     ))
+                    saved_domain_ids.append(result["id"])
             except Exception as db_error:
                 logger.warning(f"Failed to save domain {candidate.domain_name}: {db_error}")
                 continue
 
         logger.info(f"Generated {len(saved_domains)} unique domains for client {client_name} (filtered {filtered_count} duplicates)")
+
+        # Automatically check prices for all saved domains
+        # This eliminates the need for users to click "$ Check" buttons
+        prices_checked = 0
+        available_count = 0
+        if saved_domain_ids:
+            logger.info(f"Auto-checking prices for {len(saved_domain_ids)} newly generated domains...")
+            prices_checked, available_count = await _auto_check_prices_for_domains(saved_domain_ids)
+            logger.info(f"Price check complete: {prices_checked} checked, {available_count} available")
 
         return GenerateForClientResponse(
             client_id=client_id,
@@ -707,6 +772,11 @@ async def generate_domains_for_client(client_id: UUID, request: GenerateForClien
             total_candidates=total_candidates,
             provider_used=request.ai_provider,
             model_used=request.ai_model,
+            package_target=package_target,
+            existing_count=existing_count,
+            message=f"Generated {len(saved_domains)} domains to fill package gap" if request.fill_package else None,
+            prices_checked=prices_checked,
+            available_count=available_count,
         )
 
     except HTTPException:
@@ -869,7 +939,7 @@ async def get_pending_domain_candidates(
                     try:
                         result = await fetch_one("""
                             INSERT INTO domains (workspace_id, domain_name, notes, rationale, legitimacy_score, approval_status)
-                            VALUES ($1, $2, $3, $4, $5, 'pending')
+                            VALUES ($1, $2, $3, $4, $5, 'available')
                             RETURNING id, domain_name, created_at
                         """, workspace_id, candidate.domain_name,
                             f"AI generated: {candidate.generation_rationale}",
@@ -885,7 +955,7 @@ async def get_pending_domain_candidates(
                                 tld=candidate.tld,
                                 rationale=candidate.generation_rationale,
                                 legitimacy_score=candidate.legitimacy_score,
-                                approval_status="pending",
+                                approval_status="available",
                                 created_at=result["created_at"].isoformat() if result.get("created_at") else None,
                             ))
                     except Exception as db_error:
@@ -909,74 +979,21 @@ async def get_pending_domain_candidates(
     )
 
 
-@router.post("/approve/{domain_id}", response_model=ApprovalResponse)
-async def approve_domain_candidate(domain_id: UUID):
+# =============================================================================
+# DEPRECATED: Approve/Deny endpoints removed in simplified workflow
+# Domains now go directly from 'available' (generated) to 'purchased'
+# Users select domains they want to buy, no approval step needed
+# =============================================================================
+
+@router.delete("/remove/{domain_id}")
+async def remove_domain_candidate(domain_id: UUID):
     """
-    Approve a domain candidate for pricing search and potential purchase.
+    Remove a domain candidate from the list.
 
-    Sets the approval_status to 'approved' and records the review timestamp.
-    """
-    # Verify domain exists
-    domain = await fetch_one("SELECT id, domain_name FROM domains WHERE id = $1", domain_id)
-    if not domain:
-        raise HTTPException(status_code=404, detail="Domain not found")
-
-    # Update approval status
-    await execute("""
-        UPDATE domains
-        SET approval_status = 'approved', reviewed_at = NOW()
-        WHERE id = $1
-    """, domain_id)
-
-    logger.info(f"Approved domain candidate: {domain['domain_name']} ({domain_id})")
-
-    return ApprovalResponse(
-        domain_id=domain_id,
-        domain_name=domain["domain_name"],
-        status="approved",
-        message=f"Domain {domain['domain_name']} approved for pricing search",
-    )
-
-
-@router.post("/deny/{domain_id}", response_model=ApprovalResponse)
-async def deny_domain_candidate(domain_id: UUID):
-    """
-    Deny a domain candidate - it won't show in future pending lists.
-
-    Sets the approval_status to 'denied' and records the review timestamp.
-    The domain remains in the database for record-keeping but won't regenerate.
+    Permanently deletes the domain - use this when you don't want to see
+    a domain suggestion anymore. Cannot remove purchased/active domains.
     """
     # Verify domain exists
-    domain = await fetch_one("SELECT id, domain_name FROM domains WHERE id = $1", domain_id)
-    if not domain:
-        raise HTTPException(status_code=404, detail="Domain not found")
-
-    # Update approval status
-    await execute("""
-        UPDATE domains
-        SET approval_status = 'denied', reviewed_at = NOW()
-        WHERE id = $1
-    """, domain_id)
-
-    logger.info(f"Denied domain candidate: {domain['domain_name']} ({domain_id})")
-
-    return ApprovalResponse(
-        domain_id=domain_id,
-        domain_name=domain["domain_name"],
-        status="denied",
-        message=f"Domain {domain['domain_name']} denied and won't regenerate",
-    )
-
-
-@router.post("/unapprove/{domain_id}", response_model=ApprovalResponse)
-async def unapprove_domain_candidate(domain_id: UUID):
-    """
-    Unapprove a domain candidate - revert it back to pending status.
-
-    Sets the approval_status back to 'pending' and clears the review timestamp.
-    Used when a domain was approved by mistake or needs re-evaluation.
-    """
-    # Verify domain exists and is approved
     domain = await fetch_one(
         "SELECT id, domain_name, approval_status FROM domains WHERE id = $1",
         domain_id
@@ -984,36 +1001,33 @@ async def unapprove_domain_candidate(domain_id: UUID):
     if not domain:
         raise HTTPException(status_code=404, detail="Domain not found")
 
-    if domain["approval_status"] != "approved":
+    # Don't allow removing purchased/active domains
+    if domain["approval_status"] in ("purchased", "active"):
         raise HTTPException(
             status_code=400,
-            detail=f"Domain is not approved (current status: {domain['approval_status']})"
+            detail=f"Cannot remove {domain['approval_status']} domains"
         )
 
-    # Revert to pending status
-    await execute("""
-        UPDATE domains
-        SET approval_status = 'pending', reviewed_at = NULL
-        WHERE id = $1
-    """, domain_id)
+    # Delete the domain
+    await execute("DELETE FROM domains WHERE id = $1", domain_id)
 
-    logger.info(f"Unapproved domain candidate: {domain['domain_name']} ({domain_id})")
+    logger.info(f"Removed domain candidate: {domain['domain_name']} ({domain_id})")
 
-    return ApprovalResponse(
-        domain_id=domain_id,
-        domain_name=domain["domain_name"],
-        status="pending",
-        message=f"Domain {domain['domain_name']} reverted to pending",
-    )
+    return {
+        "domain_id": str(domain_id),
+        "domain_name": domain["domain_name"],
+        "status": "removed",
+        "message": f"Domain {domain['domain_name']} removed from list",
+    }
 
 
 @router.delete("/clear-candidates/{client_id}")
 async def clear_domain_candidates(client_id: UUID):
     """
-    Clear all domain candidates for a client (pending, approved, rejected).
+    Clear all available domain candidates for a client.
 
     Used for starting fresh with domain generation.
-    Does NOT delete purchased/active domains.
+    Does NOT delete purchased/active/legacy/warming domains.
     """
     # Verify client exists and get workspace_id
     client = await fetch_one("SELECT id, name, workspace_id FROM clients WHERE id = $1", client_id)
@@ -1024,13 +1038,11 @@ async def clear_domain_candidates(client_id: UUID):
 
     workspace_id = client["workspace_id"]
 
-    # Delete domain candidates (not purchased/active)
-    # Note: domains table uses workspace_id and approval_status column
+    # Delete only available domain candidates (not purchased/active/legacy/warming)
     result = await execute("""
         DELETE FROM domains
         WHERE workspace_id = $1
-          AND (approval_status IN ('pending', 'approved', 'denied')
-               OR approval_status IS NULL)
+          AND (approval_status = 'available' OR approval_status IS NULL)
     """, workspace_id)
 
     # Extract count from result like "DELETE 10"
@@ -1051,12 +1063,13 @@ async def clear_domain_candidates(client_id: UUID):
     }
 
 
-@router.get("/approved/{client_id}")
-async def get_approved_domains(client_id: UUID):
+@router.get("/available/{client_id}")
+async def get_available_domains(client_id: UUID):
     """
-    Get all approved domain candidates for a client.
+    Get all available domain candidates for a client.
 
-    These are domains ready for pricing search and potential purchase.
+    These are generated domains ready for selection and purchase.
+    Includes pricing data if available from price checker.
     """
     # Get client + workspace
     client = await fetch_one("SELECT workspace_id FROM clients WHERE id = $1", client_id)
@@ -1067,23 +1080,22 @@ async def get_approved_domains(client_id: UUID):
 
     workspace_id = client["workspace_id"]
 
-    # Get approved domains that don't have inboxes yet (not purchased)
-    approved = await fetch_all("""
+    # Get available domains with pricing data
+    # Only return domains that have been priced (at least one provider succeeded)
+    available = await fetch_all("""
         SELECT d.id, d.domain_name, d.notes, d.rationale, d.legitimacy_score,
-               d.created_at, d.reviewed_at
+               d.created_at, d.cached_price, d.porkbun_price, d.porkbun_available,
+               d.dynadot_price, d.dynadot_available, d.selected_provider,
+               d.price_checked_at
         FROM domains d
         WHERE d.workspace_id = $1
-          AND d.approval_status = 'approved'
-          AND d.domain_name NOT IN (
-            SELECT DISTINCT SUBSTRING(email FROM POSITION('@' IN email) + 1)
-            FROM inboxes
-            WHERE workspace_id = $1
-          )
-        ORDER BY d.reviewed_at DESC
+          AND d.approval_status = 'available'
+          AND d.cached_price IS NOT NULL
+        ORDER BY d.cached_price ASC, d.created_at DESC
     """, workspace_id)
 
     candidates = []
-    for row in approved or []:
+    for row in available or []:
         domain_name = row["domain_name"]
         parts = domain_name.rsplit(".", 1)
         base_name = parts[0] if len(parts) > 1 else domain_name
@@ -1096,15 +1108,29 @@ async def get_approved_domains(client_id: UUID):
             "tld": tld,
             "rationale": row.get("rationale") or row.get("notes") or "",
             "legitimacy_score": row.get("legitimacy_score") or 0.75,
-            "approval_status": "approved",
-            "reviewed_at": row["reviewed_at"].isoformat() if row.get("reviewed_at") else None,
+            "status": "available",
+            # Pricing data
+            "cached_price": float(row["cached_price"]) if row.get("cached_price") else None,
+            "porkbun_price": float(row["porkbun_price"]) if row.get("porkbun_price") else None,
+            "porkbun_available": row.get("porkbun_available"),
+            "dynadot_price": float(row["dynadot_price"]) if row.get("dynadot_price") else None,
+            "dynadot_available": row.get("dynadot_available"),
+            "selected_provider": row.get("selected_provider"),
+            "price_checked_at": row["price_checked_at"].isoformat() if row.get("price_checked_at") else None,
         })
 
     return {
         "client_id": str(client_id),
-        "approved_domains": candidates,
+        "domains": candidates,
         "total": len(candidates),
     }
+
+
+# Keep backwards compatibility alias
+@router.get("/approved/{client_id}")
+async def get_approved_domains(client_id: UUID):
+    """DEPRECATED: Use /available/{client_id} instead. Kept for backwards compatibility."""
+    return await get_available_domains(client_id)
 
 
 # ============================================================================
@@ -1112,7 +1138,7 @@ async def get_approved_domains(client_id: UUID):
 # ============================================================================
 
 @router.post("/jobs/create/{client_id}")
-async def create_domain_generation_job(client_id: UUID, count: int = 10):
+async def create_domain_generation_job(client_id: UUID, count: int = 10, fill_package: bool = True):
     """
     Create a new domain generation job for the Claude Code worker.
 
@@ -1121,7 +1147,8 @@ async def create_domain_generation_job(client_id: UUID, count: int = 10):
 
     Args:
         client_id: The client UUID to generate domains for
-        count: Number of domains to generate (default 10)
+        count: Number of domains to generate (default 10, ignored if fill_package=True)
+        fill_package: If True, auto-calculate count to fill package capacity (default True)
 
     Returns:
         Job ID and status information
@@ -1132,6 +1159,67 @@ async def create_domain_generation_job(client_id: UUID, count: int = 10):
         raise HTTPException(status_code=404, detail="Client not found")
     if not client["workspace_id"]:
         raise HTTPException(status_code=400, detail="Client not linked to a workspace")
+
+    workspace_id = client["workspace_id"]
+    generation_count = count
+    package_target = None
+    existing_count = 0
+
+    # Calculate count based on package if fill_package=True
+    if fill_package:
+        subscription = await fetch_one("""
+            SELECT
+                s.id,
+                COALESCE(pt.total_domains,
+                         (s.entra_packages * s.entra_domains_per_package) +
+                         (s.google_packages * s.google_domains_per_package)) as total_domains
+            FROM client_subscriptions s
+            LEFT JOIN package_templates pt ON s.package_template_id = pt.id
+            WHERE s.client_id = $1 AND s.status = 'active'
+        """, client_id)
+
+        if subscription:
+            package_target = subscription["total_domains"]
+
+            # Count domains by status
+            # - Confirmed: purchased, active, legacy, warming (committed)
+            # - Available: generated, ready for purchase selection
+            domain_counts = await fetch_one("""
+                SELECT
+                    COUNT(*) FILTER (WHERE approval_status IN ('purchased', 'active', 'legacy', 'warming')) as confirmed,
+                    COUNT(*) FILTER (WHERE approval_status = 'available') as available
+                FROM domains
+                WHERE workspace_id = $1
+            """, workspace_id)
+
+            confirmed_count = domain_counts["confirmed"] if domain_counts else 0
+            available_count = domain_counts["available"] if domain_counts else 0
+            existing_count = confirmed_count  # Only confirmed count towards capacity
+            gap = max(0, package_target - existing_count)
+
+            # Always generate at least 20 domains per batch for good selection
+            # Generate more if gap is larger, up to 50 per batch
+            MIN_BATCH_SIZE = 20
+            MAX_BATCH_SIZE = 50
+
+            if gap == 0 and available_count >= MIN_BATCH_SIZE:
+                # Have enough available domains to purchase from
+                return {
+                    "job_id": None,
+                    "client_id": str(client_id),
+                    "client_name": client["name"],
+                    "count": 0,
+                    "status": "skipped",
+                    "created_at": None,
+                    "message": f"Package capacity reached with {confirmed_count} confirmed domains. {available_count} available for purchase.",
+                    "package_target": package_target,
+                    "existing_count": confirmed_count,
+                    "available_count": available_count
+                }
+
+            # Generate at least MIN_BATCH_SIZE, or gap + buffer for denials
+            generation_count = max(MIN_BATCH_SIZE, min(gap + 10, MAX_BATCH_SIZE))
+            logger.info(f"Package-based job: generating {generation_count} domains ({confirmed_count} confirmed, {available_count} available, target {package_target})")
 
     # Ensure jobs table exists
     await execute("""
@@ -1152,18 +1240,20 @@ async def create_domain_generation_job(client_id: UUID, count: int = 10):
         INSERT INTO domain_generation_jobs (client_id, count, status)
         VALUES ($1, $2, 'pending')
         RETURNING id, status, created_at
-    """, client_id, count)
+    """, client_id, generation_count)
 
-    logger.info(f"Created domain generation job {job['id']} for client {client['name']}")
+    logger.info(f"Created domain generation job {job['id']} for client {client['name']} ({generation_count} domains)")
 
     return {
         "job_id": str(job["id"]),
         "client_id": str(client_id),
         "client_name": client["name"],
-        "count": count,
+        "count": generation_count,
         "status": job["status"],
         "created_at": job["created_at"].isoformat(),
-        "message": "Job queued for processing by Claude Code worker"
+        "message": f"Job queued for processing by Claude Code worker. Generating {generation_count} domains.",
+        "package_target": package_target,
+        "existing_count": existing_count
     }
 
 
@@ -1340,6 +1430,121 @@ class SimpleGenerateResponse(BaseModel):
     suggestions: list[dict]
     count: int
     saved_count: int
+    prices_checked: int = 0  # Number of domains with prices fetched
+    available_count: int = 0  # Number of domains still available
+
+
+async def _auto_check_prices_for_domains(domain_ids: list[UUID]) -> tuple[int, int]:
+    """
+    Automatically check prices for newly generated domains.
+
+    Called after domain generation to immediately populate pricing data,
+    eliminating the need for users to click "$ Check" buttons.
+
+    Args:
+        domain_ids: List of domain UUIDs to check
+
+    Returns:
+        Tuple of (checked_count, available_count)
+    """
+    if not domain_ids:
+        return 0, 0
+
+    porkbun = PorkbunService()
+    dynadot = DynadotService()
+    checked_count = 0
+    available_count = 0
+
+    try:
+        # Fetch domain names
+        domains = await fetch_all("""
+            SELECT id, domain_name FROM domains WHERE id = ANY($1)
+        """, domain_ids)
+
+        for domain in domains:
+            domain_id = domain["id"]
+            domain_name = domain["domain_name"]
+
+            try:
+                # Check both providers concurrently
+                porkbun_result, dynadot_result = await asyncio.gather(
+                    porkbun.check_availability(domain_name),
+                    dynadot.check_availability(domain_name),
+                    return_exceptions=True
+                )
+
+                # Process Porkbun result
+                porkbun_available = None
+                porkbun_price = None
+                if not isinstance(porkbun_result, Exception):
+                    porkbun_available = porkbun_result.available
+                    if porkbun_result.available and porkbun_result.price is not None:
+                        porkbun_price = float(porkbun_result.price)
+
+                # Process Dynadot result
+                dynadot_available = None
+                dynadot_price = None
+                if not isinstance(dynadot_result, Exception):
+                    dynadot_available = dynadot_result.available
+                    if dynadot_result.available and dynadot_result.price is not None:
+                        dynadot_price = float(dynadot_result.price)
+
+                # Determine best price and provider
+                best_price = None
+                best_provider = None
+                is_available = porkbun_available or dynadot_available
+
+                if porkbun_price is not None and dynadot_price is not None:
+                    if porkbun_price <= dynadot_price:
+                        best_price = porkbun_price
+                        best_provider = "porkbun"
+                    else:
+                        best_price = dynadot_price
+                        best_provider = "dynadot"
+                elif porkbun_price is not None:
+                    best_price = porkbun_price
+                    best_provider = "porkbun"
+                elif dynadot_price is not None:
+                    best_price = dynadot_price
+                    best_provider = "dynadot"
+
+                # Update domain with price data
+                await execute("""
+                    UPDATE domains
+                    SET porkbun_price = $1,
+                        porkbun_available = $2,
+                        dynadot_price = $3,
+                        dynadot_available = $4,
+                        cached_price = $5,
+                        selected_provider = $6,
+                        last_price_check = NOW()
+                    WHERE id = $7
+                """, porkbun_price, porkbun_available, dynadot_price, dynadot_available,
+                    best_price, best_provider, domain_id)
+
+                checked_count += 1
+
+                if is_available:
+                    available_count += 1
+                else:
+                    # Auto-remove unavailable domains
+                    await execute("""
+                        DELETE FROM domains
+                        WHERE id = $1 AND approval_status IN ('available', 'pending')
+                    """, domain_id)
+                    logger.info(f"Auto-removed unavailable domain: {domain_name}")
+
+            except Exception as e:
+                logger.warning(f"Failed to check price for {domain_name}: {e}")
+
+            # Brief delay between checks to respect rate limits
+            await asyncio.sleep(0.3)
+
+    finally:
+        await porkbun.close()
+        await dynadot.close()
+
+    return checked_count, available_count
 
 
 class AvailabilityCheckRequest(BaseModel):
@@ -1425,8 +1630,10 @@ async def generate_domains_simple(
         tlds=tld_list,
     )
 
-    # Save to database as pending
+    # Save to database as available and collect IDs for price checking
     saved_count = 0
+    saved_domain_ids: list[UUID] = []
+
     for s in suggestions:
         try:
             # Check if domain already exists for this workspace
@@ -1435,13 +1642,26 @@ async def generate_domains_simple(
             """, workspace_id, s.domain)
 
             if not existing:
-                await execute("""
+                # Use RETURNING to get the new domain ID
+                result = await fetch_one("""
                     INSERT INTO domains (workspace_id, domain_name, rationale, legitimacy_score, approval_status)
-                    VALUES ($1, $2, $3, $4, 'pending')
+                    VALUES ($1, $2, $3, $4, 'available')
+                    RETURNING id
                 """, workspace_id, s.domain, s.rationale, s.legitimacy_score)
                 saved_count += 1
+                if result:
+                    saved_domain_ids.append(result["id"])
         except Exception as e:
             logger.warning(f"Failed to save domain {s.domain}: {e}")
+
+    # Automatically check prices for all saved domains
+    # This eliminates the need for users to click "$ Check" buttons
+    prices_checked = 0
+    available_count = 0
+    if saved_domain_ids:
+        logger.info(f"Auto-checking prices for {len(saved_domain_ids)} newly generated domains...")
+        prices_checked, available_count = await _auto_check_prices_for_domains(saved_domain_ids)
+        logger.info(f"Price check complete: {prices_checked} checked, {available_count} available")
 
     return SimpleGenerateResponse(
         client_id=str(client_id),
@@ -1449,6 +1669,8 @@ async def generate_domains_simple(
         suggestions=[s.model_dump() for s in suggestions],
         count=len(suggestions),
         saved_count=saved_count,
+        prices_checked=prices_checked,
+        available_count=available_count,
     )
 
 
@@ -1691,10 +1913,10 @@ DNSIMPLE_NAMESERVERS = [
 @router.post("/purchase/{domain_id}", response_model=PurchaseSingleResponse)
 async def purchase_single_domain(domain_id: UUID, provider: Optional[str] = None):
     """
-    Purchase a single approved domain from selected provider.
+    Purchase a single available domain from selected provider.
 
     Used for inline table actions - purchases the domain and updates status.
-    Requires the domain to be approved first.
+    Domain must be in 'available' status (generated, not yet purchased).
 
     IMPORTANT: Automatically sets DNSimple nameservers at purchase time.
     This is REQUIRED for Hypertide - nameservers must be configured before
@@ -1721,10 +1943,12 @@ async def purchase_single_domain(domain_id: UUID, provider: Optional[str] = None
     if not domain:
         raise HTTPException(status_code=404, detail="Domain not found")
 
-    if domain["approval_status"] != "approved":
+    # Domain must be available for purchase (not already purchased/active)
+    # Accept 'pending', 'available', or 'approved' status
+    if domain["approval_status"] not in ("available", "approved", "pending"):
         raise HTTPException(
             status_code=400,
-            detail=f"Domain must be approved before purchase (current status: {domain['approval_status']})"
+            detail=f"Domain is not available for purchase (current status: {domain['approval_status']})"
         )
 
     # Require price check before purchase - prevents defaulting to wrong registrar
@@ -1880,11 +2104,11 @@ async def purchase_single_domain(domain_id: UUID, provider: Optional[str] = None
 
 
 @router.post("/purchase-domains", response_model=PurchaseDomainsResponse)
-async def purchase_approved_domains(request: PurchaseDomainsRequest):
+async def purchase_selected_domains(request: PurchaseDomainsRequest):
     """
-    Purchase approved domains via Porkbun API.
+    Purchase selected domains via Porkbun API.
 
-    Only purchases domains that have been approved (approval_status='approved').
+    Only purchases domains that are available (approval_status='available').
     Returns 402 Payment Required if insufficient balance.
 
     Args:
@@ -1899,7 +2123,7 @@ async def purchase_approved_domains(request: PurchaseDomainsRequest):
     porkbun = PorkbunService()
 
     try:
-        # Get approved domains from database
+        # Get available domains from database
         domains_to_purchase = []
         for domain_id in request.domain_ids:
             domain = await fetch_one("""
@@ -1911,10 +2135,10 @@ async def purchase_approved_domains(request: PurchaseDomainsRequest):
             if not domain:
                 raise HTTPException(status_code=404, detail=f"Domain {domain_id} not found")
 
-            if domain["approval_status"] != "approved":
+            if domain["approval_status"] not in ("available", "approved", "pending"):
                 raise HTTPException(
                     status_code=400,
-                    detail=f"Domain {domain['domain_name']} is not approved (status: {domain['approval_status']})"
+                    detail=f"Domain {domain['domain_name']} is not available for purchase (status: {domain['approval_status']})"
                 )
 
             domains_to_purchase.append(domain)
@@ -2582,7 +2806,7 @@ async def check_prices_bulk(request: BulkPriceCheckRequest):
             SELECT id, domain_name, workspace_id, approval_status
             FROM domains
             WHERE job_id = $1
-            AND approval_status IN ('pending', 'approved')
+            AND approval_status = 'available'
         """, request.job_id)
     elif request.client_id:
         # Get workspace_id from client
@@ -2590,12 +2814,12 @@ async def check_prices_bulk(request: BulkPriceCheckRequest):
         if not client or not client["workspace_id"]:
             raise HTTPException(status_code=404, detail="Client not found or has no workspace")
 
-        # Get all pending/approved domains for this client
+        # Get all available domains for this client
         domains = await fetch_all("""
             SELECT id, domain_name, workspace_id, approval_status
             FROM domains
             WHERE workspace_id = $1
-            AND approval_status IN ('pending', 'approved')
+            AND approval_status = 'available'
         """, client["workspace_id"])
     else:
         raise HTTPException(status_code=400, detail="Provide either client_id, domain_ids, or job_id")
@@ -2693,14 +2917,13 @@ async def check_prices_bulk(request: BulkPriceCheckRequest):
                 if is_available:
                     available_count += 1
                 else:
-                    # Auto-deny unavailable domains (already taken)
-                    # Include both pending and approved domains
+                    # Auto-remove unavailable domains (already taken)
+                    # Only remove 'available' status domains, keep purchased/active
                     await execute("""
-                        UPDATE domains
-                        SET approval_status = 'denied'
-                        WHERE id = $1 AND approval_status IN ('pending', 'approved')
+                        DELETE FROM domains
+                        WHERE id = $1 AND approval_status = 'available'
                     """, domain_id)
-                    logger.info(f"Auto-denied unavailable domain: {domain_name}")
+                    logger.info(f"Auto-removed unavailable domain: {domain_name}")
 
                 results.append(BulkPriceCheckResult(
                     domain_id=str(domain_id),
@@ -2774,4 +2997,185 @@ async def get_price_history(domain_id: UUID, limit: int = 30):
             for h in history
         ],
         "count": len(history),
+    }
+
+
+# =============================================================================
+# Domain Purchase Jobs (Worker Mode)
+# =============================================================================
+
+class CreateDomainPurchaseJobRequest(BaseModel):
+    """Request to create a domain purchase job."""
+    domain_ids: list[UUID] = Field(..., description="Domain IDs to purchase")
+    registrar: str = Field(default="dynadot", description="Registrar: 'dynadot' or 'porkbun'")
+
+
+class DomainPurchaseJobResponse(BaseModel):
+    """Response from domain purchase job creation."""
+    job_id: str
+    client_id: str
+    status: str
+    domain_count: int
+    registrar: str
+    message: str
+
+
+class DomainPurchaseJobStatusResponse(BaseModel):
+    """Status of a domain purchase job."""
+    job_id: str
+    status: str  # pending, processing, completed, failed
+    registrar: str
+    domain_names: list[str]
+    current_domain: Optional[str] = None
+    successful_count: int
+    failed_count: int
+    total_cost: Optional[str] = None
+    results: Optional[list] = None
+    error_message: Optional[str] = None
+    created_at: Optional[str] = None
+    started_at: Optional[str] = None
+    completed_at: Optional[str] = None
+
+
+@router.post("/purchase-jobs/create/{client_id}", response_model=DomainPurchaseJobResponse)
+async def create_domain_purchase_job(client_id: UUID, request: CreateDomainPurchaseJobRequest):
+    """
+    Create a domain purchase job for the Hypertide worker.
+
+    Instead of executing the purchase inline, this creates a job in the
+    domain_purchase_jobs table that will be picked up by the hypertide_worker.
+
+    This allows:
+    - Non-blocking API response
+    - Resilient job processing (survives API restarts)
+    - Independent worker deployment
+
+    Use GET /purchase-jobs/{job_id}/status to poll for completion.
+    """
+    if not request.domain_ids:
+        raise HTTPException(status_code=400, detail="No domain IDs provided")
+
+    if request.registrar not in ('dynadot', 'porkbun'):
+        raise HTTPException(status_code=400, detail="Registrar must be 'dynadot' or 'porkbun'")
+
+    # Get client workspace
+    client = await fetch_one(
+        "SELECT workspace_id FROM clients WHERE id = $1",
+        client_id
+    )
+    if not client:
+        raise HTTPException(status_code=404, detail="Client not found")
+
+    workspace_id = client.get("workspace_id")
+
+    # Verify domains exist and are available for purchase
+    domain_names = []
+    for domain_id in request.domain_ids:
+        domain = await fetch_one("""
+            SELECT domain_name, approval_status
+            FROM domains
+            WHERE id = $1
+        """, domain_id)
+
+        if not domain:
+            raise HTTPException(status_code=404, detail=f"Domain {domain_id} not found")
+
+        if domain["approval_status"] not in ("available", "approved", "pending"):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Domain {domain['domain_name']} is not available for purchase (status: {domain['approval_status']})"
+            )
+
+        domain_names.append(domain["domain_name"])
+
+    # Create job
+    job_id = await fetch_one("""
+        INSERT INTO domain_purchase_jobs (
+            client_id, workspace_id, domain_ids, domain_names, registrar, status
+        ) VALUES ($1, $2, $3, $4, $5, 'pending')
+        RETURNING id
+    """, client_id, workspace_id, request.domain_ids, domain_names, request.registrar)
+
+    logger.info(f"Created domain purchase job {job_id['id']} for {len(domain_names)} domains via {request.registrar}")
+
+    return DomainPurchaseJobResponse(
+        job_id=str(job_id['id']),
+        client_id=str(client_id),
+        status="pending",
+        domain_count=len(domain_names),
+        registrar=request.registrar,
+        message=f"Job created. {len(domain_names)} domain(s) queued for purchase via {request.registrar}. Poll /purchase-jobs/{job_id['id']}/status for updates."
+    )
+
+
+@router.get("/purchase-jobs/{job_id}/status", response_model=DomainPurchaseJobStatusResponse)
+async def get_domain_purchase_job_status(job_id: UUID):
+    """
+    Get the status of a domain purchase job.
+
+    Poll this endpoint to track purchase progress and get results.
+    """
+    job = await fetch_one("""
+        SELECT
+            id, status, registrar, domain_names, current_domain,
+            successful_count, failed_count, total_cost, results,
+            error_message, created_at, started_at, completed_at
+        FROM domain_purchase_jobs
+        WHERE id = $1
+    """, job_id)
+
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    return DomainPurchaseJobStatusResponse(
+        job_id=str(job["id"]),
+        status=job["status"],
+        registrar=job["registrar"],
+        domain_names=job["domain_names"] or [],
+        current_domain=job["current_domain"],
+        successful_count=job["successful_count"] or 0,
+        failed_count=job["failed_count"] or 0,
+        total_cost=str(job["total_cost"]) if job["total_cost"] else None,
+        results=job["results"],
+        error_message=job["error_message"],
+        created_at=job["created_at"].isoformat() if job["created_at"] else None,
+        started_at=job["started_at"].isoformat() if job["started_at"] else None,
+        completed_at=job["completed_at"].isoformat() if job["completed_at"] else None,
+    )
+
+
+@router.get("/purchase-jobs/client/{client_id}")
+async def get_client_domain_purchase_jobs(client_id: UUID, limit: int = 10):
+    """
+    Get recent domain purchase jobs for a client.
+
+    Returns the most recent jobs ordered by creation time.
+    """
+    jobs = await fetch_all("""
+        SELECT
+            id, status, registrar, domain_names, successful_count,
+            failed_count, total_cost, error_message, created_at, completed_at
+        FROM domain_purchase_jobs
+        WHERE client_id = $1
+        ORDER BY created_at DESC
+        LIMIT $2
+    """, client_id, limit)
+
+    return {
+        "jobs": [
+            {
+                "job_id": str(j["id"]),
+                "status": j["status"],
+                "registrar": j["registrar"],
+                "domain_count": len(j["domain_names"]) if j["domain_names"] else 0,
+                "successful_count": j["successful_count"] or 0,
+                "failed_count": j["failed_count"] or 0,
+                "total_cost": str(j["total_cost"]) if j["total_cost"] else None,
+                "error_message": j["error_message"],
+                "created_at": j["created_at"].isoformat() if j["created_at"] else None,
+                "completed_at": j["completed_at"].isoformat() if j["completed_at"] else None,
+            }
+            for j in jobs
+        ],
+        "count": len(jobs),
     }

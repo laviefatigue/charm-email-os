@@ -1,61 +1,63 @@
 ---
 title: Infrastructure Overview
 created: 2026-01-16
-updated: 2026-01-16
-tags: [hub, infrastructure]
+updated: 2026-02-11
+tags: [hub, infrastructure, localhost]
 ---
 
 # Infrastructure
 
-Charm Email OS runs on a self-hosted infrastructure using Coolify for deployments.
+> **Localhost-First**: Charm Email OS now runs entirely on localhost via Docker. Coolify/VPS deployments are deprecated.
 
-## Components
-
-- [[coolify]] - Self-hosted PaaS for container deployments
-- [[supabase]] - PostgreSQL database (managed)
-- [[vps]] - Hetzner VPS hosting the Coolify instance
-- [[security-hardening]] - Security assessment and hardening guide
-
-## Architecture Diagram
+## Current Architecture (Localhost)
 
 ```
 ┌──────────────────────────────────────────────────────────────────────┐
-│                       VPS (31.97.142.123)                             │
-│  ┌─────────────────────────────────────────────────────────────────┐ │
-│  │                          Coolify                                 │ │
-│  │                                                                  │ │
-│  │  ┌─────────────┐    ┌──────────────┐                            │ │
-│  │  │  charm-api  │    │charm-frontend│    (Public Apps)           │ │
-│  │  │  (FastAPI)  │    │  (Next.js)   │                            │ │
-│  │  └─────────────┘    └──────────────┘                            │ │
-│  │                                                                  │ │
-│  │  ┌─────────────┐ ┌─────────────┐ ┌─────────────┐                │ │
-│  │  │  strategy   │ │   domain    │ │   spintax   │  (AI Workers)  │ │
-│  │  │   worker    │ │   worker    │ │   worker    │                │ │
-│  │  └─────────────┘ └─────────────┘ └─────────────┘                │ │
-│  │                                                                  │ │
-│  └─────────────────────────────────────────────────────────────────┘ │
-└──────────────────────────────────────────────────────────────────────┘
-                                    │
-                                    ↓
-┌──────────────────────────────────────────────────────────────────────┐
-│                         Supabase (AWS)                                │
-│  ┌─────────────────────────────────────────────────────────────────┐ │
-│  │                        PostgreSQL                                │ │
-│  │               aws-0-us-east-1.pooler.supabase.com               │ │
-│  └─────────────────────────────────────────────────────────────────┘ │
+│                       LOCALHOST (Docker)                              │
+│                                                                       │
+│  ┌─────────────┐  ┌──────────────┐  ┌─────────────┐                  │
+│  │  charm-api  │  │charm-frontend│  │  onboarding │                  │
+│  │  (FastAPI)  │  │  (Next.js)   │  │    form     │                  │
+│  │  :8000      │  │  :3000       │  │  :3004      │                  │
+│  └─────────────┘  └──────────────┘  └─────────────┘                  │
+│                                                                       │
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐                   │
+│  │  strategy   │  │  emailbison │  │  postgres   │                   │
+│  │   worker    │  │    sync     │  │    :5433    │                   │
+│  └─────────────┘  └─────────────┘  └─────────────┘                   │
+│                                                                       │
 └──────────────────────────────────────────────────────────────────────┘
 ```
 
-## Access Methods
+## Access Points
 
-| Service | Access Method |
-|---------|---------------|
-| Coolify | Web UI + [[mcp-coolify]] |
-| Supabase | Connection string (asyncpg) |
-| VPS | SSH (if needed) |
+| Service | URL | Port |
+|---------|-----|------|
+| Frontend | http://localhost:3000 | 3000 |
+| API | http://localhost:8000 | 8000 |
+| API Docs | http://localhost:8000/docs | 8000 |
+| Onboarding Form | http://localhost:3004 | 3004 |
+| PostgreSQL | localhost:5433 | 5433 |
+
+## Getting Started
+
+```bash
+cd D:\Work\charm-email-os
+docker compose -f docker-compose.local.yml up -d
+```
+
+See [[../local-development/index]] for complete setup instructions.
+
+## Legacy Documentation (Deprecated)
+
+The following infrastructure documentation is preserved for reference only:
+
+- [[coolify]] - ⚠️ DEPRECATED - Self-hosted PaaS
+- [[supabase]] - Database reference
+- [[vps]] - ⚠️ DEPRECATED - Hetzner VPS
+- [[security-hardening]] - Security assessment guide
 
 ## Related
 
-- [[../index]] - Main documentation hub
+- [[../local-development/index]] - **Start here** - Local development hub
 - [[../architecture/data-flow]] - Data flow through infrastructure

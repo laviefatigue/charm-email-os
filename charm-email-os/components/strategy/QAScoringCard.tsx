@@ -11,10 +11,24 @@ interface QAScoringCardProps {
   className?: string;
 }
 
-function ScoreBadge({ score }: { score: string }) {
-  // Parse score like "24/25" to calculate percentage
-  const [current, max] = score.split('/').map(Number);
-  const percentage = max ? (current / max) * 100 : 0;
+function ScoreBadge({ score, max }: { score: string | number; max?: number }) {
+  // Handle both formats: "24/25" string or separate score/max numbers
+  let current: number;
+  let maxValue: number;
+  let displayScore: string;
+
+  if (typeof score === 'string' && score.includes('/')) {
+    // Parse "24/25" format
+    [current, maxValue] = score.split('/').map(Number);
+    displayScore = score;
+  } else {
+    // Use separate score and max fields
+    current = typeof score === 'number' ? score : parseInt(score, 10);
+    maxValue = max || 25;
+    displayScore = `${current}/${maxValue}`;
+  }
+
+  const percentage = maxValue ? (current / maxValue) * 100 : 0;
 
   return (
     <span className={cn(
@@ -22,7 +36,7 @@ function ScoreBadge({ score }: { score: string }) {
       percentage >= 90 ? 'bg-emerald-100 text-emerald-700' :
       percentage >= 70 ? 'bg-amber-100 text-amber-700' : 'bg-red-100 text-red-700'
     )}>
-      {score}
+      {displayScore}
     </span>
   );
 }
@@ -32,7 +46,7 @@ function DimensionRow({ dimension }: { dimension: QADimension }) {
     <tr className="border-b last:border-0">
       <td className="py-3 pr-4 font-medium">{dimension.name}</td>
       <td className="py-3 px-4 text-center">
-        <ScoreBadge score={dimension.score} />
+        <ScoreBadge score={dimension.score} max={dimension.max} />
       </td>
       <td className="py-3 pl-4 text-sm text-muted-foreground">{dimension.notes}</td>
     </tr>

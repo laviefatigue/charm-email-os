@@ -16,14 +16,18 @@ import {
   ListContaminationTracker,
   ESPHealthSummary,
   RotationNeedsAttention,
+  HealthDistributionPieChart,
+  LifecycleDistributionChart,
 } from '@/components/health';
 import { InventoryBarChart } from '@/components/health/InventoryBarChart';
 import { InventoryTable } from '@/components/health/InventoryTable';
 import { AutoKillToggle } from '@/components/health/AutoKillToggle';
 import { useClientStore, useHealthStore } from '@/lib/stores';
-import { inventoryApi } from '@/lib/api';
+import { inventoryApi, healthApi, subscriptionApi } from '@/lib/api';
 import { cn } from '@/lib/utils';
-import type { KillTrigger } from '@/lib/types/health';
+import { Progress } from '@/components/ui/progress';
+import type { KillTrigger, HealthRange, InfrastructureHealthResponse, PoolStatus } from '@/lib/types/health';
+import type { SubscriptionWithUsage } from '@/lib/types';
 import type {
   InventoryOverview,
   InventoryInbox,
@@ -55,6 +59,14 @@ export default function HealthPage() {
   const [isAutoKillUpdating, setIsAutoKillUpdating] = useState(false);
   const [poolStatusFilter, setPoolStatusFilter] = useState<InventoryPoolStatus | null>(null);
   const [lifecycleStatusFilter, setLifecycleStatusFilter] = useState<InventoryLifecycleStatus | null>(null);
+  const [healthRangeFilter, setHealthRangeFilter] = useState<HealthRange | null>(null);
+
+  // Infrastructure health (database-only, no EmailBison API)
+  const [infrastructureHealth, setInfrastructureHealth] = useState<InfrastructureHealthResponse | null>(null);
+  const [isInfraHealthLoading, setIsInfraHealthLoading] = useState(false);
+
+  // Subscription data for capacity planning
+  const [subscription, setSubscription] = useState<SubscriptionWithUsage | null>(null);
 
   const { getClient, selectClient, fetchClients, clients } = useClientStore();
   const isLoadingClients = useClientStore((state) => state.isLoading);
@@ -77,6 +89,19 @@ export default function HealthPage() {
 
   const client = getClient(clientId);
 
+  // Fetch infrastructure health (database-only)
+  const fetchInfrastructureHealth = useCallback(async () => {
+    setIsInfraHealthLoading(true);
+    try {
+      const health = await healthApi.getInfrastructureHealth(clientId);
+      setInfrastructureHealth(health);
+    } catch (error) {
+      console.error('Failed to fetch infrastructure health:', error);
+    } finally {
+      setIsInfraHealthLoading(false);
+    }
+  }, [clientId]);
+
   // Fetch inventory data
   const fetchInventoryData = useCallback(async () => {
     setIsInventoryLoading(true);
@@ -96,16 +121,28 @@ export default function HealthPage() {
     }
   }, [clientId]);
 
+  // Fetch subscription data for capacity planning
+  const fetchSubscription = useCallback(async () => {
+    try {
+      const sub = await subscriptionApi.getClientSubscription(clientId);
+      setSubscription(sub);
+    } catch (error) {
+      console.error('Failed to fetch subscription:', error);
+    }
+  }, [clientId]);
+
   // Fetch all health data on mount via composite endpoint
   useEffect(() => {
     selectClient(clientId);
     refreshHealth(clientId);
     fetchInventoryData();
+    fetchInfrastructureHealth();
+    fetchSubscription();
     // Also fetch clients if not loaded
     if (clients.length === 0) {
       fetchClients();
     }
-  }, [clientId, selectClient, refreshHealth, fetchInventoryData, fetchClients, clients.length]);
+  }, [clientId, selectClient, refreshHealth, fetchInventoryData, fetchInfrastructureHealth, fetchSubscription, fetchClients, clients.length]);
 
   const pendingTriggers = killTriggers.filter((t) => t.actionTaken === 'pending');
   const instantPending = killTriggers.filter(
@@ -125,6 +162,8 @@ export default function HealthPage() {
   const handleRefresh = () => {
     refreshHealth(clientId);
     fetchInventoryData();
+    fetchInfrastructureHealth();
+    fetchSubscription();
     toast.success('Health data refreshed');
   };
 
@@ -172,6 +211,13 @@ export default function HealthPage() {
   };
 
   const handleClearFilter = () => {
+    setPoolStatusFilter(null);
+    setLifecycleStatusFilter(null);
+    setHealthRangeFilter(null);
+  };
+
+  const handleHealthRangeClick = (range: HealthRange) => {
+    setHealthRangeFilter(healthRangeFilter === range ? null : range);
     setPoolStatusFilter(null);
     setLifecycleStatusFilter(null);
   };
@@ -356,6 +402,194 @@ export default function HealthPage() {
           </div>
         )}
 
+        {/* Infrastructure Health Section (Database-only) */}
+        {infrastructureHealth && (
+          <div className="grid grid-cols-12 gap-6 mb-6">
+            {/* Lifecycle Distribution Chart - Half Width (Primary: Pool Status & Lifecycle) */}
+            <div className="col-span-12 lg:col-span-6">
+              <Card>
+                <CardContent className="p-6">
+                  <h3 className="text-lg font-semibold mb-4">Inventory Status</h3>
+                  {infrastructureHealth.lifecycleDistribution ? (
+                    <LifecycleDistributionChart
+                      distribution={infrastructureHealth.lifecycleDistribution}
+                      size={180}
+                    />
+                  ) : (
+                    <HealthDistributionPieChart
+                      distribution={infrastructureHealth.healthDistribution}
+                      onSegmentClick={handleHealthRangeClick}
+                      selectedRange={healthRangeFilter}
+                      size={200}
+                    />
+                  )}
+                </CardContent>
+              </Card>
+            </div>
+
+            {/* Infrastructure Summary - Half Width */}
+            <div className="col-span-12 lg:col-span-6">
+              <Card>
+                <CardContent className="p-6">
+                  <h3 className="text-lg font-semibold mb-4">Infrastructure Summary</h3>
+                  <div className="space-y-4">
+                    {/* Overall Stats */}
+                    <div className="grid grid-cols-2 gap-4">
+                      <div className="p-3 bg-muted/50 rounded-lg">
+                        <div className="text-2xl font-bold">{infrastructureHealth.liveInboxes}</div>
+                        <div className="text-sm text-muted-foreground">Live Inboxes</div>
+                      </div>
+                      <div className="p-3 bg-muted/50 rounded-lg">
+                        <div className="text-2xl font-bold">{infrastructureHealth.deadInboxes}</div>
+                        <div className="text-sm text-muted-foreground">Dead Inboxes</div>
+                      </div>
+                      <div className="p-3 bg-muted/50 rounded-lg">
+                        <div className="text-2xl font-bold">{infrastructureHealth.avgHealthScore.toFixed(1)}</div>
+                        <div className="text-sm text-muted-foreground">Avg Health Score</div>
+                      </div>
+                      <div className="p-3 bg-muted/50 rounded-lg">
+                        <div className="text-2xl font-bold">
+                          {infrastructureHealth.cleanDomains}/{infrastructureHealth.totalDomains}
+                        </div>
+                        <div className="text-sm text-muted-foreground">Clean Domains</div>
+                      </div>
+                    </div>
+
+                    {/* Provider Breakdown */}
+                    <div>
+                      <h4 className="text-sm font-medium text-muted-foreground mb-2">Provider Breakdown</h4>
+                      <div className="space-y-2">
+                        {infrastructureHealth.providers.map((provider) => (
+                          <div key={provider.name} className="flex items-center justify-between">
+                            <span className="capitalize">{provider.name}</span>
+                            <div className="flex items-center gap-4 text-sm">
+                              <span className="text-muted-foreground">
+                                {provider.liveCount}/{provider.count} live
+                              </span>
+                              <span className={cn(
+                                'font-medium',
+                                provider.avgHealthScore >= 80 ? 'text-green-600' :
+                                provider.avgHealthScore >= 60 ? 'text-yellow-600' :
+                                'text-red-600'
+                              )}>
+                                {provider.avgHealthScore.toFixed(0)}
+                              </span>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Data Freshness */}
+                    {infrastructureHealth.lastSync && (
+                      <div className="text-xs text-muted-foreground pt-2 border-t">
+                        Data from {infrastructureHealth.syncSource} •
+                        Last sync: {new Date(infrastructureHealth.lastSync).toLocaleString()}
+                      </div>
+                    )}
+                  </div>
+                </CardContent>
+              </Card>
+            </div>
+          </div>
+        )}
+
+        {/* Capacity Planning Section */}
+        {subscription && infrastructureHealth && (
+          <Card className="mb-6">
+            <CardContent className="p-6">
+              <h3 className="text-lg font-semibold mb-4">Capacity Planning</h3>
+              <div className="space-y-4">
+                {/* Package Info */}
+                <div className="flex items-center justify-between">
+                  <span className="text-sm text-muted-foreground">
+                    Package: <span className="font-medium text-foreground">{subscription.packageTemplateName || 'Custom'}</span>
+                  </span>
+                  <span className={cn(
+                    'text-sm font-medium px-2 py-1 rounded',
+                    subscription.spareStatus === 'healthy' ? 'bg-green-100 text-green-700' :
+                    subscription.spareStatus === 'low' ? 'bg-yellow-100 text-yellow-700' :
+                    'bg-red-100 text-red-700'
+                  )}>
+                    {subscription.spareStatus === 'healthy' ? 'On Track' :
+                     subscription.spareStatus === 'low' ? 'Needs Attention' : 'Critical Gap'}
+                  </span>
+                </div>
+
+                {/* Inbox Progress */}
+                <div className="space-y-2">
+                  <div className="flex justify-between text-sm">
+                    <span>Live Inboxes</span>
+                    <span className="font-medium">
+                      {infrastructureHealth.liveInboxes} / {subscription.currentActiveInboxes + subscription.inboxesRemaining}
+                      {' '}
+                      ({subscription.inboxesUsedPercent.toFixed(0)}%)
+                    </span>
+                  </div>
+                  <Progress
+                    value={subscription.inboxesUsedPercent}
+                    className={cn(
+                      'h-3',
+                      subscription.inboxesUsedPercent < 30 ? '[&>div]:bg-red-500' :
+                      subscription.inboxesUsedPercent < 70 ? '[&>div]:bg-yellow-500' :
+                      '[&>div]:bg-green-500'
+                    )}
+                  />
+                </div>
+
+                {/* Domain Progress */}
+                <div className="space-y-2">
+                  <div className="flex justify-between text-sm">
+                    <span>Active Domains</span>
+                    <span className="font-medium">
+                      {subscription.currentActiveDomains} / {subscription.currentActiveDomains + subscription.domainsRemaining}
+                      {' '}
+                      ({subscription.domainsUsedPercent.toFixed(0)}%)
+                    </span>
+                  </div>
+                  <Progress
+                    value={subscription.domainsUsedPercent}
+                    className={cn(
+                      'h-3',
+                      subscription.domainsUsedPercent < 30 ? '[&>div]:bg-red-500' :
+                      subscription.domainsUsedPercent < 70 ? '[&>div]:bg-yellow-500' :
+                      '[&>div]:bg-green-500'
+                    )}
+                  />
+                </div>
+
+                {/* Gap Summary */}
+                {subscription.inboxesRemaining > 0 && (
+                  <div className="p-3 bg-muted/50 rounded-lg">
+                    <div className="flex items-center gap-2 text-sm">
+                      <AlertCircle className="h-4 w-4 text-amber-500" />
+                      <span>
+                        <span className="font-medium">{subscription.inboxesRemaining} more inboxes</span>
+                        {' '}needed to reach package capacity
+                        {subscription.domainsRemaining > 0 && (
+                          <span className="text-muted-foreground">
+                            {' '}(~{subscription.domainsRemaining} more domains)
+                          </span>
+                        )}
+                      </span>
+                    </div>
+                  </div>
+                )}
+
+                {/* Fully Fulfilled Message */}
+                {subscription.inboxesRemaining <= 0 && (
+                  <div className="p-3 bg-green-50 rounded-lg">
+                    <div className="flex items-center gap-2 text-sm text-green-700">
+                      <CheckCircle className="h-4 w-4" />
+                      <span>Package capacity reached - {infrastructureHealth.liveInboxes} live inboxes active</span>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </CardContent>
+          </Card>
+        )}
+
         {/* Main Dashboard Grid - Reorganized Layout */}
         <div className="grid grid-cols-12 gap-6">
           {/* Inventory Bar Chart - Full Width (Priority 1: Inventory health) */}
@@ -420,6 +654,7 @@ export default function HealthPage() {
                   isLoading={isInventoryLoading}
                   poolStatusFilter={poolStatusFilter}
                   lifecycleStatusFilter={lifecycleStatusFilter}
+                  healthRangeFilter={healthRangeFilter}
                   onKillAndReplace={handleKillAndReplace}
                   onClearFilter={handleClearFilter}
                 />

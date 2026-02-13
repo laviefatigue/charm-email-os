@@ -3,25 +3,25 @@
 import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
 import type { CycleVariable, VariableLevel } from '@/lib/types';
-import { RequestRevisionButton } from './RequestRevisionButton';
+
+// Core variables that are always available in every email
+const CORE_VARIABLES: CycleVariable[] = [
+  { name: '{{first_name}}', description: "Prospect's first name" },
+  { name: '{{company_name}}', description: "Prospect's company" },
+  { name: '{{role_title}}', description: "Prospect's job title" },
+];
 
 interface CycleVariablesPanelProps {
   cycleVariables: CycleVariable[];
   campaignVariables: CycleVariable[];
   copyVariables: CycleVariable[];
   className?: string;
-  onRequestRevision?: (level: VariableLevel) => void;
-  isSubmitting?: {
-    cycle?: boolean;
-    campaign?: boolean;
-    copy?: boolean;
-  };
 }
 
 const LEVEL_STYLES: Record<VariableLevel, { bg: string; text: string; label: string }> = {
   cycle: { bg: 'bg-purple-100', text: 'text-purple-800', label: 'Cycle' },
   campaign: { bg: 'bg-blue-100', text: 'text-blue-800', label: 'Campaign' },
-  copy: { bg: 'bg-green-100', text: 'text-green-800', label: 'Copy' },
+  copy: { bg: 'bg-purple-100', text: 'text-purple-800', label: 'Core' },
 };
 
 interface VariableTagProps {
@@ -76,15 +76,11 @@ function VariableSection({
   variables,
   level,
   emptyMessage,
-  onRequestRevision,
-  isSubmitting,
 }: {
   title: string;
   variables: CycleVariable[];
   level: VariableLevel;
   emptyMessage: string;
-  onRequestRevision?: () => void;
-  isSubmitting?: boolean;
 }) {
   const style = LEVEL_STYLES[level];
   // Deduplicate variables by name
@@ -94,21 +90,12 @@ function VariableSection({
 
   return (
     <div className="space-y-2">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <h4 className="text-sm font-medium">{title}</h4>
-          <Badge variant="outline" className={cn('text-xs', style.bg, style.text)}>
-            {style.label}
-          </Badge>
-          <span className="text-xs text-muted-foreground">({uniqueVars.length})</span>
-        </div>
-        {onRequestRevision && (
-          <RequestRevisionButton
-            onClick={onRequestRevision}
-            isSubmitting={isSubmitting}
-            tooltip={`Request revision for ${style.label.toLowerCase()}-level variables`}
-          />
-        )}
+      <div className="flex items-center gap-2">
+        <h4 className="text-sm font-medium">{title}</h4>
+        <Badge variant="outline" className={cn('text-xs', style.bg, style.text)}>
+          {style.label}
+        </Badge>
+        <span className="text-xs text-muted-foreground">({uniqueVars.length})</span>
       </div>
       {uniqueVars.length > 0 ? (
         <div className="flex flex-wrap gap-2">
@@ -128,9 +115,15 @@ export function CycleVariablesPanel({
   campaignVariables,
   copyVariables,
   className,
-  onRequestRevision,
-  isSubmitting,
 }: CycleVariablesPanelProps) {
+  // Merge core variables with any additional copy variables
+  const coreVariables = [
+    ...CORE_VARIABLES,
+    ...copyVariables.filter(v =>
+      !CORE_VARIABLES.some(c => c.name === v.name)
+    ),
+  ];
+
   return (
     <div className={cn('space-y-4', className)}>
       {/* Breadcrumb explanation */}
@@ -146,7 +139,7 @@ export function CycleVariablesPanel({
           </Badge>
           <span>→</span>
           <Badge variant="outline" className={cn('text-[10px]', LEVEL_STYLES.copy.bg, LEVEL_STYLES.copy.text)}>
-            Copy
+            Core
           </Badge>
         </span>
       </div>
@@ -156,8 +149,6 @@ export function CycleVariablesPanel({
         variables={cycleVariables}
         level="cycle"
         emptyMessage="No cycle-level variables defined"
-        onRequestRevision={onRequestRevision ? () => onRequestRevision('cycle') : undefined}
-        isSubmitting={isSubmitting?.cycle}
       />
 
       <VariableSection
@@ -165,17 +156,13 @@ export function CycleVariablesPanel({
         variables={campaignVariables}
         level="campaign"
         emptyMessage="No campaign-specific variables"
-        onRequestRevision={onRequestRevision ? () => onRequestRevision('campaign') : undefined}
-        isSubmitting={isSubmitting?.campaign}
       />
 
       <VariableSection
-        title="Copy Variables"
-        variables={copyVariables}
+        title="Core Variables"
+        variables={coreVariables}
         level="copy"
-        emptyMessage="No copy-level variables"
-        onRequestRevision={onRequestRevision ? () => onRequestRevision('copy') : undefined}
-        isSubmitting={isSubmitting?.copy}
+        emptyMessage="No core variables"
       />
     </div>
   );

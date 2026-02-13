@@ -1,0 +1,18 @@
+# Hypertide Worker Dependencies
+# For domain purchases (API) and inbox provisioning (browser automation)
+
+# HTTP Client (for Porkbun/Dynadot APIs)
+httpx==0.28.1
+
+# Data Validation (for service models)
+pydantic==2.10.4
+
+# Database (sync driver for worker)
+psycopg2-binary==2.9.9
+
+# Browser Automation (for Hypertide)
+selenium==4.26.1
+webdriver-manager==4.0.2
+
+# XML parsing (for Dynadot API responses)
+lxml==5.3.0

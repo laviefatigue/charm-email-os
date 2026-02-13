@@ -19,6 +19,16 @@ import {
   TooltipTrigger,
 } from '@/components/ui/tooltip';
 import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
+import { Checkbox } from '@/components/ui/checkbox';
+import { Label } from '@/components/ui/label';
+import {
   RefreshCw,
   CheckCircle2,
   XCircle,
@@ -32,6 +42,9 @@ import {
   Trash2,
   CreditCard,
   ShieldAlert,
+  MessageSquare,
+  Copy,
+  UserCheck,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { inboxProvisioningApi } from '@/lib/api';
@@ -40,7 +53,7 @@ import { formatDistanceToNow, format } from 'date-fns';
 interface PurchaseJob {
   jobId: string;
   clientId: string;
-  status: 'pending' | 'executing' | 'processing' | 'completed' | 'failed' | 'awaiting_checkout' | 'superseded' | 'cancelled';
+  status: 'pending' | 'executing' | 'processing' | 'completed' | 'failed' | 'awaiting_checkout' | 'superseded' | 'cancelled' | 'manual_processing';
   currentStep?: string;
   providerType: string;
   domainNames: string[];
@@ -71,6 +84,11 @@ export function PurchaseJobsTable({ clientId, onJobRetried }: PurchaseJobsTableP
   const [confirmingJobId, setConfirmingJobId] = useState<string | null>(null);
   const [refreshingJobId, setRefreshingJobId] = useState<string | null>(null);
   const [expandedJobId, setExpandedJobId] = useState<string | null>(null);
+  const [sendingToSlackJobId, setSendingToSlackJobId] = useState<string | null>(null);
+  const [copyingOrderJobId, setCopyingOrderJobId] = useState<string | null>(null);
+  const [manualCompletingJobId, setManualCompletingJobId] = useState<string | null>(null);
+  const [showManualCompleteConfirm, setShowManualCompleteConfirm] = useState<string | null>(null);
+  const [manualCompleteConfirmed, setManualCompleteConfirmed] = useState(false);
   const jobsRef = useRef(jobs);
   jobsRef.current = jobs;
 
@@ -163,6 +181,51 @@ export function PurchaseJobsTable({ clientId, onJobRetried }: PurchaseJobsTableP
       setRefreshingJobId(null);
     }
   }, []);
+
+  const handleSendToSlack = useCallback(async (jobId: string) => {
+    setSendingToSlackJobId(jobId);
+    try {
+      const result = await inboxProvisioningApi.sendToSlack(jobId);
+      toast.success(`Order sent to ${result.channel}`);
+      fetchJobs();
+    } catch (err: any) {
+      console.error('Failed to send to Slack:', err);
+      toast.error(err.message || 'Failed to send to Slack');
+    } finally {
+      setSendingToSlackJobId(null);
+    }
+  }, [fetchJobs]);
+
+  const handleCopyOrder = useCallback(async (jobId: string) => {
+    setCopyingOrderJobId(jobId);
+    try {
+      const result = await inboxProvisioningApi.getOrderSummary(jobId);
+      await navigator.clipboard.writeText(result.summary);
+      toast.success('Order details copied to clipboard');
+    } catch (err: any) {
+      console.error('Failed to copy order:', err);
+      toast.error(err.message || 'Failed to copy order details');
+    } finally {
+      setCopyingOrderJobId(null);
+    }
+  }, []);
+
+  const handleManualComplete = useCallback(async (jobId: string) => {
+    setManualCompletingJobId(jobId);
+    try {
+      await inboxProvisioningApi.manualComplete(jobId);
+      toast.success('Job marked as manually completed');
+      setShowManualCompleteConfirm(null);
+      setManualCompleteConfirmed(false);
+      fetchJobs();
+      onJobRetried?.();
+    } catch (err: any) {
+      console.error('Failed to complete job:', err);
+      toast.error(err.message || 'Failed to mark job as complete');
+    } finally {
+      setManualCompletingJobId(null);
+    }
+  }, [fetchJobs, onJobRetried]);
 
   const getFailureBadge = (errorType?: string | null) => {
     switch (errorType) {
@@ -265,6 +328,13 @@ export function PurchaseJobsTable({ clientId, onJobRetried }: PurchaseJobsTableP
             Cancelled
           </Badge>
         );
+      case 'manual_processing':
+        return (
+          <Badge variant="outline" className="bg-purple-50 text-purple-700 gap-1">
+            <Clock className="h-3 w-3" />
+            Manual Processing
+          </Badge>
+        );
       default:
         return <Badge>{job.status}</Badge>;
     }
@@ -306,6 +376,7 @@ export function PurchaseJobsTable({ clientId, onJobRetried }: PurchaseJobsTableP
   };
 
   return (
+    <>
     <Card>
       <CardHeader className="pb-2">
         <CardTitle className="text-lg">Purchase Job History</CardTitle>
@@ -481,6 +552,7 @@ export function PurchaseJobsTable({ clientId, onJobRetried }: PurchaseJobsTableP
                             </Tooltip>
                           </TooltipProvider>
                         )}
+                        {/* Failed jobs auto-notify Slack, so only show Retry here */}
                         {job.status === 'failed' && (
                           <TooltipProvider>
                             <Tooltip>
@@ -499,6 +571,69 @@ export function PurchaseJobsTable({ clientId, onJobRetried }: PurchaseJobsTableP
                                 </Button>
                               </TooltipTrigger>
                               <TooltipContent>Retry this job</TooltipContent>
+                            </Tooltip>
+                          </TooltipProvider>
+                        )}
+                        {job.status === 'manual_processing' && (
+                          <>
+                            <TooltipProvider>
+                              <Tooltip>
+                                <TooltipTrigger asChild>
+                                  <Button
+                                    variant="outline"
+                                    size="sm"
+                                    onClick={() => handleCopyOrder(job.jobId)}
+                                    disabled={copyingOrderJobId === job.jobId}
+                                  >
+                                    {copyingOrderJobId === job.jobId ? (
+                                      <Loader2 className="h-4 w-4 animate-spin" />
+                                    ) : (
+                                      <Copy className="h-4 w-4" />
+                                    )}
+                                  </Button>
+                                </TooltipTrigger>
+                                <TooltipContent>Copy order details</TooltipContent>
+                              </Tooltip>
+                            </TooltipProvider>
+                            <TooltipProvider>
+                              <Tooltip>
+                                <TooltipTrigger asChild>
+                                  <Button
+                                    variant="outline"
+                                    size="sm"
+                                    onClick={() => handleCancel(job.jobId)}
+                                    disabled={cancellingJobId === job.jobId}
+                                    className="text-red-600 hover:text-red-700 hover:bg-red-50"
+                                  >
+                                    {cancellingJobId === job.jobId ? (
+                                      <Loader2 className="h-4 w-4 animate-spin" />
+                                    ) : (
+                                      <Trash2 className="h-4 w-4" />
+                                    )}
+                                  </Button>
+                                </TooltipTrigger>
+                                <TooltipContent>Delete job &amp; unlock domains</TooltipContent>
+                              </Tooltip>
+                            </TooltipProvider>
+                          </>
+                        )}
+                        {(job.status === 'failed' || job.status === 'manual_processing') && (
+                          <TooltipProvider>
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  onClick={() => {
+                                    setShowManualCompleteConfirm(job.jobId);
+                                    setManualCompleteConfirmed(false);
+                                  }}
+                                  className="text-green-600 hover:text-green-700 hover:bg-green-50"
+                                >
+                                  <UserCheck className="h-4 w-4" />
+                                </Button>
+                              </TooltipTrigger>
+                              <TooltipContent>Mark as manually completed</TooltipContent>
                             </Tooltip>
                           </TooltipProvider>
                         )}
@@ -623,5 +758,59 @@ export function PurchaseJobsTable({ clientId, onJobRetried }: PurchaseJobsTableP
         )}
       </CardContent>
     </Card>
+
+    {/* Manual Complete Confirmation Dialog */}
+    <Dialog
+      open={!!showManualCompleteConfirm}
+      onOpenChange={(open) => {
+        if (!open) {
+          setShowManualCompleteConfirm(null);
+          setManualCompleteConfirmed(false);
+        }
+      }}
+    >
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>Confirm Manual Completion</DialogTitle>
+          <DialogDescription>
+            Marking this job as complete will update all associated domains to &quot;active&quot; status with the appropriate infrastructure type.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="flex items-start space-x-3 py-4">
+          <Checkbox
+            id="confirm-manual-complete"
+            checked={manualCompleteConfirmed}
+            onCheckedChange={(checked) => setManualCompleteConfirmed(!!checked)}
+          />
+          <Label htmlFor="confirm-manual-complete" className="text-sm leading-relaxed cursor-pointer">
+            I confirm this order was processed manually in Hypertide and all inboxes have been created successfully.
+          </Label>
+        </div>
+        <DialogFooter>
+          <Button
+            variant="outline"
+            onClick={() => {
+              setShowManualCompleteConfirm(null);
+              setManualCompleteConfirmed(false);
+            }}
+          >
+            Cancel
+          </Button>
+          <Button
+            onClick={() => showManualCompleteConfirm && handleManualComplete(showManualCompleteConfirm)}
+            disabled={!manualCompleteConfirmed || manualCompletingJobId !== null}
+            className="bg-green-600 hover:bg-green-700"
+          >
+            {manualCompletingJobId ? (
+              <Loader2 className="h-4 w-4 animate-spin mr-2" />
+            ) : (
+              <CheckCircle2 className="h-4 w-4 mr-2" />
+            )}
+            Mark Complete
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+    </>
   );
 }

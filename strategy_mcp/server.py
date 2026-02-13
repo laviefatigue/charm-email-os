@@ -516,10 +516,17 @@ async def list_tools():
             Updates the stub (created by save_cycle_scaffold) with full email content.
 
             Include for each position:
-            - 2-3 variants with subject_line, email_body, word_count
+            - title: Position title (e.g., "Custom Signal", "Creative Ideas")
+            - day: Timing (0, "3-4", "7-8", "11-12")
+            - thread_behavior: "new_thread" or "threads_to_position_N"
+            - subject_line_options: Array with subject + rationale
+            - 2-3 variants with subject_line, email_body, word_count, them_us_ratio, score
             - One variant marked is_recommended=true
-            - QA scoring for this campaign
-            - Strategy notes
+
+            Also include:
+            - sequence_summary: Timeline array with day/title/description per position
+            - qa_scoring: 6 dimensions with max values
+            - strategy_notes: callouts, data_enrichment, ab_testing
 
             All emails should be 50-90 words, with 3:1 them:us ratio.""",
             inputSchema={
@@ -535,26 +542,38 @@ async def list_tools():
                     },
                     "email_positions": {
                         "type": "array",
-                        "description": "Array of 4 email positions with variants",
+                        "description": "Array of 4 email positions with title, day, thread_behavior, subject_line_options, and variants",
                         "items": {
                             "type": "object",
                             "properties": {
                                 "position": {"type": "integer"},
+                                "title": {"type": "string", "description": "Position title e.g. 'Custom Signal'"},
+                                "day": {"description": "Timing: 0, '3-4', '7-8', '11-12'"},
+                                "thread_behavior": {"type": "string", "description": "new_thread or threads_to_position_N"},
+                                "subject_line_options": {"type": "array", "description": "Array of {subject, rationale}"},
                                 "variants": {"type": "array"}
                             }
                         }
                     },
+                    "sequence_summary": {
+                        "type": "array",
+                        "description": "Timeline: [{day, title, description}] for each position"
+                    },
+                    "after_sequence_note": {
+                        "type": "string",
+                        "description": "Post-sequence guidance (e.g., 'Stop after Email 4, re-engage in 90 days')"
+                    },
                     "qa_scoring": {
                         "type": "object",
-                        "description": "QA scoring for this campaign"
+                        "description": "QA scoring with overall_score, verdict, dimensions (each with name, max, score, notes)"
                     },
                     "strategy_notes": {
                         "type": "object",
-                        "description": "Strategy notes for this campaign"
+                        "description": "Strategy notes: callouts, data_enrichment [{variable, source}], ab_testing"
                     },
                     "variable_schema": {
                         "type": "object",
-                        "description": "Variables used in this campaign's emails"
+                        "description": "Variables with used_in tracking: core, high_signal, ai_generated, custom_signal, case_study"
                     }
                 },
                 "required": ["job_id", "campaign_number", "email_positions"]
@@ -1766,9 +1785,15 @@ Please call save_campaign_document with the complete document structure.""")]
         job_id = arguments["job_id"]
         campaign_number = arguments["campaign_number"]
         email_positions = arguments["email_positions"]
+        sequence_summary = arguments.get("sequence_summary")
+        after_sequence_note = arguments.get("after_sequence_note")
         qa_scoring = arguments.get("qa_scoring")
-        strategy_notes = arguments.get("strategy_notes")
+        strategy_notes = arguments.get("strategy_notes", {})
         variable_schema = arguments.get("variable_schema")
+
+        # Merge after_sequence_note into strategy_notes if provided
+        if after_sequence_note and strategy_notes is not None:
+            strategy_notes["after_sequence_note"] = after_sequence_note
 
         # Count variants
         variant_count = sum(len(pos.get("variants", [])) for pos in email_positions)
@@ -1787,6 +1812,7 @@ Please call save_campaign_document with the complete document structure.""")]
             for i, c in enumerate(scaffold.get("campaigns", [])):
                 if c.get("campaign_number") == campaign_number:
                     scaffold["campaigns"][i]["email_positions"] = email_positions
+                    scaffold["campaigns"][i]["sequence_summary"] = sequence_summary
                     scaffold["campaigns"][i]["qa_scoring"] = qa_scoring
                     scaffold["campaigns"][i]["strategy_notes"] = strategy_notes
                     scaffold["campaigns"][i]["variable_schema"] = variable_schema
@@ -1850,6 +1876,7 @@ Please call save_campaign_document with the complete document structure.""")]
             cur.execute("""
                 UPDATE campaign_documents
                 SET email_positions = %s,
+                    sequence_summary = %s,
                     qa_scoring = %s,
                     strategy_notes = %s,
                     variable_schema = %s,
@@ -1857,6 +1884,7 @@ Please call save_campaign_document with the complete document structure.""")]
                     updated_at = NOW()
                 WHERE id = %s
             """, (Json(email_positions),
+                  Json(sequence_summary) if sequence_summary else None,
                   Json(qa_scoring) if qa_scoring else None,
                   Json(strategy_notes) if strategy_notes else None,
                   Json(variable_schema) if variable_schema else None,
@@ -1931,10 +1959,15 @@ Please call save_campaign_document with the complete document structure.""")]
         variable_schema = arguments.get("variable_schema")
         email_positions = arguments["email_positions"]
         sequence_summary = arguments.get("sequence_summary")
+        after_sequence_note = arguments.get("after_sequence_note")
         qa_scoring = arguments.get("qa_scoring")
-        strategy_notes = arguments.get("strategy_notes")
+        strategy_notes = arguments.get("strategy_notes", {})
         used_variables = arguments.get("used_variables", [])
         missing_variables = arguments.get("missing_variables", [])
+
+        # Merge after_sequence_note into strategy_notes if provided
+        if after_sequence_note and strategy_notes is not None:
+            strategy_notes["after_sequence_note"] = after_sequence_note
 
         # Count variants
         variant_count = sum(len(pos.get("variants", [])) for pos in email_positions)

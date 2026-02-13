@@ -1,11 +1,19 @@
 ---
-title: VPS Server Configuration
+title: VPS Server Configuration (Deprecated)
 created: 2026-01-16
-updated: 2026-02-02
-tags: [infrastructure, vps, server, disk-management]
+updated: 2026-02-11
+tags: [infrastructure, vps, server, deprecated]
 ---
 
-# VPS Server
+# VPS Server (DEPRECATED)
+
+> **⚠️ DEPRECATED**: VPS deployments are no longer active. The Charm Email OS system now runs entirely on **localhost via Docker**. This documentation is preserved for legacy reference only.
+>
+> **Use instead**: [[../local-development/index]] for the current localhost-first setup.
+
+---
+
+*Legacy documentation below - for reference only*
 
 Hetzner VPS hosting the Coolify instance and all deployed applications.
 

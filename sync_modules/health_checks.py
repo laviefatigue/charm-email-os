@@ -4,6 +4,7 @@ Health Check Module
 Evaluates inbox and domain health, detects kill triggers.
 Replaces Prefect-based health checks with polling-based evaluation.
 """
+import os
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Dict, List, Optional, Tuple
@@ -14,30 +15,57 @@ from .audit_logger import AuditLogger, SyncResult
 from .slack_alerter import SlackAlerter
 
 
-# Kill trigger thresholds (from api/routes/health.py)
+# Configurable kill trigger thresholds (env vars with v3 spec defaults)
+KILL_THRESHOLD_SPAM = int(os.getenv('KILL_THRESHOLD_SPAM', 1))
+# Differentiated bounce thresholds (user approved: blocked>=1, unknown>=3, combined>=2)
+KILL_THRESHOLD_HARD_BLOCKED_24H = int(os.getenv('KILL_THRESHOLD_HARD_BLOCKED_24H', 1))
+KILL_THRESHOLD_HARD_UNKNOWN_24H = int(os.getenv('KILL_THRESHOLD_HARD_UNKNOWN_24H', 3))
+KILL_THRESHOLD_HARD_BOUNCES_24H = int(os.getenv('KILL_THRESHOLD_HARD_BOUNCES_24H', 2))
+KILL_THRESHOLD_HARD_BOUNCE_RATE = float(os.getenv('KILL_THRESHOLD_HARD_BOUNCE_RATE', 0.005))
+KILL_THRESHOLD_TOTAL_BOUNCE_RATE = float(os.getenv('KILL_THRESHOLD_TOTAL_BOUNCE_RATE', 0.05))
+KILL_THRESHOLD_MIN_SENDS = int(os.getenv('KILL_THRESHOLD_MIN_SENDS', 50))
+KILL_THRESHOLD_FRESH_INBOX_DAYS = int(os.getenv('KILL_THRESHOLD_FRESH_INBOX_DAYS', 14))
+
+# Kill trigger thresholds (configurable via env vars)
+# Priority order: spam > hard_blocked > hard_unknown > combined > rate-based > fresh_inbox
 KILL_THRESHOLDS = {
-    'hard_bounces_24h': {
-        'value': 2,
+    'spam_complaint': {
+        'value': KILL_THRESHOLD_SPAM,
         'severity': 'instant',
-        'description': '2+ hard bounces in 24 hours'
+        'description': f'{KILL_THRESHOLD_SPAM}+ spam complaints = immediate death (v3 spec)'
+    },
+    'hard_blocked_24h': {
+        'value': KILL_THRESHOLD_HARD_BLOCKED_24H,
+        'severity': 'instant',
+        'description': f'{KILL_THRESHOLD_HARD_BLOCKED_24H}+ spam/policy rejections in 24h (reputation damage)'
+    },
+    'hard_unknown_24h': {
+        'value': KILL_THRESHOLD_HARD_UNKNOWN_24H,
+        'severity': 'instant',
+        'description': f'{KILL_THRESHOLD_HARD_UNKNOWN_24H}+ bad addresses in 24h (list quality issue)'
+    },
+    'hard_bounces_24h': {
+        'value': KILL_THRESHOLD_HARD_BOUNCES_24H,
+        'severity': 'instant',
+        'description': f'{KILL_THRESHOLD_HARD_BOUNCES_24H}+ combined hard bounces in 24h (fallback)'
     },
     'hard_bounce_rate_7d': {
-        'value': 0.005,  # 0.5%
-        'min_sends': 50,
+        'value': KILL_THRESHOLD_HARD_BOUNCE_RATE,
+        'min_sends': KILL_THRESHOLD_MIN_SENDS,
         'severity': 'instant',
-        'description': 'Hard bounce rate >0.5% (min 50 sends)'
+        'description': f'Hard bounce rate >{KILL_THRESHOLD_HARD_BOUNCE_RATE*100}% (min {KILL_THRESHOLD_MIN_SENDS} sends)'
     },
     'bounce_rate_all_7d': {
-        'value': 0.05,  # 5%
-        'min_sends': 50,
+        'value': KILL_THRESHOLD_TOTAL_BOUNCE_RATE,
+        'min_sends': KILL_THRESHOLD_MIN_SENDS,
         'severity': 'instant',
-        'description': 'Total bounce rate >5%'
+        'description': f'Total bounce rate >{KILL_THRESHOLD_TOTAL_BOUNCE_RATE*100}%'
     },
     'fresh_inbox_hard_bounce': {
         'value': 1,
-        'max_age_days': 14,
+        'max_age_days': KILL_THRESHOLD_FRESH_INBOX_DAYS,
         'severity': 'instant',
-        'description': 'Any hard bounce on inbox <14 days old'
+        'description': f'Any hard bounce on inbox <{KILL_THRESHOLD_FRESH_INBOX_DAYS} days old'
     }
 }
 
@@ -116,12 +144,15 @@ class HealthCheckModule:
                 email_address,
                 inbox_state,
                 hard_bounces_24h,
+                hard_blocked_24h,
+                hard_unknown_24h,
                 hard_bounces_7d,
                 soft_bounces_7d,
                 total_sends_7d,
                 bounce_rate_7d,
                 health_score,
-                first_seen_at
+                first_seen_at,
+                complaints_lifetime
             FROM sender_accounts
             WHERE workspace_id = $1
             AND inbox_state = 'live'
@@ -176,6 +207,8 @@ class HealthCheckModule:
         triggers = []
 
         hard_bounces_24h = inbox.get('hard_bounces_24h') or 0
+        hard_blocked_24h = inbox.get('hard_blocked_24h') or 0
+        hard_unknown_24h = inbox.get('hard_unknown_24h') or 0
         hard_bounces_7d = inbox.get('hard_bounces_7d') or 0
         soft_bounces_7d = inbox.get('soft_bounces_7d') or 0
         total_sends_7d = inbox.get('total_sends_7d') or 0
@@ -186,15 +219,48 @@ class HealthCheckModule:
         if first_seen_at:
             inbox_age_days = (datetime.now(timezone.utc) - first_seen_at.replace(tzinfo=timezone.utc)).days
 
-        # Check each kill threshold
-        # 1. Hard bounces in 24h
-        threshold = KILL_THRESHOLDS['hard_bounces_24h']
-        if hard_bounces_24h >= threshold['value']:
+        # Check each kill threshold (priority order: spam > blocked > unknown > combined > rates)
+        # 0. Spam complaints (HIGHEST PRIORITY - v3 spec: 1 complaint = death)
+        threshold = KILL_THRESHOLDS['spam_complaint']
+        complaints = inbox.get('complaints_lifetime') or 0
+        if complaints >= threshold['value']:
             triggers.append({
-                'trigger_type': 'hard_bounces_24h',
-                'value': hard_bounces_24h,
+                'trigger_type': 'spam_complaint',
+                'value': complaints,
                 'threshold': threshold['value']
             })
+
+        # 1. Hard blocked (spam/policy rejection) - HIGHEST PRIORITY after spam
+        # These indicate sender reputation damage - threshold: >=1
+        threshold = KILL_THRESHOLDS['hard_blocked_24h']
+        if hard_blocked_24h >= threshold['value']:
+            triggers.append({
+                'trigger_type': 'hard_blocked_24h',
+                'value': hard_blocked_24h,
+                'threshold': threshold['value']
+            })
+
+        # 2. Hard unknown (bad email addresses) - threshold: >=3
+        # These indicate list quality issues, less urgent than blocked
+        threshold = KILL_THRESHOLDS['hard_unknown_24h']
+        if hard_unknown_24h >= threshold['value']:
+            triggers.append({
+                'trigger_type': 'hard_unknown_24h',
+                'value': hard_unknown_24h,
+                'threshold': threshold['value']
+            })
+
+        # 3. Combined hard bounces - FALLBACK (threshold: >=2)
+        # Only triggers if neither specific trigger fired (catches edge cases)
+        threshold = KILL_THRESHOLDS['hard_bounces_24h']
+        if hard_bounces_24h >= threshold['value']:
+            # Only add if no specific trigger already added
+            if not any(t['trigger_type'] in ['hard_blocked_24h', 'hard_unknown_24h'] for t in triggers):
+                triggers.append({
+                    'trigger_type': 'hard_bounces_24h',
+                    'value': hard_bounces_24h,
+                    'threshold': threshold['value']
+                })
 
         # 2. Hard bounce rate 7d
         threshold = KILL_THRESHOLDS['hard_bounce_rate_7d']
@@ -373,15 +439,25 @@ class HealthCheckModule:
         }
 
     async def reset_daily_counters(self):
-        """Reset 24h bounce counters (run daily at midnight)."""
+        """Reset 24h bounce counters (run daily at midnight).
+
+        Resets all 24h counters:
+        - hard_bounces_24h (combined)
+        - hard_blocked_24h (spam/policy rejections)
+        - hard_unknown_24h (bad addresses)
+        """
         result = await self.db.execute("""
             UPDATE sender_accounts
             SET
                 hard_bounces_24h = 0,
+                hard_blocked_24h = 0,
+                hard_unknown_24h = 0,
                 updated_at = NOW()
             WHERE hard_bounces_24h > 0
+               OR hard_blocked_24h > 0
+               OR hard_unknown_24h > 0
         """)
-        print(f"[HealthCheck] Reset 24h counters: {result}")
+        print(f"[HealthCheck] Reset 24h counters (combined, blocked, unknown): {result}")
 
     async def decay_weekly_counters(self):
         """Decay 7d bounce counters (run daily to approximate rolling window)."""

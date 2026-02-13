@@ -690,6 +690,7 @@ export interface GenerateForClientRequest {
   ai_provider?: string;
   ai_model?: string;
   preferred_tlds?: { tld: string; priority: number; max_price: number }[];
+  fill_package?: boolean;  // If true, auto-calculate count to fill package capacity
 }
 
 export interface GeneratedDomainResult {
@@ -711,6 +712,9 @@ export interface GenerateForClientResponse {
   providerUsed: string;
   modelUsed: string;
   generatedAt: string;
+  message?: string;
+  packageTarget?: number;
+  existingCount?: number;
 }
 
 // Domain Approval Types
@@ -733,10 +737,11 @@ export interface PendingCandidatesResponse {
 }
 
 export interface DomainApprovalResult {
-  domainId: string;
-  domainName: string;
-  status: 'approved' | 'denied';
+  domainId?: string;
+  domainName?: string;
+  status?: 'approved' | 'denied' | 'removed' | 'available';
   message: string;
+  success?: boolean;
 }
 
 export interface ApprovedDomainsResponse {
@@ -757,13 +762,15 @@ export interface CanGenerateResponse {
 }
 
 export interface GenerationJobResponse {
-  jobId: string;
+  jobId: string | null;  // null if skipped (package capacity reached)
   clientId: string;
   clientName: string;
   count: number;
-  status: string;
-  createdAt: string;
+  status: string;  // 'pending', 'processing', 'completed', 'failed', 'skipped'
+  createdAt: string | null;
   message: string;
+  packageTarget?: number;
+  existingCount?: number;
 }
 
 export interface GenerationJobStatus {
@@ -816,6 +823,55 @@ export interface PurchaseSingleResponse {
   error: string | null;
 }
 
+// Domain Purchase Job Types (Hypertide Worker)
+export interface CreateDomainPurchaseJobRequest {
+  domainIds: string[];
+  registrar: 'dynadot' | 'porkbun';
+}
+
+export interface DomainPurchaseJobResponse {
+  jobId: string;
+  clientId: string;
+  domainCount: number;
+  registrar: string;
+  status: string;
+  createdAt: string;
+  message: string;
+}
+
+export interface DomainPurchaseJobResult {
+  domainId: string;
+  domainName: string;
+  success: boolean;
+  price?: string;
+  orderId?: string;
+  error?: string;
+}
+
+export interface DomainPurchaseJobStatus {
+  jobId: string;
+  clientId: string;
+  status: 'pending' | 'processing' | 'completed' | 'failed' | 'partial';
+  registrar: string;
+  totalDomains: number;
+  successfulCount: number;
+  failedCount: number;
+  totalCost?: string;
+  currentDomain?: string;
+  results?: DomainPurchaseJobResult[];
+  errors?: string[];
+  errorMessage?: string;
+  createdAt: string;
+  startedAt?: string;
+  completedAt?: string;
+}
+
+export interface ClientDomainPurchaseJobsResponse {
+  clientId: string;
+  jobs: DomainPurchaseJobStatus[];
+  total: number;
+}
+
 export const domainSourcingApi = {
   /**
    * Generate unique domain suggestions for a client using their onboarding data.
@@ -857,47 +913,66 @@ export const domainSourcingApi = {
     return toCamelCase<PendingCandidatesResponse>(response);
   },
 
+  // =============================================================================
+  // DEPRECATED: Approve/Deny workflow removed in simplified domain workflow
+  // Domains now go directly from 'available' (generated) to 'purchased'
+  // =============================================================================
+
   /**
-   * Approve a domain candidate for pricing search and potential purchase.
+   * @deprecated Use getAvailableDomains instead. Approval step removed.
    */
   async approveDomain(domainId: string): Promise<DomainApprovalResult> {
-    const response = await fetchApi<Record<string, unknown>>(
-      `/api/domain-sourcing/approve/${domainId}`,
-      { method: 'POST' }
-    );
-    return toCamelCase<DomainApprovalResult>(response);
+    console.warn('approveDomain is deprecated - domains are now automatically available after generation');
+    // Return success without doing anything - domains are already available
+    return { success: true, message: 'Domain is already available (approval step removed)' } as DomainApprovalResult;
   },
 
   /**
-   * Deny a domain candidate - it won't appear in future pending lists.
+   * @deprecated Use removeDomain instead. Domains can be removed if not wanted.
    */
   async denyDomain(domainId: string): Promise<DomainApprovalResult> {
-    const response = await fetchApi<Record<string, unknown>>(
-      `/api/domain-sourcing/deny/${domainId}`,
-      { method: 'POST' }
-    );
-    return toCamelCase<DomainApprovalResult>(response);
+    console.warn('denyDomain is deprecated - use removeDomain instead');
+    return this.removeDomain(domainId);
   },
 
   /**
-   * Unapprove a domain - revert it back to pending status.
+   * @deprecated No longer needed - domains stay available until purchased or removed.
    */
   async unapproveDomain(domainId: string): Promise<DomainApprovalResult> {
+    console.warn('unapproveDomain is deprecated - domains are now always available until purchased');
+    return { success: true, message: 'No action needed (approval workflow removed)' } as DomainApprovalResult;
+  },
+
+  /**
+   * Remove a domain candidate permanently.
+   * Use this when you don't want to see a domain suggestion anymore.
+   * Cannot remove purchased/active domains.
+   */
+  async removeDomain(domainId: string): Promise<DomainApprovalResult> {
     const response = await fetchApi<Record<string, unknown>>(
-      `/api/domain-sourcing/unapprove/${domainId}`,
-      { method: 'POST' }
+      `/api/domain-sourcing/remove/${domainId}`,
+      { method: 'DELETE' }
     );
     return toCamelCase<DomainApprovalResult>(response);
   },
 
   /**
-   * Get all approved domains for a client that are ready for pricing search.
+   * Get all available domain candidates for a client with pricing data.
+   * These domains are generated and ready to select for purchase.
    */
-  async getApprovedDomains(clientId: string): Promise<ApprovedDomainsResponse> {
+  async getAvailableDomains(clientId: string): Promise<ApprovedDomainsResponse> {
     const response = await fetchApi<Record<string, unknown>>(
-      `/api/domain-sourcing/approved/${clientId}`
+      `/api/domain-sourcing/available/${clientId}`
     );
     return toCamelCase<ApprovedDomainsResponse>(response);
+  },
+
+  /**
+   * @deprecated Use getAvailableDomains instead.
+   */
+  async getApprovedDomains(clientId: string): Promise<ApprovedDomainsResponse> {
+    console.warn('getApprovedDomains is deprecated - use getAvailableDomains instead');
+    return this.getAvailableDomains(clientId);
   },
 
   /**
@@ -915,9 +990,9 @@ export const domainSourcingApi = {
    * Create a domain generation job for the Claude Code worker.
    * The job will be picked up by the background worker and processed.
    */
-  async createGenerationJob(clientId: string, count: number = 10): Promise<GenerationJobResponse> {
+  async createGenerationJob(clientId: string, count: number = 10, fillPackage: boolean = true): Promise<GenerationJobResponse> {
     const response = await fetchApi<Record<string, unknown>>(
-      `/api/domain-sourcing/jobs/create/${clientId}?count=${count}`,
+      `/api/domain-sourcing/jobs/create/${clientId}?count=${count}&fill_package=${fillPackage}`,
       { method: 'POST' }
     );
     return toCamelCase<GenerationJobResponse>(response);
@@ -1020,6 +1095,53 @@ export const domainSourcingApi = {
       `/api/domain-sourcing/price-history/${domainId}?limit=${limit}`
     );
     return toCamelCase(response);
+  },
+
+  // ===== DOMAIN PURCHASE JOBS (Hypertide Worker) =====
+
+  /**
+   * Create a domain purchase job for the Hypertide worker.
+   * The job will be picked up by the background worker and processed.
+   */
+  async createDomainPurchaseJob(
+    clientId: string,
+    request: CreateDomainPurchaseJobRequest
+  ): Promise<DomainPurchaseJobResponse> {
+    const response = await fetchApi<Record<string, unknown>>(
+      `/api/domain-sourcing/purchase-jobs/create/${clientId}`,
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          domain_ids: request.domainIds,
+          registrar: request.registrar,
+        }),
+      }
+    );
+    return toCamelCase<DomainPurchaseJobResponse>(response);
+  },
+
+  /**
+   * Get the status of a domain purchase job.
+   * Poll this endpoint to track job progress.
+   */
+  async getDomainPurchaseJobStatus(jobId: string): Promise<DomainPurchaseJobStatus> {
+    const response = await fetchApi<Record<string, unknown>>(
+      `/api/domain-sourcing/purchase-jobs/${jobId}/status`
+    );
+    return toCamelCase<DomainPurchaseJobStatus>(response);
+  },
+
+  /**
+   * Get recent domain purchase jobs for a client.
+   */
+  async getClientDomainPurchaseJobs(
+    clientId: string,
+    limit: number = 10
+  ): Promise<ClientDomainPurchaseJobsResponse> {
+    const response = await fetchApi<Record<string, unknown>>(
+      `/api/domain-sourcing/purchase-jobs/client/${clientId}?limit=${limit}`
+    );
+    return toCamelCase<ClientDomainPurchaseJobsResponse>(response);
   },
 };
 
@@ -2584,6 +2706,67 @@ export const healthApi = {
       lastSynced: string;
     }>(response);
   },
+
+  /**
+   * Get infrastructure health from LOCAL DATABASE only (no EmailBison API calls).
+   * Data is refreshed by the sync worker.
+   */
+  async getInfrastructureHealth(clientId: string): Promise<{
+    clientId: string;
+    totalInboxes: number;
+    liveInboxes: number;
+    deadInboxes: number;
+    avgHealthScore: number;
+    providers: Array<{
+      name: string;
+      count: number;
+      liveCount: number;
+      deadCount: number;
+      avgHealthScore: number;
+    }>;
+    healthDistribution: {
+      healthy: number;
+      good: number;
+      warning: number;
+      critical: number;
+      total: number;
+    };
+    totalDomains: number;
+    cleanDomains: number;
+    flaggedDomains: number;
+    lastSync: string | null;
+    syncSource: string;
+  }> {
+    const response = await fetchApi<Record<string, unknown>>(
+      `/api/health/infrastructure/${clientId}`
+    );
+    return toCamelCase<{
+      clientId: string;
+      totalInboxes: number;
+      liveInboxes: number;
+      deadInboxes: number;
+      avgHealthScore: number;
+      providers: Array<{
+        name: string;
+        count: number;
+        liveCount: number;
+        deadCount: number;
+        avgHealthScore: number;
+      }>;
+      healthDistribution: {
+        healthy: number;
+        good: number;
+        warning: number;
+        critical: number;
+        total: number;
+      };
+      totalDomains: number;
+      cleanDomains: number;
+      flaggedDomains: number;
+      lastSync: string | null;
+      syncSource: string;
+    }>(response);
+  },
 };
 
 // ===== INVENTORY API =====
@@ -3085,6 +3268,78 @@ export const inboxProvisioningApi = {
     return fetchApi<{ message: string; jobId: string; status: string }>(
       `/api/inbox-purchasing/jobs/${jobId}/confirm-checkout`,
       { method: 'POST' }
+    );
+  },
+
+  // ===== MANUAL ORDER PROCESSING =====
+
+  /**
+   * Get a human-readable order summary for manual processing.
+   * Returns formatted text optimized for copy-pasting into Hypertide forms.
+   */
+  async getOrderSummary(jobId: string): Promise<{
+    jobId: string;
+    summary: string;
+    clientName: string;
+    providerType: string;
+    orderCount: number;
+  }> {
+    const response = await fetchApi<Record<string, unknown>>(
+      `/api/inbox-purchasing/jobs/${jobId}/order-summary`
+    );
+    return toCamelCase<{
+      jobId: string;
+      summary: string;
+      clientName: string;
+      providerType: string;
+      orderCount: number;
+    }>(response);
+  },
+
+  /**
+   * Send order details to Slack for manual processing.
+   * Updates job status to 'manual_processing' after successful send.
+   */
+  async sendToSlack(jobId: string): Promise<{
+    message: string;
+    jobId: string;
+    status: string;
+    channel: string;
+  }> {
+    return fetchApi<{
+      message: string;
+      jobId: string;
+      status: string;
+      channel: string;
+    }>(
+      `/api/inbox-purchasing/jobs/${jobId}/send-to-slack`,
+      { method: 'POST' }
+    );
+  },
+
+  /**
+   * Mark a job as manually completed.
+   * Use after a team member has processed the order manually in Hypertide.
+   */
+  async manualComplete(jobId: string, notes?: string): Promise<{
+    message: string;
+    jobId: string;
+    status: string;
+    domainsUpdated: number;
+    infrastructureType: string;
+  }> {
+    return fetchApi<{
+      message: string;
+      jobId: string;
+      status: string;
+      domainsUpdated: number;
+      infrastructureType: string;
+    }>(
+      `/api/inbox-purchasing/jobs/${jobId}/manual-complete`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ notes }),
+      }
     );
   },
 };
