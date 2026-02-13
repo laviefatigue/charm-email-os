@@ -8,6 +8,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { ClientHeader, TabNavigation, PageContainer } from '@/components/layout';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import {
   KillTriggerMonitor,
   KillConfirmDialog,
@@ -18,6 +19,7 @@ import {
   RotationNeedsAttention,
   HealthDistributionPieChart,
   LifecycleDistributionChart,
+  InventorySegmentationChart,
 } from '@/components/health';
 import { InventoryBarChart } from '@/components/health/InventoryBarChart';
 import { InventoryTable } from '@/components/health/InventoryTable';
@@ -590,93 +592,130 @@ export default function HealthPage() {
           </Card>
         )}
 
-        {/* Main Dashboard Grid - Reorganized Layout */}
-        <div className="grid grid-cols-12 gap-6">
-          {/* Inventory Bar Chart - Full Width (Priority 1: Inventory health) */}
-          {inventoryOverview && (
-            <div className="col-span-12">
-              <InventoryBarChart
-                data={{
-                  deployed: inventoryOverview.deployedCount,
-                  warning: inventoryOverview.warningCount,
-                  reserve: inventoryOverview.reserveCount,
-                  total: inventoryOverview.totalInboxes,
-                  deployedTarget: inventoryOverview.deployedTarget,
-                  reserveTarget: inventoryOverview.reserveTarget,
-                  spareCapacity: inventoryOverview.spareCapacity,
-                  sparePercentage: inventoryOverview.sparePercentage,
-                  capacityStatus: inventoryOverview.capacityStatus,
-                }}
-                lifecycleCounts={{
-                  active: inventoryOverview.activeCount,
-                  incubating: inventoryOverview.incubatingCount,
-                  dead: inventoryOverview.deadCount,
-                }}
-                autoKillEnabled={inventoryOverview.autoKillEnabled}
-                onPoolStatusClick={handlePoolStatusClick}
-                onLifecycleStatusClick={handleLifecycleStatusClick}
-              />
-            </div>
-          )}
+        {/* Tabbed Dashboard */}
+        <Tabs defaultValue="infrastructure" className="space-y-6">
+          <TabsList className="grid w-full max-w-md grid-cols-2">
+            <TabsTrigger value="infrastructure">Infrastructure Health</TabsTrigger>
+            <TabsTrigger value="campaign-insights">Campaign Insights</TabsTrigger>
+          </TabsList>
 
-          {/* Kill Trigger Activity - Full Width (Priority 2: Action items) */}
-          <div className="col-span-12">
-            <KillTriggerMonitor
-              triggers={killTriggers}
-              onExecute={handleExecuteClick}
-              onDismiss={handleDismiss}
-              onRetest={handleRetest}
-              onExecuteAll={handleExecuteAll}
-              executingTriggerIds={executingTriggerIds}
-            />
-          </div>
+          {/* Tab 1: Infrastructure Health */}
+          <TabsContent value="infrastructure" className="space-y-6">
+            <div className="grid grid-cols-12 gap-6">
+              {/* Inventory Segmentation Chart - Half Width (4 segments: deployed/dead/reserve/incubating) */}
+              {inventoryOverview && (
+                <div className="col-span-12 lg:col-span-6">
+                  <InventorySegmentationChart
+                    counts={{
+                      deployed: inventoryOverview.deployedCount,
+                      dead: inventoryOverview.deadCount,
+                      reserve: inventoryOverview.reserveCount,
+                      incubating: inventoryOverview.incubatingCount,
+                      total: inventoryOverview.totalInboxes,
+                    }}
+                    onSegmentClick={(segment) => {
+                      if (segment === 'deployed' || segment === 'reserve') {
+                        handlePoolStatusClick(segment as InventoryPoolStatus);
+                      } else if (segment === 'dead' || segment === 'incubating') {
+                        handleLifecycleStatusClick(segment as InventoryLifecycleStatus);
+                      }
+                    }}
+                  />
+                </div>
+              )}
 
-          {/* Rotation Needs Attention - Half Width */}
-          <div className="col-span-12 lg:col-span-6">
-            <RotationNeedsAttention
-              domains={domainMetrics}
-              onOrderReplacement={handleOrderReplacement}
-            />
-          </div>
+              {/* Inventory Bar Chart - Half Width (Pool status: deployed/warning/reserve) */}
+              {inventoryOverview && (
+                <div className="col-span-12 lg:col-span-6">
+                  <InventoryBarChart
+                    data={{
+                      deployed: inventoryOverview.deployedCount,
+                      warning: inventoryOverview.warningCount,
+                      reserve: inventoryOverview.reserveCount,
+                      total: inventoryOverview.totalInboxes,
+                      deployedTarget: inventoryOverview.deployedTarget,
+                      reserveTarget: inventoryOverview.reserveTarget,
+                      spareCapacity: inventoryOverview.spareCapacity,
+                      sparePercentage: inventoryOverview.sparePercentage,
+                      capacityStatus: inventoryOverview.capacityStatus,
+                    }}
+                    lifecycleCounts={{
+                      active: inventoryOverview.activeCount,
+                      incubating: inventoryOverview.incubatingCount,
+                      dead: inventoryOverview.deadCount,
+                    }}
+                    autoKillEnabled={inventoryOverview.autoKillEnabled}
+                    onPoolStatusClick={handlePoolStatusClick}
+                    onLifecycleStatusClick={handleLifecycleStatusClick}
+                  />
+                </div>
+              )}
 
-          {/* Domain Health Grid - Half Width */}
-          <div className="col-span-12 lg:col-span-6">
-            <DomainHealthGrid domains={domainMetrics} />
-          </div>
-
-          {/* Inventory Table - Full Width */}
-          <div className="col-span-12">
-            <Card>
-              <CardContent className="p-6">
-                <h3 className="text-lg font-semibold mb-4">Inbox Inventory</h3>
-                <InventoryTable
-                  inboxes={inventoryInboxes}
-                  isLoading={isInventoryLoading}
-                  poolStatusFilter={poolStatusFilter}
-                  lifecycleStatusFilter={lifecycleStatusFilter}
-                  healthRangeFilter={healthRangeFilter}
-                  onKillAndReplace={handleKillAndReplace}
-                  onClearFilter={handleClearFilter}
+              {/* Kill Trigger Activity - Full Width */}
+              <div className="col-span-12">
+                <KillTriggerMonitor
+                  triggers={killTriggers}
+                  onExecute={handleExecuteClick}
+                  onDismiss={handleDismiss}
+                  onRetest={handleRetest}
+                  onExecuteAll={handleExecuteAll}
+                  executingTriggerIds={executingTriggerIds}
                 />
-              </CardContent>
-            </Card>
-          </div>
+              </div>
 
-          {/* ESP Health Summary - Half Width */}
-          <div className="col-span-12 lg:col-span-6">
-            <ESPHealthSummary summaries={espSummaries} />
-          </div>
+              {/* Rotation Needs Attention - Half Width */}
+              <div className="col-span-12 lg:col-span-6">
+                <RotationNeedsAttention
+                  domains={domainMetrics}
+                  onOrderReplacement={handleOrderReplacement}
+                />
+              </div>
 
-          {/* Campaign Attribution - Half Width */}
-          <div className="col-span-12 lg:col-span-6">
-            <CampaignAttributionPanel campaigns={campaignMetrics} />
-          </div>
+              {/* Domain Health Grid - Half Width */}
+              <div className="col-span-12 lg:col-span-6">
+                <DomainHealthGrid domains={domainMetrics} />
+              </div>
 
-          {/* List Contamination - Full Width (lower priority) */}
-          <div className="col-span-12">
-            <ListContaminationTracker sources={contaminationSources} />
-          </div>
-        </div>
+              {/* Inventory Table - Full Width */}
+              <div className="col-span-12">
+                <Card>
+                  <CardContent className="p-6">
+                    <h3 className="text-lg font-semibold mb-4">Inbox Inventory</h3>
+                    <InventoryTable
+                      inboxes={inventoryInboxes}
+                      isLoading={isInventoryLoading}
+                      poolStatusFilter={poolStatusFilter}
+                      lifecycleStatusFilter={lifecycleStatusFilter}
+                      healthRangeFilter={healthRangeFilter}
+                      onKillAndReplace={handleKillAndReplace}
+                      onClearFilter={handleClearFilter}
+                    />
+                  </CardContent>
+                </Card>
+              </div>
+
+              {/* ESP Health Summary - Full Width */}
+              <div className="col-span-12">
+                <ESPHealthSummary summaries={espSummaries} />
+              </div>
+            </div>
+          </TabsContent>
+
+          {/* Tab 2: Campaign Insights */}
+          <TabsContent value="campaign-insights" className="space-y-6">
+            <div className="grid grid-cols-12 gap-6">
+              {/* Campaign Attribution - Full Width */}
+              <div className="col-span-12">
+                <CampaignAttributionPanel campaigns={campaignMetrics} />
+              </div>
+
+              {/* List Contamination Tracker - Full Width */}
+              <div className="col-span-12">
+                <ListContaminationTracker sources={contaminationSources} />
+              </div>
+            </div>
+          </TabsContent>
+        </Tabs>
       </PageContainer>
 
       {/* Kill Confirmation Dialog */}
