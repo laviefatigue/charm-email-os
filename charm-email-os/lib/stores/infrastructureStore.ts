@@ -110,12 +110,27 @@ export const useInfrastructureStore = create<InfrastructureStore>((set, get) => 
   fetchDomainsByClient: async (clientId) => {
     set({ isLoading: true, error: null });
     try {
-      // Fetch domains with max page size (API limit is 100)
-      const data = await api.domains.list({ clientId, pageSize: 100 });
+      // Fetch ALL domains for this client by paginating through all pages
+      // This ensures purchased domains on later pages are included
+      const allDomains: Domain[] = [];
+      let page = 1;
+      const pageSize = 100;
+      let hasMore = true;
+
+      while (hasMore) {
+        const data = await api.domains.list({ clientId, pageSize, page });
+        allDomains.push(...data.items);
+        // Check if we've fetched all domains
+        hasMore = allDomains.length < data.total;
+        page++;
+        // Safety: prevent infinite loops (max 10 pages = 1000 domains)
+        if (page > 10) break;
+      }
+
       // Merge with existing domains (update if exists, add if not)
       set((state) => {
         const otherDomains = state.domains.filter((d) => d.clientId !== clientId);
-        return { domains: [...otherDomains, ...data.items], isLoading: false };
+        return { domains: [...otherDomains, ...allDomains], isLoading: false };
       });
     } catch (error) {
       set({ error: (error as Error).message, isLoading: false });

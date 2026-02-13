@@ -206,6 +206,70 @@ async def _update_job_status(
     if status == "completed":
         await _release_domain_locks(job_id)
 
+    # Auto-notify Slack when a job fails
+    if status == "failed":
+        await _auto_notify_slack_on_failure(job_id)
+
+
+async def _auto_notify_slack_on_failure(job_id: str) -> None:
+    """
+    Automatically send job details to Slack when a job fails.
+    Updates status to 'manual_processing' after successful notification.
+    """
+    import os
+    import httpx
+
+    slack_webhook = os.getenv("SLACK_ORDERS_WEBHOOK_URL", "")
+    if not slack_webhook:
+        logger.warning(f"Job {job_id} failed but SLACK_ORDERS_WEBHOOK_URL not configured - skipping auto-notification")
+        return
+
+    try:
+        job = await _get_job_from_db(job_id)
+        if not job:
+            logger.error(f"Failed to fetch job {job_id} for Slack notification")
+            return
+
+        # Get client name
+        client = await fetch_one(
+            "SELECT name FROM clients WHERE id = $1",
+            UUID(job["client_id"])
+        )
+        client_name = client.get("name", "Unknown") if client else "Unknown"
+
+        # Generate and send Slack message
+        slack_message = _generate_slack_message(job, client_name)
+
+        async with httpx.AsyncClient() as http_client:
+            response = await http_client.post(
+                slack_webhook,
+                json=slack_message,
+                timeout=10.0
+            )
+            response.raise_for_status()
+
+        logger.info(f"Auto-notified Slack for failed job {job_id}")
+
+        # Update status to manual_processing (without triggering another notification)
+        await execute(
+            """
+            UPDATE inbox_purchase_jobs
+            SET status = 'manual_processing',
+                current_step = 'Auto-sent to Slack for manual processing'
+            WHERE id = $1
+            """,
+            UUID(job_id)
+        )
+
+        # Sync domain status
+        await execute(
+            "UPDATE domains SET purchase_job_status = 'manual_processing' WHERE purchase_job_id = $1",
+            UUID(job_id)
+        )
+
+    except Exception as e:
+        logger.error(f"Failed to auto-notify Slack for job {job_id}: {e}")
+
 
 async def _get_job_from_db(job_id: str) -> Optional[dict]:
     """Fetch a job from the database."""
@@ -1403,7 +1467,11 @@ class SmartOrderRequest(BaseModel):
     provider_type: str = Field(default="entra", description="'entra' or 'google'")
     override_age_check: bool = Field(default=False, description="Allow domains younger than 30 days")
     custom_purchase: bool = Field(default=False, description="Bypass package limits, only validate domain count")
-    use_worker: bool = Field(default=True, description="Use AI worker container instead of in-process Playwright")
+    use_worker: bool = Field(default=False, description="[DEPRECATED] Use AI worker container instead of in-process Playwright")
+    execution_mode: str = Field(
+        default="slack_only",
+        description="Execution mode: 'slack_only' (default, sends to Slack for manual processing), 'worker' (AI worker), 'background_task' (in-process Playwright)"
+    )
 
 
 class SmartOrderPreview(BaseModel):
@@ -1639,11 +1707,111 @@ async def execute_smart_order(
     if isinstance(onboarding_data, str):
         onboarding_data = json.loads(onboarding_data)
 
+    # --- Slack-Only Mode (Default): Send to Slack for manual processing ---
+    # This is the primary flow - creates job and immediately notifies Slack.
+    # Team processes manually in Hypertide, then marks complete in UI.
+    if request.execution_mode == "slack_only":
+        # Resolve domain names
+        domain_names = []
+        for did in request.domain_ids:
+            domain = await fetch_one("SELECT domain_name FROM domains WHERE id = $1", did)
+            if domain:
+                domain_names.append(domain["domain_name"])
+
+        # Resolve sender names from onboarding data
+        pre_generated = onboarding_data.get("preGeneratedSenderNames", []) if onboarding_data else []
+        sender_names_json = pre_generated[:10] if pre_generated else []
+
+        # Calculate order count and provider-specific order counts
+        domains_per_order = 2 if request.provider_type == "entra" else 5
+        order_count = len(request.domain_ids) // domains_per_order
+        entra_orders_val = order_count if request.provider_type == "entra" else 0
+        google_orders_val = order_count if request.provider_type == "google" else 0
+
+        # Check for domain lock conflicts before creating the job
+        lock_conflicts = await _check_domain_lock_conflicts(request.domain_ids)
+        if lock_conflicts:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "Some domains are locked by existing purchase jobs",
+                    "locked_domains": lock_conflicts,
+                }
+            )
+
+        # Create job with status='manual_processing' (sent to Slack immediately)
+        job_id = str(uuid.uuid4())
+        request_data = request.model_dump(mode="json")
+        await execute(
+            """
+            INSERT INTO inbox_purchase_jobs (
+                id, client_id, workspace_id, status, current_step, provider_type,
+                domain_ids, domain_names, entra_orders, google_orders,
+                orders_total, order_count,
+                override_age_check, custom_purchase,
+                worker_mode, company_name, forwarding_domain,
+                bison_workspace_name, bison_url,
+                sender_names, use_saved_payment,
+                request_data,
+                created_at
+            ) VALUES (
+                $1, $2, $3, 'manual_processing', 'Sent to Slack for manual processing', $4,
+                $5, $6, $7, $8,
+                $9, $10,
+                $11, $12,
+                'slack_only', $13, $14,
+                $15, 'https://spellcast.hirecharm.com',
+                $16, TRUE,
+                $17,
+                NOW()
+            )
+            """,
+            UUID(job_id),
+            request.client_id,
+            client.get("workspace_id"),
+            request.provider_type,
+            request.domain_ids,
+            domain_names,
+            entra_orders_val,
+            google_orders_val,
+            order_count,
+            order_count,
+            request.override_age_check,
+            request.custom_purchase,
+            client.get("name", "Unknown"),
+            onboarding_data.get("primaryDomain", "") if onboarding_data else "",
+            client.get("workspace_name") or "Charm",
+            json.dumps(sender_names_json),
+            request_data,
+        )
+
+        # Lock domains for this job
+        await _lock_domains_for_job(job_id, request.domain_ids)
+
+        # Update domain status to manual_processing
+        await execute(
+            "UPDATE domains SET purchase_job_status = 'manual_processing' WHERE purchase_job_id = $1",
+            UUID(job_id)
+        )
+
+        # Send Slack notification immediately
+        slack_sent = await _send_slack_notification_for_job(job_id)
+        slack_msg = " Order sent to Slack." if slack_sent else " (Slack not configured)"
+
+        return PurchaseJobResponse(
+            job_id=job_id,
+            client_id=request.client_id,
+            status=OrderStatus.MANUAL_PROCESSING,
+            message=f"Order created for manual processing.{slack_msg} {order_count} order(s), {len(domain_names)} domains.",
+            estimated_duration_seconds=0,  # No automation, manual processing
+        )
+
     # --- Worker Mode: Create self-contained job for AI purchase worker ---
     # Global credentials (Hypertide login, Bison login, API key, Stripe) come from
     # ENV vars on the worker container — injected by MCP server's get_purchase_job().
     # Only job-specific data is stored in the DB row.
-    if request.use_worker:
+    # Note: use_worker is deprecated, use execution_mode="worker" instead
+    if request.execution_mode == "worker" or (request.use_worker and request.execution_mode != "slack_only"):
         # Resolve domain names
         domain_names = []
         for did in request.domain_ids:
@@ -1766,3 +1934,491 @@ async def execute_smart_order(
 
     # Use existing V2 execute endpoint logic
     return await execute_purchase_v2(v2_request, background_tasks)
+
+
+# =============================================================================
+# Manual Order Processing - Fallback when Hypertide automation fails
+# =============================================================================
+
+import os
+import httpx
+
+# Slack webhook for manual order notifications
+SLACK_ORDERS_WEBHOOK_URL = os.getenv("SLACK_ORDERS_WEBHOOK_URL", "")
+
+
+async def _send_slack_notification_for_job(job_id: str) -> bool:
+    """
+    Send Slack notification for a job.
+    Used for immediate notification on job creation (slack_only mode).
+    Reuses existing _generate_slack_message formatting.
+    Returns True if notification sent successfully.
+    """
+    slack_webhook = os.getenv("SLACK_ORDERS_WEBHOOK_URL", "")
+    if not slack_webhook:
+        logger.warning(f"SLACK_ORDERS_WEBHOOK_URL not configured - skipping Slack notification for job {job_id}")
+        return False
+
+    try:
+        job = await _get_job_from_db(job_id)
+        if not job:
+            logger.error(f"Failed to fetch job {job_id} for Slack notification")
+            return False
+
+        # Get client name
+        client = await fetch_one(
+            "SELECT name FROM clients WHERE id = $1",
+            UUID(job["client_id"])
+        )
+        client_name = client.get("name", "Unknown") if client else "Unknown"
+
+        # Generate and send Slack message
+        slack_message = _generate_slack_message(job, client_name)
+
+        async with httpx.AsyncClient() as http_client:
+            response = await http_client.post(
+                slack_webhook,
+                json=slack_message,
+                timeout=10.0
+            )
+            response.raise_for_status()
+
+        logger.info(f"Sent Slack notification for job {job_id}")
+        return True
+
+    except Exception as e:
+        logger.error(f"Failed to send Slack notification for job {job_id}: {e}")
+        return False
+
+
+def _generate_order_summary_text(job: dict, client_name: str) -> str:
+    """
+    Generate a human-readable order summary for manual processing.
+
+    Format is optimized for copy-pasting into Hypertide forms.
+    """
+    import json
+
+    job_id = job.get("job_id", "unknown")
+    provider_type = job.get("provider_type", "unknown")
+    monthly_cost = job.get("monthly_cost", 0)
+    domain_names = job.get("domain_names", [])
+    error_type = job.get("error_type", "unknown")
+    errors = job.get("errors", [])
+    request_data = job.get("request_data", {})
+    created_at = job.get("created_at")
+
+    # Parse sender names from request data
+    sender_names_raw = request_data.get("sender_names") or []
+    if isinstance(sender_names_raw, str):
+        try:
+            sender_names_raw = json.loads(sender_names_raw)
+        except:
+            sender_names_raw = []
+
+    # Extract email prefixes
+    sender_prefixes = []
+    for sn in sender_names_raw:
+        if isinstance(sn, dict) and sn.get("emailPrefix"):
+            sender_prefixes.append(sn["emailPrefix"])
+        elif isinstance(sn, str):
+            sender_prefixes.append(sn)
+
+    # Configuration values
+    company_name = request_data.get("company_name") or client_name
+    forwarding_domain = request_data.get("forwarding_domain", "")
+    bison_workspace = request_data.get("bison_workspace_name", "")
+
+    # Format timestamp
+    created_str = created_at.strftime("%Y-%m-%d %H:%M PST") if created_at else "unknown"
+
+    # Build the summary
+    lines = []
+    lines.append("══════════════════════════════════════════════")
+    lines.append("HYPERTIDE ORDER - MANUAL PROCESSING REQUIRED")
+    lines.append("══════════════════════════════════════════════")
+    lines.append("")
+    lines.append(f"Job ID: {job_id}")
+    lines.append(f"Client: {client_name}")
+    lines.append(f"Created: {created_str}")
+    lines.append(f"Monthly Cost: ${monthly_cost:.2f}")
+    lines.append("")
+
+    # Group domains by order - Entra uses 2 domains, Google uses 5
+    domains_per_order = 2 if provider_type == "entra" else 5
+    order_groups = []
+    for i in range(0, len(domain_names), domains_per_order):
+        order_groups.append(domain_names[i:i + domains_per_order])
+
+    # Generate order blocks
+    provider_label = "ENTRA" if provider_type == "entra" else "GOOGLE"
+    inboxes_per_order = 100 if provider_type == "entra" else 15
+
+    for idx, group in enumerate(order_groups):
+        lines.append("══════════════════════════════════════════════")
+        lines.append(f"ORDER {idx + 1}: {provider_label} ({inboxes_per_order} inboxes)")
+        lines.append("══════════════════════════════════════════════")
+        lines.append("")
+        lines.append("Domains (copy these):")
+        for domain in group:
+            lines.append(domain)
+        lines.append("")
+        lines.append("Sender Names (copy these):")
+        lines.append(", ".join(sender_prefixes) if sender_prefixes else "(use Hypertide defaults)")
+        lines.append("")
+
+    # Configuration section
+    lines.append("══════════════════════════════════════════════")
+    lines.append("CONFIGURATION (for Hypertide form)")
+    lines.append("══════════════════════════════════════════════")
+    lines.append("")
+    lines.append(f"Company Name: {company_name}")
+    lines.append(f"Forwarding Domain: {forwarding_domain}")
+    lines.append(f"EmailBison Workspace: {bison_workspace}")
+    lines.append("Payment: Use saved card")
+    lines.append("")
+
+    # Error info
+    lines.append("══════════════════════════════════════════════")
+    lines.append("ERROR INFO")
+    lines.append("══════════════════════════════════════════════")
+    lines.append("")
+    lines.append(f"Type: {error_type}")
+    lines.append(f"Message: {errors[0] if errors else 'No error details'}")
+    lines.append("")
+    lines.append("══════════════════════════════════════════════")
+    lines.append("Reply in thread when all orders are complete")
+    lines.append("══════════════════════════════════════════════")
+
+    return "\n".join(lines)
+
+
+def _generate_slack_message(job: dict, client_name: str) -> dict:
+    """
+    Generate Slack message payload with easy-to-copy formatting.
+
+    Uses code blocks so each value can be easily copied in Slack.
+    """
+    import json
+
+    job_id = job.get("job_id", "unknown")
+    provider_type = job.get("provider_type", "unknown")
+    monthly_cost = job.get("monthly_cost", 0)
+    domain_names = job.get("domain_names", [])
+    error_type = job.get("error_type", "unknown")
+    errors = job.get("errors", [])
+    request_data = job.get("request_data", {})
+
+    # Parse sender names
+    sender_names_raw = request_data.get("sender_names") or []
+    if isinstance(sender_names_raw, str):
+        try:
+            sender_names_raw = json.loads(sender_names_raw)
+        except:
+            sender_names_raw = []
+
+    sender_prefixes = []
+    for sn in sender_names_raw:
+        if isinstance(sn, dict) and sn.get("emailPrefix"):
+            sender_prefixes.append(sn["emailPrefix"])
+        elif isinstance(sn, str):
+            sender_prefixes.append(sn)
+
+    # Configuration
+    company_name = request_data.get("company_name") or client_name
+    forwarding_domain = request_data.get("forwarding_domain", "")
+    bison_workspace = request_data.get("bison_workspace_name", "")
+
+    # Group domains by order
+    domains_per_order = 2 if provider_type == "entra" else 5
+    order_groups = []
+    for i in range(0, len(domain_names), domains_per_order):
+        order_groups.append(domain_names[i:i + domains_per_order])
+
+    # Build message blocks
+    blocks = []
+
+    # Header
+    blocks.append({
+        "type": "section",
+        "text": {
+            "type": "mrkdwn",
+            "text": ":rotating_light: *Hypertide Order Needs Manual Processing*"
+        }
+    })
+
+    # Summary line
+    blocks.append({
+        "type": "section",
+        "text": {
+            "type": "mrkdwn",
+            "text": f"*Job:* `{job_id[:8]}...` | *Client:* {client_name} | *Cost:* ${monthly_cost:.0f}/mo"
+        }
+    })
+
+    blocks.append({"type": "divider"})
+
+    # Order blocks
+    provider_label = "ENTRA" if provider_type == "entra" else "GOOGLE"
+    provider_emoji = ":office:" if provider_type == "entra" else ":envelope:"
+    inboxes_per_order = 100 if provider_type == "entra" else 15
+
+    for idx, group in enumerate(order_groups):
+        # Order header
+        blocks.append({
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": f"{provider_emoji} *ORDER {idx + 1}: {provider_label}* ({inboxes_per_order} inboxes)"
+            }
+        })
+
+        # Domains
+        domain_text = "\n".join(group)
+        blocks.append({
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": f"*Domains:*\n```\n{domain_text}\n```"
+            }
+        })
+
+        # Sender names
+        sender_text = ", ".join(sender_prefixes) if sender_prefixes else "(use Hypertide defaults)"
+        blocks.append({
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": f"*Sender Names:*\n```\n{sender_text}\n```"
+            }
+        })
+
+        blocks.append({"type": "divider"})
+
+    # Configuration section
+    blocks.append({
+        "type": "section",
+        "text": {
+            "type": "mrkdwn",
+            "text": ":gear: *HYPERTIDE CONFIG*"
+        }
+    })
+
+    blocks.append({
+        "type": "section",
+        "text": {
+            "type": "mrkdwn",
+            "text": f"Company: `{company_name}`\nForwarding: `{forwarding_domain}`\nWorkspace: `{bison_workspace}`\nPayment: Saved card"
+        }
+    })
+
+    blocks.append({"type": "divider"})
+
+    # Error info
+    error_msg = errors[0] if errors else "No details"
+    blocks.append({
+        "type": "section",
+        "text": {
+            "type": "mrkdwn",
+            "text": f":x: *Error:* `{error_type}` - {error_msg}"
+        }
+    })
+
+    # Footer
+    blocks.append({
+        "type": "context",
+        "elements": [
+            {
+                "type": "mrkdwn",
+                "text": f":thread: *Reply in thread when all {len(order_groups)} order(s) complete*"
+            }
+        ]
+    })
+
+    return {
+        "blocks": blocks,
+        "text": f"Manual order required for {client_name}"  # Fallback text
+    }
+
+
+@router.get("/jobs/{job_id}/order-summary")
+async def get_order_summary(job_id: str):
+    """
+    Get a human-readable order summary for manual processing.
+
+    Returns formatted text optimized for copy-pasting into Hypertide forms.
+    """
+    job = await _get_job_from_db(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    # Get client name
+    client = await fetch_one(
+        "SELECT name FROM clients WHERE id = $1",
+        UUID(job["client_id"])
+    )
+    client_name = client.get("name", "Unknown") if client else "Unknown"
+
+    summary = _generate_order_summary_text(job, client_name)
+
+    return {
+        "job_id": job_id,
+        "summary": summary,
+        "client_name": client_name,
+        "provider_type": job.get("provider_type"),
+        "order_count": job.get("breakdown", {}).get("total_orders", 0),
+    }
+
+
+@router.post("/jobs/{job_id}/send-to-slack")
+async def send_to_slack(job_id: str):
+    """
+    Send order details to Slack for manual processing.
+
+    Updates job status to 'manual_processing' after successful send.
+    """
+    import json
+
+    if not SLACK_ORDERS_WEBHOOK_URL:
+        raise HTTPException(
+            status_code=503,
+            detail="Slack webhook not configured. Set SLACK_ORDERS_WEBHOOK_URL environment variable."
+        )
+
+    job = await _get_job_from_db(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    if job["status"] not in ("failed", "manual_processing"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Can only send failed jobs to Slack. Current status: {job['status']}"
+        )
+
+    # Get client name
+    client = await fetch_one(
+        "SELECT name FROM clients WHERE id = $1",
+        UUID(job["client_id"])
+    )
+    client_name = client.get("name", "Unknown") if client else "Unknown"
+
+    # Generate Slack message
+    slack_message = _generate_slack_message(job, client_name)
+
+    # Send to Slack
+    try:
+        async with httpx.AsyncClient() as http_client:
+            response = await http_client.post(
+                SLACK_ORDERS_WEBHOOK_URL,
+                json=slack_message,
+                timeout=10.0
+            )
+            response.raise_for_status()
+    except httpx.HTTPError as e:
+        logger.error(f"Failed to send Slack message: {e}")
+        raise HTTPException(
+            status_code=502,
+            detail=f"Failed to send Slack message: {str(e)}"
+        )
+
+    # Update job status and store slack_sent_at in results
+    existing_results = job.get("results") or []
+    updated_results = existing_results.copy() if isinstance(existing_results, list) else []
+
+    # Add slack metadata to results
+    slack_metadata = {
+        "slack_sent_at": datetime.now(timezone.utc).isoformat(),
+        "slack_channel": "#charm-os-order",
+        "type": "manual_processing_notification"
+    }
+    updated_results.append(slack_metadata)
+
+    await _update_job_status(
+        job_id,
+        "manual_processing",
+        current_step="Sent to Slack for manual processing",
+        results=updated_results
+    )
+
+    return {
+        "message": "Order sent to Slack successfully",
+        "job_id": job_id,
+        "status": "manual_processing",
+        "channel": "#charm-os-order"
+    }
+
+
+class ManualCompleteRequest(BaseModel):
+    """Request to manually complete a job."""
+    notes: Optional[str] = Field(default=None, description="Optional completion notes")
+
+
+@router.post("/jobs/{job_id}/manual-complete")
+async def manual_complete(job_id: str, request: ManualCompleteRequest = None):
+    """
+    Mark a job as manually completed.
+
+    Use this after a team member has processed the order manually in Hypertide.
+    Updates job status to 'completed' and marks domains with infrastructure_type.
+    """
+    import json
+
+    job = await _get_job_from_db(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    if job["status"] not in ("failed", "manual_processing"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Can only manually complete failed or manual_processing jobs. Current status: {job['status']}"
+        )
+
+    # Update domain infrastructure_type based on provider
+    provider_type = job.get("provider_type", "entra")
+    domain_ids = [UUID(d) for d in job.get("domain_ids", [])]
+
+    if domain_ids:
+        await execute(
+            """
+            UPDATE domains
+            SET infrastructure_type = $1,
+                infrastructure_set_at = NOW(),
+                approval_status = 'active',
+                updated_at = NOW()
+            WHERE id = ANY($2)
+            """,
+            provider_type,
+            domain_ids
+        )
+        logger.info(f"Marked {len(domain_ids)} domains as {provider_type} via manual completion")
+
+    # Build completion results
+    existing_results = job.get("results") or []
+    updated_results = existing_results.copy() if isinstance(existing_results, list) else []
+
+    completion_metadata = {
+        "manual_completion": True,
+        "completed_at": datetime.now(timezone.utc).isoformat(),
+        "notes": request.notes if request else None,
+        "type": "manual_completion"
+    }
+    updated_results.append(completion_metadata)
+
+    # Update job status
+    await _update_job_status(
+        job_id,
+        "completed",
+        current_step="Manually completed by team member",
+        results=updated_results
+    )
+
+    # Release domain locks
+    await _release_domain_locks(job_id)
+
+    return {
+        "message": "Job marked as manually completed",
+        "job_id": job_id,
+        "status": "completed",
+        "domains_updated": len(domain_ids),
+        "infrastructure_type": provider_type
+    }
