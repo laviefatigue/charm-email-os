@@ -30,6 +30,7 @@ import time
 import socket
 import logging
 import json
+import httpx
 from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Optional
@@ -63,6 +64,278 @@ DB_CONFIG = {
 POLL_INTERVAL = int(os.getenv("POLL_INTERVAL", "10"))
 WORKER_ID = os.getenv("WORKER_ID", f"worker-{socket.gethostname()}")
 STALE_JOB_MINUTES = int(os.getenv("STALE_JOB_MINUTES", "30"))
+SLACK_ORDERS_WEBHOOK_URL = os.getenv("SLACK_ORDERS_WEBHOOK_URL", "")
+
+# =============================================================================
+# Slack Notification Functions
+# =============================================================================
+
+def _send_slack_notification(message: dict) -> bool:
+    """Send a Slack notification via webhook."""
+    if not SLACK_ORDERS_WEBHOOK_URL:
+        logger.warning("SLACK_ORDERS_WEBHOOK_URL not configured - skipping notification")
+        return False
+
+    try:
+        response = httpx.post(
+            SLACK_ORDERS_WEBHOOK_URL,
+            json=message,
+            timeout=10.0
+        )
+        if response.status_code == 200:
+            logger.info("Slack notification sent successfully")
+            return True
+        else:
+            logger.warning(f"Slack notification failed: {response.status_code} - {response.text}")
+            return False
+    except Exception as e:
+        logger.error(f"Failed to send Slack notification: {e}")
+        return False
+
+
+def _generate_slack_order_started_message(job: dict, client_name: str) -> dict:
+    """Generate Slack message for order started notification (blue)."""
+    job_id = str(job.get("id", "unknown"))
+    provider_type = job.get("provider_type", "unknown")
+    domain_names = job.get("domain_names", [])
+    orders_total = len(domain_names) // (2 if provider_type == "entra" else 5) or 1
+    monthly_cost = orders_total * 50
+
+    provider_emoji = ":office:" if provider_type == "entra" else ":envelope:"
+
+    blocks = [
+        {
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": ":rocket: *Hypertide Order Started*"}
+        },
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": f"*Client:* {client_name}\n*Provider:* {provider_emoji} {provider_type.upper()}\n*Domains:* {len(domain_names)}\n*Est. Cost:* ${monthly_cost:.0f}/mo"
+            }
+        },
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": f"*Domains:*\n```{chr(10).join(domain_names[:10])}{'...' if len(domain_names) > 10 else ''}```"
+            }
+        },
+        {
+            "type": "context",
+            "elements": [
+                {"type": "mrkdwn", "text": f"Job ID: `{job_id[:8]}...` | :hourglass_flowing_sand: Worker automation in progress..."}
+            ]
+        }
+    ]
+
+    return {
+        "attachments": [{"color": "#3498db", "blocks": blocks}],
+        "text": f"Order started for {client_name}"
+    }
+
+
+def _generate_slack_ready_for_payment_message(job: dict, client_name: str, checkout_url: str = None) -> dict:
+    """Generate Slack message for order ready for payment (amber)."""
+    job_id = str(job.get("id", "unknown"))
+    provider_type = job.get("provider_type", "unknown")
+    domain_names = job.get("domain_names", [])
+
+    provider_emoji = ":office:" if provider_type == "entra" else ":envelope:"
+
+    blocks = [
+        {
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": ":credit_card: *Hypertide Order Ready for Payment*"}
+        },
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": f"*Client:* {client_name}\n*Provider:* {provider_emoji} {provider_type.upper()}\n*Domains:* {len(domain_names)}"
+            }
+        },
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": f"*Domains:*\n```{chr(10).join(domain_names[:5])}{'...' if len(domain_names) > 5 else ''}```"
+            }
+        }
+    ]
+
+    # Add checkout button if URL provided
+    if checkout_url:
+        blocks.append({
+            "type": "actions",
+            "elements": [{
+                "type": "button",
+                "text": {"type": "plain_text", "text": ":credit_card: Pay Now", "emoji": True},
+                "style": "primary",
+                "url": checkout_url
+            }]
+        })
+        blocks.append({
+            "type": "context",
+            "elements": [{"type": "mrkdwn", "text": f"Job ID: `{job_id[:8]}...` | Click to open Stripe checkout"}]
+        })
+    else:
+        # No checkout URL captured - provide manual instructions
+        blocks.append({
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": ":point_right: *Next step:* Click button below, then click 'Checkout with Stripe' on Hypertide"
+            }
+        })
+        blocks.append({
+            "type": "actions",
+            "elements": [{
+                "type": "button",
+                "text": {"type": "plain_text", "text": ":credit_card: Open Hypertide to Pay", "emoji": True},
+                "style": "primary",
+                "url": "https://app2.hypertide.io/review-order"
+            }]
+        })
+        blocks.append({
+            "type": "context",
+            "elements": [{"type": "mrkdwn", "text": f"Job ID: `{job_id[:8]}...` | All setup complete - just pay!"}]
+        })
+
+    return {
+        "attachments": [{"color": "#f39c12", "blocks": blocks}],
+        "text": f"Order ready for payment: {client_name}"
+    }
+
+
+def _generate_slack_order_specification(job: dict, client_name: str) -> dict:
+    """
+    Generate detailed Slack message with all order specifications.
+
+    This message contains everything needed to manually create the Hypertide order.
+    """
+    job_id = str(job.get("id", "unknown"))
+    provider_type = job.get("provider_type", "entra")
+    domain_names = job.get("domain_names", [])
+    request_data = job.get('request_data', {})
+
+    # Calculate values based on provider type
+    is_entra = provider_type == "entra"
+    domains_per_order = 2 if is_entra else 5
+    inboxes_per_domain = 50 if is_entra else 3
+    orders_needed = max(1, (len(domain_names) + domains_per_order - 1) // domains_per_order)
+    monthly_cost = orders_needed * 50
+    total_inboxes = len(domain_names) * inboxes_per_domain
+
+    provider_emoji = ":office:" if is_entra else ":envelope:"
+    plan_name = "Hypertide Entra" if is_entra else "Hypertide Google"
+
+    # Extract configuration from request_data
+    forwarding_domain = request_data.get('forwarding_domain', 'N/A')
+    if not forwarding_domain or forwarding_domain == 'N/A':
+        # Try to derive from first domain
+        if domain_names:
+            parts = domain_names[0].split('.')
+            if len(parts) >= 2:
+                forwarding_domain = '.'.join(parts[-2:])
+
+    sender_names = request_data.get('sender_names', [])
+    if sender_names and isinstance(sender_names, list) and len(sender_names) > 0:
+        first_name = sender_names[0].get('firstName', 'Chris')
+        last_name = sender_names[0].get('lastName', 'Booth')
+    else:
+        first_name = 'Chris'
+        last_name = 'Booth'
+
+    # Build domains list for display (limit to 20 for readability)
+    domains_display = "\n".join(domain_names[:20])
+    if len(domain_names) > 20:
+        domains_display += f"\n... and {len(domain_names) - 20} more"
+
+    blocks = [
+        {
+            "type": "header",
+            "text": {"type": "plain_text", "text": "📋 New Hypertide Order Specification", "emoji": True}
+        },
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": f"*Client:* {client_name}\n*Provider:* {provider_emoji} {provider_type.upper()}\n*Domains:* {len(domain_names)} → *{total_inboxes} inboxes*\n*Est. Cost:* ${monthly_cost}/mo"
+            }
+        },
+        {"type": "divider"},
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": f"*STEP 1: Choose Plan*\nSelect: *{plan_name}*\nQuantity: *{orders_needed} order(s)*"
+            }
+        },
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": f"*STEP 2: Select Domains (BYOD)*\n```{domains_display}```"
+            }
+        },
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": f"*STEP 3: Domain Settings*\n• Forwarding URL: `{forwarding_domain}`\n• Company Name: `{client_name}`\n• Email Tool: Bison (use saved creds)\n• Warmup & Outbound: defaults\n• User: `{first_name} {last_name}`"
+            }
+        },
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": "*STEP 4: Checkout*\nComplete Stripe payment"
+            }
+        },
+        {"type": "divider"},
+        {
+            "type": "actions",
+            "elements": [
+                {
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": "🚀 Open Hypertide", "emoji": True},
+                    "url": "https://app2.hypertide.io/choose-plan"
+                },
+                {
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": "✅ Mark as Completed", "emoji": True},
+                    "style": "primary",
+                    "action_id": f"complete_hypertide_order",
+                    "value": job_id
+                }
+            ]
+        },
+        {
+            "type": "context",
+            "elements": [{"type": "mrkdwn", "text": f"Job ID: `{job_id[:8]}...` | Click 'Mark as Completed' after Stripe payment"}]
+        }
+    ]
+
+    return {
+        "attachments": [{"color": "#3498db", "blocks": blocks}],
+        "text": f"New order specification for {client_name}"
+    }
+
+
+def _get_client_name(client_id: str) -> str:
+    """Look up client name from database."""
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT name FROM clients WHERE id = %s", (client_id,))
+        row = cur.fetchone()
+        return row['name'] if row else "Unknown Client"
+    finally:
+        cur.close()
+        conn.close()
+
 
 # =============================================================================
 # Database Helpers
@@ -117,7 +390,7 @@ def get_pending_inbox_purchase_job() -> Optional[dict]:
                    retry_count, max_retries
             FROM inbox_purchase_jobs
             WHERE status = 'pending'
-            AND execution_mode = 'worker'
+            AND worker_mode = 'worker'
             ORDER BY created_at ASC
             LIMIT 1
             FOR UPDATE SKIP LOCKED
@@ -399,6 +672,8 @@ def _import_hypertide_modules():
             MixedOrderRequest,
             BisonCredentials,
             OrderType,
+            OrderRequest,
+            SendingTool,
             DomainConfig,
             calculate_optimal_orders,
             create_order_bundle,
@@ -406,6 +681,7 @@ def _import_hypertide_modules():
         from hypertide_automation.purchase import (
             purchase_mixed_order,
             BundlePurchaseAutomation,
+            PurchaseAutomation,
         )
         from hypertide_automation.client import HypertideClient
 
@@ -416,10 +692,13 @@ def _import_hypertide_modules():
             "BisonCredentials": BisonCredentials,
             "OrderType": OrderType,
             "DomainConfig": DomainConfig,
+            "OrderRequest": OrderRequest,
+            "SendingTool": SendingTool,
             "calculate_optimal_orders": calculate_optimal_orders,
             "create_order_bundle": create_order_bundle,
             "purchase_mixed_order": purchase_mixed_order,
             "BundlePurchaseAutomation": BundlePurchaseAutomation,
+            "PurchaseAutomation": PurchaseAutomation,
             "HypertideClient": HypertideClient,
         }
     except ImportError as e:
@@ -468,34 +747,65 @@ def update_inbox_purchase_job(job_id: str, status: str, current_step: str = None
 
 
 async def process_inbox_purchase_job(job: dict):
-    """Process an inbox purchase job via Hypertide."""
+    """
+    Process an inbox purchase job by sending Slack specification.
+
+    NOTE: Browser automation was disabled due to:
+    1. Session isolation - order state only exists in headless browser
+    2. Stripe bot detection - cannot capture checkout URL
+    3. Non-shareable URLs - user's browser has different session
+
+    Flow:
+    1. Extract all order variables from job
+    2. Generate detailed Slack specification message
+    3. Send to Slack with "Open Hypertide" and "Mark Complete" buttons
+    4. Set job status to 'awaiting_manual_order'
+    5. User manually creates order in Hypertide using the specification
+    6. User clicks "Mark as Completed" in Slack → status becomes 'completed'
+    """
     job_id = str(job['id'])
+    client_id = str(job.get('client_id', ''))
+    provider_type = job.get('provider_type', 'entra')
+    domain_names = job.get('domain_names', [])
     request_data = job.get('request_data', {})
 
-    logger.info(f"Processing inbox purchase job {job_id}")
+    # Get client name for notifications
+    client_name = _get_client_name(client_id) if client_id else request_data.get('client_name', 'Unknown')
 
-    ht = _import_hypertide_modules()
-    if not ht:
-        update_inbox_purchase_job(job_id, 'failed', error="HyperTide modules not available")
-        return
+    logger.info(f"Processing inbox purchase job {job_id} for {client_name}")
+    logger.info(f"  Provider: {provider_type}, Domains: {len(domain_names)}")
+    logger.info(f"  Mode: Slack specification (manual order)")
 
     try:
-        update_inbox_purchase_job(job_id, 'executing', current_step="Initializing Hypertide")
+        # Generate and send Slack specification message
+        slack_msg = _generate_slack_order_specification(job, client_name)
+        success = _send_slack_notification(slack_msg)
 
-        # This is a simplified implementation - the full implementation would
-        # mirror the logic in inbox_purchasing.py's _execute_purchase_v2_task
-        #
-        # For now, we mark it as needing the full implementation
-
-        logger.warning(f"Inbox purchase job {job_id} - full Hypertide integration pending")
-        update_inbox_purchase_job(
-            job_id, 'failed',
-            error="Worker Hypertide integration not yet implemented - use API background tasks"
-        )
+        if success:
+            # Update job to awaiting manual completion
+            update_inbox_purchase_job(
+                job_id, 'awaiting_manual_order',
+                current_step="Slack specification sent - awaiting manual order",
+                results={
+                    "provider_type": provider_type,
+                    "domain_count": len(domain_names),
+                    "specification_sent": True,
+                }
+            )
+            logger.info(f"Slack specification sent for job {job_id}")
+        else:
+            # Slack notification failed - mark job for retry or manual handling
+            update_inbox_purchase_job(
+                job_id, 'failed',
+                current_step="Failed to send Slack specification",
+                error="Slack webhook failed - check SLACK_ORDERS_WEBHOOK_URL configuration"
+            )
+            logger.error(f"Failed to send Slack specification for job {job_id}")
 
     except Exception as e:
-        logger.error(f"Inbox purchase job {job_id} failed: {e}")
-        update_inbox_purchase_job(job_id, 'failed', error=str(e))
+        error_msg = str(e)
+        logger.error(f"Inbox purchase job {job_id} failed with exception: {error_msg}")
+        update_inbox_purchase_job(job_id, 'failed', error=error_msg)
 
 
 # =============================================================================

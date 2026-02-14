@@ -1,0 +1,31 @@
+# Cloudflare Tunnel Configuration for Charm Email OS
+#
+# This tunnel exposes local services to the internet via Cloudflare.
+# Useful for Slack webhooks, external integrations, and development.
+#
+# Usage:
+#   cloudflared tunnel run charm-services
+#
+# Note: Replace <TUNNEL_ID> with actual tunnel ID after creation
+
+tunnel: charm-services
+credentials-file: C:\Users\ellio\.cloudflared\7a0e85d6-5c45-485e-889c-95d665aeca0b.json
+
+ingress:
+  # Slack Interactive Webhooks (buttons, modals, shortcuts)
+  # Used by: Hypertide order completion flow
+  - hostname: slack-hooks.laviefatigue.com
+    service: http://localhost:8000
+    originRequest:
+      noTLSVerify: true
+
+  # API (if you want external access to the full API)
+  # - hostname: api.laviefatigue.com
+  #   service: http://localhost:8000
+
+  # Frontend (if you want external access)
+  # - hostname: charm.laviefatigue.com
+  #   service: http://localhost:3000
+
+  # Catch-all (required by cloudflared)
+  - service: http_status:404

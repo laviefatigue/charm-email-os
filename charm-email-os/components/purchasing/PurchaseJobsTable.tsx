@@ -53,7 +53,7 @@ import { formatDistanceToNow, format } from 'date-fns';
 interface PurchaseJob {
   jobId: string;
   clientId: string;
-  status: 'pending' | 'executing' | 'processing' | 'completed' | 'failed' | 'awaiting_checkout' | 'superseded' | 'cancelled' | 'manual_processing';
+  status: 'pending' | 'executing' | 'processing' | 'completed' | 'failed' | 'awaiting_checkout' | 'awaiting_manual_order' | 'superseded' | 'cancelled' | 'manual_processing';
   currentStep?: string;
   providerType: string;
   domainNames: string[];
@@ -115,7 +115,7 @@ export function PurchaseJobsTable({ clientId, onJobRetried }: PurchaseJobsTableP
     // Poll for updates every 10 seconds if any jobs are pending/executing
     const interval = setInterval(() => {
       const hasActiveJobs = jobsRef.current.some(
-        (j) => j.status === 'pending' || j.status === 'executing' || j.status === 'processing' || j.status === 'awaiting_checkout'
+        (j) => j.status === 'pending' || j.status === 'executing' || j.status === 'processing' || j.status === 'awaiting_checkout' || j.status === 'awaiting_manual_order'
       );
       if (hasActiveJobs) {
         fetchJobs();
@@ -312,6 +312,13 @@ export function PurchaseJobsTable({ clientId, onJobRetried }: PurchaseJobsTableP
           <Badge className="bg-amber-100 text-amber-800 gap-1">
             <CreditCard className="h-3 w-3" />
             Awaiting Payment
+          </Badge>
+        );
+      case 'awaiting_manual_order':
+        return (
+          <Badge className="bg-blue-100 text-blue-800 gap-1">
+            <Clock className="h-3 w-3" />
+            Spec Sent to Slack
           </Badge>
         );
       case 'superseded':
@@ -530,7 +537,7 @@ export function PurchaseJobsTable({ clientId, onJobRetried }: PurchaseJobsTableP
                             </TooltipProvider>
                           </>
                         )}
-                        {(job.status === 'failed' || job.status === 'pending') && (
+                        {(job.status === 'failed' || job.status === 'pending' || job.status === 'awaiting_manual_order') && (
                           <TooltipProvider>
                             <Tooltip>
                               <TooltipTrigger asChild>
@@ -617,7 +624,7 @@ export function PurchaseJobsTable({ clientId, onJobRetried }: PurchaseJobsTableP
                             </TooltipProvider>
                           </>
                         )}
-                        {(job.status === 'failed' || job.status === 'manual_processing') && (
+                        {(job.status === 'failed' || job.status === 'manual_processing' || job.status === 'awaiting_manual_order') && (
                           <TooltipProvider>
                             <Tooltip>
                               <TooltipTrigger asChild>

@@ -21,6 +21,9 @@ httpx==0.28.1
 # Environment
 python-dotenv==1.0.1
 
+# Form Parsing (for Slack webhooks)
+python-multipart==0.0.9
+
 # UUID
 uuid6==2024.7.10
 
