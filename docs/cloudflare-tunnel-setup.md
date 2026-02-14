@@ -151,6 +151,11 @@ Add to `docker-compose.local.yml`:
    ```
 6. Save Changes
 
+**Current Configuration (2026-02-13):**
+- Tunnel ID: `7a0e85d6-5c45-485e-889c-95d665aeca0b`
+- Webhook URL: `https://slack-hooks.laviefatigue.com/api/slack/interactions`
+- Handler: `api/routes/slack_webhooks.py`
+
 ---
 
 ## Adding More Services
