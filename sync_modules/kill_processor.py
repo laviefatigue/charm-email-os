@@ -131,6 +131,18 @@ class KillProcessor:
                             WHERE id = $1
                         """, item['id'], tag_name, scheduled_delete)
 
+                        # Mark inbox as dead immediately - the kill decision is made
+                        # EmailBison deletion is just cleanup, not the decision point
+                        await self.db.execute("""
+                            UPDATE sender_accounts
+                            SET
+                                inbox_state = 'dead',
+                                killed_at = NOW(),
+                                kill_trigger = $2::kill_trigger_type,
+                                updated_at = NOW()
+                            WHERE id = $1
+                        """, item['inbox_id'], item['trigger_type'])
+
                         tagged_count += 1
                         audit.increment_updated()
 

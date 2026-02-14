@@ -17,6 +17,7 @@ from models.health import (
     BackupCapacityResponse, BackupTierStatus, DomainGridItem,
     CampaignAttributionItem, ContaminationSourceItem, ESPSummaryItem,
     InfrastructureHealthResponse, ProviderMetrics, HealthDistribution, LifecycleDistribution,
+    WarningLevelDistribution,
 )
 
 router = APIRouter()
@@ -518,12 +519,12 @@ async def _build_kill_triggers(workspace_id: UUID) -> list[KillTriggerItem]:
 
         if hard_bounces_24h >= 1 and age_days < 14:
             triggers.append(KillTriggerItem(
-                id=f"trigger-{inbox_id}-fresh_inbox_hard_bounce",
+                id=f"trigger-{inbox_id}-fresh_inbox_bounce",
                 inbox_id=inbox_id,
                 inbox_email=row["email_address"],
                 domain_id=row["domain_id"],
                 domain_name=row["domain_name"],
-                type="fresh_inbox_hard_bounce",
+                type="fresh_inbox_bounce",
                 severity="instant",
                 value=float(hard_bounces_24h),
                 threshold=1.0,
@@ -554,12 +555,12 @@ async def _build_kill_triggers(workspace_id: UUID) -> list[KillTriggerItem]:
     mock_trigger_types = [
         ("hard_bounces_24h", "instant", 3.0, 2.0),
         ("hard_bounce_rate_7d", "instant", 1.2, 0.5),
-        ("fresh_inbox_hard_bounce", "instant", 1.0, 1.0),
+        ("fresh_inbox_bounce", "instant", 1.0, 1.0),
         ("hard_bounces_24h", "instant", 4.0, 2.0),
         ("bounce_rate_all_7d", "instant", 7.5, 5.0),
         ("hard_bounce_rate_7d", "instant", 0.8, 0.5),
         ("hard_bounces_24h", "instant", 2.0, 2.0),
-        ("fresh_inbox_hard_bounce", "instant", 2.0, 1.0),
+        ("fresh_inbox_bounce", "instant", 2.0, 1.0),
         ("hard_bounces_24h", "instant", 5.0, 2.0),
     ]
     time_offsets = [
@@ -923,20 +924,41 @@ async def _build_overall_summary(
     clean_domains = domain_stats["clean"] if domain_stats else 0
     flagged_domains = domain_stats["flagged"] if domain_stats else 0
 
-    # Dead domains (>=2 dead inboxes)
+    # Active domains = domains with at least 1 live inbox (user requirement)
+    active_domain_result = await fetch_one("""
+        SELECT COUNT(DISTINCT d.id) as active_domains
+        FROM domains d
+        WHERE d.workspace_id = $1
+          AND d.is_active = TRUE
+          AND EXISTS (
+            SELECT 1 FROM sender_accounts sa
+            WHERE SPLIT_PART(sa.email_address, '@', 2) = d.domain_name
+              AND sa.workspace_id = d.workspace_id
+              AND sa.inbox_state = 'live'
+          )
+    """, workspace_id)
+    live_domains = active_domain_result["active_domains"] if active_domain_result else 0
+
+    # Dead domains (>=2 dead inboxes OR no live inboxes)
     dead_domain_result = await fetch_one("""
         SELECT COUNT(*) as dead_domains FROM (
             SELECT d.id
             FROM domains d
-            JOIN sender_accounts sa ON SPLIT_PART(sa.email_address, '@', 2) = d.domain_name
+            LEFT JOIN sender_accounts sa ON SPLIT_PART(sa.email_address, '@', 2) = d.domain_name
                 AND sa.workspace_id = d.workspace_id
-            WHERE d.workspace_id = $1 AND sa.inbox_state = 'dead'
+                AND sa.inbox_state = 'live'
+            WHERE d.workspace_id = $1
             GROUP BY d.id
-            HAVING COUNT(*) >= 2
+            -- Dead = no live inboxes OR has 2+ dead inboxes
+            HAVING COUNT(sa.id) = 0 OR (
+                SELECT COUNT(*) FROM sender_accounts sa2
+                WHERE SPLIT_PART(sa2.email_address, '@', 2) = d.domain_name
+                  AND sa2.workspace_id = d.workspace_id
+                  AND sa2.inbox_state = 'dead'
+            ) >= 2
         ) sub
     """, workspace_id)
     dead_domains = dead_domain_result["dead_domains"] if dead_domain_result else 0
-    live_domains = total_domains - flagged_domains - dead_domains
 
     # Alert counts
     critical_alerts = critical_inboxes + flagged_domains
@@ -1343,6 +1365,37 @@ async def get_infrastructure_health(client_id: UUID):
         WHERE workspace_id = $1
     """, workspace_id)
 
+    # Get warning level distribution (for predictive death forecasting)
+    # Levels based on proximity to kill thresholds:
+    # healthy: no bounces, critical: at/above kill threshold
+    warning_dist = await fetch_one("""
+        SELECT
+            -- Healthy: no bounces in 24h or 7d
+            COUNT(*) FILTER (
+                WHERE inbox_state = 'live'
+                AND COALESCE(hard_bounces_24h, 0) = 0
+                AND COALESCE(hard_bounces_7d, 0) = 0
+            ) as healthy,
+            -- Watching: 1-2 hard bounces in 7d (pattern forming, not urgent)
+            COUNT(*) FILTER (
+                WHERE inbox_state = 'live'
+                AND COALESCE(hard_bounces_24h, 0) = 0
+                AND COALESCE(hard_bounces_7d, 0) BETWEEN 1 AND 2
+            ) as watching,
+            -- Warning: 1 hard bounce in 24h (next bounce = kill)
+            COUNT(*) FILTER (
+                WHERE inbox_state = 'live'
+                AND COALESCE(hard_bounces_24h, 0) = 1
+            ) as warning,
+            -- Critical: at or above kill threshold (2+ bounces in 24h or 3+ in 7d)
+            COUNT(*) FILTER (
+                WHERE inbox_state = 'live'
+                AND (COALESCE(hard_bounces_24h, 0) >= 2 OR COALESCE(hard_bounces_7d, 0) >= 3)
+            ) as critical
+        FROM sender_accounts
+        WHERE workspace_id = $1
+    """, workspace_id)
+
     # Build provider metrics
     providers = [
         ProviderMetrics(
@@ -1377,6 +1430,17 @@ async def get_infrastructure_health(client_id: UUID):
             reserve=lifecycle_dist["reserve"] if lifecycle_dist else 0,
             warning=lifecycle_dist["warning"] if lifecycle_dist else 0,
             total_live=lifecycle_dist["total_live"] if lifecycle_dist else 0,
+        ),
+        warning_distribution=WarningLevelDistribution(
+            healthy=warning_dist["healthy"] if warning_dist else 0,
+            watching=warning_dist["watching"] if warning_dist else 0,
+            warning=warning_dist["warning"] if warning_dist else 0,
+            critical=warning_dist["critical"] if warning_dist else 0,
+            total_at_risk=(
+                (warning_dist["watching"] if warning_dist else 0) +
+                (warning_dist["warning"] if warning_dist else 0) +
+                (warning_dist["critical"] if warning_dist else 0)
+            ),
         ),
         total_domains=domain_stats["total"] if domain_stats else 0,
         clean_domains=domain_stats["clean"] if domain_stats else 0,
@@ -1688,3 +1752,280 @@ async def get_emailbison_capacity(
         return EmailBisonCapacityResponse(
             last_synced=datetime.now(timezone.utc)
         )
+
+
+class KillVelocityWeek(BaseModel):
+    """Weekly kill velocity data point"""
+    week: str
+    deaths: int
+
+
+class KillVelocityResponse(BaseModel):
+    """Kill velocity response for trend chart"""
+    weekly: list[KillVelocityWeek]
+    total_deaths_7d: int
+    total_deaths_30d: int
+    churn_rate_7d: float
+    trend: str  # "up", "down", "stable"
+
+    class Config:
+        from_attributes = True
+
+
+@router.get("/kill-velocity/{client_id}", response_model=KillVelocityResponse)
+async def get_kill_velocity(client_id: UUID):
+    """
+    Get kill velocity data for the past 5 weeks.
+
+    Returns weekly death counts, churn rate, and trend direction.
+    Used for the executive dashboard kill velocity chart.
+    """
+    # Get client with workspace
+    client = await fetch_one("""
+        SELECT c.id, c.name, c.workspace_id
+        FROM clients c
+        WHERE c.id = $1
+    """, client_id)
+
+    if not client:
+        raise HTTPException(status_code=404, detail="Client not found")
+
+    workspace_id = client["workspace_id"]
+
+    if not workspace_id:
+        return KillVelocityResponse(
+            weekly=[],
+            total_deaths_7d=0,
+            total_deaths_30d=0,
+            churn_rate_7d=0.0,
+            trend="stable"
+        )
+
+    # Get weekly death counts for last 5 weeks
+    weekly_deaths = await fetch_all("""
+        SELECT
+            DATE_TRUNC('week', killed_at) as week,
+            COUNT(*) as deaths
+        FROM sender_accounts
+        WHERE workspace_id = $1
+            AND inbox_state = 'dead'
+            AND killed_at IS NOT NULL
+            AND killed_at > NOW() - INTERVAL '35 days'
+        GROUP BY DATE_TRUNC('week', killed_at)
+        ORDER BY week
+    """, workspace_id)
+
+    # Get total counts for metrics
+    death_counts = await fetch_one("""
+        SELECT
+            COUNT(*) FILTER (
+                WHERE inbox_state = 'dead'
+                AND killed_at IS NOT NULL
+                AND killed_at > NOW() - INTERVAL '7 days'
+            ) as deaths_7d,
+            COUNT(*) FILTER (
+                WHERE inbox_state = 'dead'
+                AND killed_at IS NOT NULL
+                AND killed_at > NOW() - INTERVAL '30 days'
+            ) as deaths_30d,
+            COUNT(*) as total_inboxes
+        FROM sender_accounts
+        WHERE workspace_id = $1
+    """, workspace_id)
+
+    deaths_7d = death_counts["deaths_7d"] if death_counts else 0
+    deaths_30d = death_counts["deaths_30d"] if death_counts else 0
+    total = death_counts["total_inboxes"] if death_counts else 0
+
+    # Calculate churn rate
+    churn_rate = (deaths_7d / total * 100) if total > 0 else 0.0
+
+    # Format weekly data
+    weekly = [
+        KillVelocityWeek(
+            week=row["week"].strftime("%Y-%m-%d") if row["week"] else "",
+            deaths=row["deaths"]
+        )
+        for row in (weekly_deaths or [])
+    ]
+
+    # Determine trend
+    trend = "stable"
+    if len(weekly) >= 2:
+        recent_week = weekly[-1].deaths if weekly else 0
+        prev_week = weekly[-2].deaths if len(weekly) > 1 else 0
+        if recent_week > prev_week:
+            trend = "up"
+        elif recent_week < prev_week:
+            trend = "down"
+
+    return KillVelocityResponse(
+        weekly=weekly,
+        total_deaths_7d=deaths_7d,
+        total_deaths_30d=deaths_30d,
+        churn_rate_7d=round(churn_rate, 2),
+        trend=trend
+    )
+
+
+# ===== KILL BREAKDOWN =====
+
+class KillCategory(BaseModel):
+    """A category of kill triggers with count and percentage"""
+    count: int
+    triggers: list[str]
+    percentage: float
+
+
+class KillTriggerDetail(BaseModel):
+    """Individual trigger type count"""
+    trigger: str
+    count: int
+    gmail_count: int = 0
+    microsoft_count: int = 0
+
+
+class KillBreakdownResponse(BaseModel):
+    """Kill trigger breakdown showing WHY inboxes died"""
+    reputation: KillCategory  # spam_complaint, hard_blocked_24h
+    list_quality: KillCategory  # hard_unknown_24h
+    premature_deployment: KillCategory  # fresh_inbox_bounce
+    other: KillCategory  # remaining triggers
+    by_provider: dict  # {"gmail": 5, "microsoft": 12}
+    total_killed: int
+    raw: list[KillTriggerDetail]  # Raw trigger counts
+
+    class Config:
+        from_attributes = True
+
+
+# Kill trigger categorization
+REPUTATION_TRIGGERS = ["spam_complaint", "hard_blocked_24h"]
+LIST_QUALITY_TRIGGERS = ["hard_unknown_24h"]
+PREMATURE_TRIGGERS = ["fresh_inbox_bounce"]
+
+
+@router.get("/kill-breakdown/{client_id}", response_model=KillBreakdownResponse)
+async def get_kill_breakdown(client_id: UUID):
+    """
+    Get kill trigger breakdown showing WHY inboxes died.
+
+    Groups triggers into actionable categories:
+    - reputation: Sender reputation issues (spam, policy blocks)
+    - list_quality: Bad email addresses
+    - premature_deployment: Fresh inbox bounces
+    - other: Other triggers
+
+    Also provides per-provider breakdown (Gmail vs Microsoft).
+    """
+    # Get client with workspace
+    client = await fetch_one("""
+        SELECT c.id, c.name, c.workspace_id
+        FROM clients c
+        WHERE c.id = $1
+    """, client_id)
+
+    if not client:
+        raise HTTPException(status_code=404, detail="Client not found")
+
+    workspace_id = client["workspace_id"]
+
+    if not workspace_id:
+        return KillBreakdownResponse(
+            reputation=KillCategory(count=0, triggers=REPUTATION_TRIGGERS, percentage=0),
+            list_quality=KillCategory(count=0, triggers=LIST_QUALITY_TRIGGERS, percentage=0),
+            premature_deployment=KillCategory(count=0, triggers=PREMATURE_TRIGGERS, percentage=0),
+            other=KillCategory(count=0, triggers=[], percentage=0),
+            by_provider={"gmail": 0, "microsoft": 0},
+            total_killed=0,
+            raw=[]
+        )
+
+    # Get kill triggers from last 30 days (only system kills, not manual)
+    trigger_rows = await fetch_all("""
+        SELECT
+            kill_trigger::text as kill_trigger,
+            COUNT(*) as count,
+            COUNT(*) FILTER (WHERE LOWER(esp::text) = 'gmail') as gmail_count,
+            COUNT(*) FILTER (WHERE LOWER(esp::text) IN ('microsoft', 'outlook')) as microsoft_count
+        FROM sender_accounts
+        WHERE workspace_id = $1
+            AND inbox_state = 'dead'
+            AND kill_trigger IS NOT NULL
+            AND kill_trigger::text != 'manual'
+            AND killed_at > NOW() - INTERVAL '30 days'
+        GROUP BY kill_trigger
+        ORDER BY count DESC
+    """, workspace_id)
+
+    # Build raw list and aggregate by category
+    raw = []
+    reputation_count = 0
+    list_quality_count = 0
+    premature_count = 0
+    other_count = 0
+    other_triggers = []
+    gmail_total = 0
+    microsoft_total = 0
+
+    for row in (trigger_rows or []):
+        trigger = row["kill_trigger"]
+        count = row["count"]
+        gmail = row["gmail_count"] or 0
+        microsoft = row["microsoft_count"] or 0
+
+        raw.append(KillTriggerDetail(
+            trigger=trigger,
+            count=count,
+            gmail_count=gmail,
+            microsoft_count=microsoft
+        ))
+
+        gmail_total += gmail
+        microsoft_total += microsoft
+
+        if trigger in REPUTATION_TRIGGERS:
+            reputation_count += count
+        elif trigger in LIST_QUALITY_TRIGGERS:
+            list_quality_count += count
+        elif trigger in PREMATURE_TRIGGERS:
+            premature_count += count
+        else:
+            other_count += count
+            if trigger not in other_triggers:
+                other_triggers.append(trigger)
+
+    total_killed = reputation_count + list_quality_count + premature_count + other_count
+
+    # Calculate percentages
+    def calc_pct(count: int) -> float:
+        return round((count / total_killed * 100), 1) if total_killed > 0 else 0.0
+
+    return KillBreakdownResponse(
+        reputation=KillCategory(
+            count=reputation_count,
+            triggers=REPUTATION_TRIGGERS,
+            percentage=calc_pct(reputation_count)
+        ),
+        list_quality=KillCategory(
+            count=list_quality_count,
+            triggers=LIST_QUALITY_TRIGGERS,
+            percentage=calc_pct(list_quality_count)
+        ),
+        premature_deployment=KillCategory(
+            count=premature_count,
+            triggers=PREMATURE_TRIGGERS,
+            percentage=calc_pct(premature_count)
+        ),
+        other=KillCategory(
+            count=other_count,
+            triggers=other_triggers,
+            percentage=calc_pct(other_count)
+        ),
+        by_provider={
+            "gmail": gmail_total,
+            "microsoft": microsoft_total
+        },
+        total_killed=total_killed,
+        raw=raw
+    )

@@ -29,7 +29,7 @@ export type KillTriggerType =
   | 'hard_bounce_rate_7d'      // >0.5% (min 50 sends)
   | 'bounce_rate_all_7d'       // >5%
   | 'provider_block'           // any
-  | 'fresh_inbox_hard_bounce'  // >=1 (inbox <14 days)
+  | 'fresh_inbox_bounce'  // >=1 (inbox <14 days)
   // Confirming Kill (Yellow)
   | 'low_inbox_placement'      // <85%
   | 'high_spam_placement'      // >5%
@@ -59,7 +59,7 @@ export const KILL_TRIGGER_THRESHOLDS: Record<KillTriggerType, { threshold: numbe
   hard_bounce_rate_7d: { threshold: 0.5, severity: 'instant', label: 'Hard Bounce Rate (7d)', minSends: 50 },
   bounce_rate_all_7d: { threshold: 5, severity: 'instant', label: 'Bounce Rate All (7d)' },
   provider_block: { threshold: 1, severity: 'instant', label: 'Provider Block' },
-  fresh_inbox_hard_bounce: { threshold: 1, severity: 'instant', label: 'Fresh Inbox Hard Bounce' },
+  fresh_inbox_bounce: { threshold: 1, severity: 'instant', label: 'Fresh Inbox Hard Bounce' },
   low_inbox_placement: { threshold: 85, severity: 'confirming', label: 'Low Inbox Placement' },
   high_spam_placement: { threshold: 5, severity: 'confirming', label: 'High Spam Placement' },
   degrading_trend: { threshold: 3, severity: 'confirming', label: 'Degrading Trend' },
@@ -492,3 +492,63 @@ export interface InfrastructureHealthResponse {
   lastSync: string | null;
   syncSource: string;
 }
+
+// ===== KILL BREAKDOWN (WHY INBOXES DIED) =====
+
+export interface KillCategory {
+  count: number;
+  triggers: string[];
+  percentage: number;
+}
+
+export interface KillTriggerDetail {
+  trigger: string;
+  count: number;
+  gmailCount: number;
+  microsoftCount: number;
+}
+
+export interface KillBreakdownResponse {
+  reputation: KillCategory;  // spam_complaint, hard_blocked_24h
+  listQuality: KillCategory;  // hard_unknown_24h
+  prematureDeployment: KillCategory;  // fresh_inbox_bounce
+  other: KillCategory;
+  byProvider: {
+    gmail: number;
+    microsoft: number;
+  };
+  totalKilled: number;
+  raw: KillTriggerDetail[];
+}
+
+// Category configurations for display
+export const KILL_CATEGORY_CONFIG = {
+  reputation: {
+    label: 'Reputation Issues',
+    description: 'Spam complaints and policy blocks - sender reputation damage',
+    color: 'rgb(239, 68, 68)',  // red
+    bgColor: 'rgb(254, 226, 226)',
+    action: 'Review email content, targeting, and sending patterns',
+  },
+  listQuality: {
+    label: 'List Quality',
+    description: 'Invalid or outdated email addresses',
+    color: 'rgb(249, 115, 22)',  // orange
+    bgColor: 'rgb(255, 237, 213)',
+    action: 'Clean lists, validate emails before import',
+  },
+  prematureDeployment: {
+    label: 'Premature Deployment',
+    description: 'Bounces on inboxes still in warmup period',
+    color: 'rgb(234, 179, 8)',  // yellow
+    bgColor: 'rgb(254, 249, 195)',
+    action: 'Let inboxes complete 14-day warmup before campaigns',
+  },
+  other: {
+    label: 'Other',
+    description: 'Other kill triggers',
+    color: 'rgb(107, 114, 128)',  // gray
+    bgColor: 'rgb(243, 244, 246)',
+    action: 'Review individual trigger details',
+  },
+} as const;

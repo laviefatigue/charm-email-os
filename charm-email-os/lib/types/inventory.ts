@@ -112,6 +112,10 @@ export interface InventoryOverview {
   incubatingCount: number;
   deadCount: number;
 
+  // Death breakdown (separates health issues from business churn)
+  killedByTrigger: number;  // System-killed (spam, bounces) - health metric
+  deactivated: number;  // Manual/business churn - not a health problem
+
   // Capacity metrics
   totalInboxes: number;
   spareCapacity: number;

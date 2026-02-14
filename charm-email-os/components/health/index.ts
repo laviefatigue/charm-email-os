@@ -25,3 +25,9 @@ export { HealthDistributionPieChart } from './HealthDistributionPieChart';
 export type { HealthRange, HealthDistribution } from './HealthDistributionPieChart';
 export { LifecycleDistributionChart } from './LifecycleDistributionChart';
 export { InventorySegmentationChart } from './InventorySegmentationChart';
+
+// Executive Dashboard Components
+export { KPICard } from './KPICard';
+export { ESPComparisonCard } from './ESPComparisonCard';
+export { KillVelocityChart } from './KillVelocityChart';
+export { KillBreakdownChart } from './KillBreakdownChart';

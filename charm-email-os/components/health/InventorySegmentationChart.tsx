@@ -3,13 +3,14 @@
 import { useMemo } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
+import { Skull } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import {
   InventoryLifecycleStatus,
   LIFECYCLE_STATUS_CONFIG,
 } from '@/lib/types/inventory';
 
-// Segment configuration for the 4-segment chart
+// Segment configuration for LIVE categories only (dead shown separately)
 const SEGMENT_CONFIG = {
   deployed: {
     bg: 'bg-green-500',
@@ -26,14 +27,10 @@ const SEGMENT_CONFIG = {
     label: 'Incubating',
     description: 'Warming for less than 14 days',
   },
-  dead: {
-    bg: 'bg-gray-400',
-    label: 'Dead',
-    description: 'Killed or flagged for removal',
-  },
 } as const;
 
-type SegmentType = keyof typeof SEGMENT_CONFIG;
+type LiveSegmentType = keyof typeof SEGMENT_CONFIG;
+type SegmentType = LiveSegmentType | 'dead';
 
 interface InventorySegmentationChartProps {
   counts: {
@@ -42,6 +39,8 @@ interface InventorySegmentationChartProps {
     reserve: number;
     incubating: number;
     total: number;
+    killedByTrigger?: number;  // System-killed (health metric)
+    deactivated?: number;  // Business churn (not a health problem)
   };
   onSegmentClick?: (segment: SegmentType) => void;
   selectedSegment?: SegmentType | null;
@@ -54,54 +53,69 @@ export function InventorySegmentationChart({
   selectedSegment,
   className,
 }: InventorySegmentationChartProps) {
-  // Calculate percentages for each segment
+  // Calculate live count (excludes dead)
+  const liveCount = counts.deployed + counts.reserve + counts.incubating;
+
+  // Calculate percentages based on LIVE total only (dead shown separately)
   const percentages = useMemo(() => {
-    if (counts.total === 0) {
-      return { deployed: 0, reserve: 0, incubating: 0, dead: 0 };
+    if (liveCount === 0) {
+      return { deployed: 0, reserve: 0, incubating: 0 };
     }
     return {
-      deployed: (counts.deployed / counts.total) * 100,
-      reserve: (counts.reserve / counts.total) * 100,
-      incubating: (counts.incubating / counts.total) * 100,
-      dead: (counts.dead / counts.total) * 100,
+      deployed: (counts.deployed / liveCount) * 100,
+      reserve: (counts.reserve / liveCount) * 100,
+      incubating: (counts.incubating / liveCount) * 100,
     };
-  }, [counts]);
+  }, [counts, liveCount]);
 
-  // Calculate cumulative positions for stacked bar
+  // Calculate cumulative positions for stacked bar (live segments only)
   const positions = useMemo(() => {
     return {
       deployed: 0,
       reserve: percentages.deployed,
       incubating: percentages.deployed + percentages.reserve,
-      dead: percentages.deployed + percentages.reserve + percentages.incubating,
     };
   }, [percentages]);
 
-  // Calculate live vs dead ratio
-  const liveCount = counts.deployed + counts.reserve + counts.incubating;
+  // Separate killed (health issue) from deactivated (business churn)
+  const killedByTrigger = counts.killedByTrigger ?? 0;
+  const deactivated = counts.deactivated ?? (counts.dead - killedByTrigger);
+
+  // Kill rate = killed / (live + killed) - excludes business churn for accurate health metric
+  const killRateBase = liveCount + killedByTrigger;
+  const killRate = killRateBase > 0 ? ((killedByTrigger / killRateBase) * 100).toFixed(1) : '0';
+
+  // Total death rate for context (includes all dead)
   const deathRate = counts.total > 0 ? ((counts.dead / counts.total) * 100).toFixed(1) : '0';
 
-  // Segment order for rendering (left to right)
-  const segmentOrder: SegmentType[] = ['deployed', 'reserve', 'incubating', 'dead'];
+  // Live segment order for rendering (left to right) - no dead in main bar
+  const liveSegmentOrder: LiveSegmentType[] = ['deployed', 'reserve', 'incubating'];
 
   return (
     <Card className={cn('', className)}>
       <CardHeader className="pb-2">
         <div className="flex items-center justify-between">
-          <CardTitle className="text-lg font-semibold">Inventory Segmentation</CardTitle>
+          <CardTitle className="text-lg font-semibold">Inbox Distribution</CardTitle>
           <div className="text-sm text-muted-foreground">
             <span className="font-medium text-foreground">{liveCount}</span> live
-            {' / '}
-            <span className="font-medium text-foreground">{counts.total}</span> total
+            {counts.dead > 0 && (
+              <>
+                {' / '}
+                <span className="font-medium text-gray-500">{counts.dead}</span> dead
+              </>
+            )}
           </div>
         </div>
       </CardHeader>
       <CardContent className="space-y-4">
-        {/* Main Stacked Bar */}
+        {/* LIVE INVENTORY Section */}
         <div className="space-y-2">
-          <div className="relative h-12 bg-muted rounded-lg overflow-hidden">
+          <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+            Live Inventory ({liveCount} inboxes)
+          </div>
+          <div className="relative h-10 bg-muted rounded-lg overflow-hidden">
             <TooltipProvider>
-              {segmentOrder.map((segment) => {
+              {liveSegmentOrder.map((segment) => {
                 const percentage = percentages[segment];
                 const position = positions[segment];
                 const count = counts[segment];
@@ -125,7 +139,7 @@ export function InventorySegmentationChart({
                         }}
                       >
                         {/* Show count label if segment is wide enough */}
-                        {percentage > 8 && (
+                        {percentage > 12 && (
                           <span className="absolute inset-0 flex items-center justify-center text-white font-semibold text-sm">
                             {count}
                           </span>
@@ -135,7 +149,7 @@ export function InventorySegmentationChart({
                     <TooltipContent>
                       <p className="font-medium">{config.label}: {count}</p>
                       <p className="text-xs text-muted-foreground">{config.description}</p>
-                      <p className="text-xs mt-1">{percentage.toFixed(1)}% of total</p>
+                      <p className="text-xs mt-1">{percentage.toFixed(1)}% of live inventory</p>
                     </TooltipContent>
                   </Tooltip>
                 );
@@ -143,9 +157,9 @@ export function InventorySegmentationChart({
             </TooltipProvider>
           </div>
 
-          {/* Legend */}
+          {/* Live Inventory Legend */}
           <div className="flex flex-wrap items-center gap-4 text-sm">
-            {segmentOrder.map((segment) => {
+            {liveSegmentOrder.map((segment) => {
               const config = SEGMENT_CONFIG[segment];
               const count = counts[segment];
               const percentage = percentages[segment];
@@ -169,33 +183,66 @@ export function InventorySegmentationChart({
           </div>
         </div>
 
-        {/* Death Rate Indicator */}
-        <div className="flex items-center justify-between p-3 rounded-lg bg-muted/50">
-          <div className="flex items-center gap-4">
-            <div>
-              <span className="text-sm text-muted-foreground">Death Rate:</span>
+        {/* DEAD INBOXES Section - Shown separately with kill vs deactivated breakdown */}
+        {counts.dead > 0 && (
+          <div className="space-y-2 pt-2 border-t">
+            <div className="flex items-center justify-between">
+              <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide flex items-center gap-1.5">
+                <Skull className="h-3.5 w-3.5 text-gray-500" />
+                Dead Inboxes ({counts.dead})
+              </div>
               <span className={cn(
-                'ml-2 font-semibold',
-                Number(deathRate) > 30 ? 'text-red-600' :
-                Number(deathRate) > 15 ? 'text-yellow-600' :
-                'text-green-600'
+                'text-sm font-medium',
+                Number(killRate) > 15 ? 'text-red-600' :
+                Number(killRate) > 5 ? 'text-amber-600' :
+                'text-gray-600'
               )}>
-                {deathRate}%
+                {killRate}% kill rate
               </span>
             </div>
-            <div className="text-sm text-muted-foreground border-l pl-4">
-              <span className="font-medium text-emerald-600">{counts.reserve}</span> ready to deploy
-            </div>
-          </div>
-          <div className="text-xs text-muted-foreground">
-            {Number(deathRate) > 30 && 'High death rate - review kill triggers'}
-            {Number(deathRate) <= 30 && Number(deathRate) > 15 && 'Moderate death rate - monitor closely'}
-            {Number(deathRate) <= 15 && 'Healthy death rate'}
-          </div>
-        </div>
 
-        {/* Quick Stats Row */}
-        <div className="grid grid-cols-4 gap-3">
+            {/* Killed by Trigger - Health issue */}
+            {killedByTrigger > 0 && (
+              <button
+                onClick={() => onSegmentClick?.('dead')}
+                className={cn(
+                  'w-full p-3 rounded-lg bg-red-50 border border-red-200 hover:bg-red-100 transition-colors text-left',
+                  selectedSegment === 'dead' && 'ring-2 ring-offset-1 ring-red-500'
+                )}
+              >
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <div className="w-3 h-3 rounded-sm bg-red-500" />
+                    <span className="font-semibold text-red-700">{killedByTrigger}</span>
+                    <span className="text-red-600">killed by triggers</span>
+                  </div>
+                  <div className="text-xs text-red-600">
+                    Health problem - review kill triggers
+                  </div>
+                </div>
+              </button>
+            )}
+
+            {/* Deactivated - Business churn */}
+            {deactivated > 0 && (
+              <div className="w-full p-3 rounded-lg bg-gray-50 border border-gray-200 text-left">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <div className="w-3 h-3 rounded-sm bg-gray-400" />
+                    <span className="font-semibold text-gray-600">{deactivated}</span>
+                    <span className="text-gray-500">deactivated</span>
+                  </div>
+                  <div className="text-xs text-gray-500">
+                    Business churn - not a health issue
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Summary Stats Row */}
+        <div className="grid grid-cols-4 gap-3 pt-2">
           <div className="text-center p-2 rounded-lg bg-green-50">
             <div className="text-lg font-bold text-green-700">{counts.deployed}</div>
             <div className="text-xs text-green-600">Deployed</div>
@@ -209,8 +256,8 @@ export function InventorySegmentationChart({
             <div className="text-xs text-amber-600">Incubating</div>
           </div>
           <div className="text-center p-2 rounded-lg bg-gray-100">
-            <div className="text-lg font-bold text-gray-700">{counts.dead}</div>
-            <div className="text-xs text-gray-600">Dead</div>
+            <div className="text-lg font-bold text-gray-500">{counts.dead}</div>
+            <div className="text-xs text-gray-500">Dead</div>
           </div>
         </div>
       </CardContent>

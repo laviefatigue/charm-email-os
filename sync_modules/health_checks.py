@@ -61,7 +61,7 @@ KILL_THRESHOLDS = {
         'severity': 'instant',
         'description': f'Total bounce rate >{KILL_THRESHOLD_TOTAL_BOUNCE_RATE*100}%'
     },
-    'fresh_inbox_hard_bounce': {
+    'fresh_inbox_bounce': {
         'value': 1,
         'max_age_days': KILL_THRESHOLD_FRESH_INBOX_DAYS,
         'severity': 'instant',
@@ -285,12 +285,12 @@ class HealthCheckModule:
                     'threshold': threshold['value']
                 })
 
-        # 4. Fresh inbox hard bounce
-        threshold = KILL_THRESHOLDS['fresh_inbox_hard_bounce']
+        # 4. Fresh inbox bounce (any bounce on inbox < 14 days old)
+        threshold = KILL_THRESHOLDS['fresh_inbox_bounce']
         if inbox_age_days is not None and inbox_age_days < threshold.get('max_age_days', 14):
             if hard_bounces_24h >= threshold['value'] or hard_bounces_7d >= threshold['value']:
                 triggers.append({
-                    'trigger_type': 'fresh_inbox_hard_bounce',
+                    'trigger_type': 'fresh_inbox_bounce',
                     'value': max(hard_bounces_24h, hard_bounces_7d),
                     'threshold': threshold['value']
                 })

@@ -1,8 +1,8 @@
 ---
 title: Health Monitoring
 created: 2026-02-12
-updated: 2026-02-12
-tags: [health, monitoring, infrastructure, database, kill-triggers]
+updated: 2026-02-13
+tags: [health, monitoring, infrastructure, database, kill-triggers, warmup]
 ---
 
 # Health Monitoring
@@ -46,6 +46,102 @@ Health scores are calculated locally by the sync worker (not returned by EmailBi
 | Critical | 0-40 | Red | Immediate action required |
 
 ## Components
+
+### Dashboard Layout (2026-02-13)
+
+The Health page uses a tabbed layout with executive KPIs:
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│  [Health Score]  [Inbox Utilization]  [Domain Coverage]  [Weekly Churn] │
+├─────────────────────────────────────────────────────────────────────────┤
+│  [Dashboard]  [Infrastructure]  [Campaign Insights]                     │
+├─────────────────────────────────────────────────────────────────────────┤
+│  ┌─────────────────────────┐  ┌────────────────────────────────────┐   │
+│  │ Inbox Distribution      │  │ Kill Velocity                       │   │
+│  │ Live: 8 / Dead: 102     │  │ This Week: 1 death │ Trend: ↑       │   │
+│  │ [████████████] 100%     │  │ [W1][W2][W3][W4][Now]               │   │
+│  │ incubating              │  │                                      │   │
+│  └─────────────────────────┘  └────────────────────────────────────┘   │
+│  ┌─────────────────────────────────────────────────────────────────┐   │
+│  │ ESP Performance        Gmail: 86%   │   Microsoft: 88%          │   │
+│  └─────────────────────────────────────────────────────────────────┘   │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+### Inventory Segmentation Chart
+
+Shows 4-segment inbox distribution with **dead shown separately**:
+
+| Segment | Color | Definition |
+|---------|-------|------------|
+| **Deployed** | Green | Assigned to active campaign, actively sending |
+| **Reserve** | Blue | 14+ days old + warmup enabled (deployment-ready) |
+| **Incubating** | Amber | Under 14 days OR warmup not enabled (still warming) |
+| **Dead** | Gray | Killed inboxes (shown separately, not in percentage bar) |
+
+**Key Design Decisions:**
+- Dead inboxes are NOT included in the percentage bar (would skew perception)
+- Reserve requires BOTH: 14+ days age AND `warmup_enabled = true`
+- Death rate shown as "X% of total created" for context
+
+```
+LIVE INVENTORY (8 inboxes)
+[████████████████████████████████████████] 100% Incubating
+
+DEAD INBOXES (102)                      87.2% of total created
+┌─────────────────────────────────────────────────────────────┐
+│ 102 killed or flagged                    High - review kill │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### Kill Velocity Chart
+
+Shows weekly death trends with warning overlay:
+
+- **5-week history**: Bar chart showing deaths per week
+- **Current warnings**: Count of inboxes at risk (approaching kill thresholds)
+- **Trend indicator**: Increasing / Decreasing / Stable
+- **Insights**: Context-aware messages based on death rate and trends
+
+### ESP Performance Card
+
+Side-by-side Gmail vs Microsoft comparison:
+
+| Metric | Source |
+|--------|--------|
+| Inbox Placement | External API (Google Postmaster / SNDS) when available |
+| Avg Health Score | Local calculation (fallback when no external data) |
+| Live/Dead Inboxes | Database counts |
+| Death Rate | Calculated: dead / (live + dead) |
+| Reputation | Derived from health score or external API |
+
+Shows "Postmaster Data Pending" badge when external APIs not integrated.
+
+### Warning Level Distribution
+
+Predictive death forecasting based on proximity to kill thresholds:
+
+| Level | Definition | Visual |
+|-------|------------|--------|
+| `healthy` | No bounces in 24h/7d | Green |
+| `watching` | 1-2 hard bounces in 7d (pattern forming) | Yellow |
+| `warning` | 1 hard bounce in 24h (one more = kill) | Orange |
+| `critical` | At or above kill threshold (pending kill) | Red |
+
+API returns `warning_distribution` with counts at each level:
+
+```json
+{
+  "warning_distribution": {
+    "healthy": 380,
+    "watching": 5,
+    "warning": 7,
+    "critical": 15,
+    "total_at_risk": 27
+  }
+}
+```
 
 ### Health Distribution Pie Chart
 
@@ -151,7 +247,24 @@ Returns database-only infrastructure health:
 | `hard_bounces_24h` | INTEGER | Recent bounce count |
 | `hard_bounces_7d` | INTEGER | Weekly bounce count |
 | `bounce_rate_7d` | DECIMAL | Bounce rate percentage |
-| `warmup_score` | INTEGER | Warmup progress 0-100 |
+| `warmup_enabled` | BOOLEAN | Whether warmup is enabled in EmailBison |
+| `warmup_started_at` | TIMESTAMP | When warmup was first detected (first_seen_at + 7 days) |
+| `warmup_stopped_at` | TIMESTAMP | When warmup was disabled |
+| `sending_started_at` | TIMESTAMP | When inbox was first deployed to campaign |
+
+### sender_accounts (all-time metrics)
+
+These columns match the EmailBison UI metrics and are synced from the API:
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `emails_sent_all_time` | INTEGER | Total emails sent (all time) |
+| `replies_all_time` | INTEGER | Total replies received (all time) |
+| `bounces_all_time` | INTEGER | Total bounces (all time) |
+| `daily_limit` | INTEGER | Daily sending limit |
+| `complaints_lifetime` | INTEGER | Total spam complaints (1 = kill trigger) |
+
+**Note**: Rate-based kill triggers are NOT implemented because absolute count thresholds (24h/7d bounces) catch the same problems without requiring `total_sends_7d` tracking.
 
 ### Health Distribution Query
 
@@ -167,14 +280,28 @@ WHERE workspace_id = $1 AND inbox_state = 'live';
 
 ## Files
 
+### Backend
+
 | File | Purpose |
 |------|---------|
-| `api/routes/health.py` | Infrastructure health endpoint |
-| `api/models/health.py` | Pydantic response models |
-| `components/health/HealthDistributionPieChart.tsx` | Pie chart component |
+| `api/routes/health.py` | Infrastructure health endpoint + warning distribution |
+| `api/routes/inventory.py` | Inventory counts and inbox listing |
+| `api/models/health.py` | Pydantic response models (WarningLevelDistribution) |
+| `sync_modules/sync_accounts.py` | Health score calculation |
+| `sync_modules/health_checks.py` | Kill trigger detection |
+| `migrations/029_inventory_segmentation_fix.sql` | Pool status view fix |
+
+### Frontend Components
+
+| File | Purpose |
+|------|---------|
+| `components/health/InventorySegmentationChart.tsx` | 4-segment distribution (dead separate) |
+| `components/health/KillVelocityChart.tsx` | Weekly death trends + warnings overlay |
+| `components/health/ESPComparisonCard.tsx` | Gmail vs Microsoft comparison |
+| `components/health/HealthDistributionPieChart.tsx` | Health score pie chart |
 | `components/health/InventoryTable.tsx` | Inbox table with filters |
 | `lib/types/health.ts` | TypeScript types |
-| `sync_modules/sync_accounts.py` | Health score calculation |
+| `lib/types/inventory.ts` | Inventory segment types
 
 ## Migration from EmailBison API
 
@@ -239,6 +366,61 @@ Not all hard bounces are equal. The system distinguishes between:
 This allows more aggressive response to reputation issues while being more tolerant of list quality problems.
 
 See [[../adr/adr-005-differentiated-bounce-thresholds]] for the decision rationale.
+
+## Warmup Tracking
+
+The health system includes warmup lifecycle tracking to ensure inboxes are properly warmed before production use.
+
+### Warmup Lifecycle
+
+```
+New Inbox → Connected → Warmup Enabled → Warming (30 days) → Ready for Campaigns
+                           ↑                                        ↓
+                           └────── Auto-enable if missing ←─────────┘
+```
+
+### Key Warmup Metrics
+
+| Field | Description |
+|-------|-------------|
+| `warmup_enabled` | Current warmup status from EmailBison |
+| `warmup_started_at` | Estimated start date (first_seen_at + 7 days buffer) |
+| `warmup_stopped_at` | When warmup was disabled (transition detected) |
+| Warmup Progress | `min(100, days_since_start / 30 * 100)` |
+
+### 7-Day Buffer
+
+When warmup is first detected as enabled, we estimate `warmup_started_at` as:
+
+```
+warmup_started_at = first_seen_at + 7 calendar days (~5 business days)
+```
+
+This accounts for inbox setup time before warmup actually starts:
+- Domain verification
+- DKIM/SPF setup
+- Initial configuration
+
+### Auto-Enable Warmup
+
+Per the principle "always try to keep connected inboxes in warming", the sync worker automatically enables warmup for:
+
+- Inboxes with `status = 'Connected'`
+- Where `warmup_enabled = false`
+- Runs every 30 minutes
+
+### Warmup Snapshots
+
+Time-series warmup data is stored in `sender_warmup_snapshots`:
+
+| Column | Description |
+|--------|-------------|
+| `warmup_enabled` | Status at snapshot time |
+| `warmup_score` | 0-100 score from EmailBison |
+| `warmup_emails_sent` | Warmup emails sent |
+| `warmup_replies_received` | Warmup replies |
+| `warmup_bounces_received_count` | Bounces received during warmup |
+| `warmup_emails_saved_from_spam` | Emails rescued from spam |
 
 ## Related
 

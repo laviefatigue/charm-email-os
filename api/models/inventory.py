@@ -33,6 +33,10 @@ class InventoryOverview(BaseModel):
     incubating_count: int = 0
     dead_count: int = 0
 
+    # Death breakdown (separates health issues from business churn)
+    killed_by_trigger: int = 0  # System-killed (spam, bounces) - health metric
+    deactivated: int = 0  # Manual/business churn - not a health problem
+
     # Capacity metrics
     total_inboxes: int = 0
     spare_capacity: int = 0

@@ -29,14 +29,21 @@ async def _get_inventory_counts_from_view(workspace_id: UUID):
     return await fetch_one("""
         SELECT
             COUNT(*) as total,
-            COUNT(*) FILTER (WHERE calculated_pool_status = 'deployed') as deployed,
-            COUNT(*) FILTER (WHERE calculated_pool_status = 'warning') as warning,
-            COUNT(*) FILTER (WHERE calculated_pool_status = 'reserve') as reserve,
-            COUNT(*) FILTER (WHERE calculated_lifecycle_status = 'active') as active,
-            COUNT(*) FILTER (WHERE calculated_lifecycle_status = 'incubating') as incubating,
-            COUNT(*) FILTER (WHERE calculated_lifecycle_status = 'dead') as dead
-        FROM v_inbox_inventory_status
-        WHERE workspace_id = $1
+            COUNT(*) FILTER (WHERE v.calculated_pool_status = 'deployed') as deployed,
+            COUNT(*) FILTER (WHERE v.calculated_pool_status = 'warning') as warning,
+            COUNT(*) FILTER (WHERE v.calculated_pool_status = 'reserve') as reserve,
+            COUNT(*) FILTER (WHERE v.calculated_lifecycle_status = 'active') as active,
+            COUNT(*) FILTER (WHERE v.calculated_lifecycle_status = 'incubating') as incubating,
+            COUNT(*) FILTER (WHERE v.calculated_lifecycle_status = 'dead') as dead,
+            -- Death breakdown: system kills (health metric) vs business churn
+            COUNT(*) FILTER (WHERE v.calculated_lifecycle_status = 'dead'
+                AND sa.kill_trigger IS NOT NULL
+                AND sa.kill_trigger::text != 'manual') as killed_by_trigger,
+            COUNT(*) FILTER (WHERE v.calculated_lifecycle_status = 'dead'
+                AND (sa.kill_trigger IS NULL OR sa.kill_trigger::text = 'manual')) as deactivated
+        FROM v_inbox_inventory_status v
+        JOIN sender_accounts sa ON v.id = sa.id
+        WHERE v.workspace_id = $1
     """, workspace_id)
 
 
@@ -48,6 +55,7 @@ async def _get_inventory_counts_direct(workspace_id: UUID):
             SELECT
                 sa.id,
                 sa.inbox_state,
+                sa.kill_trigger,
                 -- Calculate lifecycle status
                 CASE
                     WHEN sa.inbox_state = 'dead' THEN 'dead'
@@ -55,16 +63,24 @@ async def _get_inventory_counts_direct(workspace_id: UUID):
                     ELSE 'active'
                 END as lifecycle_status,
                 -- Calculate pool status
+                -- Reserve requires: 14+ days old, warmup enabled, not on campaigns
+                -- Incubating: under 14 days or warmup not enabled
                 CASE
                     WHEN sa.inbox_state = 'dead' THEN NULL
                     WHEN COALESCE(sa.hard_bounces_24h, 0) >= 1
                          OR COALESCE(sa.hard_bounces_7d, 0) >= 3 THEN 'warning'
                     WHEN EXISTS (
                         SELECT 1 FROM campaign_inboxes ci
+                        JOIN emailbison_campaigns ec ON ci.campaign_id = ec.id
                         WHERE ci.sender_account_id = sa.id
                         AND ci.is_active = TRUE
+                        AND ec.campaign_status IN ('active', 'running', 'sending')
                     ) THEN 'deployed'
-                    ELSE 'reserve'
+                    -- Reserve: 14+ days AND warmup enabled (ready to deploy)
+                    WHEN sa.created_at <= NOW() - INTERVAL '14 days'
+                         AND COALESCE(sa.warmup_enabled, TRUE) = TRUE THEN 'reserve'
+                    -- Incubating: under 14 days OR warmup not enabled
+                    ELSE 'incubating'
                 END as pool_status
             FROM sender_accounts sa
             WHERE sa.workspace_id = $1
@@ -76,7 +92,13 @@ async def _get_inventory_counts_direct(workspace_id: UUID):
             COUNT(*) FILTER (WHERE pool_status = 'reserve') as reserve,
             COUNT(*) FILTER (WHERE lifecycle_status = 'active') as active,
             COUNT(*) FILTER (WHERE lifecycle_status = 'incubating') as incubating,
-            COUNT(*) FILTER (WHERE lifecycle_status = 'dead') as dead
+            COUNT(*) FILTER (WHERE lifecycle_status = 'dead') as dead,
+            -- Death breakdown: system kills (health metric) vs business churn
+            COUNT(*) FILTER (WHERE lifecycle_status = 'dead'
+                AND kill_trigger IS NOT NULL
+                AND kill_trigger::text != 'manual') as killed_by_trigger,
+            COUNT(*) FILTER (WHERE lifecycle_status = 'dead'
+                AND (kill_trigger IS NULL OR kill_trigger::text = 'manual')) as deactivated
         FROM inbox_status
     """, workspace_id)
 
@@ -123,7 +145,7 @@ async def get_inventory_overview(client_id: UUID):
             logger.error(f"Direct count query also failed: {e2}")
 
     if not counts:
-        counts = {"total": 0, "deployed": 0, "warning": 0, "reserve": 0, "active": 0, "incubating": 0, "dead": 0}
+        counts = {"total": 0, "deployed": 0, "warning": 0, "reserve": 0, "active": 0, "incubating": 0, "dead": 0, "killed_by_trigger": 0, "deactivated": 0}
 
     # Calculate targets (85% deployed, 15% reserve)
     total_live = counts["deployed"] + counts["warning"] + counts["reserve"]
@@ -152,6 +174,8 @@ async def get_inventory_overview(client_id: UUID):
         active_count=counts["active"],
         incubating_count=counts["incubating"],
         dead_count=counts["dead"],
+        killed_by_trigger=counts.get("killed_by_trigger", 0) or 0,
+        deactivated=counts.get("deactivated", 0) or 0,
         total_inboxes=counts["total"],
         spare_capacity=spare_capacity,
         spare_percentage=round(spare_percentage, 1),
@@ -244,16 +268,24 @@ async def _get_inboxes_direct(workspace_id: UUID, pool_status: Optional[str], li
                 ELSE 'active'
             END as calculated_lifecycle_status,
             -- Calculate pool status inline
+            -- Reserve requires: 14+ days old, warmup enabled, not on campaigns
+            -- Incubating: under 14 days or warmup not enabled
             CASE
                 WHEN sa.inbox_state = 'dead' THEN NULL
                 WHEN COALESCE(sa.hard_bounces_24h, 0) >= 1
                      OR COALESCE(sa.hard_bounces_7d, 0) >= 3 THEN 'warning'
                 WHEN EXISTS (
                     SELECT 1 FROM campaign_inboxes ci
+                    JOIN emailbison_campaigns ec ON ci.campaign_id = ec.id
                     WHERE ci.sender_account_id = sa.id
                     AND ci.is_active = TRUE
+                    AND ec.campaign_status IN ('active', 'running', 'sending')
                 ) THEN 'deployed'
-                ELSE 'reserve'
+                -- Reserve: 14+ days AND warmup enabled (ready to deploy)
+                WHEN sa.created_at <= NOW() - INTERVAL '14 days'
+                     AND COALESCE(sa.warmup_enabled, TRUE) = TRUE THEN 'reserve'
+                -- Incubating: under 14 days OR warmup not enabled
+                ELSE 'incubating'
             END as calculated_pool_status,
             -- Get associated campaign IDs
             (
