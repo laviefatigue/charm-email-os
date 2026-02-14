@@ -66,3 +66,6 @@ prod_tables.txt
 
 # Example HTML files
 stablekernel-*.html
+
+# Local reference docs (not committed)
+ENV-REFERENCE.md
