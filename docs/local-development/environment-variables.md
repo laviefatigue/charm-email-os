@@ -1,8 +1,8 @@
 ---
 title: Environment Variables Reference
 created: 2026-02-10
-updated: 2026-02-12
-tags: [environment, config, reference, emailbison, slack]
+updated: 2026-02-13
+tags: [environment, config, reference, emailbison, slack, dynadot, porkbun, registrars]
 ---
 
 # Environment Variables Reference
@@ -57,6 +57,7 @@ Complete reference for all environment variables used in Charm Email OS.
 | `SYNC_INTERVAL_FULL` | `3600` | Full account sync interval (seconds) |
 | `SYNC_INTERVAL_HEALTH` | `900` | Health check interval (seconds) |
 | `SYNC_INTERVAL_KILL` | `1800` | Kill queue processing interval (seconds) |
+| `SYNC_INTERVAL_WARMUP` | `1800` | Warmup sync interval (seconds) |
 
 > **Important**: The `EMAILBISON_API_KEY` must be set in `.env.local` for the sync worker to function. Without it, health scores will be NULL and infrastructure health data will be incomplete.
 
@@ -66,6 +67,20 @@ Complete reference for all environment variables used in Charm Email OS.
 |----------|---------|-------------|
 | `SLACK_ORDERS_WEBHOOK_URL` | **Required for Slack orders** | Webhook for inbox provisioning orders (#hypertide-orders) |
 | `SLACK_WEBHOOK_URL` | (empty) | Webhook for sync alerts |
+
+### Domain Registrar APIs
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DYNADOT_API_KEY` | **Required** | Dynadot API key for domain purchasing |
+| `PORKBUN_API_KEY` | **Required** | Porkbun API key (format: `pk1_xxx`) |
+| `PORKBUN_API_SECRET` | **Required** | Porkbun API secret (format: `sk1_xxx`) |
+
+> **Important**: Both registrar credentials are required for dual-provider pricing. The system checks both providers and automatically selects the cheapest.
+>
+> Get credentials from:
+> - **Dynadot**: https://www.dynadot.com/community/developers
+> - **Porkbun**: https://porkbun.com/account/api
 
 ### Optional Services
 
@@ -143,6 +158,11 @@ CLAUDE_ACCOUNT=ClaudeCodeMax
 EMAILBISON_API_KEY=17|YOUR_TOKEN_HERE
 EMAILBISON_API_URL=https://spellcast.hirecharm.com
 
+# Domain Registrar APIs (REQUIRED for domain purchasing)
+DYNADOT_API_KEY=your_dynadot_api_key
+PORKBUN_API_KEY=pk1_xxx
+PORKBUN_API_SECRET=sk1_xxx
+
 # Slack Integration (REQUIRED for inbox provisioning)
 SLACK_ORDERS_WEBHOOK_URL=https://hooks.slack.com/services/xxx/xxx/xxx
 
@@ -153,6 +173,8 @@ SLACK_WEBHOOK_URL=
 > **Note**: Get your EmailBison API key from the EmailBison dashboard under Settings > API.
 >
 > **Note**: The `SLACK_ORDERS_WEBHOOK_URL` webhook should point to your #hypertide-orders channel. Without it, inbox provisioning orders will fail.
+>
+> **Note**: Domain registrar credentials are required for domain purchasing. Both providers are checked for pricing - the system auto-selects the cheapest.
 
 ## Variable Usage by Service
 

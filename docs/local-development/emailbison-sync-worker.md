@@ -1,8 +1,8 @@
 ---
 title: EmailBison Sync Worker
 created: 2026-02-12
-updated: 2026-02-12
-tags: [worker, emailbison, sync, health, database, kill-triggers]
+updated: 2026-02-13
+tags: [worker, emailbison, sync, health, database, kill-triggers, warmup]
 ---
 
 # EmailBison Sync Worker
@@ -14,6 +14,7 @@ The EmailBison Sync Worker keeps the local database synchronized with EmailBison
 - **Account Sync**: Keep `sender_accounts` table fresh with EmailBison data
 - **Campaign Sync**: Sync campaign metrics and snapshots
 - **Event Sync**: Track replies, bounces, and response messages
+- **Warmup Sync**: Track warmup lifecycle, create snapshots, auto-enable warmup
 - **Health Checks**: Detect kill triggers and critical health issues
 - **Kill Queue**: Process inbox deletion with 24hr tagging window
 - **Retention**: Clean up old data based on retention policies
@@ -27,18 +28,18 @@ The EmailBison Sync Worker keeps the local database synchronized with EmailBison
 │  Main Loop (every 5 min):                                        │
 │  ┌─────────────────────────────────────────────────────────────┐│
 │  │  Events Sync (5 min) → Full Sync (1 hr) → Health (15 min)   ││
-│  │       → Kill Queue (30 min) → Retention (daily)             ││
+│  │  → Kill Queue (30 min) → Warmup (30 min) → Retention (daily)││
 │  └─────────────────────────────────────────────────────────────┘│
 ├─────────────────────────────────────────────────────────────────┤
 │  Modules:                                                        │
 │  ┌─────────────┐ ┌─────────────┐ ┌─────────────┐ ┌─────────────┐│
-│  │  Accounts   │ │  Campaigns  │ │   Events    │ │   Health    ││
-│  │    Sync     │ │    Sync     │ │    Sync     │ │   Checks    ││
+│  │  Accounts   │ │  Campaigns  │ │   Events    │ │   Warmup    ││
+│  │    Sync     │ │    Sync     │ │    Sync     │ │    Sync     ││
 │  └─────────────┘ └─────────────┘ └─────────────┘ └─────────────┘│
-│  ┌─────────────┐ ┌─────────────┐                                │
-│  │    Kill     │ │  Retention  │                                │
-│  │  Processor  │ │   Manager   │                                │
-│  └─────────────┘ └─────────────┘                                │
+│  ┌─────────────┐ ┌─────────────┐ ┌─────────────┐                │
+│  │   Health    │ │    Kill     │ │  Retention  │                │
+│  │   Checks    │ │  Processor  │ │   Manager   │                │
+│  └─────────────┘ └─────────────┘ └─────────────┘                │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -50,7 +51,9 @@ The EmailBison Sync Worker keeps the local database synchronized with EmailBison
 | Full Sync | 1 hour | Accounts, domains, campaign metrics |
 | Health Checks | 15 min | Kill trigger detection, workspace health |
 | Kill Queue | 30 min | Tag inboxes, process 24hr deletions |
+| Warmup Sync | 30 min | Warmup stats, lifecycle tracking, auto-enable |
 | Retention | Daily | Clean up old audit logs, bounces |
+| Daily Counter Reset | Daily | Reset 24h bounce counters (prevents false positives) |
 
 ## Configuration
 
@@ -69,6 +72,7 @@ The EmailBison Sync Worker keeps the local database synchronized with EmailBison
 | `SYNC_INTERVAL_FULL` | 3600 | Full sync interval (seconds) |
 | `SYNC_INTERVAL_HEALTH` | 900 | Health check interval (seconds) |
 | `SYNC_INTERVAL_KILL` | 1800 | Kill queue interval (seconds) |
+| `SYNC_INTERVAL_WARMUP` | 1800 | Warmup sync interval (seconds) |
 | `SLACK_WEBHOOK_URL` | - | Optional Slack alerts |
 | `RETENTION_DAYS_AUDIT` | 90 | Days to keep audit logs |
 | `RETENTION_DAYS_BOUNCES` | 90 | Days to keep bounce messages |
@@ -103,6 +107,7 @@ emailbison-sync:
     - SYNC_INTERVAL_FULL=3600
     - SYNC_INTERVAL_HEALTH=900
     - SYNC_INTERVAL_KILL=1800
+    - SYNC_INTERVAL_WARMUP=1800
   depends_on:
     postgres:
       condition: service_healthy
@@ -122,6 +127,19 @@ The sync worker uses these tables:
 | `response_messages` | Stores reply/bounce content |
 | `kill_queue` | Tracks inboxes queued for deletion |
 | `sync_status` | Last sync timestamps per workspace |
+| `sender_warmup_snapshots` | Time-series warmup statistics |
+| `warmup_check_runs` | Audit log of warmup sync runs |
+
+### Warmup Tracking Columns
+
+The `sender_accounts` table includes these warmup-related columns:
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `warmup_enabled` | boolean | Whether warmup is currently enabled in EmailBison |
+| `warmup_started_at` | timestamp | When warmup was first detected as enabled (estimated: `first_seen_at + 7 days`) |
+| `warmup_stopped_at` | timestamp | When warmup was detected as disabled |
+| `sending_started_at` | timestamp | When inbox was first deployed to a campaign |
 
 ### Schema Migration
 
@@ -221,6 +239,63 @@ Syncs campaign data and metrics:
 - Creates/updates `emailbison_campaigns`
 - Creates metric snapshots in `campaign_snapshots`
 - Tracks send counts, bounces, replies
+
+### Warmup Sync Module
+
+Tracks warmup lifecycle and ensures connected inboxes stay in warmup (per user requirement: "We should always try to keep connected inboxes in warming").
+
+**Key Functions:**
+
+1. **Sync Warmup Stats**: Fetches warmup data from `/api/warmup/sender-emails` with date range
+2. **Lifecycle Tracking**: Detects warmup start/stop transitions and sets timestamps
+3. **Create Snapshots**: Stores time-series warmup metrics in `sender_warmup_snapshots`
+4. **Auto-Enable Warmup**: Enables warmup for connected inboxes that don't have it
+
+**Warmup Lifecycle:**
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│ Connected inbox without warmup                                       │
+│ → Auto-enable warmup via API                                        │
+│ → Set warmup_started_at = first_seen_at + 7 days                    │
+└────────────────────────────┬────────────────────────────────────────┘
+                             │
+                             ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│ Warmup Active (warmup_enabled = true)                               │
+│ → Sync warmup stats every 30 min                                    │
+│ → Create sender_warmup_snapshots                                    │
+│ → Calculate warmup progress = days_warming / 30 * 100               │
+└────────────────────────────┬────────────────────────────────────────┘
+                             │
+              ┌──────────────┴──────────────┐
+              ▼                             ▼
+┌─────────────────────────┐    ┌─────────────────────────┐
+│ Warmup Complete         │    │ Warmup Disabled         │
+│ (30+ days, ready)       │    │ (bounces or manual)     │
+│ → Ready for campaigns   │    │ → Set warmup_stopped_at │
+│ → Set sending_started_at│    │ → Re-enable if fixed    │
+│   when first deployed   │    │                         │
+└─────────────────────────┘    └─────────────────────────┘
+```
+
+**7-Day Buffer Logic:**
+
+When warmup is first detected as enabled, we estimate `warmup_started_at` as:
+
+```
+warmup_started_at = first_seen_at + 7 days (~5 business days)
+```
+
+This accounts for inbox setup time before warmup actually starts (domain verification, DKIM setup, etc.).
+
+**API Endpoints Used:**
+
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/warmup/sender-emails` | GET | List inboxes with warmup stats |
+| `/warmup/sender-emails/enable` | PATCH | Enable warmup for inboxes |
+| `/warmup/sender-emails/disable` | PATCH | Disable warmup (24hr ramp-down) |
 
 ### Event Sync Module
 
@@ -388,10 +463,11 @@ docker logs charm-emailbison-sync --tail 100 | grep "Health checks"
 | `Dockerfile.emailbison-sync` | Container definition |
 | `requirements-sync.txt` | Python dependencies |
 | `sync_modules/__init__.py` | Module exports |
-| `sync_modules/emailbison_client.py` | API client |
-| `sync_modules/sync_accounts.py` | Account sync |
+| `sync_modules/emailbison_client.py` | API client (includes warmup endpoints) |
+| `sync_modules/sync_accounts.py` | Account sync (tracks warmup_enabled) |
 | `sync_modules/sync_campaigns.py` | Campaign sync |
 | `sync_modules/sync_events.py` | Event sync |
+| `sync_modules/sync_warmup.py` | Warmup lifecycle tracking and auto-enable |
 | `sync_modules/health_checks.py` | Health evaluation |
 | `sync_modules/kill_processor.py` | Kill queue processing |
 | `sync_modules/retention.py` | Data retention |

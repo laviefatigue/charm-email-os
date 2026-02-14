@@ -1,8 +1,8 @@
 ---
 title: Database Schema
 created: 2026-01-16
-updated: 2026-01-30
-tags: [database, schema, postgresql]
+updated: 2026-02-13
+tags: [database, schema, postgresql, health, warmup, metrics]
 ---
 
 # Database Schema
@@ -103,36 +103,120 @@ CREATE INDEX idx_domains_status ON domains(approval_status);
 
 ### sender_accounts
 
-Email inbox/sending accounts.
+Email inbox/sending accounts with health monitoring and metrics.
 
 ```sql
 CREATE TABLE sender_accounts (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     workspace_id UUID REFERENCES workspaces(id),
     domain_id UUID REFERENCES domains(id),
-    email VARCHAR(255) NOT NULL,
-    first_name VARCHAR(100),
-    last_name VARCHAR(100),
+    email_address VARCHAR(255) NOT NULL UNIQUE,
+    display_name VARCHAR(255),
+    emailbison_account_id VARCHAR(50),
     status VARCHAR(50),
-    provider VARCHAR(50),
-    created_at TIMESTAMP DEFAULT NOW()
+    esp VARCHAR(50),
+
+    -- Health & State (see [[../features/health-monitoring]])
+    inbox_state VARCHAR(20) DEFAULT 'live',
+    health_score INTEGER DEFAULT 100,
+    is_active BOOLEAN DEFAULT TRUE,
+
+    -- Bounce Tracking (differentiated - see ADR-005)
+    hard_bounces_24h INTEGER DEFAULT 0,
+    hard_blocked_24h INTEGER DEFAULT 0,
+    hard_unknown_24h INTEGER DEFAULT 0,
+    hard_bounces_7d INTEGER DEFAULT 0,
+    bounce_rate_7d DECIMAL,
+    complaints_lifetime INTEGER DEFAULT 0,
+
+    -- All-Time Metrics (from EmailBison UI)
+    emails_sent_all_time INTEGER DEFAULT 0,
+    replies_all_time INTEGER DEFAULT 0,
+    bounces_all_time INTEGER DEFAULT 0,
+    daily_limit INTEGER DEFAULT 0,
+
+    -- Warmup Lifecycle
+    warmup_enabled BOOLEAN DEFAULT FALSE,
+    warmup_started_at TIMESTAMP WITH TIME ZONE,
+    warmup_stopped_at TIMESTAMP WITH TIME ZONE,
+    sending_started_at TIMESTAMP WITH TIME ZONE,
+
+    -- Inventory Management
+    inventory_pool_status VARCHAR(20) DEFAULT 'reserve',
+    inventory_lifecycle_status VARCHAR(20) DEFAULT 'incubating',
+    pool_tier VARCHAR(20) DEFAULT 'primary',
+
+    -- Timestamps
+    first_seen_at TIMESTAMP WITH TIME ZONE,
+    last_seen_at TIMESTAMP WITH TIME ZONE,
+    last_synced_at TIMESTAMP WITH TIME ZONE,
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW()
 );
 
 CREATE INDEX idx_sender_accounts_workspace ON sender_accounts(workspace_id);
 CREATE INDEX idx_sender_accounts_domain ON sender_accounts(domain_id);
+CREATE INDEX idx_sender_accounts_warmup ON sender_accounts(warmup_enabled, warmup_started_at) WHERE is_active = TRUE;
+CREATE INDEX idx_sender_accounts_metrics ON sender_accounts(emails_sent_all_time, bounces_all_time) WHERE is_active = TRUE;
 ```
+
+#### Core Columns
 
 | Column | Type | Description |
 |--------|------|-------------|
 | id | UUID | Primary key |
 | workspace_id | UUID | Owning workspace |
 | domain_id | UUID | Associated domain |
-| email | VARCHAR(255) | Full email address |
-| first_name | VARCHAR(100) | Sender first name |
-| last_name | VARCHAR(100) | Sender last name |
-| status | VARCHAR(50) | `active`, `suspended`, `warming` |
-| provider | VARCHAR(50) | `entra`, `google` |
-| created_at | TIMESTAMP | Record creation time |
+| email_address | VARCHAR(255) | Full email address (globally unique) |
+| display_name | VARCHAR(255) | Sender display name |
+| emailbison_account_id | VARCHAR(50) | EmailBison API ID |
+| status | VARCHAR(50) | `Connected`, `Not connected`, etc. |
+| esp | VARCHAR(50) | `gmail`, `microsoft`, `other` |
+
+#### Health & State Columns
+
+| Column | Type | Description |
+|--------|------|-------------|
+| inbox_state | VARCHAR(20) | `live` or `dead` |
+| health_score | INTEGER | 0-100 calculated score |
+| is_active | BOOLEAN | Whether account is actively synced |
+| complaints_lifetime | INTEGER | Total spam complaints (1 = death trigger) |
+
+#### Bounce Tracking Columns
+
+| Column | Type | Description |
+|--------|------|-------------|
+| hard_bounces_24h | INTEGER | Combined hard bounces in 24h |
+| hard_blocked_24h | INTEGER | Spam/policy rejections (550 5.7.x) |
+| hard_unknown_24h | INTEGER | Bad addresses (550 5.1.x) |
+| hard_bounces_7d | INTEGER | Hard bounces in 7 days |
+| bounce_rate_7d | DECIMAL | 7-day bounce rate from EmailBison |
+
+#### All-Time Metrics (from EmailBison UI)
+
+| Column | Type | Description |
+|--------|------|-------------|
+| emails_sent_all_time | INTEGER | Total emails sent (all time) |
+| replies_all_time | INTEGER | Total replies received (all time) |
+| bounces_all_time | INTEGER | Total bounces (all time) |
+| daily_limit | INTEGER | Daily sending limit |
+
+#### Warmup Lifecycle Columns
+
+| Column | Type | Description |
+|--------|------|-------------|
+| warmup_enabled | BOOLEAN | Whether warmup is active in EmailBison |
+| warmup_started_at | TIMESTAMP | When warmup was first detected (estimated: first_seen_at + 7d) |
+| warmup_stopped_at | TIMESTAMP | When warmup was disabled |
+| sending_started_at | TIMESTAMP | When inbox was first deployed to campaign |
+
+#### Inventory Management Columns
+
+| Column | Type | Description |
+|--------|------|-------------|
+| inventory_pool_status | VARCHAR(20) | `deployed`, `warning`, `reserve` |
+| inventory_lifecycle_status | VARCHAR(20) | `active`, `incubating`, `dead` |
+| pool_tier | VARCHAR(20) | `primary`, `hot_backup`, `warming` |
 
 ## Onboarding Tables
 
