@@ -61,6 +61,12 @@ class CampaignSyncModule:
             except Exception as e:
                 print(f"[CampaignSync] Error syncing {ws['workspace_name']}: {e}")
 
+        # After syncing all campaigns, sync campaign-inbox assignments
+        try:
+            await self.sync_all_campaign_inbox_assignments()
+        except Exception as e:
+            print(f"[CampaignSync] Error syncing campaign-inbox assignments: {e}")
+
         return results
 
     async def sync_workspace(
@@ -98,6 +104,9 @@ class CampaignSyncModule:
                     # Fetch detailed metrics
                     try:
                         details = await self.client.get_campaign_details(campaign['id'])
+                        # Unwrap data if nested
+                        if 'data' in details:
+                            details = details['data']
                         await self.create_snapshot(local_campaign_id, details)
                         audit.increment_updated()
                     except EmailBisonAPIError as e:
@@ -215,6 +224,120 @@ class CampaignSyncModule:
             round(reply_rate, 2),
             round(bounce_rate, 2)
         )
+
+    async def sync_all_campaign_inbox_assignments(self) -> int:
+        """
+        Sync campaign-inbox associations by querying each inbox's campaigns.
+
+        Uses the API: GET /api/sender-emails/{id}/campaigns
+        This is the authoritative source for which inboxes are assigned to campaigns.
+
+        Returns:
+            Number of campaign-inbox associations synced
+        """
+        print("[CampaignSync] Syncing campaign-inbox assignments...")
+
+        # Get all sender accounts with EmailBison IDs
+        accounts = await self.db.fetch("""
+            SELECT sa.id, sa.email_address, sa.emailbison_account_id,
+                   w.emailbison_workspace_id, w.workspace_name
+            FROM sender_accounts sa
+            JOIN workspaces w ON sa.workspace_id = w.id
+            WHERE sa.emailbison_account_id IS NOT NULL
+            AND sa.is_active = TRUE
+            AND w.emailbison_workspace_id IS NOT NULL
+            AND w.is_active = TRUE
+            ORDER BY w.emailbison_workspace_id
+        """)
+
+        print(f"  Found {len(accounts)} active sender accounts")
+
+        total_synced = 0
+        current_workspace_id = None
+
+        for account in accounts:
+            eb_account_id = int(account['emailbison_account_id'])
+            eb_workspace_id = int(account['emailbison_workspace_id'])
+            sender_account_id = account['id']
+
+            # Switch workspace if needed
+            if current_workspace_id != eb_workspace_id:
+                if not await self.client.switch_workspace(eb_workspace_id):
+                    print(f"    [WARN] Failed to switch to workspace {account['workspace_name']}")
+                    continue
+                current_workspace_id = eb_workspace_id
+
+            # Get campaigns for this inbox
+            try:
+                campaigns = await self.client.get_sender_campaigns(eb_account_id)
+            except EmailBisonAPIError as e:
+                if e.status_code in (404, 403):
+                    # Account may not exist or no access
+                    continue
+                raise
+
+            if not campaigns:
+                continue
+
+            # Track which campaign IDs this inbox is assigned to
+            current_campaign_ids = set()
+
+            for campaign in campaigns:
+                eb_campaign_id = str(campaign.get('id', ''))
+                if not eb_campaign_id:
+                    continue
+
+                current_campaign_ids.add(eb_campaign_id)
+
+                # Look up local campaign
+                local_campaign = await self.db.fetchrow("""
+                    SELECT id FROM emailbison_campaigns
+                    WHERE emailbison_campaign_id = $1
+                """, eb_campaign_id)
+
+                campaign_id = local_campaign['id'] if local_campaign else None
+
+                # Upsert campaign-inbox association
+                await self.db.execute("""
+                    INSERT INTO campaign_inboxes (
+                        campaign_id,
+                        sender_account_id,
+                        emailbison_campaign_id,
+                        emailbison_sender_id,
+                        assigned_at,
+                        is_active,
+                        created_at,
+                        updated_at
+                    ) VALUES ($1, $2, $3, $4, NOW(), TRUE, NOW(), NOW())
+                    ON CONFLICT (emailbison_campaign_id, emailbison_sender_id) DO UPDATE SET
+                        campaign_id = COALESCE(EXCLUDED.campaign_id, campaign_inboxes.campaign_id),
+                        sender_account_id = EXCLUDED.sender_account_id,
+                        is_active = TRUE,
+                        removed_at = NULL,
+                        updated_at = NOW()
+                """,
+                    campaign_id,
+                    sender_account_id,
+                    eb_campaign_id,
+                    eb_account_id  # Pass as integer
+                )
+                total_synced += 1
+
+            # Mark campaigns this inbox is no longer assigned to as inactive
+            if current_campaign_ids:
+                await self.db.execute("""
+                    UPDATE campaign_inboxes
+                    SET
+                        is_active = FALSE,
+                        removed_at = NOW(),
+                        updated_at = NOW()
+                    WHERE emailbison_sender_id = $1
+                    AND emailbison_campaign_id != ALL($2::text[])
+                    AND is_active = TRUE
+                """, eb_account_id, list(current_campaign_ids))  # Pass as integer
+
+        print(f"  Synced {total_synced} campaign-inbox assignments")
+        return total_synced
 
     async def get_active_campaigns(self, workspace_id: UUID = None) -> List[Dict]:
         """Get campaigns that should be checked for events."""

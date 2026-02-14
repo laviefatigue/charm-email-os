@@ -228,6 +228,17 @@ class AccountSyncModule:
         if not email:
             raise ValueError("Account missing email address")
 
+        # Check if this email already exists in a DIFFERENT workspace (data isolation check)
+        # Each email should only exist once globally
+        existing = await self.db.fetchrow("""
+            SELECT workspace_id, email_address FROM sender_accounts WHERE email_address = $1
+        """, email)
+
+        if existing and existing['workspace_id'] != workspace_id:
+            # Email exists in different workspace - skip to prevent cross-workspace pollution
+            print(f"    [SKIP] {email} already exists in workspace {existing['workspace_id']}, skipping")
+            return False
+
         # Map EmailBison fields to our schema
         eb_id = str(account.get('id', ''))
         status = account.get('status') or account.get('connection_status') or 'Unknown'
@@ -256,6 +267,15 @@ class AccountSyncModule:
         health_score = calculate_health_score(account)
         bounce_rate = account.get('bounce_rate', 0) or 0
 
+        # Extract all-time metrics from EmailBison (matches EmailBison UI)
+        emails_sent_all_time = account.get('emails_sent_count', 0) or 0
+        replies_all_time = account.get('total_replied_count', 0) or 0
+        bounces_all_time = account.get('bounced_count', 0) or 0
+        daily_limit = account.get('daily_limit', 0) or 0
+
+        # Extract warmup data
+        warmup_enabled = account.get('warmup_enabled', False)
+
         result = await self.db.fetchrow("""
             INSERT INTO sender_accounts (
                 workspace_id,
@@ -268,12 +288,17 @@ class AccountSyncModule:
                 health_score,
                 bounce_rate_7d,
                 complaints_lifetime,
+                warmup_enabled,
+                emails_sent_all_time,
+                replies_all_time,
+                bounces_all_time,
+                daily_limit,
                 is_active,
                 first_seen_at,
                 last_seen_at,
                 last_synced_at
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW(), NOW(), NOW())
-            ON CONFLICT (workspace_id, email_address) DO UPDATE SET
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, NOW(), NOW(), NOW())
+            ON CONFLICT (email_address) DO UPDATE SET
                 emailbison_account_id = EXCLUDED.emailbison_account_id,
                 display_name = COALESCE(EXCLUDED.display_name, sender_accounts.display_name),
                 status = EXCLUDED.status,
@@ -288,23 +313,46 @@ class AccountSyncModule:
                     COALESCE(EXCLUDED.complaints_lifetime, 0),
                     COALESCE(sender_accounts.complaints_lifetime, 0)
                 ),
+                warmup_enabled = EXCLUDED.warmup_enabled,
+                warmup_started_at = CASE
+                    -- Set warmup_started_at when first seeing warmup enabled
+                    -- Use first_seen_at + 7 days (~5 business days) as estimated warmup start
+                    WHEN EXCLUDED.warmup_enabled = TRUE AND sender_accounts.warmup_started_at IS NULL
+                    THEN COALESCE(sender_accounts.first_seen_at + INTERVAL '7 days', NOW())
+                    ELSE sender_accounts.warmup_started_at
+                END,
+                warmup_stopped_at = CASE
+                    -- Set warmup_stopped_at when warmup is disabled
+                    WHEN EXCLUDED.warmup_enabled = FALSE AND sender_accounts.warmup_enabled = TRUE
+                    THEN NOW()
+                    ELSE sender_accounts.warmup_stopped_at
+                END,
+                emails_sent_all_time = EXCLUDED.emails_sent_all_time,
+                replies_all_time = EXCLUDED.replies_all_time,
+                bounces_all_time = EXCLUDED.bounces_all_time,
+                daily_limit = EXCLUDED.daily_limit,
                 is_active = EXCLUDED.is_active,
                 last_seen_at = NOW(),
                 last_synced_at = NOW(),
                 updated_at = NOW()
             RETURNING (xmax = 0) as created
         """,
-            workspace_id,
-            email,
-            eb_id,
-            account.get('name'),
-            status,
-            inbox_state,
-            esp,
-            health_score,
-            bounce_rate,
-            account.get('warmup_spam_count', 0) or 0,  # complaints_lifetime from EmailBison
-            inbox_state == 'live'
+            workspace_id,                              # $1
+            email,                                     # $2
+            eb_id,                                     # $3
+            account.get('name'),                       # $4
+            status,                                    # $5
+            inbox_state,                               # $6
+            esp,                                       # $7
+            health_score,                              # $8
+            bounce_rate,                               # $9
+            account.get('warmup_spam_count', 0) or 0,  # $10 complaints_lifetime from EmailBison
+            warmup_enabled,                            # $11
+            emails_sent_all_time,                      # $12
+            replies_all_time,                          # $13
+            bounces_all_time,                          # $14
+            daily_limit,                               # $15
+            inbox_state == 'live'                      # $16 is_active
         )
 
         return result['created'] if result else False
@@ -334,13 +382,17 @@ class AccountSyncModule:
         """
         Sync domains by creating missing ones from sender_accounts.
         Domains are derived from email addresses, not fetched from EmailBison.
+
+        Note: Domains now have a global unique constraint on domain_name (not workspace-scoped).
+        Each domain can only exist once across all workspaces.
         """
         print("[AccountSync] Syncing domains...")
 
-        # Create missing domains
+        # Create missing domains (global unique on domain_name)
+        # For new domains, use the workspace_id from the first sender_account found
         created = await self.db.execute("""
             INSERT INTO domains (workspace_id, domain_name, approval_status, created_at, updated_at)
-            SELECT DISTINCT
+            SELECT DISTINCT ON (SPLIT_PART(sa.email_address, '@', 2))
                 sa.workspace_id,
                 SPLIT_PART(sa.email_address, '@', 2),
                 'legacy',
@@ -350,19 +402,18 @@ class AccountSyncModule:
             WHERE SPLIT_PART(sa.email_address, '@', 2) != ''
             AND NOT EXISTS (
                 SELECT 1 FROM domains d
-                WHERE d.workspace_id = sa.workspace_id
-                AND d.domain_name = SPLIT_PART(sa.email_address, '@', 2)
+                WHERE d.domain_name = SPLIT_PART(sa.email_address, '@', 2)
             )
+            ORDER BY SPLIT_PART(sa.email_address, '@', 2), sa.first_seen_at ASC
         """)
         print(f"  Created domains: {created}")
 
-        # Link sender_accounts to domains
+        # Link sender_accounts to domains (domain_name is globally unique now)
         linked = await self.db.execute("""
             UPDATE sender_accounts sa
             SET domain_id = d.id, updated_at = NOW()
             FROM domains d
-            WHERE sa.workspace_id = d.workspace_id
-            AND SPLIT_PART(sa.email_address, '@', 2) = d.domain_name
+            WHERE SPLIT_PART(sa.email_address, '@', 2) = d.domain_name
             AND sa.domain_id IS NULL
         """)
         print(f"  Linked accounts to domains: {linked}")

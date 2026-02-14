@@ -31,6 +31,7 @@ from sync_modules import (
     AccountSyncModule,
     CampaignSyncModule,
     EventSyncModule,
+    WarmupSyncModule,
     HealthCheckModule,
     KillProcessor,
     RetentionManager,
@@ -49,6 +50,7 @@ POLL_INTERVAL_EVENTS = int(os.getenv('SYNC_INTERVAL_EVENTS', 300))      # 5 min
 POLL_INTERVAL_FULL = int(os.getenv('SYNC_INTERVAL_FULL', 3600))         # 1 hour
 POLL_INTERVAL_HEALTH = int(os.getenv('SYNC_INTERVAL_HEALTH', 900))      # 15 min
 POLL_INTERVAL_KILL = int(os.getenv('SYNC_INTERVAL_KILL', 1800))         # 30 min
+POLL_INTERVAL_WARMUP = int(os.getenv('SYNC_INTERVAL_WARMUP', 1800))     # 30 min (warmup tracking)
 POLL_INTERVAL_OAUTH_QUEUE = int(os.getenv('SYNC_INTERVAL_OAUTH_QUEUE', 300))  # 5 min (queue processing)
 POLL_INTERVAL_OAUTH_VERIFY = int(os.getenv('SYNC_INTERVAL_OAUTH_VERIFY', 30 * 24 * 3600))  # 30 days (verification)
 
@@ -70,6 +72,7 @@ class SyncOrchestrator:
         self.last_full_sync: Optional[datetime] = None
         self.last_health_check: Optional[datetime] = None
         self.last_kill_check: Optional[datetime] = None
+        self.last_warmup_sync: Optional[datetime] = None
         self.last_retention_cleanup: Optional[datetime] = None
         self.last_daily_counter_reset: Optional[datetime] = None
         self.last_oauth_queue_check: Optional[datetime] = None
@@ -80,7 +83,7 @@ class SyncOrchestrator:
         print(f"[{datetime.now()}] EmailBison Sync Worker starting...")
         print(f"  Database: {POSTGRES_HOST}:{POSTGRES_PORT}/{POSTGRES_DB}")
         print(f"  Slack alerts: {'Enabled' if SLACK_WEBHOOK_URL else 'Disabled'}")
-        print(f"  Intervals: events={POLL_INTERVAL_EVENTS}s, full={POLL_INTERVAL_FULL}s, health={POLL_INTERVAL_HEALTH}s, kill={POLL_INTERVAL_KILL}s, oauth_queue={POLL_INTERVAL_OAUTH_QUEUE}s")
+        print(f"  Intervals: events={POLL_INTERVAL_EVENTS}s, full={POLL_INTERVAL_FULL}s, health={POLL_INTERVAL_HEALTH}s, kill={POLL_INTERVAL_KILL}s, warmup={POLL_INTERVAL_WARMUP}s, oauth_queue={POLL_INTERVAL_OAUTH_QUEUE}s")
 
         try:
             # Initialize database connection pool
@@ -154,6 +157,11 @@ class SyncOrchestrator:
                     await self.run_kill_processing()
                     self.last_kill_check = now
 
+                # Warmup sync - every 30 min
+                if self._should_run(self.last_warmup_sync, POLL_INTERVAL_WARMUP):
+                    await self.run_warmup_sync()
+                    self.last_warmup_sync = now
+
                 # Daily retention cleanup (run at midnight)
                 if self._should_run_daily(self.last_retention_cleanup):
                     await self.run_retention_cleanup()
@@ -192,6 +200,7 @@ class SyncOrchestrator:
 
         await self.run_full_sync()
         await self.run_events_sync()
+        await self.run_warmup_sync()
         await self.run_health_checks()
         await self.run_kill_processing()
 
@@ -269,6 +278,44 @@ class SyncOrchestrator:
             if result.records_processed > 0:
                 status = 'OK' if result.success else 'FAILED'
                 print(f"  Kill Queue: {result.records_processed} processed [{status}]")
+
+    async def run_warmup_sync(self):
+        """Sync warmup status and auto-enable warmup for connected inboxes.
+
+        Per user requirement: "We should always try to keep connected inboxes in warming."
+        """
+        print(f"[{datetime.now()}] Warmup sync...")
+
+        async with EmailBisonClient() as client:
+            warmup_sync = WarmupSyncModule(
+                db=self.db,
+                client=client,
+                audit_logger=self.audit_logger,
+                alerter=self.alerter
+            )
+
+            # Sync warmup stats from EmailBison
+            results = await warmup_sync.sync_all_workspaces()
+            self._print_results('Warmup', results)
+
+            # Auto-enable warmup for connected inboxes without it
+            workspaces = await self.db.fetch("""
+                SELECT id, workspace_name
+                FROM workspaces
+                WHERE emailbison_workspace_id IS NOT NULL
+                AND is_active = TRUE
+            """)
+
+            total_auto_enabled = 0
+            for ws in workspaces:
+                try:
+                    enabled = await warmup_sync.auto_enable_warmup_for_connected(ws['id'])
+                    total_auto_enabled += enabled
+                except Exception as e:
+                    print(f"  [WARN] Auto-enable warmup failed for {ws['workspace_name']}: {e}")
+
+            if total_auto_enabled > 0:
+                print(f"  Auto-enabled warmup for {total_auto_enabled} connected inboxes")
 
     async def run_retention_cleanup(self):
         """Run data retention cleanup."""

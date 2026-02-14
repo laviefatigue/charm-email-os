@@ -10,6 +10,7 @@ Modules:
 - sync_accounts: Account & domain synchronization
 - sync_campaigns: Campaign & metrics synchronization
 - sync_events: Event & response message synchronization
+- sync_warmup: Warmup status and statistics synchronization
 - health_checks: Inbox and domain health evaluation
 - kill_processor: Kill queue processing with 24hr tagging
 - retention: Data retention/cleanup logic
@@ -22,6 +23,7 @@ from .slack_alerter import SlackAlerter
 from .sync_accounts import AccountSyncModule
 from .sync_campaigns import CampaignSyncModule
 from .sync_events import EventSyncModule
+from .sync_warmup import WarmupSyncModule
 from .health_checks import HealthCheckModule
 from .kill_processor import KillProcessor
 from .retention import RetentionManager
@@ -35,6 +37,7 @@ __all__ = [
     'AccountSyncModule',
     'CampaignSyncModule',
     'EventSyncModule',
+    'WarmupSyncModule',
     'HealthCheckModule',
     'KillProcessor',
     'RetentionManager',

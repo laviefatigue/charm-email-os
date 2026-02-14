@@ -184,6 +184,13 @@ class EmailBisonClient:
         """Delete sender account from EmailBison."""
         return await self._request('DELETE', f'/sender-emails/{account_id}')
 
+    async def get_sender_campaigns(self, account_id: int) -> List[Dict]:
+        """Get campaigns that a sender account is assigned to."""
+        response = await self._request('GET', f'/sender-emails/{account_id}/campaigns')
+        if isinstance(response, list):
+            return response
+        return response.get('data', [])
+
     # =========================================================================
     # TAGS
     # =========================================================================
@@ -346,6 +353,97 @@ class EmailBisonClient:
             'GET',
             f'/campaigns/{campaign_id}/leads',
             params={'page': page, 'limit': limit}
+        )
+
+    # =========================================================================
+    # WARMUP
+    # =========================================================================
+
+    async def get_warmup_sender_accounts(
+        self,
+        warmup_status: str = None,
+        start_date: str = None,
+        end_date: str = None,
+        page: int = 1,
+        per_page: int = 100
+    ) -> Dict:
+        """Get sender accounts with warmup statistics.
+
+        Args:
+            warmup_status: Filter by 'enabled' or 'disabled'
+            start_date: Start date for stats (YYYY-MM-DD)
+            end_date: End date for stats (YYYY-MM-DD)
+            page: Page number
+            per_page: Results per page
+        """
+        params = {'page': page, 'per_page': per_page}
+        if warmup_status:
+            params['warmup_status'] = warmup_status
+        if start_date:
+            params['start_date'] = start_date
+        if end_date:
+            params['end_date'] = end_date
+        return await self._request('GET', '/warmup/sender-emails', params=params)
+
+    async def get_all_warmup_sender_accounts(
+        self,
+        warmup_status: str = None,
+        start_date: str = None,
+        end_date: str = None
+    ) -> List[Dict]:
+        """Get all sender accounts with warmup stats (handles pagination)."""
+        all_accounts = []
+        page = 1
+
+        while True:
+            response = await self.get_warmup_sender_accounts(
+                warmup_status=warmup_status,
+                start_date=start_date,
+                end_date=end_date,
+                page=page,
+                per_page=100
+            )
+
+            if isinstance(response, list):
+                all_accounts.extend(response)
+                break
+            else:
+                accounts = response.get('data', [])
+                if not accounts:
+                    break
+
+                all_accounts.extend(accounts)
+
+                meta = response.get('meta', {})
+                if page >= meta.get('last_page', page):
+                    break
+
+            page += 1
+
+        return all_accounts
+
+    async def enable_warmup(self, sender_email_ids: List[int]) -> Dict:
+        """Enable warmup for specified inboxes.
+
+        Args:
+            sender_email_ids: List of EmailBison sender account IDs
+        """
+        return await self._request(
+            'PATCH',
+            '/warmup/sender-emails/enable',
+            json_data={'sender_email_ids': sender_email_ids}
+        )
+
+    async def disable_warmup(self, sender_email_ids: List[int]) -> Dict:
+        """Disable warmup for specified inboxes (24hr ramp-down).
+
+        Args:
+            sender_email_ids: List of EmailBison sender account IDs
+        """
+        return await self._request(
+            'PATCH',
+            '/warmup/sender-emails/disable',
+            json_data={'sender_email_ids': sender_email_ids}
         )
 
 
