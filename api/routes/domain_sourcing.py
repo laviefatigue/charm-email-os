@@ -1982,12 +1982,37 @@ async def purchase_single_domain(domain_id: UUID, provider: Optional[str] = None
         check_result = await registrar.check_availability(domain["domain_name"])
 
         if not check_result.available:
-            return PurchaseSingleResponse(
-                domain_id=str(domain_id),
-                domain_name=domain["domain_name"],
-                success=False,
-                error=f"Domain is no longer available on {registrar_name}",
-            )
+            # Primary provider unavailable - try fallback provider
+            fallback_provider = "dynadot" if use_provider == "porkbun" else "porkbun"
+            logger.info(f"Domain {domain['domain_name']} unavailable on {registrar_name}, trying {fallback_provider}")
+
+            if fallback_provider == "dynadot":
+                fallback_registrar = DynadotService()
+            else:
+                fallback_registrar = PorkbunService()
+
+            fallback_check = await fallback_registrar.check_availability(domain["domain_name"])
+
+            if fallback_check.available:
+                # Switch to fallback provider
+                registrar = fallback_registrar
+                registrar_name = fallback_provider
+                use_provider = fallback_provider
+                check_result = fallback_check
+                logger.info(f"Fallback successful: {domain['domain_name']} available on {fallback_provider}")
+
+                # Update selected_provider in DB to reflect actual provider
+                await execute("""
+                    UPDATE domains SET selected_provider = $1 WHERE id = $2
+                """, fallback_provider, domain_id)
+            else:
+                # Neither provider has it available
+                return PurchaseSingleResponse(
+                    domain_id=str(domain_id),
+                    domain_name=domain["domain_name"],
+                    success=False,
+                    error="Domain is no longer available on any registrar",
+                )
 
         # Verify price is under threshold
         price = check_result.price or Decimal("15")

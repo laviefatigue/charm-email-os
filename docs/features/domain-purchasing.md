@@ -1,53 +1,132 @@
 ---
 title: Domain Purchasing
 created: 2026-01-21
-updated: 2026-01-21
-tags: [feature, domains, purchasing, registrars, porkbun]
+updated: 2026-02-13
+tags: [feature, domains, purchasing, registrars, porkbun, dynadot, pricing]
 ---
 
 # Domain Purchasing
 
-Domain availability checking and purchasing via registrar APIs.
+Domain availability checking and purchasing via registrar APIs with automatic price comparison.
 
 ## Overview
 
-After [[domain-generation]] creates candidates, this system checks availability and pricing across registrars, then handles purchase execution.
+After [[domain-generation]] creates candidates, this system checks availability and pricing across **both registrars simultaneously**, caches the results, and automatically selects the cheapest provider for purchase.
 
 ```
 ┌──────────────────────────────────────────────────────────────────────┐
 │  Domain Sourcing Pipeline                                            │
 ├──────────────────────────────────────────────────────────────────────┤
 │                                                                       │
-│  1. GENERATE        2. SEARCH           3. APPROVE      4. PURCHASE  │
+│  1. GENERATE        2. PRICE CHECK      3. APPROVE      4. PURCHASE  │
 │  ┌──────────┐      ┌──────────┐        ┌──────────┐    ┌──────────┐ │
-│  │ AI/Pattern│ ──► │ Porkbun  │ ──►    │ Human    │ ──►│ Registrar│ │
-│  │ Generator │      │ Dynadot  │        │ Review   │    │ API      │ │
-│  └──────────┘      └──────────┘        └──────────┘    └──────────┘ │
+│  │ AI/Pattern│ ──► │ Porkbun  │ ──►    │ Human    │ ──►│ Cheapest │ │
+│  │ Generator │      │ Dynadot  │        │ Review   │    │ Provider │ │
+│  └──────────┘      │ (parallel)│        └──────────┘    │ (fallback)│ │
+│                    └──────────┘                         └──────────┘ │
 │                                                                       │
 └──────────────────────────────────────────────────────────────────────┘
 ```
 
 ## Supported Registrars
 
-| Registrar | Status | API Docs | Notes |
-|-----------|--------|----------|-------|
-| **Porkbun** | Working | [API v3](https://porkbun.com/api/json/v3/documentation) | Primary registrar, free WHOIS privacy |
-| **Dynadot** | Planned | [API v3](https://www.dynadot.com/domain/api3.html) | Competitive pricing, needs API key |
-| Namecheap | Future | - | Enum defined, not implemented |
-| Cloudflare | Future | - | Enum defined, not implemented |
+| Registrar | Status | API Docs | Typical .com Price |
+|-----------|--------|----------|-------------------|
+| **Dynadot** | ✅ Working | [API v3](https://www.dynadot.com/domain/api3.html) | ~$10.88/year |
+| **Porkbun** | ✅ Working | [API v3](https://porkbun.com/api/json/v3/documentation) | ~$11.08/year |
+| Namecheap | Future | - | - |
+| Cloudflare | Future | - | - |
 
-## Porkbun Integration
+## Dual-Provider Pricing System
 
-### Configuration
+### How It Works
 
-Environment variables in `.env`:
+1. **Price Check** calls both Dynadot and Porkbun APIs in parallel
+2. **Results cached** on domain record (no repeated API calls)
+3. **Best price auto-selected** for display and purchase
+4. **Fallback on purchase** if primary provider becomes unavailable
+
+### Database Schema
+
+Prices are cached on each domain record:
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `porkbun_price` | DECIMAL(10,2) | Cached Porkbun price |
+| `porkbun_available` | BOOLEAN | Porkbun availability |
+| `dynadot_price` | DECIMAL(10,2) | Cached Dynadot price |
+| `dynadot_available` | BOOLEAN | Dynadot availability |
+| `cached_price` | DECIMAL(10,2) | Best price (for sorting) |
+| `selected_provider` | VARCHAR(20) | Provider with best price |
+| `price_checked_at` | TIMESTAMP | Last check time |
+
+### UI Display
+
+The Procurement tab shows both providers:
+```
+PB: $11.08
+DD: $10.88 ✓  ← Checkmark indicates best price
+```
+
+### Purchase Fallback
+
+If the selected provider becomes unavailable at purchase time:
+1. System detects unavailability
+2. Automatically tries the other provider
+3. Updates `selected_provider` in database
+4. Proceeds with purchase
+
+## Configuration
+
+### Required Environment Variables
+
+Add to `.env.local`:
 
 ```bash
+# Dynadot (primary - usually cheaper)
+DYNADOT_API_KEY=your_api_key_here
+
+# Porkbun (secondary)
 PORKBUN_API_KEY=pk1_xxx
 PORKBUN_API_SECRET=sk1_xxx
 ```
 
-Get credentials from: https://porkbun.com/account/api
+Get credentials:
+- **Dynadot**: https://www.dynadot.com/community/developers
+- **Porkbun**: https://porkbun.com/account/api
+
+## Dynadot Integration
+
+### API Details
+
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/api3.xml?command=search` | GET | Check availability + pricing |
+| `/api3.xml?command=register` | GET | Purchase domain |
+| `/api3.xml?command=set_ns` | GET | Set nameservers |
+
+### Response Structure (XML)
+
+```xml
+<SearchResponse>
+  <SearchHeader>
+    <Status>success</Status>
+  </SearchHeader>
+  <SearchResults>
+    <SearchResult>
+      <DomainName>example.com</DomainName>
+      <Status>available</Status>
+      <Price>10.88</Price>
+    </SearchResult>
+  </SearchResults>
+</SearchResponse>
+```
+
+### Pricing
+
+Standard .com domains: ~$10.88/year (typically cheapest)
+
+## Porkbun Integration
 
 ### API Details
 
@@ -57,15 +136,12 @@ Get credentials from: https://porkbun.com/account/api
 | `/domain/checkDomain/{domain}` | POST | Check availability + pricing |
 | `/domain/register/{domain}` | POST | Purchase domain |
 | `/domain/updateNs/{domain}` | POST | Set nameservers |
-| `/pricing/get` | POST | Get all TLD pricing |
 
 ### Rate Limiting
 
-**Critical**: Porkbun allows only **1 domain check per 10 seconds**.
+**Note**: Porkbun has stricter rate limits than Dynadot. The system handles this with delays between checks.
 
-The test script and registrar integration handle this automatically with 11-second delays between checks.
-
-### Response Structure
+### Response Structure (JSON)
 
 ```json
 {
@@ -73,13 +149,7 @@ The test script and registrar integration handle this automatically with 11-seco
   "response": {
     "avail": "yes",
     "price": "11.08",
-    "regularPrice": "11.08",
-    "firstYearPromo": "no",
-    "premium": "no",
-    "additional": {
-      "renewal": { "price": "11.08" },
-      "transfer": { "price": "11.08" }
-    }
+    "regularPrice": "11.08"
   }
 }
 ```
@@ -87,26 +157,6 @@ The test script and registrar integration handle this automatically with 11-seco
 ### Pricing
 
 Standard .com domains: ~$11.08/year (includes free WHOIS privacy)
-
-## Dynadot Integration
-
-### Status: Planned
-
-Dynadot support is implemented in code but requires API credentials.
-
-### Configuration Needed
-
-```bash
-DYNADOT_API_KEY=xxx
-```
-
-Get credentials from: https://www.dynadot.com/community/developers
-
-### Why Add Dynadot
-
-- Price comparison across registrars
-- Often has better bulk pricing
-- Different promotional deals than Porkbun
 
 ## Test Script
 
@@ -187,18 +237,28 @@ POST /api/domain-sourcing/purchase
 }
 ```
 
-## Next Steps
+## Price Checking
 
-1. **Dynadot Integration**: Add API key and test connectivity
-2. **Price Comparison UI**: Show prices from multiple registrars
-3. **Bulk Purchase**: Support purchasing multiple domains in one flow
-4. **Inbox Integration**: Connect to [[inbox-purchasing]] after domain purchase
+### Bulk Price Check
+
+The "Check All Prices" button on the Procurement tab:
+1. Fetches all candidate domains for the client
+2. Calls both registrar APIs in parallel for each domain
+3. Caches results to database
+4. Updates UI with dual pricing display
+
+### Background Price Checker
+
+The `charm-price-checker` worker automatically refreshes stale prices:
+- Runs every 12 hours (configurable via `CHECK_INTERVAL`)
+- Re-checks domains where `price_checked_at` > 24 hours old
+- Removes domains that become unavailable
 
 ## Known Issues
 
-- Porkbun rate limit (1/10s) makes bulk checks slow
-- No automatic retry on rate limit errors
-- Dynadot XML parsing is simplified (may miss some fields)
+- Porkbun has stricter rate limits than Dynadot
+- Some premium domains may have different pricing between registrars
+- Price fluctuations can occur between check and purchase (mitigated by re-verification)
 
 ## Related
 

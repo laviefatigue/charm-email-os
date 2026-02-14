@@ -106,6 +106,7 @@ class ExecutePurchaseRequest(BaseModel):
     bison_workspace: Optional[str] = None
     bison_url: str = Field(default="https://spellcast.hirecharm.com")
     bison_api_key: Optional[str] = Field(default=None, description="EmailBison API key for workspace fetch")
+    bison_app_id: Optional[str] = Field(default=None, description="Google OAuth App ID (required for Google orders)")
 
     # Payment
     use_saved_payment: bool = Field(default=True, description="Use saved Stripe payment method")
@@ -296,6 +297,7 @@ class ExecutePurchaseV2Request(BaseModel):
     bison_workspace: Optional[str] = None
     bison_url: str = Field(default="https://spellcast.hirecharm.com")
     bison_api_key: Optional[str] = Field(default=None, description="EmailBison API key for workspace fetch")
+    bison_app_id: Optional[str] = Field(default=None, description="Google OAuth App ID (required for Google orders)")
 
     # Payment
     use_saved_payment: bool = Field(default=True, description="Use saved Stripe payment method")

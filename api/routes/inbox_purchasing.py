@@ -290,6 +290,96 @@ async def _auto_notify_slack_on_failure(job_id: str) -> None:
         logger.error(f"Failed to auto-notify Slack for job {job_id}: {e}")
 
 
+async def _send_slack_order_started(job_id: str) -> dict:
+    """
+    Send Slack notification when order automation starts.
+
+    Returns dict with success status.
+    """
+    import os
+    import httpx
+
+    slack_webhook = os.getenv("SLACK_ORDERS_WEBHOOK_URL", "")
+    if not slack_webhook:
+        logger.warning(f"Job {job_id} started but SLACK_ORDERS_WEBHOOK_URL not configured")
+        return {"success": False, "error": "SLACK_ORDERS_WEBHOOK_URL not configured"}
+
+    try:
+        job = await _get_job_from_db(job_id)
+        if not job:
+            return {"success": False, "error": "Job not found"}
+
+        # Get client name
+        client = await fetch_one(
+            "SELECT name FROM clients WHERE id = $1",
+            UUID(job["client_id"])
+        )
+        client_name = client.get("name", "Unknown") if client else "Unknown"
+
+        # Generate and send Slack message
+        slack_message = _generate_slack_order_started_message(job, client_name)
+
+        async with httpx.AsyncClient() as http_client:
+            response = await http_client.post(
+                slack_webhook,
+                json=slack_message,
+                timeout=10.0
+            )
+            response.raise_for_status()
+
+        logger.info(f"Slack: Order started notification sent for job {job_id}")
+        return {"success": True}
+
+    except Exception as e:
+        logger.error(f"Failed to send order started Slack for job {job_id}: {e}")
+        return {"success": False, "error": str(e)}
+
+
+async def _send_slack_checkout_ready(job_id: str, checkout_url: str) -> dict:
+    """
+    Send Slack notification when checkout URL is captured.
+
+    Returns dict with success status.
+    """
+    import os
+    import httpx
+
+    slack_webhook = os.getenv("SLACK_ORDERS_WEBHOOK_URL", "")
+    if not slack_webhook:
+        logger.warning(f"Job {job_id} checkout ready but SLACK_ORDERS_WEBHOOK_URL not configured")
+        return {"success": False, "error": "SLACK_ORDERS_WEBHOOK_URL not configured"}
+
+    try:
+        job = await _get_job_from_db(job_id)
+        if not job:
+            return {"success": False, "error": "Job not found"}
+
+        # Get client name
+        client = await fetch_one(
+            "SELECT name FROM clients WHERE id = $1",
+            UUID(job["client_id"])
+        )
+        client_name = client.get("name", "Unknown") if client else "Unknown"
+
+        # Generate and send Slack message
+        slack_message = _generate_slack_checkout_ready_message(job, client_name, checkout_url)
+
+        async with httpx.AsyncClient() as http_client:
+            response = await http_client.post(
+                slack_webhook,
+                json=slack_message,
+                timeout=10.0
+            )
+            response.raise_for_status()
+
+        logger.info(f"Slack: Checkout ready notification sent for job {job_id}")
+        return {"success": True}
+
+    except Exception as e:
+        logger.error(f"Failed to send checkout ready Slack for job {job_id}: {e}")
+        return {"success": False, "error": str(e)}
+
+
 async def _get_job_from_db(job_id: str) -> Optional[dict]:
     """Fetch a job from the database."""
     import json
@@ -1293,8 +1383,20 @@ async def _execute_purchase_v2_task(
     pre_generated: list,
     workspace_id_str: str,
 ):
-    """Background task to execute V2 HyperTide purchase with domain grouping."""
+    """
+    Background task to execute V2 HyperTide purchase with domain grouping.
+
+    Slack-First Flow:
+    1. Send "Order Started" Slack notification
+    2. Execute automation
+    3. Capture checkout URL (or complete if auto-pay)
+    4. Send "Checkout Ready" Slack notification (if checkout URL captured)
+    5. Update job status
+    """
     try:
+        # 1. Send "Order Started" Slack notification
+        await _send_slack_order_started(job_id)
+
         await _update_job_status(job_id, "executing", "Preparing order requests")
 
         # Process each order group
@@ -1400,8 +1502,31 @@ async def _execute_purchase_v2_task(
                         "domains_created": domain_names,
                         "domain_ids": [str(d) for d in group.domain_ids],
                         "order_id": order_result.order_id,
+                        "checkout_url": getattr(order_result, 'checkout_url', None),
                         "error": order_result.error_message,
                     })
+
+                    # If checkout URL captured, store it and send notification
+                    checkout_url = getattr(order_result, 'checkout_url', None)
+                    if checkout_url:
+                        # Store checkout URL in database
+                        await execute(
+                            "UPDATE inbox_purchase_jobs SET checkout_url = $1 WHERE id = $2",
+                            checkout_url,
+                            UUID(job_id)
+                        )
+                        logger.info(f"Stored checkout URL for job {job_id}")
+
+                        # Send "Checkout Ready" Slack notification
+                        await _send_slack_checkout_ready(job_id, checkout_url)
+
+                        # Update status to awaiting_checkout
+                        await _update_job_status(
+                            job_id, "awaiting_checkout",
+                            current_step="Checkout URL captured, awaiting manual payment",
+                            results=all_results,
+                        )
+                        return  # Stop processing - user will pay manually
 
             except Exception as order_error:
                 logger.error(f"Order group {group_idx + 1} failed: {order_error}")
@@ -1488,8 +1613,8 @@ class SmartOrderRequest(BaseModel):
     custom_purchase: bool = Field(default=False, description="Bypass package limits, only validate domain count")
     use_worker: bool = Field(default=False, description="[DEPRECATED] Use AI worker container instead of in-process Playwright")
     execution_mode: str = Field(
-        default="slack_only",
-        description="Execution mode: 'slack_only' (default, sends to Slack for manual processing), 'worker' (AI worker), 'background_task' (in-process Playwright)"
+        default="worker",
+        description="Execution mode: 'worker' (default, automated via Hypertide worker), 'slack_only' (manual processing), 'background_task' (in-process Playwright)"
     )
 
 
@@ -2165,6 +2290,126 @@ def _generate_order_summary_text(job: dict, client_name: str) -> str:
     lines.append("══════════════════════════════════════════════")
 
     return "\n".join(lines)
+
+
+def _generate_slack_order_started_message(job: dict, client_name: str) -> dict:
+    """
+    Generate Slack message for order started notification.
+
+    Blue notification indicating automation has begun.
+    """
+    job_id = job.get("id", job.get("job_id", "unknown"))
+    if hasattr(job_id, 'hex'):
+        job_id = str(job_id)
+    provider_type = job.get("provider_type", "unknown")
+    domain_names = job.get("domain_names", [])
+    orders_total = job.get("orders_total", 1)
+    monthly_cost = orders_total * 50  # $50/order
+
+    provider_emoji = ":office:" if provider_type == "entra" else ":envelope:"
+
+    blocks = [
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": ":rocket: *New Hypertide Order Started*"
+            }
+        },
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": f"*Client:* {client_name}\n*Provider:* {provider_emoji} {provider_type.upper()}\n*Orders:* {orders_total}\n*Est. Cost:* ${monthly_cost:.0f}/mo"
+            }
+        },
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": f"*Domains:*\n```{chr(10).join(domain_names[:10])}{'...' if len(domain_names) > 10 else ''}```"
+            }
+        },
+        {
+            "type": "context",
+            "elements": [
+                {"type": "mrkdwn", "text": f"Job ID: `{str(job_id)[:8]}...` | :hourglass_flowing_sand: Automation in progress..."}
+            ]
+        }
+    ]
+
+    return {
+        "attachments": [{
+            "color": "#3498db",  # Blue for in-progress
+            "blocks": blocks
+        }],
+        "text": f"Order started for {client_name}"
+    }
+
+
+def _generate_slack_checkout_ready_message(job: dict, client_name: str, checkout_url: str) -> dict:
+    """
+    Generate Slack message for checkout ready notification.
+
+    Green notification with clickable payment button.
+    """
+    job_id = job.get("id", job.get("job_id", "unknown"))
+    if hasattr(job_id, 'hex'):
+        job_id = str(job_id)
+    provider_type = job.get("provider_type", "unknown")
+    domain_names = job.get("domain_names", [])
+    orders_total = job.get("orders_total", 1)
+
+    provider_emoji = ":office:" if provider_type == "entra" else ":envelope:"
+
+    blocks = [
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": ":white_check_mark: *Hypertide Order Ready for Payment*"
+            }
+        },
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": f"*Client:* {client_name}\n*Provider:* {provider_emoji} {provider_type.upper()}\n*Orders:* {orders_total}"
+            }
+        },
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": f"*Domains:*\n```{chr(10).join(domain_names[:5])}{'...' if len(domain_names) > 5 else ''}```"
+            }
+        },
+        {
+            "type": "actions",
+            "elements": [
+                {
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": ":credit_card: Complete Payment", "emoji": True},
+                    "style": "primary",
+                    "url": checkout_url
+                }
+            ]
+        },
+        {
+            "type": "context",
+            "elements": [
+                {"type": "mrkdwn", "text": f"Job ID: `{str(job_id)[:8]}...` | Click button to pay in browser"}
+            ]
+        }
+    ]
+
+    return {
+        "attachments": [{
+            "color": "#27ae60",  # Green for ready
+            "blocks": blocks
+        }],
+        "text": f"Order ready for payment - {client_name}"
+    }
 
 
 def _generate_slack_message(job: dict, client_name: str) -> dict:

@@ -165,9 +165,11 @@ class OrderResult(BaseModel):
     Result of a completed Hypertide purchase.
 
     This is returned after successful automation.
+    For Slack-first flow, checkout_url is captured for manual payment.
     """
     success: bool
     order_id: Optional[str] = None
+    checkout_url: Optional[str] = None  # Stripe checkout URL for manual payment
     client_name: str
     forwarding_domain: str
     order_type: OrderType

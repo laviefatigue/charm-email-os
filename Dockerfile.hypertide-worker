@@ -58,6 +58,12 @@ COPY requirements-hypertide.txt /app/
 # Install Python dependencies
 RUN pip install --no-cache-dir -r requirements-hypertide.txt
 
+# Set Playwright browsers path BEFORE install so they go to the right place
+ENV PLAYWRIGHT_BROWSERS_PATH="/ms-playwright"
+
+# Install Playwright browsers (Chromium only for smaller image)
+RUN playwright install chromium --with-deps
+
 # Copy the API services (for Porkbun/Dynadot clients)
 COPY api/services/ /app/api/services/
 
@@ -91,9 +97,14 @@ ENV WORKER_ID=""
 ENV HYPERTIDE_HEADLESS="true"
 ENV HYPERTIDE_SESSION_B64=""
 
-# Chrome configuration for headless mode
-ENV CHROME_BIN="/usr/bin/chromium"
-ENV CHROMEDRIVER_PATH="/usr/bin/chromedriver"
+# Slack notifications
+ENV SLACK_ORDERS_WEBHOOK_URL=""
+
+# EmailBison credentials (for Hypertide Email Tool Connection)
+ENV EMAILBISON_API_URL=""
+ENV EMAILBISON_API_KEY=""
+ENV EMAILBISON_USERNAME=""
+ENV EMAILBISON_PASSWORD=""
 
 # Health check: verify worker process is running
 HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
