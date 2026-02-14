@@ -72,7 +72,7 @@ export const useClientStore = create<ClientStore>((set, get) => ({
     try {
       const newClient = await api.clients.create({
         name: data.name,
-        // domain is stored in onboarding_data.primary_domain now
+        onboardingData: data.domain ? { primaryDomain: data.domain } : undefined,
       });
       set((state) => ({
         clients: [...state.clients, newClient],

@@ -254,10 +254,15 @@ export const clientApi = {
   /**
    * Create a new client
    */
-  async create(data: { name: string; workspaceId?: string; logoUrl?: string }) {
+  async create(data: {
+    name: string;
+    workspaceId?: string;
+    logoUrl?: string;
+    onboardingData?: { primaryDomain?: string };
+  }) {
     const response = await fetchApi<Record<string, unknown>>('/api/clients', {
       method: 'POST',
-      body: JSON.stringify(toSnakeCase(data)),
+      body: JSON.stringify(toSnakeCase(data as Record<string, unknown>)),
     });
     return toCamelCase<Client>(response);
   },
@@ -2765,6 +2770,54 @@ export const healthApi = {
       flaggedDomains: number;
       lastSync: string | null;
       syncSource: string;
+    }>(response);
+  },
+
+  /**
+   * Get kill velocity data for trend chart (weekly deaths over 5 weeks)
+   */
+  async getKillVelocity(clientId: string): Promise<{
+    weekly: Array<{ week: string; deaths: number }>;
+    totalDeaths7d: number;
+    totalDeaths30d: number;
+    churnRate7d: number;
+    trend: 'up' | 'down' | 'stable';
+  }> {
+    const response = await fetchApi<Record<string, unknown>>(
+      `/api/health/kill-velocity/${clientId}`
+    );
+    return toCamelCase<{
+      weekly: Array<{ week: string; deaths: number }>;
+      totalDeaths7d: number;
+      totalDeaths30d: number;
+      churnRate7d: number;
+      trend: 'up' | 'down' | 'stable';
+    }>(response);
+  },
+
+  /**
+   * Get kill trigger breakdown showing WHY inboxes died
+   */
+  async getKillBreakdown(clientId: string): Promise<{
+    reputation: { count: number; triggers: string[]; percentage: number };
+    listQuality: { count: number; triggers: string[]; percentage: number };
+    prematureDeployment: { count: number; triggers: string[]; percentage: number };
+    other: { count: number; triggers: string[]; percentage: number };
+    byProvider: { gmail: number; microsoft: number };
+    totalKilled: number;
+    raw: Array<{ trigger: string; count: number; gmailCount: number; microsoftCount: number }>;
+  }> {
+    const response = await fetchApi<Record<string, unknown>>(
+      `/api/health/kill-breakdown/${clientId}`
+    );
+    return toCamelCase<{
+      reputation: { count: number; triggers: string[]; percentage: number };
+      listQuality: { count: number; triggers: string[]; percentage: number };
+      prematureDeployment: { count: number; triggers: string[]; percentage: number };
+      other: { count: number; triggers: string[]; percentage: number };
+      byProvider: { gmail: number; microsoft: number };
+      totalKilled: number;
+      raw: Array<{ trigger: string; count: number; gmailCount: number; microsoftCount: number }>;
     }>(response);
   },
 };

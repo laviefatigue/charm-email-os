@@ -537,7 +537,7 @@ export function PurchaseJobsTable({ clientId, onJobRetried }: PurchaseJobsTableP
                             </TooltipProvider>
                           </>
                         )}
-                        {(job.status === 'failed' || job.status === 'pending' || job.status === 'awaiting_manual_order') && (
+                        {job.status !== 'completed' && (
                           <TooltipProvider>
                             <Tooltip>
                               <TooltipTrigger asChild>
@@ -555,7 +555,7 @@ export function PurchaseJobsTable({ clientId, onJobRetried }: PurchaseJobsTableP
                                   )}
                                 </Button>
                               </TooltipTrigger>
-                              <TooltipContent>Cancel job &amp; unlock domains</TooltipContent>
+                              <TooltipContent>Delete job &amp; unlock domains</TooltipContent>
                             </Tooltip>
                           </TooltipProvider>
                         )}
