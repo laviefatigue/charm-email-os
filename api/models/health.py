@@ -333,6 +333,21 @@ class LifecycleDistribution(BaseModel):
     total_live: int  # incubating + active (or deployed + reserve + warning for live only)
 
 
+class WarningLevelDistribution(BaseModel):
+    """
+    Warning level distribution for predictive death forecasting.
+    Tracks inboxes by proximity to kill thresholds.
+    """
+    # Warning levels (progressive severity)
+    healthy: int = 0     # No bounces, stable
+    watching: int = 0    # 1-2 hard bounces in 7d (pattern forming)
+    warning: int = 0     # 1 hard bounce in 24h (next bounce = kill)
+    critical: int = 0    # At or above kill threshold (pending kill)
+
+    # Summary
+    total_at_risk: int = 0  # watching + warning + critical
+
+
 class InfrastructureHealthResponse(BaseModel):
     """
     Infrastructure health from LOCAL DATABASE only.
@@ -354,6 +369,9 @@ class InfrastructureHealthResponse(BaseModel):
 
     # Lifecycle distribution (for inventory visibility - shows all inboxes except dead)
     lifecycle_distribution: Optional["LifecycleDistribution"] = None
+
+    # Warning level distribution (for predictive death forecasting)
+    warning_distribution: Optional["WarningLevelDistribution"] = None
 
     # Domain metrics (from domains table)
     total_domains: int

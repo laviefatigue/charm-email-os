@@ -71,9 +71,7 @@ services:
       - DEBUG=true
       # CORS - allow local frontend
       - CORS_ORIGINS=["http://localhost:3000","http://charm-frontend:3000"]
-      # Slack webhook for manual order notifications
-      - SLACK_ORDERS_WEBHOOK_URL=${SLACK_ORDERS_WEBHOOK_URL:-}
-      # API keys loaded from .env.local via env_file:
+      # API keys and Slack webhook loaded from .env.local via env_file:
       # - EMAILBISON_API_KEY
       # - DYNADOT_API_KEY
       # - PORKBUN_API_KEY, PORKBUN_API_SECRET (if configured)
@@ -284,6 +282,7 @@ services:
       - SYNC_INTERVAL_FULL=3600
       - SYNC_INTERVAL_HEALTH=900
       - SYNC_INTERVAL_KILL=1800
+      - SYNC_INTERVAL_WARMUP=1800
       - SYNC_INTERVAL_OAUTH_QUEUE=300
       - SYNC_INTERVAL_OAUTH_VERIFY=2592000
       # OAuth scraping credentials (loaded from .env.local):

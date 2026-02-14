@@ -1327,3 +1327,430 @@ async def backfill_clients_from_workspaces():
         "created_clients": created,
         "already_linked_count": existing_count["count"] if existing_count else 0
     }
+
+
+# ESP mapping for sender accounts
+ESP_MAP = {
+    'Google': 'gmail',
+    'Microsoft': 'microsoft',
+    'Yahoo': 'yahoo',
+    'SMTP': 'other',
+    'Other': 'other'
+}
+
+
+def calculate_health_score(account: dict) -> int:
+    """
+    Calculate health score (0-100) from EmailBison account data.
+    Same formula as sync_modules/sync_accounts.py
+    """
+    score = 0
+
+    # Connection status (40 points)
+    status = (account.get('status') or account.get('connection_status') or '').lower()
+    if 'connected' in status and 'not' not in status:
+        score += 40
+    elif 'unknown' in status or not status:
+        score += 20
+
+    # Bounce rate (20 points)
+    sent = account.get('emails_sent_count', 0) or 0
+    bounced = account.get('bounced_count', 0) or 0
+    bounce_rate = (bounced / sent * 100) if sent > 0 else 0
+
+    if bounce_rate < 2:
+        score += 20
+    elif bounce_rate < 5:
+        score += 15
+    elif bounce_rate < 10:
+        score += 10
+
+    # Spam rate (20 points)
+    spam_count = account.get('warmup_spam_count', 0) or 0
+    spam_rate = (spam_count / sent * 100) if sent > 0 else 0
+
+    if spam_rate < 1:
+        score += 20
+    elif spam_rate < 3:
+        score += 15
+    elif spam_rate < 5:
+        score += 10
+
+    # Reply rate (10 points)
+    replied = account.get('total_replied_count', 0) or 0
+    reply_rate = (replied / sent * 100) if sent > 0 else 0
+
+    if reply_rate > 10:
+        score += 10
+    elif reply_rate > 5:
+        score += 7
+    elif reply_rate > 2:
+        score += 5
+    else:
+        score += 3
+
+    # Warmup/daily limit (10 points)
+    if account.get('warmup_enabled'):
+        score += 10
+    elif account.get('daily_limit'):
+        score += 7
+    else:
+        score += 5
+
+    return min(100, max(0, score))
+
+
+@router.post("/backfill/from-emailbison")
+async def backfill_from_emailbison(sync_data: bool = True):
+    """
+    Import workspaces from EmailBison API and sync all associated data.
+
+    Steps:
+    1. GET /api/workspaces/v1.1 - list all EmailBison workspaces
+    2. Create local workspace + client records for missing ones
+    3. If sync_data=True, for each new workspace:
+       a. Switch workspace context in EmailBison
+       b. Fetch all sender_accounts via /api/sender-emails
+       c. Upsert to sender_accounts table with calculated health_score
+       d. Derive domains from email addresses (set approval_status='legacy')
+       e. Link sender_accounts to domains via domain_id
+    4. Queue OAuth sync for each new workspace
+
+    Args:
+        sync_data: If True, also sync sender_accounts and domains (default: True)
+    """
+    if not EMAILBISON_API_KEY:
+        raise HTTPException(
+            status_code=500,
+            detail="EMAILBISON_API_KEY not configured"
+        )
+
+    created_workspaces = []
+    created_clients = []
+    already_exists = []
+    synced_data = {"accounts_by_workspace": {}, "domains_by_workspace": {}}
+    errors = []
+    total_accounts_synced = 0
+    total_domains_created = 0
+
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as http_client:
+            # 1. Fetch all workspaces from EmailBison
+            logger.info("Fetching workspaces from EmailBison API...")
+            response = await http_client.get(
+                f"{EMAILBISON_API_URL}/api/workspaces/v1.1",
+                headers={
+                    "Authorization": f"Bearer {EMAILBISON_API_KEY}",
+                    "Accept": "application/json",
+                },
+            )
+
+            if response.status_code != 200:
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"EmailBison API error: {response.status_code} - {response.text}"
+                )
+
+            data = response.json()
+            eb_workspaces = data if isinstance(data, list) else data.get('data', [])
+            logger.info(f"Found {len(eb_workspaces)} workspaces in EmailBison")
+
+            # 2. Get existing local workspace EmailBison IDs
+            existing_rows = await fetch_all(
+                "SELECT emailbison_workspace_id FROM workspaces WHERE emailbison_workspace_id IS NOT NULL"
+            )
+            existing_eb_ids = {str(row['emailbison_workspace_id']) for row in existing_rows}
+
+            # 3. Process each EmailBison workspace
+            for eb_workspace in eb_workspaces:
+                eb_id = eb_workspace.get('id')
+                eb_name = eb_workspace.get('name', f'Workspace {eb_id}')
+                eb_id_str = str(eb_id)
+
+                if eb_id_str in existing_eb_ids:
+                    # Workspace exists - still sync data if requested
+                    if sync_data:
+                        try:
+                            # Look up local workspace_id
+                            ws_row = await fetch_one(
+                                "SELECT id FROM workspaces WHERE emailbison_workspace_id = $1",
+                                eb_id_str
+                            )
+                            if ws_row:
+                                accounts_synced, domains_created = await _sync_workspace_data(
+                                    http_client, ws_row['id'], eb_name, eb_id
+                                )
+                                synced_data["accounts_by_workspace"][eb_name] = accounts_synced
+                                synced_data["domains_by_workspace"][eb_name] = domains_created
+                                total_accounts_synced += accounts_synced
+                                total_domains_created += domains_created
+                        except Exception as e:
+                            logger.error(f"Error syncing data for existing workspace '{eb_name}': {e}")
+                            errors.append({
+                                'emailbison_id': eb_id,
+                                'name': eb_name,
+                                'error': f"Data sync failed: {str(e)}"
+                            })
+
+                    already_exists.append({
+                        'emailbison_id': eb_id,
+                        'name': eb_name
+                    })
+                    continue
+
+                try:
+                    # 3a. Create local workspace record
+                    workspace_id = await create_local_workspace(eb_name, eb_id)
+
+                    if not workspace_id:
+                        errors.append({
+                            'emailbison_id': eb_id,
+                            'name': eb_name,
+                            'error': 'Failed to create local workspace'
+                        })
+                        continue
+
+                    created_workspaces.append({
+                        'id': str(workspace_id),
+                        'emailbison_id': eb_id,
+                        'name': eb_name
+                    })
+                    logger.info(f"Created workspace '{eb_name}' (local: {workspace_id}, EmailBison: {eb_id})")
+
+                    # 3b. Create client record linked to workspace
+                    client_result = await fetch_one(
+                        """
+                        INSERT INTO clients (name, workspace_id, onboarding_complete)
+                        VALUES ($1, $2, false)
+                        RETURNING id, name, workspace_id
+                        """,
+                        eb_name,
+                        workspace_id
+                    )
+
+                    if client_result:
+                        created_clients.append({
+                            'id': str(client_result['id']),
+                            'name': client_result['name'],
+                            'workspace_id': str(workspace_id)
+                        })
+
+                    # 3c. Queue OAuth sync for the new workspace
+                    await queue_oauth_sync(workspace_id, eb_id)
+
+                    # 3d. Sync sender_accounts if requested
+                    if sync_data:
+                        accounts_synced, domains_created = await _sync_workspace_data(
+                            http_client, workspace_id, eb_name, eb_id
+                        )
+                        synced_data["accounts_by_workspace"][eb_name] = accounts_synced
+                        synced_data["domains_by_workspace"][eb_name] = domains_created
+                        total_accounts_synced += accounts_synced
+                        total_domains_created += domains_created
+
+                except Exception as e:
+                    logger.error(f"Error processing workspace '{eb_name}': {e}")
+                    errors.append({
+                        'emailbison_id': eb_id,
+                        'name': eb_name,
+                        'error': str(e)
+                    })
+
+        return {
+            "message": "EmailBison workspace sync complete",
+            "summary": {
+                "total_emailbison_workspaces": len(eb_workspaces),
+                "already_synced": len(already_exists),
+                "workspaces_created": len(created_workspaces),
+                "clients_created": len(created_clients),
+                "accounts_synced": total_accounts_synced,
+                "domains_created": total_domains_created,
+                "errors": len(errors)
+            },
+            "created_workspaces": created_workspaces,
+            "created_clients": created_clients,
+            "synced_data": synced_data if sync_data else None,
+            "already_exists": already_exists,
+            "errors": errors
+        }
+
+    except httpx.RequestError as e:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Failed to connect to EmailBison API: {str(e)}"
+        )
+
+
+async def _sync_workspace_data(
+    http_client: httpx.AsyncClient,
+    workspace_id: UUID,
+    workspace_name: str,
+    emailbison_workspace_id: int
+) -> tuple[int, int]:
+    """
+    Sync sender_accounts and domains for a workspace from EmailBison.
+
+    Returns:
+        Tuple of (accounts_synced, domains_created)
+    """
+    accounts_synced = 0
+    domains_created = 0
+
+    try:
+        # Switch to workspace context
+        switch_response = await http_client.post(
+            f"{EMAILBISON_API_URL}/api/workspaces/v1.1/switch-workspace",
+            headers={
+                "Authorization": f"Bearer {EMAILBISON_API_KEY}",
+                "Content-Type": "application/json",
+            },
+            json={"team_id": emailbison_workspace_id}
+        )
+
+        if switch_response.status_code not in (200, 201):
+            logger.warning(f"Failed to switch to workspace {workspace_name}: {switch_response.status_code}")
+            return (0, 0)
+
+        # Fetch all sender accounts (paginated)
+        all_accounts = []
+        page = 1
+        per_page = 100
+
+        while True:
+            accounts_response = await http_client.get(
+                f"{EMAILBISON_API_URL}/api/sender-emails",
+                headers={
+                    "Authorization": f"Bearer {EMAILBISON_API_KEY}",
+                    "Accept": "application/json",
+                },
+                params={"page": page, "per_page": per_page}
+            )
+
+            if accounts_response.status_code != 200:
+                logger.warning(f"Failed to fetch accounts for {workspace_name}: {accounts_response.status_code}")
+                break
+
+            data = accounts_response.json()
+            accounts = data.get('data', [])
+            all_accounts.extend(accounts)
+
+            # Check if there are more pages
+            meta = data.get('meta', {})
+            last_page = meta.get('last_page', 1)
+            if page >= last_page:
+                break
+            page += 1
+
+        logger.info(f"  [{workspace_name}] Found {len(all_accounts)} accounts in EmailBison")
+
+        # Upsert each account
+        for account in all_accounts:
+            email = (account.get('email') or '').lower().strip()
+            if not email:
+                continue
+
+            eb_account_id = str(account.get('id', ''))
+            status = account.get('status') or account.get('connection_status') or 'Unknown'
+            provider = account.get('provider') or ''
+            inbox_state = 'dead' if status in ('Not connected', 'Disconnected', 'Disabled') else 'live'
+            esp = ESP_MAP.get(provider, 'other')
+            health_score = calculate_health_score(account)
+            display_name = account.get('name', '')
+            bounce_rate = account.get('bounce_rate', 0) or 0
+            spam_count = account.get('warmup_spam_count', 0) or 0
+
+            try:
+                await execute("""
+                    INSERT INTO sender_accounts (
+                        workspace_id, email_address, emailbison_account_id,
+                        display_name, status, inbox_state, esp, health_score,
+                        bounce_rate_7d, complaints_lifetime, is_active,
+                        first_seen_at, last_seen_at, last_synced_at
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW(), NOW(), NOW())
+                    ON CONFLICT (workspace_id, email_address) DO UPDATE SET
+                        emailbison_account_id = EXCLUDED.emailbison_account_id,
+                        display_name = COALESCE(EXCLUDED.display_name, sender_accounts.display_name),
+                        status = EXCLUDED.status,
+                        inbox_state = CASE
+                            WHEN sender_accounts.inbox_state = 'dead' THEN 'dead'
+                            ELSE EXCLUDED.inbox_state
+                        END,
+                        esp = COALESCE(EXCLUDED.esp, sender_accounts.esp),
+                        health_score = EXCLUDED.health_score,
+                        bounce_rate_7d = EXCLUDED.bounce_rate_7d,
+                        complaints_lifetime = GREATEST(
+                            COALESCE(EXCLUDED.complaints_lifetime, 0),
+                            COALESCE(sender_accounts.complaints_lifetime, 0)
+                        ),
+                        is_active = EXCLUDED.is_active,
+                        last_seen_at = NOW(),
+                        last_synced_at = NOW()
+                """, workspace_id, email, eb_account_id, display_name, status,
+                   inbox_state, esp, health_score, bounce_rate, spam_count, inbox_state == 'live')
+                accounts_synced += 1
+            except Exception as e:
+                logger.warning(f"Failed to upsert account {email}: {e}")
+
+        # Create missing domains (derived from email addresses)
+        domain_result = await execute("""
+            INSERT INTO domains (workspace_id, domain_name, approval_status, created_at, updated_at)
+            SELECT DISTINCT
+                sa.workspace_id,
+                SPLIT_PART(sa.email_address, '@', 2),
+                'legacy',
+                NOW(),
+                NOW()
+            FROM sender_accounts sa
+            WHERE sa.workspace_id = $1
+            AND SPLIT_PART(sa.email_address, '@', 2) != ''
+            AND NOT EXISTS (
+                SELECT 1 FROM domains d
+                WHERE d.workspace_id = sa.workspace_id
+                AND d.domain_name = SPLIT_PART(sa.email_address, '@', 2)
+            )
+        """, workspace_id)
+
+        # Parse domain creation count from result
+        if domain_result and 'INSERT' in domain_result:
+            parts = domain_result.split()
+            if len(parts) >= 2:
+                try:
+                    domains_created = int(parts[1])
+                except ValueError:
+                    pass
+
+        # Link sender_accounts to domains
+        await execute("""
+            UPDATE sender_accounts sa
+            SET domain_id = d.id
+            FROM domains d
+            WHERE sa.workspace_id = $1
+            AND d.workspace_id = sa.workspace_id
+            AND SPLIT_PART(sa.email_address, '@', 2) = d.domain_name
+            AND sa.domain_id IS NULL
+        """, workspace_id)
+
+        # Update domain health scores (average of inbox health scores)
+        await execute("""
+            UPDATE domains d
+            SET
+                latest_health_score = sub.avg_score,
+                updated_at = NOW()
+            FROM (
+                SELECT
+                    domain_id,
+                    AVG(health_score)::INTEGER as avg_score
+                FROM sender_accounts
+                WHERE domain_id IS NOT NULL
+                AND health_score IS NOT NULL
+                GROUP BY domain_id
+            ) sub
+            WHERE d.id = sub.domain_id
+        """)
+
+        logger.info(f"  [{workspace_name}] Synced {accounts_synced} accounts, created {domains_created} domains")
+
+    except Exception as e:
+        logger.error(f"Error syncing workspace {workspace_name}: {e}")
+
+    return (accounts_synced, domains_created)
