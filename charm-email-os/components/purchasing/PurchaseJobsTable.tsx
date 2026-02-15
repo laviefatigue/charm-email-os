@@ -45,6 +45,7 @@ import {
   MessageSquare,
   Copy,
   UserCheck,
+  Building2,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { inboxProvisioningApi } from '@/lib/api';
@@ -69,6 +70,13 @@ interface PurchaseJob {
   errors?: string[];
   errorType?: 'payment' | 'config' | 'auth' | 'timeout' | 'system' | 'stale' | null;
   checkoutUrl?: string;
+  // Order configuration data (from request_data in API)
+  requestData?: {
+    company_name?: string;
+    forwarding_domain?: string;
+    bison_workspace_name?: string;
+    sender_names?: Array<{ emailPrefix?: string; firstName?: string; lastName?: string }>;
+  };
 }
 
 interface PurchaseJobsTableProps {
@@ -537,7 +545,7 @@ export function PurchaseJobsTable({ clientId, onJobRetried }: PurchaseJobsTableP
                             </TooltipProvider>
                           </>
                         )}
-                        {job.status !== 'completed' && (
+                        {!['completed', 'cancelled', 'superseded'].includes(job.status) && (
                           <TooltipProvider>
                             <Tooltip>
                               <TooltipTrigger asChild>
@@ -716,6 +724,44 @@ export function PurchaseJobsTable({ clientId, onJobRetried }: PurchaseJobsTableP
                                     className="text-xs"
                                   >
                                     {domain}
+                                  </Badge>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                          {/* Order Configuration */}
+                          <div className="border-t pt-3 mt-3">
+                            <div className="font-medium mb-2 flex items-center gap-2">
+                              <Building2 className="h-4 w-4" />
+                              Order Configuration
+                            </div>
+                            <div className="grid grid-cols-2 gap-2 text-xs">
+                              <div>
+                                <span className="text-muted-foreground">Provider:</span>{' '}
+                                {job.providerType?.toUpperCase()} ({job.providerType === 'entra' ? '100' : '15'} inboxes/order)
+                              </div>
+                              <div>
+                                <span className="text-muted-foreground">Company:</span>{' '}
+                                {job.requestData?.company_name || '-'}
+                              </div>
+                              <div>
+                                <span className="text-muted-foreground">Forwarding:</span>{' '}
+                                {job.requestData?.forwarding_domain || '-'}
+                              </div>
+                              <div>
+                                <span className="text-muted-foreground">Workspace:</span>{' '}
+                                {job.requestData?.bison_workspace_name || '-'}
+                              </div>
+                            </div>
+                          </div>
+                          {/* Sender Names */}
+                          {job.requestData?.sender_names && job.requestData.sender_names.length > 0 && (
+                            <div className="border-t pt-3 mt-3">
+                              <div className="font-medium mb-2">Sender Names</div>
+                              <div className="flex flex-wrap gap-1">
+                                {job.requestData.sender_names.map((sn, idx) => (
+                                  <Badge key={idx} variant="secondary" className="text-xs">
+                                    {sn.emailPrefix || `${sn.firstName} ${sn.lastName}`}
                                   </Badge>
                                 ))}
                               </div>
