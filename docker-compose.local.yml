@@ -210,7 +210,7 @@ services:
       - POSTGRES_USER=postgres
       - POSTGRES_PASSWORD=localdevpassword
       - POLL_INTERVAL=5
-      - CLAUDE_ACCOUNT=ClaudeCodeMax
+      - CLAUDE_ACCOUNT=default
       - OAUTH_CHECK_INTERVAL=3600
       # Auto-trigger price check after domain generation
       - API_BASE_URL=http://charm-api:8000
