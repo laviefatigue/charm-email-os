@@ -197,37 +197,38 @@ services:
       start_period: 10s
 
   # ----- DOMAIN WORKER: AI Domain Generation -----
-  # Uncomment to enable Claude Code-powered domain generation
-  # domain-worker:
-  #   build:
-  #     context: .
-  #     dockerfile: Dockerfile.domain-worker
-  #   container_name: charm-domain-worker
-  #   restart: unless-stopped
-  #   environment:
-  #     - POSTGRES_HOST=postgres
-  #     - POSTGRES_PORT=5432
-  #     - POSTGRES_DB=postgres
-  #     - POSTGRES_USER=postgres
-  #     - POSTGRES_PASSWORD=localdevpassword
-  #     - POLL_INTERVAL=5
-  #     - CLAUDE_ACCOUNT=ClaudeCodeMax
-  #     - OAUTH_CHECK_INTERVAL=3600
-  #     # Auto-trigger price check after domain generation
-  #     - API_BASE_URL=http://charm-api:8000
-  #   volumes:
-  #     - ${USERPROFILE}/.claude:/home/claude/.claude
-  #   depends_on:
-  #     postgres:
-  #       condition: service_healthy
-  #   networks:
-  #     - charm-network
-  #   healthcheck:
-  #     test: ["CMD", "pgrep", "-f", "python3.*domain_generator_worker.py"]
-  #     interval: 30s
-  #     timeout: 10s
-  #     retries: 3
-  #     start_period: 10s
+  domain-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.domain-worker
+    container_name: charm-domain-worker
+    restart: unless-stopped
+    environment:
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=postgres
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=localdevpassword
+      - POLL_INTERVAL=5
+      - CLAUDE_ACCOUNT=ClaudeCodeMax
+      - OAUTH_CHECK_INTERVAL=3600
+      # Auto-trigger price check after domain generation
+      - API_BASE_URL=http://charm-api:8000
+    env_file:
+      - .env.local
+    volumes:
+      - ${USERPROFILE}/.claude:/home/claude/.claude
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - charm-network
+    healthcheck:
+      test: ["CMD", "pgrep", "-f", "python3.*domain_generator_worker.py"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
 
   # ----- SPINTAX WORKER: Spintax Processing -----
   # spintax-worker:
