@@ -1138,7 +1138,7 @@ async def get_approved_domains(client_id: UUID):
 # ============================================================================
 
 @router.post("/jobs/create/{client_id}")
-async def create_domain_generation_job(client_id: UUID, count: int = 10, fill_package: bool = True):
+async def create_domain_generation_job(client_id: UUID, count: int = 20, fill_package: bool = False):
     """
     Create a new domain generation job for the Claude Code worker.
 
@@ -1147,8 +1147,8 @@ async def create_domain_generation_job(client_id: UUID, count: int = 10, fill_pa
 
     Args:
         client_id: The client UUID to generate domains for
-        count: Number of domains to generate (default 10, ignored if fill_package=True)
-        fill_package: If True, auto-calculate count to fill package capacity (default True)
+        count: Number of domains to generate (default 20)
+        fill_package: If True, auto-calculate count to fill package capacity (default False)
 
     Returns:
         Job ID and status information
