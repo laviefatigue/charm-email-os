@@ -10,6 +10,7 @@ import {
   Save,
   X,
   LinkIcon,
+  RefreshCw,
 } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -22,6 +23,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
+import { Switch } from '@/components/ui/switch';
 import type { Client } from '@/lib/types';
 import { INDUSTRIES } from '@/lib/types';
 import { useClientStore } from '@/lib/stores/clientStore';
@@ -40,6 +42,7 @@ export function ClientProfileCard({ client, onUpdate }: ClientProfileCardProps) 
     website: client.website || '',
     industry: client.industry || '',
     domainPattern: client.domainPattern || '',
+    syncEnabled: client.syncEnabled ?? true,  // Default to enabled
   });
 
   const handleSave = async () => {
@@ -64,6 +67,7 @@ export function ClientProfileCard({ client, onUpdate }: ClientProfileCardProps) 
       website: client.website || '',
       industry: client.industry || '',
       domainPattern: client.domainPattern || '',
+      syncEnabled: client.syncEnabled ?? true,
     });
     setIsEditing(false);
   };
@@ -166,6 +170,27 @@ export function ClientProfileCard({ client, onUpdate }: ClientProfileCardProps) 
                 Used for pattern-based domain generation (e.g., getexample.com, tryexample.com)
               </p>
             </div>
+
+            {/* Sync Settings - Only show if workspace is linked */}
+            {client.workspaceId && (
+              <div className="space-y-2 md:col-span-2 pt-4 border-t">
+                <div className="flex items-center justify-between">
+                  <div className="space-y-0.5">
+                    <Label htmlFor="syncEnabled" className="text-base">Sync Enabled</Label>
+                    <p className="text-xs text-muted-foreground">
+                      When disabled, this workspace will be excluded from EmailBison sync operations
+                    </p>
+                  </div>
+                  <Switch
+                    id="syncEnabled"
+                    checked={formData.syncEnabled}
+                    onCheckedChange={(checked) =>
+                      setFormData({ ...formData, syncEnabled: checked })
+                    }
+                  />
+                </div>
+              </div>
+            )}
           </div>
         </CardContent>
       </Card>
@@ -291,14 +316,22 @@ export function ClientProfileCard({ client, onUpdate }: ClientProfileCardProps) 
           </div>
         </div>
 
-        {/* Workspace Info */}
+        {/* Workspace Info & Sync Status */}
         {client.workspaceName && (
           <div className="mt-6 pt-6 border-t">
-            <div className="flex items-center gap-2 text-sm text-muted-foreground">
-              <Building2 className="h-4 w-4" />
-              <span>
-                Linked to workspace: <strong>{client.workspaceName}</strong>
-              </span>
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                <Building2 className="h-4 w-4" />
+                <span>
+                  Linked to workspace: <strong>{client.workspaceName}</strong>
+                </span>
+              </div>
+              <div className="flex items-center gap-2">
+                <RefreshCw className={`h-4 w-4 ${client.syncEnabled !== false ? 'text-green-600' : 'text-gray-400'}`} />
+                <span className={`text-sm font-medium ${client.syncEnabled !== false ? 'text-green-600' : 'text-gray-500'}`}>
+                  {client.syncEnabled !== false ? 'Sync Enabled' : 'Sync Disabled'}
+                </span>
+              </div>
             </div>
           </div>
         )}

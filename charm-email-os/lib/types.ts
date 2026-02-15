@@ -45,6 +45,8 @@ export interface Client {
   inboxCount?: number;
   domainCount?: number;
   campaignCount?: number;
+  // Workspace sync control
+  syncEnabled?: boolean;  // Maps to workspace.is_active - controls whether sync worker processes this workspace
 }
 
 // Onboarding data collected during client setup

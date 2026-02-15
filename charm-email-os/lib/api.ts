@@ -284,6 +284,8 @@ export const clientApi = {
       website: string;
       industry: string;
       domainPattern: string;
+      // Workspace sync control
+      syncEnabled: boolean;
     }>
   ) {
     const response = await fetchApi<Record<string, unknown>>(`/api/clients/${id}`, {

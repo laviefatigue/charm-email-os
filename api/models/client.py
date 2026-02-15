@@ -116,6 +116,8 @@ class ClientUpdate(BaseModel):
     website: Optional[str] = None
     industry: Optional[str] = None
     domain_pattern: Optional[str] = None
+    # Workspace sync control (updates workspace.is_active)
+    sync_enabled: Optional[bool] = None
 
 
 class ClientOnboard(BaseModel):
@@ -137,6 +139,7 @@ class Client(ClientBase):
     inbox_count: int = 0
     domain_count: int = 0
     campaign_count: int = 0
+    sync_enabled: Optional[bool] = True  # Maps to workspace.is_active
 
     class Config:
         from_attributes = True

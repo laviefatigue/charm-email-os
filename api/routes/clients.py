@@ -197,7 +197,8 @@ async def list_clients(
             COALESCE(
                 (SELECT COUNT(*) FROM emailbison_campaigns ec WHERE ec.workspace_id = c.workspace_id),
                 0
-            ) as campaign_count
+            ) as campaign_count,
+            COALESCE(w.is_active, true) as sync_enabled
         FROM clients c
         LEFT JOIN workspaces w ON c.workspace_id = w.id
         {where_clause}
@@ -361,7 +362,8 @@ async def get_client(client_id: UUID):
             COALESCE(
                 (SELECT COUNT(*) FROM emailbison_campaigns ec WHERE ec.workspace_id = c.workspace_id),
                 0
-            ) as campaign_count
+            ) as campaign_count,
+            COALESCE(w.is_active, true) as sync_enabled
         FROM clients c
         LEFT JOIN workspaces w ON c.workspace_id = w.id
         WHERE c.id = $1
@@ -438,24 +440,45 @@ async def update_client(client_id: UUID, update: ClientUpdate):
         params.append(update.domain_pattern)
         param_idx += 1
 
-    if not set_parts:
+    # Note: sync_enabled is handled separately (updates workspace, not client)
+    # We still need to allow empty set_parts if only sync_enabled is being updated
+    if not set_parts and update.sync_enabled is None:
         raise HTTPException(status_code=400, detail="No fields to update")
 
-    # Add updated_at
-    set_parts.append("updated_at = NOW()")
+    # Execute client update if there are fields to update
+    if set_parts:
+        # Add updated_at
+        set_parts.append("updated_at = NOW()")
 
-    # Execute update
-    params.append(client_id)
-    query = f"""
-        UPDATE clients
-        SET {', '.join(set_parts)}
-        WHERE id = ${param_idx}
-        RETURNING id
-    """
-    result = await fetch_one(query, *params)
+        # Execute update
+        params.append(client_id)
+        query = f"""
+            UPDATE clients
+            SET {', '.join(set_parts)}
+            WHERE id = ${param_idx}
+            RETURNING id, workspace_id
+        """
+        result = await fetch_one(query, *params)
 
-    if not result:
-        raise HTTPException(status_code=404, detail="Client not found")
+        if not result:
+            raise HTTPException(status_code=404, detail="Client not found")
+
+        workspace_id = result.get("workspace_id")
+    else:
+        # Only sync_enabled is being updated, get workspace_id from client
+        client_row = await fetch_one("SELECT workspace_id FROM clients WHERE id = $1", client_id)
+        if not client_row:
+            raise HTTPException(status_code=404, detail="Client not found")
+        workspace_id = client_row.get("workspace_id")
+
+    # Handle sync_enabled - updates workspace.is_active
+    if update.sync_enabled is not None and workspace_id:
+        await execute(
+            "UPDATE workspaces SET is_active = $1, updated_at = NOW() WHERE id = $2",
+            update.sync_enabled,
+            workspace_id
+        )
+        logger.info(f"Updated workspace {workspace_id} sync status to is_active={update.sync_enabled}")
 
     # Return updated client
     return await get_client(client_id)
