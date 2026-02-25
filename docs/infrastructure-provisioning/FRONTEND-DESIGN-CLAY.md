@@ -1136,6 +1136,330 @@ function BulkActionsBar({ selectedDomains }: { selectedDomains: WaterfallDomain[
 
 ---
 
+## 🎯 HyperTide Order Modal (Complete Configuration)
+
+**Critical Modal:** This modal configures the HyperTide order with workspace and forwarding domain settings.
+
+```tsx
+interface HyperTideOrderModalProps {
+  selectedDomains: WaterfallDomain[];
+  onClose: () => void;
+  onSubmit: (config: HyperTideOrderConfig) => Promise<void>;
+}
+
+interface HyperTideOrderConfig {
+  orderGroups: {
+    orderType: 'entra' | 'google';
+    domainIds: string[];
+    senderNameId: string;
+  }[];
+  forwardingDomain: string;
+  bisonWorkspace: string;
+}
+
+function HyperTideOrderModal({ selectedDomains, onClose, onSubmit }: HyperTideOrderModalProps) {
+  const [submitting, setSubmitting] = useState(false);
+  const [config, setConfig] = useState<HyperTideOrderConfig>({
+    orderGroups: [],
+    forwardingDomain: '',
+    bisonWorkspace: '',
+  });
+
+  // Group domains by provider (Entra: 2 domains/order, Google: 5 domains/order)
+  const groupedDomains = useMemo(() => {
+    const entraDomains = selectedDomains.filter(d => d.assignedProvider === 'entra');
+    const googleDomains = selectedDomains.filter(d => d.assignedProvider === 'google');
+
+    const entraGroups = chunk(entraDomains, 2); // 2 domains per Entra order
+    const googleGroups = chunk(googleDomains, 5); // 5 domains per Google order
+
+    return {
+      entraGroups,
+      googleGroups,
+      totalOrders: entraGroups.length + googleGroups.length,
+    };
+  }, [selectedDomains]);
+
+  const handleSubmit = async () => {
+    // Validate configuration
+    if (!config.bisonWorkspace) {
+      toast.error('EmailBison workspace is required');
+      return;
+    }
+    if (!config.forwardingDomain) {
+      toast.error('Forwarding domain is required');
+      return;
+    }
+
+    setSubmitting(true);
+    try {
+      await onSubmit(config);
+      toast.success('HyperTide orders submitted successfully');
+      onClose();
+    } catch (error) {
+      toast.error(`Failed to submit orders: ${(error as Error).message}`);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <Dialog open onOpenChange={onClose}>
+      <DialogContent className="max-w-4xl max-h-[90vh] flex flex-col">
+        {/* Header */}
+        <DialogHeader className="border-b border-gray-200 pb-4">
+          <DialogTitle className="text-2xl font-semibold flex items-center gap-3">
+            <div className="w-10 h-10 bg-gradient-to-br from-blue-500 to-indigo-600 rounded-lg flex items-center justify-center">
+              <Package className="w-6 h-6 text-white" />
+            </div>
+            Create HyperTide Order
+          </DialogTitle>
+          <p className="text-sm text-gray-500 mt-2">
+            Configure inbox provisioning orders for {selectedDomains.length} domains
+          </p>
+        </DialogHeader>
+
+        {/* Content - Scrollable */}
+        <div className="flex-1 overflow-y-auto space-y-6 py-4">
+          {/* Order Summary */}
+          <div className="grid grid-cols-3 gap-4">
+            <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+              <div className="text-sm text-blue-700 mb-1">Microsoft Entra Orders</div>
+              <div className="text-2xl font-bold text-blue-900">
+                {groupedDomains.entraGroups.length}
+              </div>
+              <div className="text-xs text-blue-600 mt-1">
+                {groupedDomains.entraGroups.length * 2} domains (2 per order)
+              </div>
+            </div>
+
+            <div className="bg-red-50 border border-red-200 rounded-lg p-4">
+              <div className="text-sm text-red-700 mb-1">Google Workspace Orders</div>
+              <div className="text-2xl font-bold text-red-900">
+                {groupedDomains.googleGroups.length}
+              </div>
+              <div className="text-xs text-red-600 mt-1">
+                {groupedDomains.googleGroups.length * 5} domains (5 per order)
+              </div>
+            </div>
+
+            <div className="bg-indigo-50 border border-indigo-200 rounded-lg p-4">
+              <div className="text-sm text-indigo-700 mb-1">Total Orders</div>
+              <div className="text-2xl font-bold text-indigo-900">
+                {groupedDomains.totalOrders}
+              </div>
+              <div className="text-xs text-indigo-600 mt-1">
+                ~{groupedDomains.totalOrders * 2}h estimated
+              </div>
+            </div>
+          </div>
+
+          {/* Configuration Section */}
+          <div className="space-y-4">
+            <h3 className="text-lg font-semibold text-gray-900">Configuration</h3>
+
+            {/* EmailBison Workspace Selector */}
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-gray-700 flex items-center gap-2">
+                <Mail className="w-4 h-4 text-indigo-600" />
+                EmailBison Workspace *
+              </label>
+              <select
+                value={config.bisonWorkspace}
+                onChange={(e) => setConfig({ ...config, bisonWorkspace: e.target.value })}
+                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+              >
+                <option value="">Select workspace...</option>
+                <option value="workspace-1">Production Workspace</option>
+                <option value="workspace-2">Staging Workspace</option>
+                <option value="workspace-3">Client A Workspace</option>
+                <option value="workspace-4">Client B Workspace</option>
+              </select>
+              <p className="text-xs text-gray-500">
+                Where inboxes will be synced after provisioning
+              </p>
+            </div>
+
+            {/* Forwarding Domain */}
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-gray-700 flex items-center gap-2">
+                <Globe className="w-4 h-4 text-indigo-600" />
+                Forwarding Domain *
+              </label>
+              <input
+                type="text"
+                value={config.forwardingDomain}
+                onChange={(e) => setConfig({ ...config, forwardingDomain: e.target.value })}
+                placeholder="e.g., client@emailbison.com"
+                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+              />
+              <p className="text-xs text-gray-500">
+                Email address for inbox forwarding (HyperTide requirement)
+              </p>
+            </div>
+
+            {/* Sender Name Configuration (per order group) */}
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-gray-700 flex items-center gap-2">
+                <User className="w-4 h-4 text-indigo-600" />
+                Sender Names per Order
+              </label>
+              <div className="bg-gray-50 border border-gray-200 rounded-lg p-4 space-y-3">
+                <p className="text-xs text-gray-600">
+                  Assign sender names to each order group (optional, can be configured later)
+                </p>
+                {/* This would be more complex UI - simplified for now */}
+                <button className="text-sm text-indigo-600 hover:text-indigo-700 font-medium">
+                  + Configure Sender Names
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {/* Order Groups Preview */}
+          <div className="space-y-4">
+            <h3 className="text-lg font-semibold text-gray-900">Order Preview</h3>
+
+            <div className="border border-gray-200 rounded-lg overflow-hidden">
+              <table className="w-full text-sm">
+                <thead className="bg-gray-50 border-b border-gray-200">
+                  <tr>
+                    <th className="text-left p-3 font-semibold text-gray-700">Order #</th>
+                    <th className="text-left p-3 font-semibold text-gray-700">Provider</th>
+                    <th className="text-left p-3 font-semibold text-gray-700">Domains</th>
+                    <th className="text-left p-3 font-semibold text-gray-700">Sender Name</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100">
+                  {groupedDomains.entraGroups.map((group, idx) => (
+                    <tr key={`entra-${idx}`} className="hover:bg-gray-50">
+                      <td className="p-3 font-mono text-gray-600">#{idx + 1}</td>
+                      <td className="p-3">
+                        <div className="flex items-center gap-2">
+                          <div className="w-2 h-2 rounded-full bg-blue-500" />
+                          <span className="font-medium text-blue-700">Microsoft Entra</span>
+                        </div>
+                      </td>
+                      <td className="p-3 font-mono text-xs text-gray-600">
+                        {group.map(d => d.name).join(', ')}
+                      </td>
+                      <td className="p-3 text-gray-500">
+                        <input
+                          type="text"
+                          placeholder="e.g., John Smith"
+                          className="w-full px-2 py-1 text-sm border border-gray-300 rounded"
+                        />
+                      </td>
+                    </tr>
+                  ))}
+                  {groupedDomains.googleGroups.map((group, idx) => (
+                    <tr key={`google-${idx}`} className="hover:bg-gray-50">
+                      <td className="p-3 font-mono text-gray-600">
+                        #{groupedDomains.entraGroups.length + idx + 1}
+                      </td>
+                      <td className="p-3">
+                        <div className="flex items-center gap-2">
+                          <div className="w-2 h-2 rounded-full bg-red-500" />
+                          <span className="font-medium text-red-700">Google Workspace</span>
+                        </div>
+                      </td>
+                      <td className="p-3 font-mono text-xs text-gray-600">
+                        {group.map(d => d.name).join(', ')}
+                      </td>
+                      <td className="p-3 text-gray-500">
+                        <input
+                          type="text"
+                          placeholder="e.g., Jane Doe"
+                          className="w-full px-2 py-1 text-sm border border-gray-300 rounded"
+                        />
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          {/* Important Notice */}
+          <div className="bg-orange-50 border border-orange-200 rounded-lg p-4">
+            <div className="flex gap-3">
+              <AlertCircle className="w-5 h-5 text-orange-600 flex-shrink-0 mt-0.5" />
+              <div className="space-y-1">
+                <div className="font-semibold text-sm text-orange-900">Important Notes</div>
+                <ul className="text-xs text-orange-800 space-y-1 list-disc list-inside">
+                  <li>Orders are submitted to HyperTide and cannot be cancelled</li>
+                  <li>HyperTide will provision inboxes within 1-4 hours (vendor SLA)</li>
+                  <li>Inboxes will auto-sync to EmailBison workspace when ready</li>
+                  <li>You'll receive notifications when provisioning is complete</li>
+                </ul>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Footer */}
+        <DialogFooter className="border-t border-gray-200 pt-4">
+          <div className="flex justify-between items-center w-full">
+            <div className="text-sm text-gray-600">
+              {groupedDomains.totalOrders} order{groupedDomains.totalOrders !== 1 ? 's' : ''} •{' '}
+              {selectedDomains.length} domain{selectedDomains.length !== 1 ? 's' : ''}
+            </div>
+            <div className="flex gap-3">
+              <Button
+                variant="outline"
+                onClick={onClose}
+                disabled={submitting}
+              >
+                Cancel
+              </Button>
+              <Button
+                onClick={handleSubmit}
+                disabled={submitting || !config.bisonWorkspace || !config.forwardingDomain}
+                className="bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-700 hover:to-purple-700"
+              >
+                {submitting ? (
+                  <>
+                    <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                    Submitting Orders...
+                  </>
+                ) : (
+                  <>
+                    <Package className="w-4 h-4 mr-2" />
+                    Submit {groupedDomains.totalOrders} Order{groupedDomains.totalOrders !== 1 ? 's' : ''}
+                  </>
+                )}
+              </Button>
+            </div>
+          </div>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// Helper function to chunk arrays
+function chunk<T>(array: T[], size: number): T[][] {
+  const chunks: T[][] = [];
+  for (let i = 0; i < array.length; i += size) {
+    chunks.push(array.slice(i, i + size));
+  }
+  return chunks;
+}
+```
+
+**Key Features:**
+
+✅ **EmailBison Workspace Selector** - Dropdown to select destination workspace
+✅ **Forwarding Domain Input** - Required by HyperTide API
+✅ **Order Grouping** - Auto-groups domains (2 for Entra, 5 for Google)
+✅ **Sender Name Configuration** - Optional per-order sender names
+✅ **Order Preview Table** - Shows all orders before submission
+✅ **Validation** - Ensures workspace and forwarding domain are set
+✅ **Visual Feedback** - Color-coded provider badges, summary cards
+✅ **Important Notices** - Clear warnings about irreversible actions
+
+---
+
 ## 📱 Responsive (Mobile - Clay Style)
 
 ```tsx
