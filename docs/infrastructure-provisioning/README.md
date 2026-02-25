@@ -26,8 +26,9 @@
 | **[EXISTING-CODE-ANALYSIS.md](INFRASTRUCTURE-PROVISIONING-EXISTING-CODE-ANALYSIS.md)** | 18KB | 80% reusable patterns from codebase |
 | **[MODULAR-DESIGN.md](INFRASTRUCTURE-PROVISIONING-MODULAR-DESIGN.md)** | 27KB | Component architecture breakdown |
 | **[FRONTEND-DESIGN.md](INFRASTRUCTURE-PROVISIONING-FRONTEND-DESIGN.md)** | 50KB | Complete visual design & UX specifications |
+| **[FRONTEND-DESIGN-BASE44.md](INFRASTRUCTURE-PROVISIONING-FRONTEND-DESIGN-BASE44.md)** | 70KB | 🎨 Base44 brutalist aesthetic design (RECOMMENDED) |
 
-**Total:** 8 documents, 215KB
+**Total:** 9 documents, 285KB
 
 ---
 
@@ -43,13 +44,13 @@
 ### For Frontend Engineers
 1. [EXISTING-CODE-ANALYSIS.md](INFRASTRUCTURE-PROVISIONING-EXISTING-CODE-ANALYSIS.md) - Reusable patterns
 2. [MODULAR-DESIGN.md](INFRASTRUCTURE-PROVISIONING-MODULAR-DESIGN.md) - Component architecture
-3. [FRONTEND-DESIGN.md](INFRASTRUCTURE-PROVISIONING-FRONTEND-DESIGN.md) - Visual design & UX
+3. 🎨 **[FRONTEND-DESIGN-BASE44.md](INFRASTRUCTURE-PROVISIONING-FRONTEND-DESIGN-BASE44.md) - Base44 brutalist design (USE THIS)**
 4. [API-INTEGRATION.md](INFRASTRUCTURE-PROVISIONING-API-INTEGRATION.md) - Store + hooks
 
 ### For Product/Design Review
 1. [INDEX.md](INFRASTRUCTURE-PROVISIONING-INDEX.md) - Overview
 2. [SPA-V2.md](INFRASTRUCTURE-PROVISIONING-SPA-V2.md) - Complete requirements
-3. [FRONTEND-DESIGN.md](INFRASTRUCTURE-PROVISIONING-FRONTEND-DESIGN.md) - Visual mockups & design system
+3. 🎨 **[FRONTEND-DESIGN-BASE44.md](INFRASTRUCTURE-PROVISIONING-FRONTEND-DESIGN-BASE44.md) - Base44 aesthetic design**
 
 ---
 
@@ -79,7 +80,7 @@ Generated → Priced → Purchased → DNS Moved → DNS Verified → Provider A
 | New API Endpoints | 7 endpoints |
 | New Components | 25+ components |
 | Code Reuse | 80% |
-| Documentation | 215KB across 8 files |
+| Documentation | 285KB across 9 files |
 
 ---
 
