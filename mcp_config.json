@@ -1,5 +1,9 @@
 {
   "mcpServers": {
+    "chrome-devtools": {
+      "command": "npx",
+      "args": ["chrome-devtools-mcp@latest"]
+    },
     "domain-generator": {
       "command": "python",
       "args": ["-m", "domain_mcp.server"],
@@ -10,6 +14,25 @@
         "POSTGRES_DB": "${POSTGRES_DB}",
         "POSTGRES_USER": "${POSTGRES_USER}",
         "POSTGRES_PASSWORD": "${POSTGRES_PASSWORD}"
+      }
+    },
+    "emailbison": {
+      "type": "http",
+      "url": "https://mcp.emailbison.com/mcp",
+      "headers": {
+        "Authorization": "Bearer 33|hvosGDc0tkZihZhxJmXvpIZZ6qOjlINb3sSc0aPVa39c82f7",
+        "Instance-URL": "https://spellcast.hirecharm.com/",
+        "Accept": "application/json, text/event-stream"
+      }
+    },
+    "emailbison-local": {
+      "command": "py",
+      "args": ["-m", "emailbison_mcp.server_complete"],
+      "env": {
+        "PYTHONPATH": "D:/Work/Email-Bison MCP/production/emailbison-mcp-v3.1.1-portable/src",
+        "MCP_TRANSPORT": "stdio",
+        "EMAILBISON_API_URL": "https://spellcast.hirecharm.com",
+        "EMAILBISON_API_TOKEN": "17|MJ4B2ye4YyzawJFcQKxNJlIFGmyafaEQuZodYCV6d1ef7cbb"
       }
     }
   }

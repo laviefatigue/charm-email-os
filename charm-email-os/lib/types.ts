@@ -188,6 +188,8 @@ export interface Domain {
   deadInboxCount?: number;
   // Blacklist details (names of RBLs domain is listed on)
   blacklistNames?: string[];
+  // Domain source tracking (how this domain was acquired)
+  domainSource?: 'generated' | 'purchased' | 'legacy';
 }
 
 // Helper to check if DNS has propagated (24 hours since nameserver update)

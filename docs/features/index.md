@@ -19,6 +19,22 @@ Feature documentation for Charm Email OS.
 - [[strategy-generation]] - AI strategy generation (Phase 3)
 - [[health-monitoring]] - Database-driven inbox/domain health monitoring with kill triggers
 - [[oauth-sync]] - OAuth workspace synchronization
+- [[hypertide-automation]] - Hypertide inbox provisioning integration
+
+## Implementation Guides
+
+- [[rbl-implementation-guide]] - DNS-based blacklist checking system
+  - Production-ready code examples
+  - Free self-hosted solution
+  - Essential providers: Spamhaus, Barracuda, SpamCop
+
+## System Integration & Compliance
+
+- [[hypertide-health-v3-impact]] - How Hypertide constraints affect Health V3 system
+  - 75% compatibility analysis
+  - Kill triggers: No changes needed ✅
+  - Capacity planning: Formula updates required ⚠️
+- [[v3-compliance-gap-analysis]] - Health V3 compliance assessment
 
 ## Feature Status
 

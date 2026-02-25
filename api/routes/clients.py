@@ -1695,7 +1695,7 @@ async def _sync_workspace_data(
                         display_name = COALESCE(EXCLUDED.display_name, sender_accounts.display_name),
                         status = EXCLUDED.status,
                         inbox_state = CASE
-                            WHEN sender_accounts.inbox_state = 'dead' THEN 'dead'
+                            WHEN sender_accounts.killed_at IS NOT NULL THEN 'dead'
                             ELSE EXCLUDED.inbox_state
                         END,
                         esp = COALESCE(EXCLUDED.esp, sender_accounts.esp),

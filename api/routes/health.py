@@ -18,6 +18,7 @@ from models.health import (
     CampaignAttributionItem, ContaminationSourceItem, ESPSummaryItem,
     InfrastructureHealthResponse, ProviderMetrics, HealthDistribution, LifecycleDistribution,
     WarningLevelDistribution,
+    DailyVolumeSnapshot, KillEventAnnotation, DailyVolumeHistoryResponse,
 )
 
 router = APIRouter()
@@ -532,59 +533,46 @@ async def _build_kill_triggers(workspace_id: UUID) -> list[KillTriggerItem]:
                 action_taken="pending",
             ))
 
-    # --- Mock recent kills from dead inboxes ---
-    dead_rows = await fetch_all("""
+    # --- Real flagged inboxes from kill_queue table ---
+    # These are inboxes processed by the sync worker kill_processor.py
+    flagged_rows = await fetch_all("""
         SELECT
-            sa.id as inbox_id,
+            kq.id as queue_id,
+            kq.inbox_id,
+            kq.trigger_type,
+            COALESCE(kq.trigger_value, 0) as trigger_value,
+            COALESCE(kq.trigger_threshold, 0) as trigger_threshold,
+            kq.tag_name,
+            kq.tagged_at,
+            kq.created_at as queued_at,
             sa.email_address,
             d.id as domain_id,
-            d.domain_name,
-            d.infrastructure_type,
-            COALESCE(sa.hard_bounces_7d, 0) as hard_bounces_7d,
-            COALESCE(sa.total_sends_7d, 0) as total_sends_7d
-        FROM sender_accounts sa
-        LEFT JOIN domains d ON SPLIT_PART(sa.email_address, '@', 2) = d.domain_name
-            AND sa.workspace_id = d.workspace_id
-        WHERE sa.workspace_id = $1
-            AND sa.inbox_state = 'dead'
-        ORDER BY sa.updated_at DESC NULLS LAST
-        LIMIT 9
+            d.domain_name
+        FROM kill_queue kq
+        JOIN sender_accounts sa ON kq.inbox_id = sa.id
+        LEFT JOIN domains d ON sa.workspace_id = d.workspace_id
+            AND SPLIT_PART(sa.email_address, '@', 2) = d.domain_name
+        WHERE kq.workspace_id = $1
+        AND kq.status = 'flagged'
+        ORDER BY kq.tagged_at DESC NULLS LAST
+        LIMIT 20
     """, workspace_id)
 
-    # Vary trigger types and times for dead inboxes
-    mock_trigger_types = [
-        ("hard_bounces_24h", "instant", 3.0, 2.0),
-        ("hard_bounce_rate_7d", "instant", 1.2, 0.5),
-        ("fresh_inbox_bounce", "instant", 1.0, 1.0),
-        ("hard_bounces_24h", "instant", 4.0, 2.0),
-        ("bounce_rate_all_7d", "instant", 7.5, 5.0),
-        ("hard_bounce_rate_7d", "instant", 0.8, 0.5),
-        ("hard_bounces_24h", "instant", 2.0, 2.0),
-        ("fresh_inbox_bounce", "instant", 2.0, 1.0),
-        ("hard_bounces_24h", "instant", 5.0, 2.0),
-    ]
-    time_offsets = [
-        timedelta(hours=1), timedelta(hours=3), timedelta(hours=8),
-        timedelta(days=1), timedelta(days=1, hours=12), timedelta(days=2),
-        timedelta(days=3), timedelta(days=4), timedelta(days=5),
-    ]
-
-    for i, row in enumerate(dead_rows):
-        ttype, sev, val, thresh = mock_trigger_types[i % len(mock_trigger_types)]
-        offset = time_offsets[i % len(time_offsets)]
+    for row in flagged_rows:
         triggers.append(KillTriggerItem(
-            id=f"kill-{row['inbox_id']}-{ttype}",
+            id=f"flagged-{row['queue_id']}",
             inbox_id=row["inbox_id"],
             inbox_email=row["email_address"],
             domain_id=row["domain_id"],
             domain_name=row["domain_name"],
-            type=ttype,
-            severity=sev,
-            value=val,
-            threshold=thresh,
-            detected_at=now - offset,
+            type=row["trigger_type"],
+            severity="instant",  # All kill_queue triggers are instant
+            value=float(row["trigger_value"]),
+            threshold=float(row["trigger_threshold"]),
+            detected_at=row["queued_at"] or now,
             action_taken="killed",
-            resolved_at=now - offset + timedelta(minutes=2),
+            resolved_at=row["tagged_at"],
+            tag_name=row["tag_name"],
         ))
 
     # TODO: Implement real confirming kill triggers
@@ -1277,6 +1265,8 @@ async def get_infrastructure_health(client_id: UUID):
                 healthy=0, good=0, warning=0, critical=0, total=0
             ),
             total_domains=0,
+            live_domains=0,
+            dead_domains=0,
             clean_domains=0,
             flagged_domains=0,
             sync_source="database"
@@ -1408,6 +1398,32 @@ async def get_infrastructure_health(client_id: UUID):
         for p in provider_stats
     ]
 
+    # Live domains = domains with at least 1 live inbox
+    # Dead domains = domains with 0 live inboxes (legacy HyperTide domains no longer active)
+    live_domain_stats = await fetch_one("""
+        SELECT COUNT(DISTINCT d.id) as live_domains
+        FROM domains d
+        WHERE d.workspace_id = $1
+          AND EXISTS (
+              SELECT 1 FROM sender_accounts sa
+              WHERE SPLIT_PART(sa.email_address, '@', 2) = d.domain_name
+                AND sa.inbox_state = 'live'
+          )
+    """, workspace_id)
+    live_domains = live_domain_stats["live_domains"] if live_domain_stats else 0
+    total_domains = domain_stats["total"] if domain_stats else 0
+    dead_domains = max(0, total_domains - live_domains)
+
+    # Domain source breakdown (legacy vs purchased vs generated)
+    domain_source_stats = await fetch_one("""
+        SELECT
+            COUNT(*) FILTER (WHERE domain_source = 'legacy' OR domain_source IS NULL) as legacy,
+            COUNT(*) FILTER (WHERE domain_source = 'purchased') as purchased,
+            COUNT(*) FILTER (WHERE domain_source = 'generated') as generated
+        FROM domains
+        WHERE workspace_id = $1
+    """, workspace_id)
+
     return InfrastructureHealthResponse(
         client_id=client_id,
         total_inboxes=inbox_stats["total"] if inbox_stats else 0,
@@ -1442,9 +1458,16 @@ async def get_infrastructure_health(client_id: UUID):
                 (warning_dist["critical"] if warning_dist else 0)
             ),
         ),
-        total_domains=domain_stats["total"] if domain_stats else 0,
+        total_domains=total_domains,
+        live_domains=live_domains,
+        dead_domains=dead_domains,
         clean_domains=domain_stats["clean"] if domain_stats else 0,
         flagged_domains=domain_stats["flagged"] if domain_stats else 0,
+        domain_source_breakdown={
+            "legacy": domain_source_stats["legacy"] if domain_source_stats else 0,
+            "purchased": domain_source_stats["purchased"] if domain_source_stats else 0,
+            "generated": domain_source_stats["generated"] if domain_source_stats else 0,
+        },
         last_sync=last_sync["last_sync"] if last_sync else None,
         sync_source="database"
     )
@@ -1775,10 +1798,10 @@ class KillVelocityResponse(BaseModel):
 @router.get("/kill-velocity/{client_id}", response_model=KillVelocityResponse)
 async def get_kill_velocity(client_id: UUID):
     """
-    Get kill velocity data for the past 5 weeks.
+    Get kill velocity data for ENTIRE CLIENT HISTORY.
 
-    Returns weekly death counts, churn rate, and trend direction.
-    Used for the executive dashboard kill velocity chart.
+    Returns weekly death counts from the beginning of time, churn rate, and trend direction.
+    Used for the executive dashboard kill velocity chart showing full historical wave pattern.
     """
     # Get client with workspace
     client = await fetch_one("""
@@ -1801,7 +1824,7 @@ async def get_kill_velocity(client_id: UUID):
             trend="stable"
         )
 
-    # Get weekly death counts for last 5 weeks
+    # Get weekly death counts for ENTIRE HISTORY (not just 5 weeks)
     weekly_deaths = await fetch_all("""
         SELECT
             DATE_TRUNC('week', killed_at) as week,
@@ -1810,7 +1833,6 @@ async def get_kill_velocity(client_id: UUID):
         WHERE workspace_id = $1
             AND inbox_state = 'dead'
             AND killed_at IS NOT NULL
-            AND killed_at > NOW() - INTERVAL '35 days'
         GROUP BY DATE_TRUNC('week', killed_at)
         ORDER BY week
     """, workspace_id)
@@ -2028,4 +2050,146 @@ async def get_kill_breakdown(client_id: UUID):
         },
         total_killed=total_killed,
         raw=raw
+    )
+
+
+# ===== Daily Volume History (for Capacity Chart) =====
+
+from models.health import (
+    DailyVolumeSnapshot,
+    KillEventAnnotation,
+    DailyVolumeHistoryResponse,
+    CapacityInsight,
+)
+
+
+@router.get("/daily-volume/{client_id}", response_model=DailyVolumeHistoryResponse)
+async def get_daily_volume_history(
+    client_id: UUID,
+    days: int = Query(90, ge=1, le=365, description="Number of days of history")
+):
+    """
+    Get daily sending volume and capacity history for client dashboard chart.
+
+    Returns N days (default: 90) of:
+    - Emails sent per day
+    - Available capacity per day
+    - Incubating inbox count per day
+    - Capacity utilization percentage
+    - Kill events for chart annotations
+
+    Used by: Client dashboard "Sending Capacity Over Time" chart
+    """
+    # Get client with workspace
+    client = await fetch_one("""
+        SELECT c.id, c.name, c.workspace_id
+        FROM clients c
+        WHERE c.id = $1
+    """, client_id)
+
+    if not client:
+        raise HTTPException(status_code=404, detail="Client not found")
+
+    workspace_id = client["workspace_id"]
+
+    if not workspace_id:
+        return DailyVolumeHistoryResponse(
+            client_id=client_id,
+            workspace_id=None,
+            start_date=datetime.now(timezone.utc) - timedelta(days=days),
+            end_date=datetime.now(timezone.utc),
+            days_requested=days,
+            days_returned=0,
+            snapshots=[],
+            kill_events=[]
+        )
+
+    start_date = datetime.now(timezone.utc) - timedelta(days=days)
+
+    # Query daily snapshots
+    snapshot_rows = await fetch_all("""
+        SELECT
+            snapshot_date,
+            emails_sent,
+            emails_delivered,
+            emails_bounced,
+            daily_capacity_available,
+            live_inboxes,
+            incubating_inboxes,
+            dead_inboxes,
+            capacity_utilization_pct,
+            kills_that_day
+        FROM daily_volume_snapshots
+        WHERE workspace_id = $1
+          AND snapshot_date >= $2::date
+        ORDER BY snapshot_date ASC
+    """, workspace_id, start_date)
+
+    # Get kill events for annotations (grouped by day)
+    kill_rows = await fetch_all("""
+        SELECT
+            DATE(killed_at) as kill_date,
+            COUNT(*) as inboxes_killed,
+            STRING_AGG(DISTINCT kill_trigger::text, ', ') as kill_reasons
+        FROM sender_accounts
+        WHERE workspace_id = $1
+          AND killed_at >= $2
+          AND killed_at IS NOT NULL
+        GROUP BY DATE(killed_at)
+        ORDER BY kill_date ASC
+    """, workspace_id, start_date)
+
+    # Build snapshots list
+    snapshots = []
+    total_emails = 0
+    total_capacity = 0
+    total_utilization = 0.0
+
+    for row in (snapshot_rows or []):
+        snapshots.append(DailyVolumeSnapshot(
+            date=datetime.combine(row["snapshot_date"], datetime.min.time()),
+            emails_sent=row["emails_sent"] or 0,
+            emails_delivered=row["emails_delivered"] or 0,
+            emails_bounced=row["emails_bounced"] or 0,
+            daily_capacity_available=row["daily_capacity_available"] or 0,
+            live_inboxes=row["live_inboxes"] or 0,
+            incubating_inboxes=row["incubating_inboxes"] or 0,
+            dead_inboxes=row["dead_inboxes"] or 0,
+            capacity_utilization_pct=float(row["capacity_utilization_pct"]) if row["capacity_utilization_pct"] else 0.0,
+            kills_that_day=row["kills_that_day"] or 0
+        ))
+        total_emails += row["emails_sent"] or 0
+        total_capacity += row["daily_capacity_available"] or 0
+        if row["capacity_utilization_pct"]:
+            total_utilization += float(row["capacity_utilization_pct"])
+
+    # Build kill events list
+    kill_events = []
+    total_kills = 0
+    for row in (kill_rows or []):
+        kill_events.append(KillEventAnnotation(
+            date=datetime.combine(row["kill_date"], datetime.min.time()),
+            inboxes_killed=row["inboxes_killed"] or 0,
+            kill_reasons=row["kill_reasons"] or ""
+        ))
+        total_kills += row["inboxes_killed"] or 0
+
+    # Calculate averages
+    num_snapshots = len(snapshots) or 1
+    avg_capacity = total_capacity // num_snapshots if snapshots else 0
+    avg_utilization = total_utilization / num_snapshots if snapshots else 0.0
+
+    return DailyVolumeHistoryResponse(
+        client_id=client_id,
+        workspace_id=workspace_id,
+        start_date=start_date,
+        end_date=datetime.now(timezone.utc),
+        days_requested=days,
+        days_returned=len(snapshots),
+        snapshots=snapshots,
+        kill_events=kill_events,
+        total_emails_sent=total_emails,
+        avg_daily_capacity=avg_capacity,
+        avg_utilization_pct=round(avg_utilization, 2),
+        total_kills=total_kills
     )

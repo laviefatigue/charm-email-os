@@ -2739,6 +2739,8 @@ export const healthApi = {
       total: number;
     };
     totalDomains: number;
+    liveDomains: number;
+    deadDomains: number;
     cleanDomains: number;
     flaggedDomains: number;
     lastSync: string | null;
@@ -2768,6 +2770,8 @@ export const healthApi = {
         total: number;
       };
       totalDomains: number;
+      liveDomains: number;
+      deadDomains: number;
       cleanDomains: number;
       flaggedDomains: number;
       lastSync: string | null;
@@ -2820,6 +2824,80 @@ export const healthApi = {
       byProvider: { gmail: number; microsoft: number };
       totalKilled: number;
       raw: Array<{ trigger: string; count: number; gmailCount: number; microsoftCount: number }>;
+    }>(response);
+  },
+
+  /**
+   * Get daily volume history for sending capacity chart
+   */
+  async getDailyVolumeHistory(
+    clientId: string,
+    params?: { days?: number; workspaceId?: string }
+  ): Promise<{
+    clientId: string;
+    workspaceId: string | null;
+    startDate: string;
+    endDate: string;
+    daysRequested: number;
+    daysReturned: number;
+    snapshots: Array<{
+      date: string;
+      emailsSent: number;
+      emailsDelivered: number;
+      emailsBounced: number;
+      dailyCapacityAvailable: number;
+      liveInboxes: number;
+      incubatingInboxes: number;
+      deadInboxes: number;
+      capacityUtilizationPct: number | null;
+      killsThatDay: number;
+    }>;
+    killEvents: Array<{
+      date: string;
+      inboxesKilled: number;
+      killReasons: string;
+    }>;
+    totalEmailsSent: number;
+    avgDailyCapacity: number;
+    avgUtilizationPct: number;
+    totalKills: number;
+  }> {
+    const searchParams = new URLSearchParams();
+    if (params?.days) searchParams.set('days', params.days.toString());
+    if (params?.workspaceId) searchParams.set('workspace_id', params.workspaceId);
+
+    const query = searchParams.toString();
+    const response = await fetchApi<Record<string, unknown>>(
+      `/api/health/daily-volume/${clientId}${query ? `?${query}` : ''}`
+    );
+    return toCamelCase<{
+      clientId: string;
+      workspaceId: string | null;
+      startDate: string;
+      endDate: string;
+      daysRequested: number;
+      daysReturned: number;
+      snapshots: Array<{
+        date: string;
+        emailsSent: number;
+        emailsDelivered: number;
+        emailsBounced: number;
+        dailyCapacityAvailable: number;
+        liveInboxes: number;
+        incubatingInboxes: number;
+        deadInboxes: number;
+        capacityUtilizationPct: number | null;
+        killsThatDay: number;
+      }>;
+      killEvents: Array<{
+        date: string;
+        inboxesKilled: number;
+        killReasons: string;
+      }>;
+      totalEmailsSent: number;
+      avgDailyCapacity: number;
+      avgUtilizationPct: number;
+      totalKills: number;
     }>(response);
   },
 };

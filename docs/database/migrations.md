@@ -1,8 +1,8 @@
 ---
 title: Database Migrations
 created: 2026-01-16
-updated: 2026-02-13
-tags: [database, migrations, warmup, health]
+updated: 2026-02-23
+tags: [database, migrations, warmup, health, daily-volume]
 ---
 
 # Database Migrations
@@ -260,6 +260,210 @@ END WHERE inbox_state = 'live';
 - **Reserve** now requires BOTH: 14+ days old AND `warmup_enabled = TRUE`
 - **Incubating** is the fallback for everything else (under 14 days OR warmup not enabled)
 - Aligns with business logic: Reserve = deployment-ready inboxes only
+
+### Health & Capacity Tracking (2026-02)
+
+#### 032_domain_source_tracking.sql
+
+**Status**: Applied (2026-02-22)
+
+Tracks domain source (legacy vs HyperTide-generated):
+
+```sql
+ALTER TABLE domains ADD COLUMN IF NOT EXISTS domain_source VARCHAR(20) DEFAULT 'legacy';
+-- Values: 'legacy', 'hypertide_entra', 'hypertide_google'
+```
+
+#### 033_backfill_killed_at.sql
+
+**Status**: Applied (2026-02-22)
+
+Backfills `killed_at` timestamp for 5528 dead inboxes based on `tagged_at`.
+
+#### 034_bounce_counter_reset.sql
+
+**Status**: Applied (2026-02-22)
+
+Adds function to reset 24h bounce counters daily:
+
+```sql
+CREATE OR REPLACE FUNCTION reset_24h_bounce_counters()
+RETURNS INTEGER AS $$
+-- Resets hard_bounces_24h, hard_blocked_24h, hard_unknown_24h to 0
+$$;
+```
+
+#### 035_performance_indexes.sql
+
+**Status**: Applied (2026-02-22)
+
+Adds performance indexes for domain lookups:
+
+```sql
+CREATE INDEX IF NOT EXISTS idx_sender_accounts_domain_split
+ON sender_accounts (SPLIT_PART(email_address, '@', 2));
+```
+
+#### 036_campaign_burn_events.sql
+
+**Status**: Applied (2026-02-22)
+
+Granular campaign burn tracking:
+
+```sql
+CREATE TABLE campaign_burn_events (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    campaign_id VARCHAR(100) NOT NULL,
+    workspace_id UUID REFERENCES workspaces(id),
+    sender_account_id UUID REFERENCES sender_accounts(id),
+    trigger_type VARCHAR(50) NOT NULL,
+    -- spam_complaint, hard_blocked, hard_unknown, hard_bounces, bounce_rate, fresh_inbox
+    burned_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    ...
+);
+
+-- Views for analysis
+CREATE VIEW campaign_burn_summary AS ...
+CREATE VIEW domain_burn_summary AS ...
+CREATE VIEW recent_burn_summary AS ...
+```
+
+#### 037_domain_aggregate_metrics.sql
+
+**Status**: Applied (2026-02-22)
+
+Domain-wide health aggregation:
+
+```sql
+ALTER TABLE domains ADD COLUMN IF NOT EXISTS total_inboxes INTEGER DEFAULT 0;
+ALTER TABLE domains ADD COLUMN IF NOT EXISTS live_inboxes INTEGER DEFAULT 0;
+ALTER TABLE domains ADD COLUMN IF NOT EXISTS dead_inboxes INTEGER DEFAULT 0;
+ALTER TABLE domains ADD COLUMN IF NOT EXISTS domain_bounce_rate_7d NUMERIC(5,2);
+ALTER TABLE domains ADD COLUMN IF NOT EXISTS inboxes_with_complaints INTEGER DEFAULT 0;
+ALTER TABLE domains ADD COLUMN IF NOT EXISTS inboxes_with_blocks INTEGER DEFAULT 0;
+
+-- Function to recalculate metrics
+CREATE OR REPLACE FUNCTION recalculate_domain_metrics(p_domain_id UUID) ...
+
+-- Alert view
+CREATE VIEW domain_health_alerts AS ...
+```
+
+#### 038_domain_capacity_views.sql
+
+**Status**: Applied (2026-02-23)
+
+HyperTide capacity tracking views (database-only, no automation changes):
+
+```sql
+-- Per-domain capacity vs HyperTide expected
+CREATE VIEW v_domain_capacity AS
+SELECT
+    domain_id, domain_name, provider_type,
+    live_inboxes, dead_inboxes,
+    current_daily_capacity, expected_daily_capacity,
+    capacity_utilization_pct, viability_status
+FROM ...
+
+-- Workspace rollup by provider
+CREATE VIEW v_workspace_capacity_summary AS ...
+
+-- Domains below 70% utilization
+CREATE VIEW v_domains_at_risk AS ...
+
+-- Validation: daily_limit vs expected
+CREATE VIEW v_capacity_validation AS ...
+```
+
+**HyperTide Capacity Model**:
+- Entra: 50 inboxes/domain × 2 emails/day = 100 emails/day expected
+- Google: 3 inboxes/domain × 20 emails/day = 60 emails/day expected
+
+#### 040_fix_inventory_status_consistency.sql
+
+**Status**: Applied (2026-02-23)
+
+Fixes stale `inventory_lifecycle_status` and `inventory_pool_status` values to ensure consistency with actual inbox state.
+
+#### 041_daily_volume_snapshots.sql
+
+**Status**: Applied (2026-02-23)
+
+Daily sending volume tracking for client dashboard time-series charts:
+
+```sql
+CREATE TABLE daily_volume_snapshots (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    workspace_id UUID NOT NULL REFERENCES workspaces(id),
+    snapshot_date DATE NOT NULL,
+
+    -- Volume metrics (backfilled from EmailBison campaign stats)
+    emails_sent INTEGER NOT NULL DEFAULT 0,
+    emails_delivered INTEGER NOT NULL DEFAULT 0,
+    emails_bounced INTEGER NOT NULL DEFAULT 0,
+    emails_complained INTEGER NOT NULL DEFAULT 0,
+
+    -- Capacity metrics (snapshot as of end of day)
+    live_inboxes INTEGER NOT NULL DEFAULT 0,
+    incubating_inboxes INTEGER NOT NULL DEFAULT 0,
+    dead_inboxes INTEGER NOT NULL DEFAULT 0,
+    daily_capacity_available INTEGER NOT NULL DEFAULT 0,
+
+    -- Derived metrics
+    capacity_utilization_pct DECIMAL(5,2),
+    kills_that_day INTEGER NOT NULL DEFAULT 0,
+
+    UNIQUE(workspace_id, snapshot_date)
+);
+```
+
+**Initial Backfill**: 54,716 emails backfilled across 7 active workspaces using `scripts/backfill_daily_volume.py`. Data coverage: Nov 25, 2025 - Feb 22, 2026 (90 days).
+
+| Workspace | Backfilled | Coverage |
+|-----------|------------|----------|
+| Spout | 29,692 | 39% of all-time |
+| SPUI | 8,510 | 54% |
+| EventPanda | 6,277 | 73% |
+| Charm | 6,115 | 34% |
+| Sammy | 2,058 | 2% (pre-Nov activity) |
+| Stable Kernel | 1,282 | 13% |
+| Hello Hero | 782 | 3% |
+
+**Note**: Coverage percentages are relative to all-time totals in `sender_accounts.emails_sent_all_time`. Lower percentages indicate most sending occurred before the 90-day backfill window.
+
+#### 039_client_capacity_views.sql
+
+**Status**: Applied (2026-02-23)
+
+Client-level capacity tracking against purchased packages:
+
+```sql
+-- Client packages vs actual with gap analysis
+CREATE VIEW v_client_capacity AS
+SELECT
+    client_name,
+    entra_packages, entra_domains_target, entra_domains_actual,
+    entra_inbox_gap, entra_orders_needed,
+    google_packages, google_domains_target, google_domains_actual,
+    google_inbox_gap, google_orders_needed,
+    entra_pipeline_buffer, google_pipeline_buffer
+FROM ...
+
+-- Actionable HyperTide order queue
+CREATE VIEW v_hypertide_order_queue AS ...
+
+-- Inbox flow through lifecycle stages
+CREATE VIEW v_inbox_pipeline AS ...
+
+-- Raw volume for ALL workspaces (no package required)
+CREATE VIEW v_workspace_volume AS ...
+```
+
+**Key Fields**:
+- Package targets from `client_subscriptions` table
+- Gap analysis: target - actual active domains
+- Pipeline buffer: incubating + reserve inboxes
+- Works with or without subscription (informational, not restrictive)
 
 ## Running Migrations
 

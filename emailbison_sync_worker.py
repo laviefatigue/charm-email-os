@@ -36,6 +36,7 @@ from sync_modules import (
     KillProcessor,
     RetentionManager,
     OAuthSyncModule,
+    DailySnapshotModule,
 )
 
 # Configuration from environment
@@ -77,6 +78,7 @@ class SyncOrchestrator:
         self.last_daily_counter_reset: Optional[datetime] = None
         self.last_oauth_queue_check: Optional[datetime] = None
         self.last_oauth_verify: Optional[datetime] = None
+        self.last_daily_snapshot: Optional[datetime] = None
 
     async def start(self, single_pass: bool = False):
         """Initialize connections and start the sync worker."""
@@ -172,6 +174,11 @@ class SyncOrchestrator:
                     await self.run_daily_counter_reset()
                     self.last_daily_counter_reset = now
 
+                # Daily volume snapshot (for client dashboard capacity chart)
+                if self._should_run_daily(self.last_daily_snapshot):
+                    await self.run_daily_snapshot()
+                    self.last_daily_snapshot = now
+
                 # OAuth queue processing - every 5 min (for new workspaces)
                 if self._should_run(self.last_oauth_queue_check, POLL_INTERVAL_OAUTH_QUEUE):
                     await self.run_oauth_queue()
@@ -263,7 +270,7 @@ class SyncOrchestrator:
         print(f"  Health: {result.records_processed} workspaces, {result.records_updated} with triggers [{status}]")
 
     async def run_kill_processing(self):
-        """Process the kill queue (tag pending, delete ready)."""
+        """Process the kill queue (tag and flag inboxes as inactive - NO DELETION)."""
         print(f"[{datetime.now()}] Kill queue processing...")
 
         async with EmailBisonClient() as client:
@@ -347,6 +354,33 @@ class SyncOrchestrator:
         await health_module.reset_daily_counters()
 
         print(f"  24h counters reset for all active inboxes")
+
+    async def run_daily_snapshot(self):
+        """Create daily volume snapshots for client dashboard capacity chart.
+
+        Captures yesterday's metrics:
+        - Emails sent
+        - Capacity available
+        - Live/incubating/dead inbox counts
+        - Capacity utilization percentage
+        - Kill events for chart annotations
+        """
+        print(f"[{datetime.now()}] Daily volume snapshot...")
+
+        async with EmailBisonClient() as client:
+            snapshot_module = DailySnapshotModule(
+                db=self.db,
+                client=client,
+                alerter=self.alerter,
+                audit_logger=self.audit_logger
+            )
+            result = await snapshot_module.snapshot_all_workspaces()
+
+            print(
+                f"  Snapshot: {result['workspaces_processed']} workspaces | "
+                f"Total capacity: {result['total_capacity']:,} | "
+                f"Kills: {result['total_kills']}"
+            )
 
     async def run_oauth_queue(self):
         """Process OAuth sync queue (newly created workspaces)."""

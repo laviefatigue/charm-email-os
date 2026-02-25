@@ -1613,8 +1613,8 @@ class SmartOrderRequest(BaseModel):
     custom_purchase: bool = Field(default=False, description="Bypass package limits, only validate domain count")
     use_worker: bool = Field(default=False, description="[DEPRECATED] Use AI worker container instead of in-process Playwright")
     execution_mode: str = Field(
-        default="worker",
-        description="Execution mode: 'worker' (default, automated via Hypertide worker), 'slack_only' (manual processing), 'background_task' (in-process Playwright)"
+        default="api",
+        description="Execution mode: 'api' (default, REST API), 'worker' (browser automation), 'slack_only' (manual processing), 'background_task' (in-process Playwright)"
     )
 
 
@@ -1994,6 +1994,107 @@ async def execute_smart_order(
             status=OrderStatus.MANUAL_PROCESSING,
             message=f"Order sent to Slack. {order_count} order(s), {len(domain_names)} domains.",
             estimated_duration_seconds=0,  # No automation, manual processing
+        )
+
+    # --- API Mode: Create job for Hypertide REST API Worker (fastest, fully automated) ---
+    # The worker at D:\Work\Hypertide-API polls for worker_mode='api' jobs.
+    # This bypasses browser automation entirely - direct REST API calls (~2-5 seconds).
+    if request.execution_mode == "api":
+        # Resolve domain names
+        domain_names = []
+        for did in request.domain_ids:
+            domain = await fetch_one("SELECT domain_name FROM domains WHERE id = $1", did)
+            if domain:
+                domain_names.append(domain["domain_name"])
+
+        # Resolve sender names from onboarding data
+        pre_generated = onboarding_data.get("preGeneratedSenderNames", []) if onboarding_data else []
+        sender_names_json = pre_generated[:10] if pre_generated else []
+
+        # Calculate order count and provider-specific order counts
+        domains_per_order = 2 if request.provider_type == "entra" else 5
+        order_count = len(request.domain_ids) // domains_per_order
+        entra_orders_val = order_count if request.provider_type == "entra" else 0
+        google_orders_val = order_count if request.provider_type == "google" else 0
+
+        # Check for domain lock conflicts before creating the job (read-only check)
+        lock_conflicts = await _check_domain_lock_conflicts(request.domain_ids)
+        if lock_conflicts:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "Some domains are locked by existing purchase jobs",
+                    "locked_domains": lock_conflicts,
+                }
+            )
+
+        # Check nameserver verification status before allowing order
+        ns_unverified = await _check_ns_verification(request.domain_ids)
+        if ns_unverified:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "Nameservers not verified",
+                    "unverified_domains": ns_unverified,
+                    "message": "All domains must have verified nameservers before ordering inboxes.",
+                }
+            )
+
+        # Create API job FIRST (must exist before locking domains due to FK constraint)
+        job_id = str(uuid.uuid4())
+        request_data = request.model_dump(mode="json")
+        await execute(
+            """
+            INSERT INTO inbox_purchase_jobs (
+                id, client_id, workspace_id, status, provider_type,
+                domain_ids, domain_names, entra_orders, google_orders,
+                orders_total, order_count,
+                override_age_check, custom_purchase,
+                worker_mode, company_name, forwarding_domain,
+                bison_workspace_name, bison_url,
+                sender_names, use_saved_payment,
+                request_data,
+                created_at
+            ) VALUES (
+                $1, $2, $3, 'pending', $4,
+                $5, $6, $7, $8,
+                $9, $10,
+                $11, $12,
+                'api', $13, $14,
+                $15, 'https://spellcast.hirecharm.com',
+                $16, TRUE,
+                $17,
+                NOW()
+            )
+            """,
+            UUID(job_id),
+            request.client_id,
+            client.get("workspace_id"),
+            request.provider_type,
+            request.domain_ids,
+            domain_names,
+            entra_orders_val,
+            google_orders_val,
+            order_count,
+            order_count,
+            request.override_age_check,
+            request.custom_purchase,
+            client.get("name", "Unknown"),
+            onboarding_data.get("primaryDomain", "") if onboarding_data else "",
+            client.get("workspace_name") or "Charm",
+            json.dumps(sender_names_json),
+            request_data,
+        )
+
+        # Lock domains for this job (FK constraint satisfied — job now exists)
+        await _lock_domains_for_job(job_id, request.domain_ids)
+
+        return PurchaseJobResponse(
+            job_id=job_id,
+            client_id=request.client_id,
+            status=OrderStatus.PENDING,
+            message=f"Purchase job queued for API worker. {order_count} order(s), {len(domain_names)} domains.",
+            estimated_duration_seconds=order_count * 10,  # ~10 seconds per order via API
         )
 
     # --- Worker Mode: Create self-contained job for AI purchase worker ---

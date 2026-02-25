@@ -171,19 +171,9 @@ class WarmupSyncModule:
 
         # Detect warmup start
         if eb_warmup_enabled and not existing_warmup_started_at:
-            # First time seeing warmup enabled - estimate start date
-            # Add 5 business days (~7 calendar days) to account creation
-            # This accounts for inbox setup time before warmup actually starts
-            eb_created_at = account.get('created_at')
-            if eb_created_at:
-                try:
-                    created = datetime.fromisoformat(eb_created_at.replace('Z', '+00:00'))
-                    # Add 7 calendar days (~5 business days) buffer
-                    warmup_started_at = created + timedelta(days=7)
-                except (ValueError, AttributeError):
-                    warmup_started_at = now
-            else:
-                warmup_started_at = now
+            # Record when we FIRST OBSERVED warmup_enabled=TRUE
+            # This is observation-based tracking, not estimation
+            warmup_started_at = now
 
         # Detect warmup stop
         if not eb_warmup_enabled and existing_warmup_enabled:

@@ -15,6 +15,7 @@ Modules:
 - kill_processor: Kill queue processing with 24hr tagging
 - retention: Data retention/cleanup logic
 - sync_oauth: OAuth config scraping from EmailBison UI
+- daily_snapshot: Daily volume and capacity snapshots for dashboard charts
 """
 
 from .emailbison_client import EmailBisonClient
@@ -28,6 +29,7 @@ from .health_checks import HealthCheckModule
 from .kill_processor import KillProcessor
 from .retention import RetentionManager
 from .sync_oauth import OAuthSyncModule
+from .daily_snapshot import DailySnapshotModule
 
 __all__ = [
     'EmailBisonClient',
@@ -42,4 +44,5 @@ __all__ = [
     'KillProcessor',
     'RetentionManager',
     'OAuthSyncModule',
+    'DailySnapshotModule',
 ]

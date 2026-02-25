@@ -206,6 +206,28 @@ class SlackAlerter:
             context='Health Check Module'
         )
 
+    async def alert_domain_flagged(
+        self,
+        domain: str,
+        reason: str,
+        workspace: str = None
+    ):
+        """Alert when domain is flagged for review (V3 compliance)."""
+        fields = {
+            'Domain': domain,
+            'Reason': reason
+        }
+        if workspace:
+            fields['Workspace'] = workspace
+
+        await self.send_alert(
+            level='warning',
+            title='Domain Flagged for Review',
+            message=f"Domain `{domain}` has exceeded health thresholds and requires review",
+            fields=fields,
+            context='Domain Health Check'
+        )
+
     async def alert_sync_summary(
         self,
         results: List[Dict],

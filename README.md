@@ -103,3 +103,20 @@ A separate `ENV-REFERENCE.md` document contains the complete variable reference 
 ## License
 
 Proprietary - HireCharm Inc.
+
+## Executive Dashboard
+
+A modern, visually-rich health dashboard for Charm's email infrastructure.
+
+**URL:** http://localhost:3006
+**Location:** `/executive-dashboard`
+**Client:** Charm (hardcoded)
+
+Features:
+- Real-time health metrics with gradient cards
+- Kill velocity and breakdown charts
+- 30-day volume history
+- Provider performance analytics
+- Auto-refresh every 5 minutes
+
+See `/executive-dashboard/README.md` for details.

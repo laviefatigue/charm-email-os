@@ -402,17 +402,28 @@ async def get_inventory_inboxes(
             # Return empty response rather than error
             return InventoryInboxListResponse(items=[], total=0, filtered_by=None)
 
+    # Batch fetch all campaign names to avoid N+1 queries
+    all_campaign_ids = set()
+    for row in rows:
+        if row["associated_campaign_ids"]:
+            all_campaign_ids.update(row["associated_campaign_ids"])
+
+    campaign_names_map = {}
+    if all_campaign_ids:
+        camp_rows = await fetch_all("""
+            SELECT id, campaign_name FROM emailbison_campaigns
+            WHERE id = ANY($1)
+        """, list(all_campaign_ids))
+        campaign_names_map = {c["id"]: c["campaign_name"] for c in camp_rows if c["campaign_name"]}
+
     # Build response items
     items = []
     for row in rows:
-        # Get campaign names if any
+        # Get campaign names from pre-fetched map
         campaigns = []
         if row["associated_campaign_ids"]:
-            camp_rows = await fetch_all("""
-                SELECT campaign_name FROM emailbison_campaigns
-                WHERE id = ANY($1)
-            """, row["associated_campaign_ids"])
-            campaigns = [c["campaign_name"] for c in camp_rows if c["campaign_name"]]
+            campaigns = [campaign_names_map.get(cid) for cid in row["associated_campaign_ids"]
+                        if campaign_names_map.get(cid)]
 
         items.append(InventoryInboxItem(
             inbox_id=row["id"],

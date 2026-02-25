@@ -40,7 +40,7 @@ function SeverityBadge({ trigger }: { trigger: KillTrigger }) {
   if (isKilled) {
     return (
       <Badge variant="secondary" className="bg-gray-200 text-gray-600 text-xs px-1.5">
-        KILLED
+        FLAGGED
       </Badge>
     );
   }
@@ -207,10 +207,19 @@ function TriggerRow({
             )}
           </div>
         )}
-        {isKilled && trigger.resolvedAt && (
-          <span className="text-xs text-muted-foreground">
-            Killed {formatTimeAgo(trigger.resolvedAt)} ago
-          </span>
+        {isKilled && (
+          <div className="flex flex-col gap-1">
+            {trigger.resolvedAt && (
+              <span className="text-xs text-muted-foreground">
+                Flagged {formatTimeAgo(trigger.resolvedAt)} ago
+              </span>
+            )}
+            {trigger.tagName && (
+              <Badge variant="outline" className="text-xs w-fit">
+                {trigger.tagName}
+              </Badge>
+            )}
+          </div>
         )}
       </td>
     </tr>

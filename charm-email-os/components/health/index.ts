@@ -31,3 +31,7 @@ export { KPICard } from './KPICard';
 export { ESPComparisonCard } from './ESPComparisonCard';
 export { KillVelocityChart } from './KillVelocityChart';
 export { KillBreakdownChart } from './KillBreakdownChart';
+export { SendingCapacityChart } from './SendingCapacityChart';
+
+// Disconnected Inboxes
+export { DisconnectedInboxesList } from './DisconnectedInboxesList';

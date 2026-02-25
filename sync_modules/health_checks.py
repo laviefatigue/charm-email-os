@@ -27,12 +27,18 @@ KILL_THRESHOLD_MIN_SENDS = int(os.getenv('KILL_THRESHOLD_MIN_SENDS', 50))
 KILL_THRESHOLD_FRESH_INBOX_DAYS = int(os.getenv('KILL_THRESHOLD_FRESH_INBOX_DAYS', 14))
 
 # Kill trigger thresholds (configurable via env vars)
-# Priority order: spam > hard_blocked > hard_unknown > combined > rate-based > fresh_inbox
+# Priority order: spam > provider_block > hard_blocked > hard_unknown > combined > rate-based > fresh_inbox
 KILL_THRESHOLDS = {
     'spam_complaint': {
         'value': KILL_THRESHOLD_SPAM,
         'severity': 'instant',
         'description': f'{KILL_THRESHOLD_SPAM}+ spam complaints = immediate death (v3 spec)'
+    },
+    # V3 Section 3: Provider-specific blocking (Gmail, Microsoft, Yahoo)
+    'provider_block': {
+        'value': 1,
+        'severity': 'instant',
+        'description': 'Provider block detected (Gmail, Microsoft, Yahoo) = immediate death'
     },
     'hard_blocked_24h': {
         'value': KILL_THRESHOLD_HARD_BLOCKED_24H,
@@ -67,6 +73,14 @@ KILL_THRESHOLDS = {
         'severity': 'instant',
         'description': f'Any hard bounce on inbox <{KILL_THRESHOLD_FRESH_INBOX_DAYS} days old'
     }
+}
+
+# V3 Section 5: Domain health thresholds
+DOMAIN_THRESHOLDS = {
+    'unhealthy_warning': 0.15,    # 15% unhealthy = flag for investigation
+    'unhealthy_pause': 0.30,      # 30% unhealthy = pause domain (tag for review)
+    'dead_inbox_flagged': 1,      # 1 dead inbox = domain flagged
+    'dead_inbox_dead': 2,         # 2+ dead inboxes = domain dead
 }
 
 
@@ -143,6 +157,7 @@ class HealthCheckModule:
                 id,
                 email_address,
                 inbox_state,
+                esp,
                 hard_bounces_24h,
                 hard_blocked_24h,
                 hard_unknown_24h,
@@ -219,7 +234,7 @@ class HealthCheckModule:
         if first_seen_at:
             inbox_age_days = (datetime.now(timezone.utc) - first_seen_at.replace(tzinfo=timezone.utc)).days
 
-        # Check each kill threshold (priority order: spam > blocked > unknown > combined > rates)
+        # Check each kill threshold (priority order: spam > provider_block > blocked > unknown > combined > rates)
         # 0. Spam complaints (HIGHEST PRIORITY - v3 spec: 1 complaint = death)
         threshold = KILL_THRESHOLDS['spam_complaint']
         complaints = inbox.get('complaints_lifetime') or 0
@@ -228,6 +243,17 @@ class HealthCheckModule:
                 'trigger_type': 'spam_complaint',
                 'value': complaints,
                 'threshold': threshold['value']
+            })
+
+        # 0.5 V3: Provider-specific blocking (Gmail, Microsoft, Yahoo)
+        # Detect via hard_blocked bounces + ESP type
+        esp_type = inbox.get('esp') or 'other'
+        if esp_type in ('gmail', 'microsoft', 'yahoo') and hard_blocked_24h >= 1:
+            # Provider block detected - this is ESP-specific reputation damage
+            triggers.append({
+                'trigger_type': f'provider_block_{esp_type}',
+                'value': hard_blocked_24h,
+                'threshold': 1
             })
 
         # 1. Hard blocked (spam/policy rejection) - HIGHEST PRIORITY after spam
@@ -369,25 +395,161 @@ class HealthCheckModule:
             )
 
     async def update_domain_health(self, workspace_id: UUID):
-        """Update health scores for all domains in workspace."""
+        """
+        Update health scores and V3 state for all domains in workspace.
+
+        V3 Section 5 Domain Health Thresholds:
+        - 1 dead inbox = 'flagged' (accelerate backup warming)
+        - 2+ dead inboxes = 'dead' (tag for review)
+        - >30% inboxes unhealthy = 'dead' (tag for review)
+
+        NOTE: Domain state changes are local flags only.
+        Human operators decide actual action based on state.
+        """
+        # Update basic health metrics
         await self.db.execute("""
             UPDATE domains d
             SET
                 latest_health_score = COALESCE(sub.avg_score, 100),
+                live_inbox_count = COALESCE(sub.live_count, 0),
+                dead_inbox_count = COALESCE(sub.dead_count, 0),
+                health_percentage = CASE
+                    WHEN COALESCE(sub.total_count, 0) > 0
+                    THEN (COALESCE(sub.live_count, 0)::DECIMAL / sub.total_count * 100)
+                    ELSE 100
+                END,
                 updated_at = NOW()
             FROM (
                 SELECT
                     domain_id,
-                    AVG(COALESCE(health_score, 100))::INTEGER as avg_score
+                    AVG(COALESCE(health_score, 100))::INTEGER as avg_score,
+                    COUNT(*) as total_count,
+                    COUNT(*) FILTER (WHERE inbox_state = 'live') as live_count,
+                    COUNT(*) FILTER (WHERE inbox_state = 'dead') as dead_count,
+                    COUNT(*) FILTER (WHERE health_score < 60) as unhealthy_count
                 FROM sender_accounts
                 WHERE workspace_id = $1
                 AND domain_id IS NOT NULL
-                AND inbox_state = 'live'
                 GROUP BY domain_id
             ) sub
             WHERE d.id = sub.domain_id
             AND d.workspace_id = $1
         """, workspace_id)
+
+        # V3: Update domain state based on thresholds
+        # 1 dead inbox = flagged, 2+ dead = dead, >30% unhealthy = dead
+        await self.db.execute("""
+            UPDATE domains d
+            SET
+                domain_state = CASE
+                    -- 2+ dead inboxes = domain dead
+                    WHEN COALESCE(d.dead_inbox_count, 0) >= $2 THEN 'dead'
+                    -- >30% unhealthy = domain dead
+                    WHEN COALESCE(d.health_percentage, 100) < (100 - $3 * 100) THEN 'dead'
+                    -- 1 dead inbox = flagged
+                    WHEN COALESCE(d.dead_inbox_count, 0) >= $4 THEN 'flagged'
+                    -- Otherwise live
+                    ELSE 'live'
+                END::domain_state,
+                updated_at = NOW()
+            WHERE d.workspace_id = $1
+            -- Only update if state would change
+            AND (
+                (COALESCE(d.dead_inbox_count, 0) >= $2 AND d.domain_state != 'dead')
+                OR (COALESCE(d.health_percentage, 100) < (100 - $3 * 100) AND d.domain_state != 'dead')
+                OR (COALESCE(d.dead_inbox_count, 0) >= $4 AND COALESCE(d.dead_inbox_count, 0) < $2 AND d.domain_state != 'flagged')
+                OR (COALESCE(d.dead_inbox_count, 0) < $4 AND d.domain_state != 'live')
+            )
+        """,
+            workspace_id,
+            DOMAIN_THRESHOLDS['dead_inbox_dead'],      # $2: 2
+            DOMAIN_THRESHOLDS['unhealthy_pause'],      # $3: 0.30
+            DOMAIN_THRESHOLDS['dead_inbox_flagged']    # $4: 1
+        )
+
+        # V3: Recalculate domain aggregate metrics (bounce rate, cross-inbox patterns)
+        await self._recalculate_workspace_domain_metrics(workspace_id)
+
+        # V3: Check domain-wide bounce rate threshold (>5% = flag domain)
+        await self._check_domain_bounce_rate_thresholds(workspace_id)
+
+    async def _recalculate_workspace_domain_metrics(self, workspace_id: UUID):
+        """
+        Recalculate aggregate metrics for all domains in workspace.
+
+        Updates:
+        - domain_bounce_rate_7d (aggregate of all inbox bounce rates)
+        - inboxes_with_complaints / inboxes_with_blocks (cross-inbox detection)
+        - burn_breakdown (JSONB with trigger type counts)
+        """
+        try:
+            count = await self.db.fetchval(
+                "SELECT recalculate_workspace_domain_metrics($1)",
+                workspace_id
+            )
+            if count and count > 0:
+                print(f"    [DOMAIN METRICS] Recalculated {count} domains")
+        except Exception as e:
+            # Don't fail health checks if metrics calc fails
+            print(f"    [WARNING] Failed to recalculate workspace domain metrics: {e}")
+
+    async def _check_domain_bounce_rate_thresholds(self, workspace_id: UUID):
+        """
+        V3 Section 5: Check domain-wide bounce rate thresholds.
+
+        Thresholds:
+        - domain_bounce_rate_7d > 5% = flag domain for review
+        - inboxes_with_complaints >= 2 = flag domain (cross-inbox pattern)
+        - inboxes_with_blocks >= 2 = flag domain (cross-inbox pattern)
+
+        NOTE: This flags domains for review, doesn't auto-kill.
+        """
+        # Find domains that exceed thresholds
+        flagged_domains = await self.db.fetch("""
+            SELECT
+                id,
+                domain_name,
+                domain_bounce_rate_7d,
+                inboxes_with_complaints,
+                inboxes_with_blocks,
+                domain_state
+            FROM domains
+            WHERE workspace_id = $1
+            AND domain_state = 'live'
+            AND (
+                domain_bounce_rate_7d > 0.05
+                OR inboxes_with_complaints >= 2
+                OR inboxes_with_blocks >= 2
+            )
+        """, workspace_id)
+
+        for domain in flagged_domains:
+            reasons = []
+            if domain['domain_bounce_rate_7d'] and domain['domain_bounce_rate_7d'] > 0.05:
+                reasons.append(f"bounce_rate={domain['domain_bounce_rate_7d']*100:.1f}%")
+            if domain['inboxes_with_complaints'] and domain['inboxes_with_complaints'] >= 2:
+                reasons.append(f"complaints_across_{domain['inboxes_with_complaints']}_inboxes")
+            if domain['inboxes_with_blocks'] and domain['inboxes_with_blocks'] >= 2:
+                reasons.append(f"blocks_across_{domain['inboxes_with_blocks']}_inboxes")
+
+            # Flag the domain
+            await self.db.execute("""
+                UPDATE domains
+                SET
+                    domain_state = 'flagged',
+                    updated_at = NOW()
+                WHERE id = $1
+            """, domain['id'])
+
+            reason_str = ', '.join(reasons)
+            print(f"    [DOMAIN FLAGGED] {domain['domain_name']}: {reason_str}")
+
+            # Alert
+            if self.alerter:
+                await self.alerter.alert_domain_flagged(
+                    domain=domain['domain_name'],
+                    reason=reason_str
+                )
 
     async def get_workspace_health_summary(self, workspace_id: UUID) -> Dict:
         """Get health summary for a workspace."""

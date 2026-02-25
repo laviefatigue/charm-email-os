@@ -156,6 +156,7 @@ async def list_domains(
             d.purchase_job_id,
             d.purchase_job_status,
             d.infrastructure_type,
+            d.domain_source,
             COALESCE(
                 (SELECT COUNT(*) FROM sender_accounts sa
                  WHERE SPLIT_PART(sa.email_address, '@', 2) = d.domain_name

@@ -11,8 +11,14 @@ PostgreSQL database documentation for Charm Email OS.
 
 ## Documentation
 
-- [[schema]] - Full database schema
-- [[migrations]] - Migration history
+- [[README]] - **Database documentation hub** - Start here for overview
+- [[schema]] - Full database schema reference
+- [[migrations]] - Migration history and changelog
+- [[backfill-analysis]] - **Data availability and backfill requirements**
+  - Current state: 95% schema, 70% data
+  - Critical gaps: RBL data, daily snapshots, campaign burns
+  - Ready-to-run SQL scripts
+  - Time to full data: 13-19 hours
 
 ## Connection
 

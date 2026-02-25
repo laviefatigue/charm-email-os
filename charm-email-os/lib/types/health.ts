@@ -49,6 +49,7 @@ export interface KillTrigger {
   retestAt?: Date; // For confirming triggers
   resolvedAt?: Date;
   actionTaken?: 'killed' | 'dismissed' | 'pending';
+  tagName?: string; // Trigger-specific tag applied in EmailBison (e.g., flagged_fresh_inbox_bounce)
 }
 
 // Kill trigger threshold configuration
@@ -467,6 +468,16 @@ export const POOL_STATUS_CONFIG: Record<PoolStatus, { label: string; color: stri
   warning: { label: 'Warning', color: 'rgb(249, 115, 22)', bgColor: 'rgb(255, 237, 213)' },        // orange
 };
 
+// ===== WARNING LEVEL DISTRIBUTION (PREDICTIVE DEATH FORECASTING) =====
+
+export interface WarningLevelDistribution {
+  healthy: number;    // No bounces, stable
+  watching: number;   // 1-2 hard bounces in 7d (pattern forming)
+  warning: number;    // 1 hard bounce in 24h (next bounce = kill)
+  critical: number;   // At or above kill threshold (pending kill)
+  totalAtRisk: number;  // watching + warning + critical
+}
+
 // ===== INFRASTRUCTURE HEALTH (DATABASE-ONLY) =====
 
 export interface ProviderMetrics {
@@ -475,6 +486,12 @@ export interface ProviderMetrics {
   liveCount: number;
   deadCount: number;
   avgHealthScore: number;
+}
+
+export interface DomainSourceBreakdown {
+  legacy: number;
+  purchased: number;
+  generated: number;
 }
 
 export interface InfrastructureHealthResponse {
@@ -486,9 +503,13 @@ export interface InfrastructureHealthResponse {
   providers: ProviderMetrics[];
   healthDistribution: HealthDistribution;
   lifecycleDistribution?: LifecycleDistribution;  // Optional for backwards compatibility
+  warningDistribution?: WarningLevelDistribution;  // For predictive death forecasting
   totalDomains: number;
+  liveDomains: number;  // Domains with at least 1 live inbox
+  deadDomains: number;  // Domains with 0 live inboxes
   cleanDomains: number;
   flaggedDomains: number;
+  domainSourceBreakdown?: DomainSourceBreakdown;  // Legacy vs purchased vs generated
   lastSync: string | null;
   syncSource: string;
 }
@@ -552,3 +573,45 @@ export const KILL_CATEGORY_CONFIG = {
     action: 'Review individual trigger details',
   },
 } as const;
+
+// ===== DAILY VOLUME SNAPSHOTS (FOR SENDING CAPACITY CHART) =====
+
+export interface DailyVolumeSnapshot {
+  date: string;
+  emailsSent: number;
+  emailsDelivered: number;
+  emailsBounced: number;
+  dailyCapacityAvailable: number;
+  liveInboxes: number;
+  incubatingInboxes: number;
+  deadInboxes: number;
+  capacityUtilizationPct: number | null;
+  killsThatDay: number;
+}
+
+export interface KillEventAnnotation {
+  date: string;
+  inboxesKilled: number;
+  killReasons: string;
+}
+
+export interface DailyVolumeHistoryResponse {
+  clientId: string;
+  workspaceId: string | null;
+  startDate: string;
+  endDate: string;
+  daysRequested: number;
+  daysReturned: number;
+  snapshots: DailyVolumeSnapshot[];
+  killEvents: KillEventAnnotation[];
+  totalEmailsSent: number;
+  avgDailyCapacity: number;
+  avgUtilizationPct: number;
+  totalKills: number;
+}
+
+export interface CapacityInsight {
+  icon: string;
+  message: string;
+  severity: 'info' | 'warning' | 'critical';
+}

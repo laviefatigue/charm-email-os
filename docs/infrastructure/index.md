@@ -48,6 +48,14 @@ docker compose -f docker-compose.local.yml up -d
 
 See [[../local-development/index]] for complete setup instructions.
 
+## Infrastructure Policies & Constraints
+
+- [[hypertide-rotation-policy]] - **CRITICAL** - Hypertide domain rotation constraints
+  - Cannot add/remove individual inboxes
+  - Must replace entire domains
+  - Two-tier rotation strategy
+  - Requires 20-30% capacity buffer
+
 ## Legacy Documentation (Deprecated)
 
 The following infrastructure documentation is preserved for reference only:
@@ -61,3 +69,4 @@ The following infrastructure documentation is preserved for reference only:
 
 - [[../local-development/index]] - **Start here** - Local development hub
 - [[../architecture/data-flow]] - Data flow through infrastructure
+- [[../features/hypertide-health-v3-impact]] - How rotation policy affects Health V3

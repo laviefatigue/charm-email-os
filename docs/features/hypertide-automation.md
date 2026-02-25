@@ -1,9 +1,9 @@
 ---
 title: Hypertide Inbox Automation
 created: 2026-02-13
-updated: 2026-02-13
+updated: 2026-02-23
 selector_mapping_date: 2026-02-13
-tags: [feature, hypertide, automation, inboxes, playwright, selectors]
+tags: [feature, hypertide, automation, inboxes, playwright, selectors, capacity]
 ---
 
 # Hypertide Inbox Automation
@@ -47,6 +47,51 @@ PurchaseAutomation (purchase.py)
 | Monthly capacity | 5,000 emails | 5,000+ emails |
 | Best for | B2B outreach at scale | Personal email deliverability |
 | DNS warning | Disconnect Microsoft tenant | Disconnect Google Workspace |
+
+## Capacity Tracking (2026-02-23)
+
+Database views track HyperTide infrastructure capacity per domain and client.
+
+### Expected Capacity per Domain
+
+| Provider | Inboxes | Emails/Day/Inbox | Daily Capacity |
+|----------|---------|------------------|----------------|
+| **Entra** | 50 | 2 | 100 emails/day |
+| **Google** | 3 | 20 | 60 emails/day |
+
+### Views Available
+
+| View | Purpose |
+|------|---------|
+| `v_domain_capacity` | Per-domain capacity vs expected |
+| `v_client_capacity` | Client packages vs actual with gap analysis |
+| `v_hypertide_order_queue` | Orders needed to fill capacity gaps |
+| `v_workspace_volume` | Raw volume (no package required) |
+
+### Client Packages
+
+Stored in `client_subscriptions`:
+
+```sql
+entra_packages: 6          -- HyperTide Entra orders purchased
+entra_domains_per_package: 2  -- Default
+entra_inboxes_per_domain: 52  -- Default (50 + buffer)
+google_packages: 5         -- HyperTide Google orders purchased
+google_domains_per_package: 5 -- Default
+google_inboxes_per_domain: 3  -- Default
+spare_ratio: 0.15          -- 15% pipeline buffer target
+```
+
+### Order Queue Query
+
+```sql
+-- Find clients needing more HyperTide orders
+SELECT client_name, provider_type, domain_gap, orders_needed
+FROM v_hypertide_order_queue
+WHERE orders_needed > 0;
+```
+
+See [[health-monitoring#HyperTide Capacity Tracking]] for full documentation.
 
 ## UI Selectors (Updated 2026-02-13)
 

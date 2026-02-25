@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__emailbison__bulk_export",
+      "mcp__emailbison__call_api",
+      "mcp__emailbison__search_api_spec",
+      "mcp__emailbison__get_campaign_analytics",
+      "mcp__emailbison__list_campaigns",
+      "mcp__emailbison__get_campaign",
+      "mcp__emailbison-local__get_warmup_status_dashboard"
+    ],
+    "additionalDirectories": [
+      "D:\\Work\\client-health-dashboard\\src\\components\\health",
+      "D:\\Work\\client-health-dashboard\\src\\app",
+      "D:\\Work\\client-health-dashboard"
+    ]
+  }
+}

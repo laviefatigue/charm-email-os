@@ -63,6 +63,24 @@ docker compose -f docker-compose.local.yml up -d
 - [[features/health-monitoring]] - Database-driven health monitoring
 - [[concepts/kill-triggers]] - Automated inbox termination system
 - [[local-development/emailbison-sync-worker]] - Sync worker configuration
+- [[features/hypertide-health-v3-impact]] - How Hypertide affects Health V3 system
+- [[features/v3-compliance-gap-analysis]] - Health V3 compliance assessment
+
+## Infrastructure & Constraints
+
+- [[infrastructure/hypertide-rotation-policy]] - **CRITICAL** - Domain rotation constraints
+  - Cannot add/remove individual inboxes
+  - Must replace entire domains
+  - Two-tier rotation strategy
+- [[features/rbl-implementation-guide]] - RBL checking implementation guide
+
+## Database & Data Management
+
+- [[database/README]] - **Database hub** - Complete database documentation
+- [[database/backfill-analysis]] - Data availability and backfill requirements
+  - 95% schema complete, 70% data populated
+  - Critical gaps and SQL scripts
+  - 13-19 hours to full data
 
 ## Architecture Decisions
 

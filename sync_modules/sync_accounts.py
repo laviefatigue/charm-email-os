@@ -276,6 +276,10 @@ class AccountSyncModule:
         # Extract warmup data
         warmup_enabled = account.get('warmup_enabled', False)
 
+        # Calculate initial inventory status for new inboxes
+        initial_lifecycle = 'dead' if inbox_state == 'dead' else 'incubating'
+        initial_pool = None if inbox_state == 'dead' else 'incubating'
+
         result = await self.db.fetchrow("""
             INSERT INTO sender_accounts (
                 workspace_id,
@@ -294,16 +298,19 @@ class AccountSyncModule:
                 bounces_all_time,
                 daily_limit,
                 is_active,
+                inventory_lifecycle_status,
+                inventory_pool_status,
+                disconnected_at,
                 first_seen_at,
                 last_seen_at,
                 last_synced_at
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, NOW(), NOW(), NOW())
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, NOW(), NOW(), NOW())
             ON CONFLICT (email_address) DO UPDATE SET
                 emailbison_account_id = EXCLUDED.emailbison_account_id,
                 display_name = COALESCE(EXCLUDED.display_name, sender_accounts.display_name),
                 status = EXCLUDED.status,
                 inbox_state = CASE
-                    WHEN sender_accounts.inbox_state = 'dead' THEN 'dead'
+                    WHEN sender_accounts.killed_at IS NOT NULL THEN 'dead'
                     ELSE EXCLUDED.inbox_state
                 END,
                 esp = COALESCE(EXCLUDED.esp, sender_accounts.esp),
@@ -315,10 +322,9 @@ class AccountSyncModule:
                 ),
                 warmup_enabled = EXCLUDED.warmup_enabled,
                 warmup_started_at = CASE
-                    -- Set warmup_started_at when first seeing warmup enabled
-                    -- Use first_seen_at + 7 days (~5 business days) as estimated warmup start
+                    -- Record when we FIRST OBSERVE warmup_enabled=TRUE (observation-based)
                     WHEN EXCLUDED.warmup_enabled = TRUE AND sender_accounts.warmup_started_at IS NULL
-                    THEN COALESCE(sender_accounts.first_seen_at + INTERVAL '7 days', NOW())
+                    THEN NOW()
                     ELSE sender_accounts.warmup_started_at
                 END,
                 warmup_stopped_at = CASE
@@ -332,9 +338,39 @@ class AccountSyncModule:
                 bounces_all_time = EXCLUDED.bounces_all_time,
                 daily_limit = EXCLUDED.daily_limit,
                 is_active = EXCLUDED.is_active,
+                -- Update inventory lifecycle status based on current state
+                inventory_lifecycle_status = CASE
+                    WHEN sender_accounts.killed_at IS NOT NULL THEN 'dead'
+                    WHEN EXCLUDED.inbox_state = 'dead' THEN 'dead'
+                    WHEN sender_accounts.created_at > NOW() - INTERVAL '14 days' THEN 'incubating'
+                    ELSE 'active'
+                END,
+                -- Update inventory pool status (NULL for dead, else calculate)
+                inventory_pool_status = CASE
+                    WHEN sender_accounts.killed_at IS NOT NULL THEN NULL
+                    WHEN EXCLUDED.inbox_state = 'dead' THEN NULL
+                    WHEN COALESCE(sender_accounts.hard_bounces_24h, 0) >= 1
+                         OR COALESCE(sender_accounts.hard_bounces_7d, 0) >= 3 THEN 'warning'
+                    WHEN sender_accounts.created_at <= NOW() - INTERVAL '14 days'
+                         AND COALESCE(EXCLUDED.warmup_enabled, TRUE) = TRUE THEN 'reserve'
+                    ELSE 'incubating'
+                END,
                 last_seen_at = NOW(),
                 last_synced_at = NOW(),
-                updated_at = NOW()
+                updated_at = NOW(),
+                -- Track disconnection timestamp
+                disconnected_at = CASE
+                    -- Set disconnected_at when status changes TO 'Not connected'
+                    WHEN EXCLUDED.status = 'Not connected'
+                         AND sender_accounts.status != 'Not connected'
+                         AND sender_accounts.disconnected_at IS NULL
+                    THEN NOW()
+                    -- Keep existing disconnected_at if still disconnected
+                    WHEN EXCLUDED.status = 'Not connected'
+                    THEN sender_accounts.disconnected_at
+                    -- Clear disconnected_at when reconnected
+                    ELSE NULL
+                END
             RETURNING (xmax = 0) as created
         """,
             workspace_id,                              # $1
@@ -352,7 +388,10 @@ class AccountSyncModule:
             replies_all_time,                          # $13
             bounces_all_time,                          # $14
             daily_limit,                               # $15
-            inbox_state == 'live'                      # $16 is_active
+            inbox_state == 'live',                     # $16 is_active
+            initial_lifecycle,                         # $17 inventory_lifecycle_status
+            initial_pool,                              # $18 inventory_pool_status
+            datetime.now() if status == 'Not connected' else None  # $19 disconnected_at
         )
 
         return result['created'] if result else False

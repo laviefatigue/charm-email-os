@@ -41,6 +41,7 @@ class DomainCreate(DomainBase):
 
 RegistrarProvider = Literal["porkbun", "dynadot"]
 InfrastructureType = Literal["entra", "google"]
+DomainSource = Literal["generated", "purchased", "legacy"]
 
 
 class Domain(BaseModel):
@@ -109,6 +110,9 @@ class Domain(BaseModel):
 
     # Blacklist details (names of RBLs domain is listed on)
     blacklist_names: Optional[list[str]] = None
+
+    # Domain source tracking (how this domain was acquired)
+    domain_source: Optional[str] = "legacy"  # generated, purchased, legacy
 
     class Config:
         from_attributes = True

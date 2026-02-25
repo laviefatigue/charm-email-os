@@ -60,33 +60,40 @@ See [[adr-005-differentiated-bounce-thresholds]] for the decision rationale.
 │  2. QUEUE      Insert into kill_queue table                    │
 │       ↓        Status: 'pending'                               │
 │                                                                 │
-│  3. TAG        Apply tag in EmailBison                         │
-│       ↓        Tag: "delete_queue"                             │
-│                Status: 'tagged'                                │
+│  3. TAG        Apply trigger-specific tag in EmailBison        │
+│       ↓        Tag: "flagged_{trigger_type}"                   │
+│                Examples: flagged_fresh_inbox_bounce,           │
+│                          flagged_spam_complaint                │
+│                Status: 'flagged'                               │
 │                                                                 │
-│  4. WAIT       24-hour safety buffer                           │
-│       ↓        (allows manual review if needed)                │
+│  4. UPDATE     Mark inbox_state = 'dead' locally               │
+│                Inbox excluded from future campaigns            │
 │                                                                 │
-│  5. DELETE     Remove from EmailBison                          │
-│       ↓        Status: 'deleted'                               │
-│                                                                 │
-│  6. UPDATE     Mark inbox_state = 'dead'                       │
-│                in sender_accounts                              │
+│  NOTE: Inboxes are NOT deleted from EmailBison.                │
+│        They remain tagged for visibility into WHY flagged.     │
 │                                                                 │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-### Safety Window
+### Tagging System (No Deletion)
 
-The 24-hour window between tagging and deletion allows:
+Inboxes are tagged with trigger-specific tags for visibility:
 
-- Manual review in EmailBison (search by tag)
-- False positive detection
-- Emergency override if needed
+| Tag Name | Trigger | Meaning |
+|----------|---------|---------|
+| `flagged_fresh_inbox_bounce` | Fresh inbox bounce | Inbox <14 days with any bounce |
+| `flagged_spam_complaint` | Spam complaint | User reported spam |
+| `flagged_hard_blocked_24h` | Hard blocked | Spam/policy rejection |
+| `flagged_hard_unknown_24h` | Hard unknown | Bad email addresses |
+| `flagged_hard_bounces_24h` | Hard bounces | Combined fallback |
 
-**Tag name**: `delete_queue` (consistent tag, `tagged_at` timestamp stored in `kill_queue` table)
+**Why no deletion?**
+- Inboxes remain in EmailBison for manual review
+- Tags provide visibility into WHY each inbox was flagged
+- Can filter by tag in EmailBison to see patterns
+- Easier to reverse if false positive (cancel_kill removes tag)
 
-> **Important**: The `delete_queue` tag must exist in each EmailBison workspace before kill processing can work. When creating new workspaces, ensure this tag is created. The kill processor uses `get_or_create_tag()` but this can fail under rate limiting - pre-creating the tag prevents 422 errors.
+> **Important**: Tags are created on-demand using `get_or_create_tag()`. The kill processor caches tag IDs per workspace per run for efficiency.
 
 ## Database Schema
 
@@ -100,10 +107,9 @@ The 24-hour window between tagging and deletion allows:
 | `trigger_type` | VARCHAR | Which trigger fired |
 | `trigger_value` | DECIMAL | Actual value at trigger time |
 | `trigger_threshold` | DECIMAL | Threshold that was breached |
-| `status` | VARCHAR | pending, tagged, deleted, failed |
+| `status` | VARCHAR | pending, flagged, failed, cancelled |
 | `tagged_at` | TIMESTAMP | When inbox was tagged in EmailBison |
-| `scheduled_delete_at` | TIMESTAMP | When deletion is scheduled |
-| `deleted_at` | TIMESTAMP | When actually deleted |
+| `tag_name` | VARCHAR | Trigger-specific tag applied (e.g., flagged_fresh_inbox_bounce) |
 | `error_message` | TEXT | Error details if failed |
 | `created_at` | TIMESTAMP | When queued |
 
@@ -198,11 +204,20 @@ FROM sender_accounts
 WHERE inbox_state = 'live'
 AND (hard_blocked_24h >= 1 OR hard_unknown_24h >= 3 OR complaints_lifetime >= 1);
 
--- Recent kills by trigger type
-SELECT trigger_type, COUNT(*), MAX(deleted_at)
+-- Recently flagged by trigger type (with tag names)
+SELECT trigger_type, tag_name, COUNT(*), MAX(tagged_at)
 FROM kill_queue
-WHERE status = 'deleted'
-GROUP BY trigger_type;
+WHERE status = 'flagged'
+GROUP BY trigger_type, tag_name
+ORDER BY COUNT(*) DESC;
+
+-- Flagged inbox breakdown by workspace
+SELECT w.workspace_name, kq.trigger_type, kq.tag_name, COUNT(*)
+FROM kill_queue kq
+JOIN workspaces w ON kq.workspace_id = w.id
+WHERE kq.status = 'flagged'
+GROUP BY w.workspace_name, kq.trigger_type, kq.tag_name
+ORDER BY w.workspace_name, COUNT(*) DESC;
 ```
 
 ## Files

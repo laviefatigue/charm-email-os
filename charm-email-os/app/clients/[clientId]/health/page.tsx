@@ -18,13 +18,15 @@ import {
   ESPComparisonCard,
   KillVelocityChart,
   KillBreakdownChart,
+  DisconnectedInboxesList,
+  SendingCapacityChart,
 } from '@/components/health';
 import { DomainInboxTree, InboxForm } from '@/components/inboxes';
 import { useClientStore, useHealthStore, useInfrastructureStore } from '@/lib/stores';
 import { inventoryApi, healthApi, subscriptionApi } from '@/lib/api';
 import { cn } from '@/lib/utils';
 import { Progress } from '@/components/ui/progress';
-import type { KillTrigger, InfrastructureHealthResponse, KillBreakdownResponse } from '@/lib/types/health';
+import type { KillTrigger, InfrastructureHealthResponse, KillBreakdownResponse, DailyVolumeHistoryResponse } from '@/lib/types/health';
 import type { SubscriptionWithUsage } from '@/lib/types';
 import type { InventoryOverview } from '@/lib/types/inventory';
 
@@ -59,6 +61,9 @@ export default function HealthPage() {
 
   // Kill breakdown data (why inboxes died)
   const [killBreakdown, setKillBreakdown] = useState<KillBreakdownResponse | null>(null);
+
+  // Daily volume history for sending capacity chart
+  const [dailyVolume, setDailyVolume] = useState<DailyVolumeHistoryResponse | null>(null);
 
   // Subscription data for capacity planning
   const [subscription, setSubscription] = useState<SubscriptionWithUsage | null>(null);
@@ -182,6 +187,16 @@ export default function HealthPage() {
     }
   }, [clientId]);
 
+  // Fetch daily volume history for sending capacity chart
+  const fetchDailyVolume = useCallback(async () => {
+    try {
+      const volume = await healthApi.getDailyVolumeHistory(clientId, { days: 90 });
+      setDailyVolume(volume);
+    } catch (error) {
+      console.error('Failed to fetch daily volume history:', error);
+    }
+  }, [clientId]);
+
   // Fetch all data on mount
   useEffect(() => {
     selectClient(clientId);
@@ -191,11 +206,12 @@ export default function HealthPage() {
     fetchSubscription();
     fetchKillVelocity();
     fetchKillBreakdown();
+    fetchDailyVolume();
     fetchDomainsByClient(clientId);
     if (clients.length === 0) {
       fetchClients();
     }
-  }, [clientId, selectClient, refreshHealth, fetchInventoryData, fetchInfrastructureHealth, fetchSubscription, fetchKillVelocity, fetchKillBreakdown, fetchDomainsByClient, fetchClients, clients.length]);
+  }, [clientId, selectClient, refreshHealth, fetchInventoryData, fetchInfrastructureHealth, fetchSubscription, fetchKillVelocity, fetchKillBreakdown, fetchDailyVolume, fetchDomainsByClient, fetchClients, clients.length]);
 
   const instantPending = killTriggers.filter(
     (t) => t.severity === 'instant' && t.actionTaken === 'pending'
@@ -217,6 +233,7 @@ export default function HealthPage() {
     fetchSubscription();
     fetchKillVelocity();
     fetchKillBreakdown();
+    fetchDailyVolume();
     fetchDomainsByClient(clientId);
     toast.success('Health data refreshed');
   };
@@ -482,6 +499,18 @@ export default function HealthPage() {
               {/* Kill Breakdown Chart - Why inboxes died */}
               <KillBreakdownChart breakdown={killBreakdown} />
 
+              {/* Sending Capacity Over Time */}
+              {dailyVolume && dailyVolume.daysReturned > 0 && (
+                <SendingCapacityChart
+                  snapshots={dailyVolume.snapshots}
+                  killEvents={dailyVolume.killEvents}
+                  totalEmailsSent={dailyVolume.totalEmailsSent}
+                  avgDailyCapacity={dailyVolume.avgDailyCapacity}
+                  avgUtilizationPct={dailyVolume.avgUtilizationPct}
+                  totalKills={dailyVolume.totalKills}
+                />
+              )}
+
               {/* ESP Performance Comparison */}
               <ESPComparisonCard
                 gmail={gmailSummary ? {
@@ -526,6 +555,9 @@ export default function HealthPage() {
 
           {/* Tab 2: Infrastructure - Domains & Inboxes Tree */}
           <TabsContent value="infrastructure" className="space-y-6">
+            {/* Disconnected Inboxes Alert */}
+            <DisconnectedInboxesList clientId={clientId} />
+
             <Card>
               <CardHeader className="pb-4">
                 <div className="flex items-center justify-between">

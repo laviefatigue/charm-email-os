@@ -1,8 +1,8 @@
 ---
 title: Health Monitoring
 created: 2026-02-12
-updated: 2026-02-13
-tags: [health, monitoring, infrastructure, database, kill-triggers, warmup]
+updated: 2026-02-23
+tags: [health, monitoring, infrastructure, database, kill-triggers, warmup, capacity]
 ---
 
 # Health Monitoring
@@ -340,19 +340,19 @@ The health system includes automated kill detection. When thresholds are breache
 ### Kill Queue Process
 
 1. **Detect** - Health check finds threshold breach (every 15 min)
-2. **Queue** - Add to `kill_queue` table
-3. **Tag** - Apply `delete_queue` tag in EmailBison
-4. **Wait** - 24-hour safety window
-5. **Delete** - Remove from EmailBison after 24 hours
-6. **Update** - Mark `inbox_state = 'dead'`
+2. **Queue** - Add to `kill_queue` table with status 'pending'
+3. **Tag** - Apply trigger-specific tag in EmailBison (e.g., `flagged_fresh_inbox_bounce`)
+4. **Flag** - Update status to 'flagged', mark `inbox_state = 'dead'`
+
+**Note**: Inboxes are NOT deleted from EmailBison. They remain tagged for visibility into WHY they were flagged. This allows manual review in EmailBison by filtering by tag.
 
 ### Kill Trigger Monitor (UI)
 
 The Health page shows three sections:
 
-- **Action Required** (red) - Inboxes queued for deletion
+- **Action Required** (red) - Inboxes pending flagging
 - **Under Review** (yellow) - Confirming triggers (planned feature)
-- **Recent Kills** - Completed deletions
+- **Recently Flagged** - Inboxes tagged and marked as dead (no deletion)
 
 See [[../concepts/kill-triggers]] for complete documentation.
 
@@ -422,8 +422,132 @@ Time-series warmup data is stored in `sender_warmup_snapshots`:
 | `warmup_bounces_received_count` | Bounces received during warmup |
 | `warmup_emails_saved_from_spam` | Emails rescued from spam |
 
+## V3 Specification Compliance
+
+The Health V3 specification (`Inbox & Domain Health System v3.md`) defines 22 sections of requirements. Current implementation coverage:
+
+| Area | Coverage | Status |
+|------|----------|--------|
+| Instant Kill Triggers | **95%** | All instant triggers + provider blocking |
+| Confirming Kill Triggers | 0% | TODO: Requires placement testing |
+| Domain Health Thresholds | **90%** | 1 dead=flagged, 2+=dead, >30% unhealthy=dead |
+| Portfolio Structure | **85%** | Roles + backup promotion automation |
+| ESP Configuration | 40% | Schema ready; Postmaster/SNDS API integration pending |
+| Campaign Quarantine | **90%** | Burn tracking + quarantine triggers |
+| List Management | **85%** | Segment quarantine + provider flagging |
+| Placement Testing | 5% | Schema only |
+| Alerting | 25% | Slack only |
+| Data Model | **95%** | All core tables complete |
+
+**Overall V3 Compliance: ~78%** (updated 2026-02-23)
+
+For detailed gap analysis, see [[v3-compliance-gap-analysis]].
+
+### Implemented Features
+
+1. **Provider-specific blocking** - Gmail/Microsoft/Yahoo blocks trigger `flagged_provider_block_{esp}`
+2. **Domain health thresholds** - Auto-transition to flagged/dead based on dead inbox count
+3. **Campaign quarantine** - Burns 2+ inboxes in 7 days = quarantine
+4. **Backup promotion** - Hot Backup → Primary when Primary dies
+5. **List segment tracking** - Quarantine segments with 2+ bounces, purge at 3+
+6. **Enrichment provider flagging** - Flag providers with 3+ bounces
+
+### Remaining Gaps
+
+1. **Confirming kill triggers** - Requires placement testing integration
+2. **Postmaster/SNDS integration** - Schema ready, API not connected
+3. **Placement testing** - No test execution or seed list management
+4. **Email/SMS alerting** - Only Slack implemented
+
+## HyperTide Capacity Tracking (2026-02-23)
+
+Database views for tracking domain capacity against HyperTide infrastructure packages.
+
+### Capacity Model
+
+| Provider | Inboxes/Domain | Emails/Day/Inbox | Expected Capacity/Domain |
+|----------|----------------|------------------|--------------------------|
+| **Entra** | 50 | 2 | 100 emails/day |
+| **Google** | 3 | 20 | 60 emails/day |
+
+### Capacity Views
+
+| View | Purpose |
+|------|---------|
+| `v_domain_capacity` | Per-domain capacity vs expected (utilization %, viability status) |
+| `v_workspace_capacity_summary` | Aggregated by workspace + provider type |
+| `v_domains_at_risk` | Domains below 70% capacity utilization |
+| `v_capacity_validation` | Cross-validates daily_limit against expected HyperTide values |
+| `v_client_capacity` | Client packages vs actual with gap analysis |
+| `v_hypertide_order_queue` | Actionable HyperTide orders needed to fill gaps |
+| `v_inbox_pipeline` | Inbox flow through lifecycle stages |
+| `v_workspace_volume` | Raw volume for ALL workspaces (no package required) |
+
+### Viability Status
+
+| Status | Utilization | Description |
+|--------|-------------|-------------|
+| `healthy` | >70% | Performing well |
+| `warning` | 40-70% | Needs attention |
+| `critical` | <40% | Significant capacity loss |
+| `deprecated` | 0 live | No live inboxes remaining |
+
+### Client Package Tracking
+
+Client packages are stored in `client_subscriptions`:
+
+```sql
+SELECT
+    entra_packages,          -- Number of Entra HyperTide packages
+    entra_domains_per_package,  -- 2 (default)
+    entra_inboxes_per_domain,   -- 52 (default)
+    google_packages,         -- Number of Google packages
+    google_domains_per_package, -- 5 (default)
+    google_inboxes_per_domain,  -- 3 (default)
+    spare_ratio              -- 0.15 (15% buffer)
+FROM client_subscriptions
+WHERE status = 'active';
+```
+
+### Gap Analysis
+
+The `v_client_capacity` view calculates:
+
+- **Target domains/inboxes** from subscription
+- **Actual active** (excluding deprecated)
+- **Gap** = target - actual
+- **Orders needed** = gap / domains_per_package
+- **Pipeline buffer** = incubating + reserve inboxes
+- **Buffer ratio** = pipeline / active (should be >= spare_ratio)
+
+Clients without subscriptions show raw volume with NULL for targets (informational, not restrictive).
+
+### Sample Queries
+
+```sql
+-- Domains at risk for a workspace
+SELECT domain_name, capacity_utilization_pct, viability_status
+FROM v_domains_at_risk
+WHERE workspace_id = 'your-workspace-id';
+
+-- HyperTide orders needed
+SELECT * FROM v_hypertide_order_queue
+WHERE orders_needed > 0;
+
+-- Client capacity dashboard
+SELECT client_name, entra_domain_gap, google_domain_gap,
+       entra_orders_needed, google_orders_needed
+FROM v_client_capacity;
+
+-- Raw workspace volume (no package required)
+SELECT workspace_name, provider_type, live_inboxes, dead_inboxes,
+       incubating_inboxes, active_inboxes
+FROM v_workspace_volume;
+```
+
 ## Related
 
+- [[v3-compliance-gap-analysis]] - Detailed V3 gap analysis
 - [[../concepts/kill-triggers]] - Kill trigger system
 - [[../adr/adr-005-differentiated-bounce-thresholds]] - Differentiated thresholds ADR
 - [[../local-development/emailbison-sync-worker]] - Sync worker documentation

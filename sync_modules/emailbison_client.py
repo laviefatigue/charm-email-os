@@ -180,9 +180,9 @@ class EmailBisonClient:
         """Update sender account."""
         return await self._request('PATCH', f'/sender-emails/{account_id}', json_data=data)
 
-    async def delete_sender_account(self, account_id: int) -> Dict:
-        """Delete sender account from EmailBison."""
-        return await self._request('DELETE', f'/sender-emails/{account_id}')
+    # NOTE: delete_sender_account() method intentionally removed.
+    # Inboxes are NEVER deleted from EmailBison - only tagged and flagged locally.
+    # See kill_processor.py for the tagging-only workflow.
 
     async def get_sender_campaigns(self, account_id: int) -> List[Dict]:
         """Get campaigns that a sender account is assigned to."""

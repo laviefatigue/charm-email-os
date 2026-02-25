@@ -384,14 +384,18 @@ See [[../concepts/kill-triggers]] for detailed documentation on kill trigger eva
 
 ### Kill Processor
 
-Implements 24-hour kill queue:
+Implements trigger-specific tagging (no deletion):
 
-1. **Pending** → Tag inbox in EmailBison with `delete_queue`
-2. **Tagged** → Wait 24 hours
-3. **Delete** → Remove from EmailBison after 24 hours
-4. **Update** → Mark `sender_accounts.inbox_state = 'dead'`
+1. **Pending** → Tag inbox in EmailBison with `flagged_{trigger_type}`
+2. **Flagged** → Mark `sender_accounts.inbox_state = 'dead'`
 
-> **Note**: The `delete_queue` tag must exist in each workspace. When provisioning new workspaces, create this tag to prevent 422 errors during kill processing.
+**Tag Examples**:
+- `flagged_fresh_inbox_bounce` - Inbox <14 days with any bounce
+- `flagged_spam_complaint` - Spam complaint received
+- `flagged_hard_blocked_24h` - Spam/policy rejection
+- `flagged_hard_unknown_24h` - Bad email addresses
+
+> **Note**: Inboxes are NOT deleted from EmailBison. They remain tagged for visibility into WHY each inbox was flagged. Tags are created on-demand using `get_or_create_tag()`.
 
 ### Retention Manager
 
@@ -416,11 +420,12 @@ Alert format:
 ```
 🔔 Inbox Kill Trigger Fired
 
-Inbox `user@domain.com` has been queued for deletion
+Inbox `user@domain.com` has been flagged
 
 • Trigger: hard_bounces_24h
 • Value: 3
-• Status: Tagged for 24h queue
+• Tag: flagged_hard_bounces_24h
+• Status: Flagged (excluded from campaigns)
 ```
 
 ## Troubleshooting
@@ -455,11 +460,60 @@ Verify the health check interval hasn't elapsed:
 docker logs charm-emailbison-sync --tail 100 | grep "Health checks"
 ```
 
+## Daily Volume Snapshots
+
+The `daily_volume_snapshots` table stores historical sending volume per workspace for client dashboard charts.
+
+### How It Works
+
+Volume data comes from **EmailBison campaign stats**, not sender account deltas:
+
+```
+EmailBison API                Our Database
+───────────────               ────────────
+Campaigns → Stats             daily_volume_snapshots
+    │          │                    │
+    │    POST /campaigns/{id}/stats │
+    │    { start_date, end_date }   │
+    │          │                    │
+    └──────────┴── emails_sent ────►│
+               per day              │
+```
+
+Campaign-level stats are preserved even after sender accounts are killed/deleted.
+
+### Backfill Script
+
+To backfill historical data from EmailBison:
+
+```bash
+# Backfill last 90 days for all active workspaces
+python scripts/backfill_daily_volume.py --days 90
+
+# Backfill specific date range
+python scripts/backfill_daily_volume.py --start-date 2025-11-01 --end-date 2026-02-22
+
+# Backfill single workspace
+python scripts/backfill_daily_volume.py --workspace-id b9abd34a-f16a-4b92-bda0-5af10f8c44bd --days 30
+```
+
+**Initial Backfill (2026-02-23)**: 54,716 emails across 7 workspaces, covering Nov 25, 2025 - Feb 22, 2026.
+
+### Daily Snapshot Worker
+
+The sync worker creates daily snapshots at 00:05 UTC via `run_daily_snapshot()`:
+
+1. Queries current capacity metrics (live/incubating/dead inboxes, daily_limit sum)
+2. Calls `snapshot_daily_volume()` SQL function
+3. Logs results to `sync_audit_log`
+
 ## Files
 
 | File | Purpose |
 |------|---------|
 | `emailbison_sync_worker.py` | Main orchestrator |
+| `scripts/backfill_daily_volume.py` | Historical data backfill from EmailBison API |
+| `sync_modules/daily_snapshot.py` | Daily snapshot worker module |
 | `Dockerfile.emailbison-sync` | Container definition |
 | `requirements-sync.txt` | Python dependencies |
 | `sync_modules/__init__.py` | Module exports |

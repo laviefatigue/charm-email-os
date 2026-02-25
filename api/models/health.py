@@ -169,6 +169,7 @@ class KillTriggerItem(BaseModel):
     action_taken: Optional[str] = None  # killed, dismissed, pending
     resolved_at: Optional[datetime] = None
     retest_at: Optional[datetime] = None
+    tag_name: Optional[str] = None  # Trigger-specific tag applied in EmailBison (e.g., flagged_fresh_inbox_bounce)
 
 
 class BackupTierStatus(BaseModel):
@@ -375,9 +376,70 @@ class InfrastructureHealthResponse(BaseModel):
 
     # Domain metrics (from domains table)
     total_domains: int
+    live_domains: int  # Domains with at least 1 live inbox
+    dead_domains: int  # Domains with 0 live inboxes (legacy HyperTide domains)
     clean_domains: int
     flagged_domains: int
+
+    # Domain source breakdown (how domains were acquired)
+    domain_source_breakdown: Optional[dict] = None  # {generated: X, purchased: Y, legacy: Z}
 
     # Data freshness
     last_sync: Optional[datetime] = None
     sync_source: str = "database"
+
+
+# ===== Daily Volume Snapshot Models (for Capacity Chart) =====
+
+class DailyVolumeSnapshot(BaseModel):
+    """Single day's volume and capacity snapshot for time-series chart."""
+
+    date: datetime  # Snapshot date
+    emails_sent: int = 0  # Total emails sent this day
+    emails_delivered: int = 0  # Emails successfully delivered
+    emails_bounced: int = 0  # Emails bounced
+    daily_capacity_available: int = 0  # Total daily capacity (sum of inbox limits)
+    live_inboxes: int = 0  # Count of live inboxes as of end of day
+    incubating_inboxes: int = 0  # Count of incubating inboxes
+    dead_inboxes: int = 0  # Count of dead inboxes
+    capacity_utilization_pct: Optional[float] = None  # Percentage of capacity used (0-100)
+    kills_that_day: int = 0  # Inboxes killed on this day
+
+
+class KillEventAnnotation(BaseModel):
+    """Kill event for chart annotation (vertical marker)."""
+
+    date: datetime  # Date of kill event
+    inboxes_killed: int = 0  # Number of inboxes killed this day
+    kill_reasons: str = ""  # Comma-separated list of kill trigger types
+
+
+class DailyVolumeHistoryResponse(BaseModel):
+    """Response containing daily volume history for dashboard chart."""
+
+    client_id: UUID
+    workspace_id: Optional[UUID] = None
+    start_date: datetime
+    end_date: datetime
+    days_requested: int = 90
+    days_returned: int = 0
+
+    # Time-series data
+    snapshots: list[DailyVolumeSnapshot] = []
+
+    # Kill events for chart annotations
+    kill_events: list[KillEventAnnotation] = []
+
+    # Summary metrics
+    total_emails_sent: int = 0
+    avg_daily_capacity: int = 0
+    avg_utilization_pct: float = 0.0
+    total_kills: int = 0
+
+
+class CapacityInsight(BaseModel):
+    """Auto-generated insight message for capacity chart."""
+
+    icon: str = ""  # Emoji icon
+    message: str = ""  # Insight text
+    severity: str = "info"  # info, warning, critical

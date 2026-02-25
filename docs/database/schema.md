@@ -1,8 +1,8 @@
 ---
 title: Database Schema
 created: 2026-01-16
-updated: 2026-02-13
-tags: [database, schema, postgresql, health, warmup, metrics]
+updated: 2026-02-23
+tags: [database, schema, postgresql, health, warmup, metrics, daily-volume]
 ---
 
 # Database Schema
@@ -514,6 +514,58 @@ CREATE TABLE strategy_revision_requests (
 CREATE INDEX idx_revisions_job ON strategy_revision_requests(job_id);
 CREATE INDEX idx_revisions_processed ON strategy_revision_requests(processed);
 ```
+
+## Metrics Tables
+
+### daily_volume_snapshots
+
+Historical sending volume per workspace for client dashboard charts.
+
+```sql
+CREATE TABLE daily_volume_snapshots (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    workspace_id UUID NOT NULL REFERENCES workspaces(id),
+    snapshot_date DATE NOT NULL,
+
+    -- Volume metrics (from EmailBison campaign stats)
+    emails_sent INTEGER NOT NULL DEFAULT 0,
+    emails_delivered INTEGER NOT NULL DEFAULT 0,
+    emails_bounced INTEGER NOT NULL DEFAULT 0,
+    emails_complained INTEGER NOT NULL DEFAULT 0,
+
+    -- Capacity metrics (snapshot as of end of day)
+    live_inboxes INTEGER NOT NULL DEFAULT 0,
+    incubating_inboxes INTEGER NOT NULL DEFAULT 0,
+    dead_inboxes INTEGER NOT NULL DEFAULT 0,
+    daily_capacity_available INTEGER NOT NULL DEFAULT 0,
+
+    -- Derived metrics
+    capacity_utilization_pct DECIMAL(5,2),
+    kills_that_day INTEGER NOT NULL DEFAULT 0,
+
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+
+    UNIQUE(workspace_id, snapshot_date)
+);
+
+CREATE INDEX idx_daily_volume_workspace_date ON daily_volume_snapshots(workspace_id, snapshot_date DESC);
+CREATE INDEX idx_daily_volume_date ON daily_volume_snapshots(snapshot_date DESC);
+```
+
+| Column | Type | Description |
+|--------|------|-------------|
+| workspace_id | UUID | Workspace this snapshot belongs to |
+| snapshot_date | DATE | Date of this snapshot |
+| emails_sent | INTEGER | Total emails sent across all campaigns |
+| emails_bounced | INTEGER | Total bounced emails |
+| daily_capacity_available | INTEGER | SUM(daily_limit) for all live inboxes |
+| capacity_utilization_pct | DECIMAL | (emails_sent / daily_capacity) * 100 |
+| kills_that_day | INTEGER | Inboxes killed on this date |
+
+**Data Source**: Backfilled from EmailBison API via `scripts/backfill_daily_volume.py`. Daily updates via sync worker's `run_daily_snapshot()`.
+
+**Initial Backfill (2026-02-23)**: 54,716 emails across 7 workspaces, covering Nov 25, 2025 - Feb 22, 2026.
 
 ## Related
 

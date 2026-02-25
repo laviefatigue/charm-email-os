@@ -113,7 +113,7 @@ export function KillTriggerMonitor({
               {recentKills.length > 0 && (
                 <span className="flex items-center gap-1 text-gray-500">
                   <Skull className="h-4 w-4" />
-                  {recentKills.length} killed
+                  {recentKills.length} flagged
                 </span>
               )}
             </div>
@@ -179,10 +179,10 @@ export function KillTriggerMonitor({
               </CollapsibleSection>
             )}
 
-            {/* Recent Kills - Collapsed by default */}
+            {/* Recently Flagged - Collapsed by default */}
             {recentKills.length > 0 && (
               <CollapsibleSection
-                title="Recent Kills"
+                title="Recently Flagged"
                 count={recentKills.length}
                 icon={<Skull className="h-4 w-4" />}
                 iconColor="text-gray-500"
