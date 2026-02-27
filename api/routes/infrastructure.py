@@ -456,6 +456,17 @@ async def get_client_infra_summary(client_id: str) -> dict:
         client_id
     )
 
+    # Get the package template name for display
+    package_info = await fetch_one(
+        """
+        SELECT pt.name as package_name
+        FROM client_subscriptions cs
+        JOIN package_templates pt ON cs.package_template_id = pt.id
+        WHERE cs.client_id = $1 AND cs.status = 'active'
+        """,
+        client_id
+    )
+
     # CRITICAL FIX: Compute domain status and only count from LIVE/FLAGGED domains
     # Domain status: live (healthy), flagged (1 dead OR all disconnected), dead (2+ dead OR 0 live)
     domain_and_inbox_counts = await fetch_one(
@@ -566,6 +577,7 @@ async def get_client_infra_summary(client_id: str) -> dict:
         return {
             'client_id': client_id,
             'client_name': 'Unknown',
+            'package_name': None,
             'entra': {
                 'provider': 'entra',
                 'package_count': 0,
@@ -636,6 +648,7 @@ async def get_client_infra_summary(client_id: str) -> dict:
     return {
         'client_id': str(row['client_id']),
         'client_name': row.get('client_name', 'Unknown'),
+        'package_name': package_info.get('package_name') if package_info else None,
         'entra': {
             'provider': 'entra',
             'package_count': row.get('entra_packages') or 0,

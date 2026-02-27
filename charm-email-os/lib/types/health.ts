@@ -1,3 +1,5 @@
+export * from './infrastructure';
+
 // ===== STATE MACHINE TYPES =====
 
 // Inbox lifecycle: Live -> Dead (one-way, permanent)

@@ -6,10 +6,6 @@ import {
   Server,
   Mail,
   Pencil,
-  AlertTriangle,
-  CheckCircle2,
-  TrendingUp,
-  TrendingDown,
 } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -137,14 +133,6 @@ export function SubscriptionCard({ clientId, onEdit }: SubscriptionCardProps) {
   }
 
   // Subscription exists - show details
-  const spareStatusColor = {
-    healthy: 'text-green-600 bg-green-50',
-    low: 'text-yellow-600 bg-yellow-50',
-    critical: 'text-red-600 bg-red-50',
-  }[subscription.spareStatus];
-
-  const SpareIcon = subscription.spareStatus === 'healthy' ? CheckCircle2 : AlertTriangle;
-
   return (
     <Card>
       <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-4">
@@ -202,74 +190,17 @@ export function SubscriptionCard({ clientId, onEdit }: SubscriptionCardProps) {
           </div>
         </div>
 
-        {/* Provider Breakdown */}
-        <div className="grid grid-cols-2 gap-4 mb-6">
-          <div className="bg-blue-50 rounded-lg p-3">
-            <div className="flex items-center gap-2 mb-1">
-              <div className="w-2 h-2 bg-blue-600 rounded-full"></div>
-              <span className="text-sm font-medium text-blue-800">Microsoft Entra</span>
-            </div>
-            <p className="text-xs text-blue-600">
-              {subscription.entraPackages} orders × {subscription.entraDomainsPerPackage} domains
-            </p>
-            <p className="text-lg font-semibold text-blue-800">
-              {subscription.entraDomains} domains / {subscription.entraInboxes} inboxes
-            </p>
-          </div>
-
-          <div className="bg-green-50 rounded-lg p-3">
-            <div className="flex items-center gap-2 mb-1">
-              <div className="w-2 h-2 bg-green-600 rounded-full"></div>
-              <span className="text-sm font-medium text-green-800">Google Workspace</span>
-            </div>
-            <p className="text-xs text-green-600">
-              {subscription.googlePackages} orders × {subscription.googleDomainsPerPackage} domains
-            </p>
-            <p className="text-lg font-semibold text-green-800">
-              {subscription.googleDomains} domains / {subscription.googleInboxes} inboxes
-            </p>
-          </div>
-        </div>
-
-        {/* Inventory Status */}
-        <div className="border-t pt-4">
-          <h4 className="text-sm font-medium mb-3">Current Inventory</h4>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-            <div className="text-center">
-              <div className="text-2xl font-bold text-green-600">
-                {subscription.currentActiveInboxes}
-              </div>
-              <div className="text-xs text-muted-foreground">Active</div>
-            </div>
-            <div className="text-center">
-              <div className="text-2xl font-bold text-orange-600">
-                {subscription.currentWarmingInboxes}
-              </div>
-              <div className="text-xs text-muted-foreground">Warming</div>
-            </div>
-            <div className="text-center">
-              <div className="text-2xl font-bold text-blue-600">
-                {subscription.currentSpareInboxes}
-              </div>
-              <div className="text-xs text-muted-foreground">Spare</div>
-            </div>
-            <div className="text-center">
-              <div className="text-2xl font-bold text-red-600">
-                {subscription.currentFlaggedInboxes}
-              </div>
-              <div className="text-xs text-muted-foreground">Flagged</div>
-            </div>
-          </div>
-        </div>
-
-        {/* Spare Capacity Status */}
-        <div className="mt-4 flex items-center gap-2">
-          <div className={`flex items-center gap-1.5 px-2 py-1 rounded-full text-xs ${spareStatusColor}`}>
-            <SpareIcon className="h-3 w-3" />
-            <span className="capitalize">Spare: {subscription.spareStatus}</span>
-          </div>
-          <span className="text-xs text-muted-foreground">
-            ({subscription.currentSpareInboxes} / {subscription.targetSpareInboxes} target)
+        {/* Provider Breakdown - Condensed */}
+        <div className="flex items-center gap-6 text-sm text-muted-foreground">
+          <span className="flex items-center gap-1.5">
+            <div className="w-2 h-2 rounded-full bg-blue-500" />
+            <span className="font-medium text-foreground">Entra:</span>
+            {subscription.entraPackages}×{subscription.entraDomainsPerPackage}={subscription.entraDomains} dom, {subscription.entraInboxes} inbx
+          </span>
+          <span className="flex items-center gap-1.5">
+            <div className="w-2 h-2 rounded-full bg-green-500" />
+            <span className="font-medium text-foreground">Google:</span>
+            {subscription.googlePackages}×{subscription.googleDomainsPerPackage}={subscription.googleDomains} dom, {subscription.googleInboxes} inbx
           </span>
         </div>
       </CardContent>

@@ -56,7 +56,7 @@ export default function ClientsPage() {
       <div className="flex items-center justify-between mb-6">
         <div>
           <h1 className="text-2xl font-bold">Clients</h1>
-          <p className="text-muted-foreground">Manage your agency clients and their campaigns</p>
+          <p className="text-muted-foreground">Manage your clients and their email infrastructure</p>
         </div>
         <Button onClick={() => setShowForm(true)}>
           <Plus className="h-4 w-4 mr-2" />
@@ -68,7 +68,7 @@ export default function ClientsPage() {
         <EmptyState
           icon={Users}
           title="No clients yet"
-          description="Get started by adding your first client to manage their email campaigns."
+          description="Get started by adding your first client to manage their email infrastructure."
           action={{
             label: 'Add Client',
             onClick: () => setShowForm(true),

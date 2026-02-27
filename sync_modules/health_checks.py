@@ -23,8 +23,9 @@ KILL_THRESHOLD_HARD_UNKNOWN_24H = int(os.getenv('KILL_THRESHOLD_HARD_UNKNOWN_24H
 KILL_THRESHOLD_HARD_BOUNCES_24H = int(os.getenv('KILL_THRESHOLD_HARD_BOUNCES_24H', 2))
 KILL_THRESHOLD_HARD_BOUNCE_RATE = float(os.getenv('KILL_THRESHOLD_HARD_BOUNCE_RATE', 0.005))
 KILL_THRESHOLD_TOTAL_BOUNCE_RATE = float(os.getenv('KILL_THRESHOLD_TOTAL_BOUNCE_RATE', 0.05))
-KILL_THRESHOLD_MIN_SENDS = int(os.getenv('KILL_THRESHOLD_MIN_SENDS', 50))
+KILL_THRESHOLD_MIN_SENDS = int(os.getenv('KILL_THRESHOLD_MIN_SENDS', 20))  # Lowered from 50 to catch more accounts
 KILL_THRESHOLD_FRESH_INBOX_DAYS = int(os.getenv('KILL_THRESHOLD_FRESH_INBOX_DAYS', 14))
+KILL_THRESHOLD_DISCONNECTED_DAYS = int(os.getenv('KILL_THRESHOLD_DISCONNECTED_DAYS', 21))
 
 # Kill trigger thresholds (configurable via env vars)
 # Priority order: spam > provider_block > hard_blocked > hard_unknown > combined > rate-based > fresh_inbox
@@ -72,6 +73,11 @@ KILL_THRESHOLDS = {
         'max_age_days': KILL_THRESHOLD_FRESH_INBOX_DAYS,
         'severity': 'instant',
         'description': f'Any hard bounce on inbox <{KILL_THRESHOLD_FRESH_INBOX_DAYS} days old'
+    },
+    'disconnected_timeout': {
+        'value': KILL_THRESHOLD_DISCONNECTED_DAYS,
+        'severity': 'instant',
+        'description': f'Inbox disconnected for {KILL_THRESHOLD_DISCONNECTED_DAYS}+ days = presumed dead'
     }
 }
 
@@ -105,6 +111,10 @@ class HealthCheckModule:
         )
 
         try:
+            # First, aggregate bounce counts from response_messages
+            # This ensures counters are up-to-date before checking triggers
+            await self.aggregate_bounce_counts_from_events()
+
             workspaces = await self.db.fetch("""
                 SELECT id, workspace_name
                 FROM workspaces
@@ -140,6 +150,60 @@ class HealthCheckModule:
         except Exception as e:
             return await audit.fail(e)
 
+    async def aggregate_bounce_counts_from_events(self):
+        """
+        Aggregate bounce counts from response_messages table.
+
+        This catches bounces that weren't properly linked during sync,
+        and provides a reconciliation mechanism to ensure bounce counters
+        are accurate before health checks run.
+
+        Updates hard_bounces_24h, hard_bounces_7d, and hard_blocked_24h
+        based on actual bounce events in the database.
+        """
+        try:
+            # Count bounces per sender account from response_messages
+            result = await self.db.execute("""
+                WITH bounce_counts AS (
+                    SELECT
+                        sender_account_id,
+                        COUNT(*) FILTER (WHERE received_at > NOW() - INTERVAL '24 hours') as bounces_24h,
+                        COUNT(*) FILTER (WHERE received_at > NOW() - INTERVAL '7 days') as bounces_7d,
+                        COUNT(*) FILTER (
+                            WHERE bounce_type = 'hard_blocked'
+                            AND received_at > NOW() - INTERVAL '24 hours'
+                        ) as blocked_24h,
+                        COUNT(*) FILTER (
+                            WHERE bounce_type = 'hard_unknown'
+                            AND received_at > NOW() - INTERVAL '24 hours'
+                        ) as unknown_24h
+                    FROM response_messages
+                    WHERE folder = 'bounced'
+                      AND sender_account_id IS NOT NULL
+                      AND received_at > NOW() - INTERVAL '7 days'
+                    GROUP BY sender_account_id
+                )
+                UPDATE sender_accounts sa
+                SET
+                    hard_bounces_24h = GREATEST(COALESCE(sa.hard_bounces_24h, 0), COALESCE(bc.bounces_24h, 0)),
+                    hard_bounces_7d = GREATEST(COALESCE(sa.hard_bounces_7d, 0), COALESCE(bc.bounces_7d, 0)),
+                    hard_blocked_24h = GREATEST(COALESCE(sa.hard_blocked_24h, 0), COALESCE(bc.blocked_24h, 0)),
+                    hard_unknown_24h = GREATEST(COALESCE(sa.hard_unknown_24h, 0), COALESCE(bc.unknown_24h, 0)),
+                    updated_at = NOW()
+                FROM bounce_counts bc
+                WHERE sa.id = bc.sender_account_id
+                AND (
+                    COALESCE(sa.hard_bounces_24h, 0) < COALESCE(bc.bounces_24h, 0)
+                    OR COALESCE(sa.hard_bounces_7d, 0) < COALESCE(bc.bounces_7d, 0)
+                    OR COALESCE(sa.hard_blocked_24h, 0) < COALESCE(bc.blocked_24h, 0)
+                    OR COALESCE(sa.hard_unknown_24h, 0) < COALESCE(bc.unknown_24h, 0)
+                )
+            """)
+            print(f"[HealthCheck] Aggregated bounce counts from response_messages: {result}")
+        except Exception as e:
+            # Don't fail health checks if aggregation fails
+            print(f"[HealthCheck] Warning: Failed to aggregate bounce counts: {e}")
+
     async def check_workspace_health(
         self,
         workspace_id: UUID,
@@ -152,11 +216,14 @@ class HealthCheckModule:
             Number of kill triggers detected
         """
         # Get all active inboxes with metrics
+        # NOTE: warmup_started_at is used to calculate incubation age (2-week period)
+        # NOTE: disconnected_at tracks when inbox lost connection (for 21-day auto-kill)
         inboxes = await self.db.fetch("""
             SELECT
                 id,
                 email_address,
                 inbox_state,
+                status,
                 esp,
                 hard_bounces_24h,
                 hard_blocked_24h,
@@ -166,7 +233,8 @@ class HealthCheckModule:
                 total_sends_7d,
                 bounce_rate_7d,
                 health_score,
-                first_seen_at,
+                warmup_started_at,
+                disconnected_at,
                 complaints_lifetime
             FROM sender_accounts
             WHERE workspace_id = $1
@@ -227,12 +295,24 @@ class HealthCheckModule:
         hard_bounces_7d = inbox.get('hard_bounces_7d') or 0
         soft_bounces_7d = inbox.get('soft_bounces_7d') or 0
         total_sends_7d = inbox.get('total_sends_7d') or 0
-        first_seen_at = inbox.get('first_seen_at')
+        warmup_started_at = inbox.get('warmup_started_at')
 
-        # Calculate age
+        # Calculate incubation age from warmup_started_at (NOT first_seen_at)
+        #
+        # IMPORTANT: The 2-week incubation period starts when:
+        # 1. Inbox is added to EmailBison AND
+        # 2. Warmup is enabled (warmup_started_at is set)
+        #
+        # This means:
+        # - inbox_age_days = days since warmup was first enabled
+        # - Fresh inbox protection applies during 2-week incubation (warmup period)
+        # - After 2 weeks, inbox is considered "mature" and normal thresholds apply
+        #
+        # If warmup_started_at is NULL, inbox hasn't started incubation yet
+        # (either brand new or warmup not enabled) - treat as "mature" (no special protection)
         inbox_age_days = None
-        if first_seen_at:
-            inbox_age_days = (datetime.now(timezone.utc) - first_seen_at.replace(tzinfo=timezone.utc)).days
+        if warmup_started_at:
+            inbox_age_days = (datetime.now(timezone.utc) - warmup_started_at.replace(tzinfo=timezone.utc)).days
 
         # Check each kill threshold (priority order: spam > provider_block > blocked > unknown > combined > rates)
         # 0. Spam complaints (HIGHEST PRIORITY - v3 spec: 1 complaint = death)
@@ -321,6 +401,20 @@ class HealthCheckModule:
                     'threshold': threshold['value']
                 })
 
+        # 5. Disconnected timeout (inbox disconnected for 21+ days = presumed dead)
+        # This catches inboxes that lost OAuth connection and were never reconnected
+        # After 21 days disconnected, we can safely assume the inbox is abandoned
+        threshold = KILL_THRESHOLDS['disconnected_timeout']
+        disconnected_at = inbox.get('disconnected_at')
+        if disconnected_at:
+            disconnected_days = (datetime.now(timezone.utc) - disconnected_at.replace(tzinfo=timezone.utc)).days
+            if disconnected_days >= threshold['value']:
+                triggers.append({
+                    'trigger_type': 'disconnected_timeout',
+                    'value': disconnected_days,
+                    'threshold': threshold['value']
+                })
+
         # Determine health state
         if triggers:
             health_state = 'critical'
@@ -355,11 +449,11 @@ class HealthCheckModule:
         trigger_threshold: float
     ):
         """Add inbox to kill queue if not already queued."""
-        # Check if already queued (pending or tagged)
+        # Check if already queued (pending or flagged)
         existing = await self.db.fetchval("""
             SELECT id FROM kill_queue
             WHERE inbox_id = $1
-            AND status IN ('pending', 'tagged')
+            AND status IN ('pending', 'flagged')
         """, inbox_id)
 
         if existing:
@@ -402,11 +496,12 @@ class HealthCheckModule:
         - 1 dead inbox = 'flagged' (accelerate backup warming)
         - 2+ dead inboxes = 'dead' (tag for review)
         - >30% inboxes unhealthy = 'dead' (tag for review)
+        - ALL live inboxes disconnected = 'flagged' (0 operational capacity)
 
         NOTE: Domain state changes are local flags only.
         Human operators decide actual action based on state.
         """
-        # Update basic health metrics
+        # Update basic health metrics (including connection status counts)
         await self.db.execute("""
             UPDATE domains d
             SET
@@ -426,7 +521,10 @@ class HealthCheckModule:
                     COUNT(*) as total_count,
                     COUNT(*) FILTER (WHERE inbox_state = 'live') as live_count,
                     COUNT(*) FILTER (WHERE inbox_state = 'dead') as dead_count,
-                    COUNT(*) FILTER (WHERE health_score < 60) as unhealthy_count
+                    COUNT(*) FILTER (WHERE health_score < 60) as unhealthy_count,
+                    -- Connection status for operational capacity
+                    COUNT(*) FILTER (WHERE inbox_state = 'live' AND status = 'Connected') as connected_count,
+                    COUNT(*) FILTER (WHERE inbox_state = 'live' AND status IN ('Not connected', 'Disconnected')) as disconnected_count
                 FROM sender_accounts
                 WHERE workspace_id = $1
                 AND domain_id IS NOT NULL
@@ -437,7 +535,11 @@ class HealthCheckModule:
         """, workspace_id)
 
         # V3: Update domain state based on thresholds
-        # 1 dead inbox = flagged, 2+ dead = dead, >30% unhealthy = dead
+        # Priority: dead > flagged > live
+        # 1. 2+ dead inboxes = dead
+        # 2. >30% unhealthy = dead
+        # 3. 1 dead inbox = flagged
+        # 4. Otherwise live
         await self.db.execute("""
             UPDATE domains d
             SET
@@ -466,6 +568,10 @@ class HealthCheckModule:
             DOMAIN_THRESHOLDS['unhealthy_pause'],      # $3: 0.30
             DOMAIN_THRESHOLDS['dead_inbox_flagged']    # $4: 1
         )
+
+        # NEW: Flag domains where ALL live inboxes are disconnected
+        # These domains have 0 operational capacity despite having live inboxes
+        await self._flag_all_disconnected_domains(workspace_id)
 
         # V3: Recalculate domain aggregate metrics (bounce rate, cross-inbox patterns)
         await self._recalculate_workspace_domain_metrics(workspace_id)
@@ -549,6 +655,62 @@ class HealthCheckModule:
                 await self.alerter.alert_domain_flagged(
                     domain=domain['domain_name'],
                     reason=reason_str
+                )
+
+    async def _flag_all_disconnected_domains(self, workspace_id: UUID):
+        """
+        Flag domains where ALL live inboxes are disconnected.
+
+        These domains have 0 operational capacity despite having live inboxes.
+        This is separate from kill-based logic - it's about connection status.
+
+        A domain with all disconnected inboxes:
+        - Has live inboxes (not killed)
+        - BUT none of them are connected (OAuth expired, needs HyperTide reconnection)
+        - Therefore has 0 operational capacity (can't send emails)
+        - Should be flagged for attention
+        """
+        # Find domains where all live inboxes are disconnected
+        disconnected_domains = await self.db.fetch("""
+            SELECT
+                d.id,
+                d.domain_name,
+                d.domain_state,
+                COUNT(*) FILTER (WHERE sa.inbox_state = 'live') as live_count,
+                COUNT(*) FILTER (WHERE sa.inbox_state = 'live' AND sa.status = 'Connected') as connected_count,
+                COUNT(*) FILTER (WHERE sa.inbox_state = 'live' AND sa.status IN ('Not connected', 'Disconnected')) as disconnected_count
+            FROM domains d
+            JOIN sender_accounts sa ON sa.domain_id = d.id
+            WHERE d.workspace_id = $1
+            AND d.domain_state = 'live'  -- Only check live domains
+            GROUP BY d.id
+            HAVING
+                -- Has live inboxes
+                COUNT(*) FILTER (WHERE sa.inbox_state = 'live') > 0
+                -- BUT none are connected (all disconnected)
+                AND COUNT(*) FILTER (WHERE sa.inbox_state = 'live' AND sa.status = 'Connected') = 0
+        """, workspace_id)
+
+        for domain in disconnected_domains:
+            # Flag the domain
+            await self.db.execute("""
+                UPDATE domains
+                SET
+                    domain_state = 'flagged',
+                    updated_at = NOW()
+                WHERE id = $1
+            """, domain['id'])
+
+            print(
+                f"    [DOMAIN FLAGGED] {domain['domain_name']}: "
+                f"all_disconnected ({domain['disconnected_count']}/{domain['live_count']} live inboxes disconnected)"
+            )
+
+            # Alert
+            if self.alerter:
+                await self.alerter.alert_domain_flagged(
+                    domain=domain['domain_name'],
+                    reason=f"all_disconnected ({domain['disconnected_count']}/{domain['live_count']} live)"
                 )
 
     async def get_workspace_health_summary(self, workspace_id: UUID) -> Dict:

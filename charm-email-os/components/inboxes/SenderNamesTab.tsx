@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
-import { Plus, User, RefreshCw, CheckCircle2, Mail, Trash2, Crown, Users } from 'lucide-react';
+import { Plus, User, RefreshCw, Trash2, Users } from 'lucide-react';
 import { toast } from 'sonner';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -9,20 +9,6 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from '@/components/ui/table';
-import {
-  Accordion,
-  AccordionContent,
-  AccordionItem,
-  AccordionTrigger,
-} from '@/components/ui/accordion';
 import {
   AlertDialog,
   AlertDialogAction,
@@ -261,121 +247,71 @@ export function SenderNamesTab({ clientId, client, onSave }: SenderNamesTabProps
           </div>
         </CardHeader>
         <CardContent className="space-y-6">
-          {/* Names Accordion */}
+          {/* Sender Names List */}
           {senderNames.length > 0 ? (
-            <Accordion
-              type="multiple"
-              value={expandedItems}
-              onValueChange={setExpandedItems}
-              className="space-y-2"
-            >
+            <div className="space-y-2">
               {senderNames.map((name) => (
-                <AccordionItem
+                <div
                   key={name.id}
-                  value={name.id}
-                  className="border rounded-lg px-4"
+                  className="flex items-center justify-between py-3 px-4 border rounded-lg bg-muted/30"
                 >
-                  <AccordionTrigger className="hover:no-underline">
-                    <div className="flex items-center justify-between w-full pr-4">
-                      <div className="flex items-center gap-3">
-                        <User className="h-4 w-4 text-muted-foreground" />
-                        <span className="font-medium">
-                          {name.firstName} {name.lastName}
-                        </span>
-                        {name.isFounder && (
-                          <Badge variant="default" className="text-xs bg-amber-500 hover:bg-amber-600">
-                            <Crown className="h-3 w-3 mr-1" />
-                            Founder
-                          </Badge>
-                        )}
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <Badge variant="secondary">
-                          {name.prefixes.length} prefixes
-                        </Badge>
-                        <CheckCircle2 className="h-4 w-4 text-green-500" />
-                      </div>
-                    </div>
-                  </AccordionTrigger>
-                  <AccordionContent>
-                    <div className="pt-2 pb-4 space-y-4">
-                      {/* Action buttons */}
-                      <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-3">
+                    <User className="h-5 w-5 text-muted-foreground" />
+                    <span className="font-medium">
+                      {name.firstName} {name.lastName}
+                    </span>
+                    {name.isFounder && (
+                      <Badge variant="outline" className="bg-indigo-50 text-indigo-700 text-xs">
+                        Primary
+                      </Badge>
+                    )}
+                    <Badge variant="secondary" className="text-xs">
+                      {name.prefixes.length} prefixes
+                    </Badge>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => handleRegeneratePrefixes(name)}
+                      className="h-8 px-2"
+                    >
+                      <RefreshCw className="h-4 w-4" />
+                    </Button>
+                    <AlertDialog>
+                      <AlertDialogTrigger asChild>
                         <Button
-                          variant="outline"
+                          variant="ghost"
                           size="sm"
-                          onClick={() => handleRegeneratePrefixes(name)}
+                          className="h-8 px-2 text-destructive hover:text-destructive"
+                          disabled={deletingId === name.id}
                         >
-                          <RefreshCw className="h-3 w-3 mr-1" />
-                          Regenerate
+                          <Trash2 className="h-4 w-4" />
                         </Button>
-                        <AlertDialog>
-                          <AlertDialogTrigger asChild>
-                            <Button
-                              variant="outline"
-                              size="sm"
-                              className="text-destructive hover:text-destructive"
-                              disabled={deletingId === name.id}
-                            >
-                              <Trash2 className="h-3 w-3 mr-1" />
-                              Remove
-                            </Button>
-                          </AlertDialogTrigger>
-                          <AlertDialogContent>
-                            <AlertDialogHeader>
-                              <AlertDialogTitle>Remove Sender Name?</AlertDialogTitle>
-                              <AlertDialogDescription>
-                                This will remove {name.firstName} {name.lastName} and all {name.prefixes.length} email prefixes.
-                                This action cannot be undone.
-                              </AlertDialogDescription>
-                            </AlertDialogHeader>
-                            <AlertDialogFooter>
-                              <AlertDialogCancel>Cancel</AlertDialogCancel>
-                              <AlertDialogAction
-                                onClick={() => handleDeleteName(name.id)}
-                                className="bg-destructive hover:bg-destructive/90"
-                              >
-                                Remove
-                              </AlertDialogAction>
-                            </AlertDialogFooter>
-                          </AlertDialogContent>
-                        </AlertDialog>
-                      </div>
-
-                      {/* Prefixes table */}
-                      <div className="max-h-[300px] overflow-auto border rounded-md">
-                        <Table>
-                          <TableHeader>
-                            <TableRow>
-                              <TableHead className="w-12">#</TableHead>
-                              <TableHead>Email Prefix</TableHead>
-                              <TableHead>Example Email</TableHead>
-                            </TableRow>
-                          </TableHeader>
-                          <TableBody>
-                            {name.prefixes.map((prefix, index) => (
-                              <TableRow key={index}>
-                                <TableCell className="font-medium text-muted-foreground">
-                                  {index + 1}
-                                </TableCell>
-                                <TableCell>
-                                  <code className="px-2 py-1 bg-muted rounded text-sm">
-                                    {prefix}
-                                  </code>
-                                </TableCell>
-                                <TableCell className="text-muted-foreground">
-                                  {prefix}@example.com
-                                </TableCell>
-                              </TableRow>
-                            ))}
-                          </TableBody>
-                        </Table>
-                      </div>
-                    </div>
-                  </AccordionContent>
-                </AccordionItem>
+                      </AlertDialogTrigger>
+                      <AlertDialogContent>
+                        <AlertDialogHeader>
+                          <AlertDialogTitle>Remove Sender Name?</AlertDialogTitle>
+                          <AlertDialogDescription>
+                            This will remove {name.firstName} {name.lastName} and all {name.prefixes.length} email prefixes.
+                            This action cannot be undone.
+                          </AlertDialogDescription>
+                        </AlertDialogHeader>
+                        <AlertDialogFooter>
+                          <AlertDialogCancel>Cancel</AlertDialogCancel>
+                          <AlertDialogAction
+                            onClick={() => handleDeleteName(name.id)}
+                            className="bg-destructive hover:bg-destructive/90"
+                          >
+                            Remove
+                          </AlertDialogAction>
+                        </AlertDialogFooter>
+                      </AlertDialogContent>
+                    </AlertDialog>
+                  </div>
+                </div>
               ))}
-            </Accordion>
+            </div>
           ) : (
             <div className="text-center py-8 text-muted-foreground">
               <User className="h-12 w-12 mx-auto mb-3 opacity-50" />
@@ -419,8 +355,8 @@ export function SenderNamesTab({ clientId, client, onSave }: SenderNamesTabProps
                 >
                   {senderNames.length === 0 ? (
                     <>
-                      <Crown className="h-3 w-3 mr-1" />
-                      Founder
+                      <User className="h-3 w-3 mr-1" />
+                      Primary
                     </>
                   ) : (
                     <>
@@ -450,31 +386,6 @@ export function SenderNamesTab({ clientId, client, onSave }: SenderNamesTabProps
           </div>
         </CardContent>
       </Card>
-
-      {/* Summary Card */}
-      {senderNames.length > 0 && (
-        <Card className="bg-muted/30">
-          <CardContent className="pt-6">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-4">
-                <Mail className="h-8 w-8 text-primary" />
-                <div>
-                  <p className="text-lg font-semibold">
-                    {totalPrefixes} Email Prefixes Ready
-                  </p>
-                  <p className="text-sm text-muted-foreground">
-                    From {senderNames.length} sender {senderNames.length === 1 ? 'name' : 'names'} using {provider === 'entra' ? 'Microsoft Entra' : 'Google Workspace'}
-                  </p>
-                </div>
-              </div>
-              <div className="text-right">
-                <p className="text-sm text-muted-foreground">Prefixes per domain</p>
-                <p className="text-2xl font-bold text-primary">{totalPrefixes}</p>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-      )}
     </div>
   );
 }

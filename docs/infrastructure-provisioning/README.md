@@ -1,122 +1,173 @@
-# Infrastructure Provisioning SPA - Documentation
+# Infrastructure Provisioning SPA
 
-**Complete design documentation for the waterfall-style infrastructure provisioning single-page application.**
-
----
-
-## 📖 Start Here
-
-**New to this project?** Read documents in this order:
-
-1. **INDEX.md** - Master navigation guide (read first!)
-2. **SPA-V2.md** - Complete requirements and business logic
-3. **IMPLEMENTATION-ROADMAP.md** - 4-week implementation plan (developers start here)
+**Unified dashboard for managing client email infrastructure: domains, inboxes, and HyperTide orders.**
 
 ---
 
-## 📚 Document Index
+## Status: IMPLEMENTED
 
-| Document | Size | Purpose |
-|----------|------|---------|
-| **[INDEX.md](INFRASTRUCTURE-PROVISIONING-INDEX.md)** | 16KB | Master navigation guide - which doc to read when |
-| **[IMPLEMENTATION-ROADMAP.md](INFRASTRUCTURE-PROVISIONING-IMPLEMENTATION-ROADMAP.md)** | 32KB | Day-by-day implementation plan (4 weeks) |
-| **[SPA-V2.md](INFRASTRUCTURE-PROVISIONING-SPA-V2.md)** | 27KB | Complete requirements with corrected DNS flow |
-| **[MINIMAL-CHANGES.md](INFRASTRUCTURE-PROVISIONING-MINIMAL-CHANGES.md)** | 15KB | Database schema (only 5 new fields) |
-| **[API-INTEGRATION.md](INFRASTRUCTURE-PROVISIONING-API-INTEGRATION.md)** | 30KB | Complete API layer specification |
-| **[EXISTING-CODE-ANALYSIS.md](INFRASTRUCTURE-PROVISIONING-EXISTING-CODE-ANALYSIS.md)** | 18KB | 80% reusable patterns from codebase |
-| **[MODULAR-DESIGN.md](INFRASTRUCTURE-PROVISIONING-MODULAR-DESIGN.md)** | 27KB | Component architecture breakdown |
-| **[FRONTEND-DESIGN.md](INFRASTRUCTURE-PROVISIONING-FRONTEND-DESIGN.md)** | 50KB | Complete visual design & UX specifications |
-| **[FRONTEND-DESIGN-CLAY.md](INFRASTRUCTURE-PROVISIONING-FRONTEND-DESIGN-CLAY.md)** | 100KB | 🎨 **Clay.com waterfall style (RECOMMENDED)** |
-| **[FRONTEND-DESIGN-BASE44.md](INFRASTRUCTURE-PROVISIONING-FRONTEND-DESIGN-BASE44.md)** | 70KB | Base44 brutalist aesthetic (alternative) |
-| **[BASE44-VISUAL-MOCKUP.md](BASE44-VISUAL-MOCKUP.md)** | 15KB | ASCII mockup of Base44 design |
+The Infrastructure Provisioning SPA is live and operational.
 
-**Total:** 11 documents, 400KB
+**Access:** `http://localhost:3000/infrastructure`
 
 ---
 
-## 🎯 Quick Links by Role
+## What It Does
 
-### For Developers
-👉 **[IMPLEMENTATION-ROADMAP.md](INFRASTRUCTURE-PROVISIONING-IMPLEMENTATION-ROADMAP.md)** - Start Phase 1
-
-### For Backend Engineers
-1. [MINIMAL-CHANGES.md](INFRASTRUCTURE-PROVISIONING-MINIMAL-CHANGES.md) - Database schema
-2. [API-INTEGRATION.md](INFRASTRUCTURE-PROVISIONING-API-INTEGRATION.md) - Endpoint specs
-
-### For Frontend Engineers
-1. [EXISTING-CODE-ANALYSIS.md](INFRASTRUCTURE-PROVISIONING-EXISTING-CODE-ANALYSIS.md) - Reusable patterns
-2. [MODULAR-DESIGN.md](INFRASTRUCTURE-PROVISIONING-MODULAR-DESIGN.md) - Component architecture
-3. 🎨 **[FRONTEND-DESIGN-CLAY.md](INFRASTRUCTURE-PROVISIONING-FRONTEND-DESIGN-CLAY.md) - Clay.com waterfall style (USE THIS)**
-4. [FRONTEND-DESIGN-BASE44.md](INFRASTRUCTURE-PROVISIONING-FRONTEND-DESIGN-BASE44.md) - Base44 brutalist (alternative)
-5. [API-INTEGRATION.md](INFRASTRUCTURE-PROVISIONING-API-INTEGRATION.md) - Store + hooks
-
-### For Product/Design Review
-1. [INDEX.md](INFRASTRUCTURE-PROVISIONING-INDEX.md) - Overview
-2. [SPA-V2.md](INFRASTRUCTURE-PROVISIONING-SPA-V2.md) - Complete requirements
-3. 🎨 **[FRONTEND-DESIGN-CLAY.md](INFRASTRUCTURE-PROVISIONING-FRONTEND-DESIGN-CLAY.md) - Clay.com waterfall design (RECOMMENDED)**
-4. [FRONTEND-DESIGN-BASE44.md](INFRASTRUCTURE-PROVISIONING-FRONTEND-DESIGN-BASE44.md) - Base44 brutalist (alternative)
-5. [BASE44-VISUAL-MOCKUP.md](BASE44-VISUAL-MOCKUP.md) - Visual mockup reference
+The SPA provides a single view to:
+- Monitor domain and inbox health across all clients
+- Track HyperTide order utilization against client packages
+- Execute bulk domain purchases
+- Create HyperTide provisioning orders
+- Filter and sort domains by lifecycle stage
 
 ---
 
-## 🏗️ What We're Building
+## Quick Reference
 
-**Waterfall-style SPA** for bulk domain/inbox infrastructure provisioning with 9 stages:
+### Provider Metrics
+
+| Metric | Formula | Example |
+|--------|---------|---------|
+| **DOMAINS** | actual / expected | 12/12 |
+| **INBOXES** | live / total | 607/618 |
+| **DAILY CAPACITY** | inboxes × rate | 1,518/day |
+| **ORDERS** | used / required | 6/6 |
+
+### Email Rates
+
+| Provider | Emails/Day/Inbox |
+|----------|------------------|
+| Entra | 2.5 |
+| Google | 17.5 |
+
+### HyperTide Orders
+
+| Provider | Domains/Order | Inboxes/Domain |
+|----------|---------------|----------------|
+| Entra | 2 | 50 |
+| Google | 5 | 3 |
+
+### Client Packages
+
+| Package | Entra Orders | Google Orders | Total Domains |
+|---------|--------------|---------------|---------------|
+| Starter | 6 | 5 | 37 |
+| Growth | 12 | 10 | 74 |
+
+---
+
+## Documentation
+
+| Document | Purpose |
+|----------|---------|
+| **[USER-GUIDE.md](USER-GUIDE.md)** | Complete usage guide with all metrics explained |
+| [FRONTEND-DESIGN-CLAY.md](FRONTEND-DESIGN-CLAY.md) | Original design specification |
+| [API-INTEGRATION.md](INFRASTRUCTURE-PROVISIONING-API-INTEGRATION.md) | API endpoint documentation |
+| [MODULAR-DESIGN.md](INFRASTRUCTURE-PROVISIONING-MODULAR-DESIGN.md) | Component architecture |
+
+---
+
+## Key Files
+
+### Frontend
 
 ```
-Generated → Priced → Purchased → DNS Moved → DNS Verified → Provider Assigned → HyperTide Ordered → Provisioned → Synced
+charm-email-os/
+├── app/infrastructure/
+│   └── page.tsx                    # Main SPA page
+├── components/infrastructure/
+│   ├── InfraSummaryHeader.tsx      # Provider metrics cards
+│   ├── WaterfallTable.tsx          # Domain waterfall table
+│   ├── WaterfallFilters.tsx        # Filter controls
+│   └── cells/
+│       ├── DomainCell.tsx          # Domain name + badges
+│       ├── PricingCell.tsx         # Price + purchase status
+│       ├── DNSCell.tsx             # DNS configuration
+│       ├── ProviderCell.tsx        # Entra/Google assignment
+│       ├── HyperTideCell.tsx       # Provisioning status
+│       └── StatusCell.tsx          # Live/Flagged/Dead
+├── lib/
+│   ├── stores/waterfallStore.ts    # Zustand state
+│   └── types/infrastructure.ts     # TypeScript types
 ```
 
-**Key Features:**
-- Bulk actions at top of each column
-- Checkbox selection with "Select All"
-- Real-time job polling
-- Package-aware (Starter: 37 domains, Growth: 74 domains)
-- Provider tracking (Entra vs Google)
+### Backend
+
+```
+api/routes/
+└── infrastructure.py               # Waterfall API endpoints
+```
+
+### Database
+
+```sql
+-- Key tables
+domains                 -- Domain inventory
+sender_accounts         -- Inbox records
+client_subscriptions    -- Package assignments
+package_templates       -- Starter/Growth definitions
+```
 
 ---
 
-## 📊 Project Stats
+## Running Locally
 
-| Metric | Value |
-|--------|-------|
-| Timeline | 4 weeks (17 dev days) |
-| Database Changes | 5 new columns, 1 view |
-| New API Endpoints | 7 endpoints |
-| New Components | 25+ components |
-| Code Reuse | 80% |
-| Documentation | 400KB across 11 files |
-
----
-
-## ✅ Status
-
-- [x] Requirements complete (SPA-V2.md)
-- [x] Database schema designed (MINIMAL-CHANGES.md)
-- [x] API layer specified (API-INTEGRATION.md)
-- [x] Component architecture defined (MODULAR-DESIGN.md)
-- [x] Implementation roadmap created (IMPLEMENTATION-ROADMAP.md)
-- [ ] Phase 1: Foundation (in progress)
-- [ ] Phase 2: Components
-- [ ] Phase 3: Modals & Bulk Actions
-- [ ] Phase 4: Integration & Deployment
-
----
-
-## 🚀 Getting Started
+### With Docker (Recommended)
 
 ```bash
-# Read the master index
-cat docs/infrastructure-provisioning/INDEX.md
+cd charm-email-os
+docker-compose -f docker-compose.local.yml up -d
+```
 
-# Follow the implementation roadmap
-cat docs/infrastructure-provisioning/IMPLEMENTATION-ROADMAP.md
+Access at: `http://localhost:3000/infrastructure`
 
-# Start Phase 1: Database migration
-cd /home/claw/charm-email-os
-supabase db push
+### Development Mode
+
+```bash
+cd charm-email-os/charm-email-os
+npm run dev
+```
+
+Access at: `http://localhost:3000/infrastructure`
+
+---
+
+## Troubleshooting
+
+### Container not starting
+```bash
+docker-compose -f docker-compose.local.yml logs charm-frontend
+```
+
+### API errors
+```bash
+curl http://localhost:8000/health
+```
+
+### Database connection
+```bash
+docker exec charm-postgres psql -U postgres -d postgres -c "\dt"
 ```
 
 ---
 
-**All design work complete. Ready for implementation.**
+## Recent Changes
+
+| Date | Change |
+|------|--------|
+| 2026-02-26 | **Two-phase pricing**: Dynadot loads first (fast), Porkbun second (rate-limited) |
+| 2026-02-26 | **Generate Domains** button with loading feedback |
+| 2026-02-26 | **Check Prices** button shows progress (X checked, Y available) |
+| 2026-02-26 | **Buy button** only appears when BOTH registrar prices available |
+| 2026-02-26 | **HyperTide test endpoint** for order validation without charging |
+| 2026-02-25 | Fixed DOMAINS metric to show actual/expected based on orders |
+| 2026-02-25 | Fixed ORDERS metric to use client package requirements |
+| 2026-02-25 | Fixed DAILY CAPACITY to use correct email rates per provider |
+| 2026-02-25 | Added lifecycle priority sorting to domain table |
+
+---
+
+## Contact
+
+For issues or questions, check the main project documentation or open an issue.

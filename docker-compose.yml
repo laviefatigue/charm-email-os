@@ -83,9 +83,13 @@ services:
       - POSTGRES_USER=${POSTGRES_USER:-postgres}
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
       - POSTGRES_SCHEMA=${POSTGRES_SCHEMA:-public}
-      # Email Bison API (optional)
+      # Email Bison API
       - EMAILBISON_API_KEY=${EMAILBISON_API_KEY:-}
       - EMAILBISON_API_URL=${EMAILBISON_API_URL:-https://spellcast.hirecharm.com}
+      # Domain Registrar APIs
+      - DYNADOT_API_KEY=${DYNADOT_API_KEY:-}
+      - PORKBUN_API_KEY=${PORKBUN_API_KEY:-}
+      - PORKBUN_API_SECRET=${PORKBUN_API_SECRET:-}
       # API Configuration
       - API_TITLE=Charm Email OS API
       - API_VERSION=1.0.0
@@ -124,7 +128,10 @@ networks:
 #   - POSTGRES_USER: Database user (default: postgres)
 #   - POSTGRES_PASSWORD: Database password (REQUIRED)
 #   - POSTGRES_SCHEMA: Schema to use (default: public)
-#   - EMAILBISON_API_KEY: Optional Email Bison API key
+#   - EMAILBISON_API_KEY: EmailBison API key for sync
+#   - DYNADOT_API_KEY: Dynadot API key for domain purchases
+#   - PORKBUN_API_KEY: Porkbun API key for domain purchases
+#   - PORKBUN_API_SECRET: Porkbun API secret
 #   - FRONTEND_PORT: Frontend exposed port (default: 3000)
 #   - EXEC_DASHBOARD_PORT: Executive dashboard port (default: 3006)
 #   - API_PORT: API exposed port (default: 8000)

@@ -154,13 +154,13 @@ class CampaignSyncModule:
                 workspace_id,
                 emailbison_campaign_id,
                 campaign_name,
-                status,
+                campaign_status,
                 first_seen_at,
                 last_seen_at
             ) VALUES ($1, $2, $3, $4, NOW(), NOW())
             ON CONFLICT (workspace_id, emailbison_campaign_id) DO UPDATE SET
                 campaign_name = EXCLUDED.campaign_name,
-                status = EXCLUDED.status,
+                campaign_status = EXCLUDED.campaign_status,
                 last_seen_at = NOW(),
                 updated_at = NOW()
             RETURNING id
@@ -169,7 +169,7 @@ class CampaignSyncModule:
         return result['id']
 
     async def create_snapshot(self, campaign_id: UUID, details: Dict):
-        """Create a metrics snapshot for a campaign."""
+        """Create a metrics snapshot for a campaign and update main record."""
         now = datetime.now(timezone.utc)
 
         # Extract metrics from campaign details
@@ -180,16 +180,43 @@ class CampaignSyncModule:
         replies = int(details.get('unique_replies', details.get('replied', 0)) or 0)
         bounced = int(details.get('bounced', 0) or 0)
         interested = int(details.get('interested', 0) or 0)
+        unsubscribed = int(details.get('unsubscribed', 0) or 0)
 
         # Calculate rates
         open_rate = (opens / contacted * 100) if contacted > 0 else 0
         reply_rate = (replies / contacted * 100) if contacted > 0 else 0
-        bounce_rate = (bounced / emails_sent * 100) if emails_sent > 0 else 0
+        bounce_rate = (bounced / emails_sent) if emails_sent > 0 else 0  # Store as decimal
 
         # Period must have end > start (database constraint)
         period_start = now - timedelta(days=1)
         period_end = now
 
+        # Update main campaign record with latest metrics
+        await self.db.execute("""
+            UPDATE emailbison_campaigns
+            SET
+                total_leads = $2,
+                total_leads_contacted = $3,
+                emails_sent = $4,
+                bounces = $5,
+                bounce_rate = $6,
+                completion_percentage = CASE
+                    WHEN $2 > 0 THEN ($3::DECIMAL / $2 * 100)
+                    ELSE 0
+                END,
+                last_snapshot_at = NOW(),
+                updated_at = NOW()
+            WHERE id = $1
+        """,
+            campaign_id,
+            total_leads,
+            contacted,
+            emails_sent,
+            bounced,
+            round(bounce_rate, 4)
+        )
+
+        # Create snapshot for historical tracking
         await self.db.execute("""
             INSERT INTO campaign_snapshots (
                 campaign_id,
@@ -222,7 +249,7 @@ class CampaignSyncModule:
             bounced,
             round(open_rate, 2),
             round(reply_rate, 2),
-            round(bounce_rate, 2)
+            round(bounce_rate * 100, 2)  # Snapshot stores as percentage
         )
 
     async def sync_all_campaign_inbox_assignments(self) -> int:
@@ -351,7 +378,7 @@ class CampaignSyncModule:
                 w.workspace_name
             FROM emailbison_campaigns ec
             JOIN workspaces w ON ec.workspace_id = w.id
-            WHERE ec.status IN ('active', 'running', 'sending')
+            WHERE ec.campaign_status IN ('active', 'running', 'sending')
             AND w.emailbison_workspace_id IS NOT NULL
             AND w.is_active = TRUE
         """

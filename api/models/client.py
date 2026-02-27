@@ -141,6 +141,11 @@ class Client(ClientBase):
     campaign_count: int = 0
     sync_enabled: Optional[bool] = True  # Maps to workspace.is_active
 
+    # Capacity metrics for operational status
+    connected_inbox_count: int = 0  # Live inboxes with Connected status
+    package_inbox_target: int = 0   # Expected inboxes from subscription package
+    package_name: Optional[str] = None  # Name of subscription package (e.g., "Starter", "Growth")
+
     class Config:
         from_attributes = True
 

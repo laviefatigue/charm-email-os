@@ -137,6 +137,7 @@ export interface ProviderSummary {
 export interface ClientInfraSummary {
   clientId: string;
   clientName: string;
+  packageName?: string | null; // Assigned package template name (e.g., "Starter", "Growth")
   entra: ProviderSummary;
   google: ProviderSummary;
   totalDomains: number;

@@ -3,10 +3,12 @@
 /**
  * HyperTide Order Modal
  * Auto-selects domains using FIFO (oldest purchased + DNS ready first)
+ * Allows user to select which sender names to include in the order
  */
 
 import { useState, useEffect } from 'react';
 import { useWaterfallStore } from '@/lib/stores/waterfallStore';
+import { api } from '@/lib/api';
 import {
   Dialog,
   DialogContent,
@@ -19,6 +21,7 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Separator } from '@/components/ui/separator';
 import { ScrollArea } from '@/components/ui/scroll-area';
+import { Checkbox } from '@/components/ui/checkbox';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import {
@@ -30,26 +33,39 @@ import {
   Mail,
   DollarSign,
   Package,
+  User,
 } from 'lucide-react';
 import { PROVIDER_CONFIG, TLD_DISPLAY } from '@/lib/types/infrastructure';
-import type { ProviderType, HyperTideOrderPreview } from '@/lib/types/infrastructure';
+import type { ProviderType, HyperTideOrderPreview, SenderName } from '@/lib/types/infrastructure';
 
 interface HyperTideOrderModalProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   provider: ProviderType;
-  onConfirm: (request: { domainIds: string[]; provider: ProviderType; orderCount: number }) => Promise<void>;
+  clientId: string;
+  onConfirm: (request: {
+    domainIds: string[];
+    provider: ProviderType;
+    orderCount: number;
+    senderNames: { firstName: string; lastName: string }[];
+  }) => Promise<void>;
 }
 
 export function HyperTideOrderModal({
   open,
   onOpenChange,
   provider,
+  clientId,
   onConfirm,
 }: HyperTideOrderModalProps) {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [orderCount, setOrderCount] = useState(1);
+
+  // Sender name state
+  const [senderNames, setSenderNames] = useState<SenderName[]>([]);
+  const [selectedNameIds, setSelectedNameIds] = useState<Set<string>>(new Set());
+  const [loadingNames, setLoadingNames] = useState(false);
 
   const {
     getHyperTideOrderPreview,
@@ -57,6 +73,25 @@ export function HyperTideOrderModal({
     selectDomainsForHyperTide,
     clearSelection,
   } = useWaterfallStore();
+
+  // Fetch sender names when modal opens
+  useEffect(() => {
+    if (open && clientId) {
+      setLoadingNames(true);
+      api.infrastructure
+        .getSenderNamesByClient(clientId)
+        .then((response) => {
+          setSenderNames(response.senderNames);
+          // Select all names by default
+          setSelectedNameIds(new Set(response.senderNames.map((n) => n.id)));
+        })
+        .catch((err) => {
+          console.error('Failed to fetch sender names:', err);
+          setSenderNames([]);
+        })
+        .finally(() => setLoadingNames(false));
+    }
+  }, [open, clientId]);
 
   const config = PROVIDER_CONFIG[provider];
   const isEntra = provider === 'entra';
@@ -77,8 +112,32 @@ export function HyperTideOrderModal({
 
   const preview = getHyperTideOrderPreview(provider);
 
+  // Toggle sender name selection
+  const toggleSenderName = (id: string) => {
+    setSelectedNameIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
+  };
+
+  // Get selected sender names as array
+  const getSelectedSenderNames = () => {
+    return senderNames
+      .filter((n) => selectedNameIds.has(n.id))
+      .map((n) => ({ firstName: n.firstName, lastName: n.lastName }));
+  };
+
   const handleConfirm = async () => {
     if (!preview || preview.selectedDomains.length === 0) return;
+    if (selectedNameIds.size === 0) {
+      setError('Please select at least one sender name');
+      return;
+    }
 
     setIsSubmitting(true);
     setError(null);
@@ -88,6 +147,7 @@ export function HyperTideOrderModal({
         domainIds: preview.selectedDomains.map((d) => d.domainId),
         provider,
         orderCount: preview.orderCount,
+        senderNames: getSelectedSenderNames(),
       });
       clearSelection();
       onOpenChange(false);
@@ -218,6 +278,62 @@ export function HyperTideOrderModal({
                 +
               </Button>
             </div>
+          </div>
+
+          {/* Sender Names Section */}
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <div className="text-sm font-medium text-slate-700 flex items-center gap-2">
+                <User className="w-4 h-4" />
+                Sender Names
+              </div>
+              <span className="text-xs text-slate-500">
+                {selectedNameIds.size} of {senderNames.length} selected
+              </span>
+            </div>
+            {loadingNames ? (
+              <div className="border rounded-lg p-4 flex items-center justify-center">
+                <Loader2 className="w-4 h-4 animate-spin mr-2" />
+                <span className="text-sm text-slate-500">Loading sender names...</span>
+              </div>
+            ) : senderNames.length === 0 ? (
+              <div className="border rounded-lg p-4 text-center">
+                <AlertTriangle className="w-8 h-8 text-amber-400 mx-auto mb-2" />
+                <p className="text-sm text-slate-600">No sender names configured</p>
+                <p className="text-xs text-slate-500 mt-1">
+                  Configure sender names in client settings before creating orders.
+                </p>
+              </div>
+            ) : (
+              <div className="border rounded-lg divide-y max-h-[140px] overflow-y-auto">
+                {senderNames.map((name) => (
+                  <label
+                    key={name.id}
+                    className="flex items-center gap-3 p-3 hover:bg-slate-50 cursor-pointer"
+                  >
+                    <Checkbox
+                      checked={selectedNameIds.has(name.id)}
+                      onCheckedChange={() => toggleSenderName(name.id)}
+                    />
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2">
+                        <span className="font-medium text-sm text-slate-900">
+                          {name.fullName}
+                        </span>
+                        {name.isFounder && (
+                          <Badge variant="outline" className="bg-indigo-50 text-indigo-700 text-xs px-1.5 py-0">
+                            Primary
+                          </Badge>
+                        )}
+                      </div>
+                    </div>
+                  </label>
+                ))}
+              </div>
+            )}
+            {selectedNameIds.size === 0 && senderNames.length > 0 && (
+              <p className="text-xs text-red-500">At least one sender name must be selected</p>
+            )}
           </div>
 
           {/* Summary Stats */}

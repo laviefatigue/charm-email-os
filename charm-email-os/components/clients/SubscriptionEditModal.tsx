@@ -21,13 +21,14 @@ import {
 } from '@/components/ui/select';
 import { Textarea } from '@/components/ui/textarea';
 import { Slider } from '@/components/ui/slider';
-import type { SubscriptionWithUsage, PackageTemplate } from '@/lib/types';
-import { subscriptionApi } from '@/lib/api';
+import type { SubscriptionWithUsage, PackageTemplate, Client } from '@/lib/types';
+import { subscriptionApi, clientApi } from '@/lib/api';
 
 interface SubscriptionEditModalProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   clientId: string;
+  client?: Client;
   subscription: SubscriptionWithUsage | null;
   onSave?: () => void;
 }
@@ -36,11 +37,13 @@ export function SubscriptionEditModal({
   open,
   onOpenChange,
   clientId,
+  client,
   subscription,
   onSave,
 }: SubscriptionEditModalProps) {
   const [templates, setTemplates] = useState<PackageTemplate[]>([]);
   const [selectedTemplateId, setSelectedTemplateId] = useState<string | null>(null);
+  const [primaryDomain, setPrimaryDomain] = useState('');
   const [formData, setFormData] = useState({
     entraPackages: 6,
     googlePackages: 5,
@@ -55,6 +58,8 @@ export function SubscriptionEditModal({
   useEffect(() => {
     if (open) {
       loadTemplates();
+      // Initialize primary domain from client
+      setPrimaryDomain(client?.onboardingData?.primaryDomain || '');
       if (subscription) {
         setFormData({
           entraPackages: subscription.entraPackages,
@@ -67,7 +72,7 @@ export function SubscriptionEditModal({
         setUseCustom(!subscription.packageTemplateId);
       }
     }
-  }, [open, subscription]);
+  }, [open, subscription, client]);
 
   const loadTemplates = async () => {
     setIsLoading(true);
@@ -103,6 +108,17 @@ export function SubscriptionEditModal({
   const handleSave = async () => {
     setIsSaving(true);
     try {
+      // Save primary domain if changed
+      const currentPrimaryDomain = client?.onboardingData?.primaryDomain || '';
+      if (primaryDomain !== currentPrimaryDomain) {
+        await clientApi.update(clientId, {
+          onboardingData: {
+            ...client?.onboardingData,
+            primaryDomain: primaryDomain || undefined,
+          },
+        });
+      }
+
       if (subscription) {
         // Update existing
         await subscriptionApi.updateSubscription(clientId, {
@@ -165,6 +181,20 @@ export function SubscriptionEditModal({
           <div className="py-8 text-center text-muted-foreground">Loading...</div>
         ) : (
           <div className="space-y-6 py-4">
+            {/* Primary Domain */}
+            <div className="space-y-2">
+              <Label htmlFor="primaryDomain">Primary Domain</Label>
+              <Input
+                id="primaryDomain"
+                value={primaryDomain}
+                onChange={(e) => setPrimaryDomain(e.target.value)}
+                placeholder="e.g., hirecharm.com"
+              />
+              <p className="text-xs text-muted-foreground">
+                The main domain associated with this client
+              </p>
+            </div>
+
             {/* Template Selection */}
             <div className="space-y-2">
               <Label>Package Template</Label>

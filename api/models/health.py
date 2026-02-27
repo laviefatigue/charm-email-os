@@ -307,6 +307,9 @@ class ProviderMetrics(BaseModel):
     live_count: int
     dead_count: int
     avg_health_score: float
+    # Connection status (OAuth state from EmailBison)
+    connected_count: int = 0  # Live + Connected (operational)
+    disconnected_count: int = 0  # Live + Not connected (needs reconnection)
 
 
 class HealthDistribution(BaseModel):
@@ -358,9 +361,19 @@ class InfrastructureHealthResponse(BaseModel):
 
     # Summary metrics
     total_inboxes: int
-    live_inboxes: int
-    dead_inboxes: int
+    live_inboxes: int  # inbox_state = 'live' (includes disconnected)
+    dead_inboxes: int  # inbox_state = 'dead' (killed by triggers)
     avg_health_score: float
+
+    # Connection status breakdown (CRITICAL for accuracy)
+    # Operational = Live + Connected (can actually send email)
+    # Disconnected = Live + Not connected (OAuth expired, needs reconnection)
+    connected_inboxes: int = 0  # Operational - can send NOW
+    disconnected_inboxes: int = 0  # Live but OAuth expired - CANNOT send
+
+    # Capacity metrics
+    operational_capacity: int = 0  # SUM(daily_limit) for connected inboxes only
+    potential_capacity: int = 0  # SUM(daily_limit) for all live inboxes (if reconnected)
 
     # Provider breakdown (from sender_accounts.esp)
     providers: list[ProviderMetrics]

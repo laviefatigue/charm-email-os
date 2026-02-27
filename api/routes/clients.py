@@ -172,7 +172,7 @@ async def list_clients(
     count_result = await fetch_one(count_query, *params)
     total = count_result["total"] if count_result else 0
 
-    # Get clients with workspace info
+    # Get clients with workspace info and capacity metrics
     query = f"""
         SELECT
             c.id,
@@ -198,7 +198,33 @@ async def list_clients(
                 (SELECT COUNT(*) FROM emailbison_campaigns ec WHERE ec.workspace_id = c.workspace_id),
                 0
             ) as campaign_count,
-            COALESCE(w.is_active, true) as sync_enabled
+            COALESCE(w.is_active, true) as sync_enabled,
+            -- Capacity metrics: connected inboxes (live + connected status)
+            COALESCE(
+                (SELECT COUNT(*) FROM sender_accounts sa
+                 JOIN domains d ON sa.domain_id = d.id
+                 WHERE d.workspace_id = c.workspace_id
+                   AND sa.inbox_state = 'live'
+                   AND sa.status = 'Connected'),
+                0
+            ) as connected_inbox_count,
+            -- Package target: expected inboxes from subscription
+            COALESCE(
+                (SELECT
+                    (cs.entra_packages * cs.entra_domains_per_package * cs.entra_inboxes_per_domain) +
+                    (cs.google_packages * cs.google_domains_per_package * cs.google_inboxes_per_domain)
+                 FROM client_subscriptions cs
+                 WHERE cs.client_id = c.id AND cs.status = 'active'
+                 LIMIT 1),
+                0
+            ) as package_inbox_target,
+            -- Package name from template
+            (SELECT pt.name
+             FROM client_subscriptions cs
+             JOIN package_templates pt ON cs.package_template_id = pt.id
+             WHERE cs.client_id = c.id AND cs.status = 'active'
+             LIMIT 1
+            ) as package_name
         FROM clients c
         LEFT JOIN workspaces w ON c.workspace_id = w.id
         {where_clause}
@@ -1306,6 +1332,189 @@ async def set_sender_name(client_id: UUID, request: SetBaseNameRequest):
         "prefixes": prefixes,
         "provider": request.provider,
         "patterns": patterns_used,
+    }
+
+
+@router.post("/{client_id}/add-sender-name")
+async def add_sender_name(client_id: UUID, request: SetBaseNameRequest):
+    """
+    Add a sender name to existing names (append, don't replace).
+
+    The first name added becomes the Primary (isFounder=true).
+    Subsequent names are secondary (isFounder=false).
+
+    Example:
+        POST /clients/{id}/add-sender-name
+        {
+            "firstName": "Sarah",
+            "lastName": "Johnson",
+            "provider": "entra"
+        }
+    """
+    # Verify client exists
+    client = await fetch_one(
+        "SELECT id, onboarding_data FROM clients WHERE id = $1",
+        client_id
+    )
+    if not client:
+        raise HTTPException(status_code=404, detail="Client not found")
+
+    # Parse existing onboarding data
+    onboarding_data = client.get("onboarding_data")
+    if isinstance(onboarding_data, str):
+        onboarding_data = json.loads(onboarding_data)
+    elif onboarding_data is None:
+        onboarding_data = {}
+
+    # Get existing names
+    existing_names = onboarding_data.get("baseSenderNames", [])
+
+    # Mark as founder only if first name being added
+    is_founder = len(existing_names) == 0
+
+    # Generate prefixes for the new name
+    prefixes = generate_all_prefixes(
+        request.first_name,
+        request.last_name,
+        request.provider
+    )
+
+    # Build new base name data
+    new_name = {
+        "firstName": request.first_name,
+        "lastName": request.last_name,
+        "isFounder": is_founder,
+    }
+
+    # Append to existing names
+    existing_names.append(new_name)
+    onboarding_data["baseSenderNames"] = existing_names
+
+    # Regenerate all preGeneratedSenderNames from all base names
+    all_pre_generated = []
+    provider = request.provider
+    for name in existing_names:
+        name_prefixes = generate_all_prefixes(
+            name["firstName"],
+            name["lastName"],
+            provider
+        )
+        for prefix in name_prefixes:
+            all_pre_generated.append({
+                "firstName": name["firstName"],
+                "lastName": name["lastName"],
+                "emailPrefix": prefix,
+                "source": "founder" if name.get("isFounder") else "generated",
+            })
+
+    onboarding_data["preGeneratedSenderNames"] = all_pre_generated
+    onboarding_data["senderNamePreferences"] = {
+        "usePersonas": False,
+        "nameCount": len(all_pre_generated),
+        "provider": provider,
+    }
+
+    # Save to database
+    await execute(
+        """
+        UPDATE clients
+        SET onboarding_data = $1, updated_at = NOW()
+        WHERE id = $2
+        """,
+        json.dumps(onboarding_data),
+        client_id
+    )
+
+    logger.info(f"Added sender name for client {client_id}: {request.first_name} {request.last_name} (total: {len(existing_names)} names)")
+
+    return {
+        "success": True,
+        "totalNames": len(existing_names),
+        "newName": new_name,
+        "prefixes": prefixes,
+    }
+
+
+@router.delete("/{client_id}/sender-names/{name_index}")
+async def delete_sender_name(client_id: UUID, name_index: int):
+    """
+    Delete a sender name by index.
+
+    If the primary (index 0) is deleted, the next name becomes primary.
+
+    Example:
+        DELETE /clients/{id}/sender-names/1
+    """
+    # Verify client exists
+    client = await fetch_one(
+        "SELECT id, onboarding_data FROM clients WHERE id = $1",
+        client_id
+    )
+    if not client:
+        raise HTTPException(status_code=404, detail="Client not found")
+
+    # Parse existing onboarding data
+    onboarding_data = client.get("onboarding_data")
+    if isinstance(onboarding_data, str):
+        onboarding_data = json.loads(onboarding_data)
+    elif onboarding_data is None:
+        onboarding_data = {}
+
+    # Get existing names
+    existing_names = onboarding_data.get("baseSenderNames", [])
+
+    if name_index < 0 or name_index >= len(existing_names):
+        raise HTTPException(status_code=404, detail="Name index out of range")
+
+    # Remove the name
+    removed_name = existing_names.pop(name_index)
+
+    # If we removed the primary (index 0), promote new index 0 to primary
+    if name_index == 0 and len(existing_names) > 0:
+        existing_names[0]["isFounder"] = True
+
+    onboarding_data["baseSenderNames"] = existing_names
+
+    # Regenerate all preGeneratedSenderNames from remaining base names
+    all_pre_generated = []
+    # Get provider from preferences, default to entra
+    provider = onboarding_data.get("senderNamePreferences", {}).get("provider", "entra")
+
+    for name in existing_names:
+        name_prefixes = generate_all_prefixes(
+            name["firstName"],
+            name["lastName"],
+            provider
+        )
+        for prefix in name_prefixes:
+            all_pre_generated.append({
+                "firstName": name["firstName"],
+                "lastName": name["lastName"],
+                "emailPrefix": prefix,
+                "source": "founder" if name.get("isFounder") else "generated",
+            })
+
+    onboarding_data["preGeneratedSenderNames"] = all_pre_generated
+    if onboarding_data.get("senderNamePreferences"):
+        onboarding_data["senderNamePreferences"]["nameCount"] = len(all_pre_generated)
+
+    # Save to database
+    await execute(
+        """
+        UPDATE clients
+        SET onboarding_data = $1, updated_at = NOW()
+        WHERE id = $2
+        """,
+        json.dumps(onboarding_data),
+        client_id
+    )
+
+    logger.info(f"Deleted sender name for client {client_id}: {removed_name['firstName']} {removed_name['lastName']} (remaining: {len(existing_names)} names)")
+
+    return {
+        "success": True,
+        "removedName": removed_name,
+        "remainingNames": len(existing_names),
     }
 
 

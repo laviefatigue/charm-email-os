@@ -40,6 +40,14 @@ import type {
   CycleRegenerationResponse,
 } from './types';
 
+import type {
+  WaterfallResponse,
+  HyperTideOrderRequest,
+  HyperTideOrderResponse,
+  SenderName,
+  SenderNamesResponse,
+} from './types/infrastructure';
+
 // API base URL - use environment variable or default to deployed API
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://ccssgc4gowsog04wck400o0w.31.97.142.123.sslip.io';
 
@@ -588,6 +596,48 @@ export const clientApi = {
       }),
     });
   },
+
+  /**
+   * Add a sender name (appends to existing names)
+   * First name added becomes Primary, subsequent are secondary
+   */
+  async addSenderName(
+    clientId: string,
+    firstName: string,
+    lastName: string,
+    provider: 'entra' | 'google' = 'entra'
+  ): Promise<{
+    success: boolean;
+    totalNames: number;
+    newName: BaseName;
+    prefixes: string[];
+  }> {
+    return fetchApi(`/api/clients/${clientId}/add-sender-name`, {
+      method: 'POST',
+      body: JSON.stringify({
+        firstName,
+        lastName,
+        provider,
+      }),
+    });
+  },
+
+  /**
+   * Delete a sender name by index
+   * If primary (index 0) is deleted, next name becomes primary
+   */
+  async deleteSenderName(
+    clientId: string,
+    nameIndex: number
+  ): Promise<{
+    success: boolean;
+    removedName: BaseName;
+    remainingNames: number;
+  }> {
+    return fetchApi(`/api/clients/${clientId}/sender-names/${nameIndex}`, {
+      method: 'DELETE',
+    });
+  },
 };
 
 // ===== DOMAIN API =====
@@ -883,22 +933,69 @@ export const domainSourcingApi = {
   /**
    * Generate unique domain suggestions for a client using their onboarding data.
    * Automatically filters out duplicates and saves unique domains to DB.
+   * Falls back to simple pattern-based generation if HyperTide module unavailable.
    */
   async generateForClient(clientId: string, options?: GenerateForClientRequest): Promise<GenerateForClientResponse> {
-    const response = await fetchApi<Record<string, unknown>>(`/api/domain-sourcing/generate-for-client/${clientId}`, {
+    try {
+      const response = await fetchApi<Record<string, unknown>>(`/api/domain-sourcing/generate-for-client/${clientId}`, {
+        method: 'POST',
+        body: JSON.stringify({
+          count: options?.count ?? 10,
+          ai_provider: options?.ai_provider ?? 'openai',
+          ai_model: options?.ai_model ?? 'gpt-4',
+          preferred_tlds: options?.preferred_tlds ?? [
+            { tld: 'com', priority: 1, max_price: 12.0 },
+            { tld: 'io', priority: 2, max_price: 35.0 },
+            { tld: 'co', priority: 3, max_price: 25.0 },
+          ],
+        }),
+      });
+      return toCamelCase<GenerateForClientResponse>(response);
+    } catch (error) {
+      // Fallback to simple generation if HyperTide module unavailable (503 error)
+      console.warn('HyperTide module unavailable, using simple generation fallback');
+      return this.generateSimple(clientId, options?.count ?? 10);
+    }
+  },
+
+  /**
+   * Simple pattern-based domain generation (no HyperTide required).
+   * Used as fallback when full AI generation is unavailable.
+   */
+  async generateSimple(clientId: string, count: number = 10): Promise<GenerateForClientResponse> {
+    const response = await fetchApi<{
+      generated: Array<{ id: string; domain_name: string; legitimacy_score: number }>;
+      message: string;
+    }>('/api/infrastructure/generate-domains/simple', {
       method: 'POST',
-      body: JSON.stringify({
-        count: options?.count ?? 10,
-        ai_provider: options?.ai_provider ?? 'openai',
-        ai_model: options?.ai_model ?? 'gpt-4',
-        preferred_tlds: options?.preferred_tlds ?? [
-          { tld: 'com', priority: 1, max_price: 12.0 },
-          { tld: 'io', priority: 2, max_price: 35.0 },
-          { tld: 'co', priority: 3, max_price: 25.0 },
-        ],
-      }),
+      body: JSON.stringify({ client_id: clientId, count }),
     });
-    return toCamelCase<GenerateForClientResponse>(response);
+
+    // Transform to match GenerateForClientResponse format
+    return {
+      clientId,
+      clientName: '',
+      industry: '',
+      generatedDomains: response.generated.map(d => {
+        const parts = d.domain_name.split('.');
+        const tld = parts.length > 1 ? parts.pop()! : '';
+        const baseName = parts.join('.');
+        return {
+          id: d.id,
+          domainName: d.domain_name,
+          baseName,
+          tld,
+          legitimacyScore: d.legitimacy_score,
+          rationale: 'Pattern-based generation',
+        };
+      }),
+      filteredCount: 0,
+      totalCandidates: response.generated.length,
+      providerUsed: 'pattern',
+      modelUsed: 'simple',
+      generatedAt: new Date().toISOString(),
+      message: response.message,
+    };
   },
 
   /**
@@ -3723,6 +3820,181 @@ export const unifiedCycleApi = {
   },
 };
 
+// ===== INFRASTRUCTURE PROVISIONING API =====
+
+export const infrastructureApi = {
+  /**
+   * Get complete waterfall view for a client (looks up client's workspace)
+   */
+  async getWaterfallByClient(
+    clientId: string,
+    options?: {
+      purchaseStatus?: 'all' | 'purchased' | 'not_purchased';
+      tld?: 'com' | 'co' | 'info';
+      provider?: 'entra' | 'google';
+      status?: 'live' | 'flagged' | 'dead';
+      showOverBudget?: boolean;
+      showDeactivated?: boolean;
+      showNeedsReconnection?: boolean;
+    }
+  ): Promise<WaterfallResponse> {
+    const params = new URLSearchParams();
+    if (options?.purchaseStatus && options.purchaseStatus !== 'all') {
+      params.set('purchase_status', options.purchaseStatus);
+    }
+    if (options?.tld) params.set('tld', options.tld);
+    if (options?.provider) params.set('provider', options.provider);
+    if (options?.status) params.set('status', options.status);
+    if (options?.showOverBudget) params.set('show_over_budget', 'true');
+    if (options?.showDeactivated) params.set('show_deactivated', 'true');
+    if (options?.showNeedsReconnection) params.set('show_needs_reconnection', 'true');
+
+    const query = params.toString();
+    const response = await fetchApi<Record<string, unknown>>(
+      `/api/infrastructure/waterfall/client/${clientId}${query ? `?${query}` : ''}`
+    );
+    return toCamelCase<WaterfallResponse>(response);
+  },
+
+  /**
+   * Get complete waterfall view for workspace (direct query)
+   */
+  async getWaterfallByWorkspace(
+    workspaceId: string,
+    options?: {
+      view?: 'all' | 'owned' | 'new';
+      stage?: number;
+      provider?: 'entra' | 'google';
+    }
+  ): Promise<WaterfallResponse> {
+    const params = new URLSearchParams();
+    if (options?.view) params.set('view', options.view);
+    if (options?.stage) params.set('stage', options.stage.toString());
+    if (options?.provider) params.set('provider', options.provider);
+
+    const query = params.toString();
+    const response = await fetchApi<Record<string, unknown>>(
+      `/api/infrastructure/waterfall/workspace/${workspaceId}${query ? `?${query}` : ''}`
+    );
+    return toCamelCase<WaterfallResponse>(response);
+  },
+
+  /**
+   * Bulk price check for multiple domains by ID
+   */
+  async bulkPriceCheck(domainIds: string[]): Promise<{ jobId: string; totalDomains: number; status: string }> {
+    const response = await fetchApi<Record<string, unknown>>('/api/infrastructure/bulk-price-check', {
+      method: 'POST',
+      body: JSON.stringify({ domain_ids: domainIds }),
+    });
+    return toCamelCase<{ jobId: string; totalDomains: number; status: string }>(response);
+  },
+
+  /**
+   * Bulk price check for all unpriced domains in a workspace
+   */
+  async bulkPriceCheckWorkspace(
+    workspaceId: string,
+    maxDomains?: number
+  ): Promise<{
+    checked: number;
+    available: number;
+    unavailable: number;
+    errors: number;
+    domains: Array<{ domainName: string; porkbunPrice?: number; dynadotPrice?: number; available: boolean; error?: string }>;
+  }> {
+    const response = await fetchApi<Record<string, unknown>>('/api/infrastructure/bulk-price-check', {
+      method: 'POST',
+      body: JSON.stringify({
+        workspace_id: workspaceId,
+        max_domains: maxDomains || 50,
+      }),
+    });
+    return toCamelCase<{
+      checked: number;
+      available: number;
+      unavailable: number;
+      errors: number;
+      domains: Array<{ domainName: string; porkbunPrice?: number; dynadotPrice?: number; available: boolean; error?: string }>;
+    }>(response);
+  },
+
+  /**
+   * Bulk purchase multiple domains
+   */
+  async bulkPurchase(
+    domainIds: string[],
+    provider?: 'porkbun' | 'dynadot'
+  ): Promise<{ jobId: string; totalDomains: number; status: string }> {
+    const params = provider ? `?provider=${provider}` : '';
+    const response = await fetchApi<Record<string, unknown>>(
+      `/api/infrastructure/bulk-purchase${params}`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ domain_ids: domainIds }),
+      }
+    );
+    return toCamelCase<{ jobId: string; totalDomains: number; status: string }>(response);
+  },
+
+  /**
+   * Set nameservers to DNSimple for multiple domains
+   */
+  async setNameservers(domainIds: string[]): Promise<{ jobId: string; totalDomains: number }> {
+    const response = await fetchApi<Record<string, unknown>>('/api/infrastructure/set-nameservers', {
+      method: 'POST',
+      body: JSON.stringify({ domain_ids: domainIds }),
+    });
+    return toCamelCase<{ jobId: string; totalDomains: number }>(response);
+  },
+
+  /**
+   * Verify DNS records for multiple domains
+   */
+  async verifyDNS(domainIds: string[]): Promise<{ results: unknown[]; allConfigured: number; partiallyConfigured: number }> {
+    const response = await fetchApi<Record<string, unknown>>('/api/infrastructure/verify-dns', {
+      method: 'POST',
+      body: JSON.stringify({ domain_ids: domainIds }),
+    });
+    return toCamelCase<{ results: unknown[]; allConfigured: number; partiallyConfigured: number }>(response);
+  },
+
+  /**
+   * Assign Entra or Google provider to domains
+   */
+  async assignProvider(domainIds: string[], provider: 'entra' | 'google'): Promise<{ updated: number; provider: string }> {
+    const response = await fetchApi<Record<string, unknown>>(
+      `/api/infrastructure/assign-provider?provider=${provider}`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ domain_ids: domainIds }),
+      }
+    );
+    return toCamelCase<{ updated: number; provider: string }>(response);
+  },
+
+  /**
+   * Create HyperTide order with workspace configuration
+   */
+  async createHyperTideOrder(request: HyperTideOrderRequest): Promise<HyperTideOrderResponse> {
+    const response = await fetchApi<Record<string, unknown>>('/api/infrastructure/hypertide-order', {
+      method: 'POST',
+      body: JSON.stringify(toSnakeCase(request as unknown as Record<string, unknown>)),
+    });
+    return toCamelCase<HyperTideOrderResponse>(response);
+  },
+
+  /**
+   * Get sender names for client (reads from clients.onboarding_data)
+   */
+  async getSenderNamesByClient(clientId: string): Promise<SenderNamesResponse> {
+    const response = await fetchApi<Record<string, unknown>>(
+      `/api/infrastructure/sender-names/client/${clientId}`
+    );
+    return toCamelCase<SenderNamesResponse>(response);
+  },
+};
+
 // ===== COMBINED API EXPORT =====
 
 export const api = {
@@ -3736,6 +4008,7 @@ export const api = {
   leads: leadApi,
   health: healthApi,
   inventory: inventoryApi,
+  infrastructure: infrastructureApi,
   onboarding: onboardingApi,
   strategy: strategyApi,
   subscriptions: subscriptionApi,

@@ -245,7 +245,12 @@ class AccountSyncModule:
         provider = account.get('provider') or ''
 
         # Determine inbox state
-        inbox_state = 'dead' if status in ('Not connected', 'Disconnected', 'Disabled') else 'live'
+        # IMPORTANT: Disconnected != Dead
+        # - 'dead' = killed by trigger for bad behavior (bounces, spam complaints)
+        # - 'live' = available for campaigns (even if currently disconnected)
+        # - Disconnected inboxes stay 'live' but have status='Not connected' for tracking
+        # Only 'Disabled' (explicit user action in EmailBison) marks as dead
+        inbox_state = 'dead' if status == 'Disabled' else 'live'
 
         # Get ESP
         esp = ESP_MAP.get(provider, 'other')
@@ -273,8 +278,12 @@ class AccountSyncModule:
         bounces_all_time = account.get('bounced_count', 0) or 0
         daily_limit = account.get('daily_limit', 0) or 0
 
-        # Extract warmup data
+        # Extract warmup data (for monitoring only, NOT kill triggers)
         warmup_enabled = account.get('warmup_enabled', False)
+        warmup_score = account.get('warmup_score')  # 0-100 or None
+        warmup_spam_count = account.get('warmup_spam_count', 0) or 0  # Emails landing in spam during warmup
+        warmup_bounces_received = account.get('warmup_bounces_received_count', 0) or 0
+        warmup_bounces_caused = account.get('warmup_bounces_caused_count', 0) or 0
 
         # Calculate initial inventory status for new inboxes
         initial_lifecycle = 'dead' if inbox_state == 'dead' else 'incubating'
@@ -301,10 +310,14 @@ class AccountSyncModule:
                 inventory_lifecycle_status,
                 inventory_pool_status,
                 disconnected_at,
+                warmup_score,
+                warmup_spam_count,
+                warmup_bounces_received,
+                warmup_bounces_caused,
                 first_seen_at,
                 last_seen_at,
                 last_synced_at
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, NOW(), NOW(), NOW())
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, NOW(), NOW(), NOW())
             ON CONFLICT (email_address) DO UPDATE SET
                 emailbison_account_id = EXCLUDED.emailbison_account_id,
                 display_name = COALESCE(EXCLUDED.display_name, sender_accounts.display_name),
@@ -370,8 +383,13 @@ class AccountSyncModule:
                     THEN sender_accounts.disconnected_at
                     -- Clear disconnected_at when reconnected
                     ELSE NULL
-                END
-            RETURNING (xmax = 0) as created
+                END,
+                -- Warmup monitoring fields (NOT used for kill triggers)
+                warmup_score = EXCLUDED.warmup_score,
+                warmup_spam_count = EXCLUDED.warmup_spam_count,
+                warmup_bounces_received = EXCLUDED.warmup_bounces_received,
+                warmup_bounces_caused = EXCLUDED.warmup_bounces_caused
+            RETURNING (xmax = 0) as created, emails_sent_all_time as prev_sends
         """,
             workspace_id,                              # $1
             email,                                     # $2
@@ -382,7 +400,7 @@ class AccountSyncModule:
             esp,                                       # $7
             health_score,                              # $8
             bounce_rate,                               # $9
-            account.get('warmup_spam_count', 0) or 0,  # $10 complaints_lifetime from EmailBison
+            0,  # $10 complaints_lifetime - NOT seeded from API. Only incremented by sync_events.py on actual FBL/spam reports
             warmup_enabled,                            # $11
             emails_sent_all_time,                      # $12
             replies_all_time,                          # $13
@@ -391,10 +409,44 @@ class AccountSyncModule:
             inbox_state == 'live',                     # $16 is_active
             initial_lifecycle,                         # $17 inventory_lifecycle_status
             initial_pool,                              # $18 inventory_pool_status
-            datetime.now() if status == 'Not connected' else None  # $19 disconnected_at
+            datetime.now() if status == 'Not connected' else None,  # $19 disconnected_at
+            warmup_score,                              # $20 warmup_score (monitoring only)
+            warmup_spam_count,                         # $21 warmup_spam_count (NOT complaints)
+            warmup_bounces_received,                   # $22 warmup_bounces_received
+            warmup_bounces_caused                      # $23 warmup_bounces_caused
         )
 
-        return result['created'] if result else False
+        if not result:
+            return False
+
+        created = result['created']
+
+        # Track send delta to populate total_sends_7d for rate-based kill triggers
+        #
+        # KEY DIFFERENCE FROM BOUNCES:
+        # - Bounces: We DON'T track delta here (warmup bounces shouldn't trigger kills)
+        # - Sends: We DO track delta (ALL sends matter for rate calculations)
+        #
+        # Rate calculation: bounce_rate = hard_bounces_7d / total_sends_7d
+        # - Numerator (bounces): Campaign-only via sync_events.py
+        # - Denominator (sends): ALL sends (warmup + campaign) via this delta
+        #
+        # This gives accurate rates: inboxes that send more have lower rates.
+        # Daily decay (0.86x in health_checks.py) handles 7-day rolling window.
+        if not created and result['prev_sends'] is not None:
+            prev_sends = result['prev_sends'] or 0
+            send_delta = max(0, emails_sent_all_time - prev_sends)
+
+            if send_delta > 0:
+                await self.db.execute("""
+                    UPDATE sender_accounts
+                    SET
+                        total_sends_7d = COALESCE(total_sends_7d, 0) + $2,
+                        updated_at = NOW()
+                    WHERE email_address = $1
+                """, email, send_delta)
+
+        return created
 
     async def mark_stale_accounts(self, workspace_id: UUID, active_eb_ids: set):
         """Mark accounts that are no longer in EmailBison as inactive."""

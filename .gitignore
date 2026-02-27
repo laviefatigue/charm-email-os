@@ -41,6 +41,15 @@ Thumbs.db
 # Credentials (kept locally, never committed)
 .claude-creds/
 claude-credentials-local/
+.env.production
+
+# Hypertide credentials
+Hypertide/automation/.env
+*.session
+*.cookie
+
+# Claude Code credentials (mounted from host)
+.claude/
 
 # Backups & test output
 backups/

@@ -12,6 +12,9 @@ import {
   Server,
   Mail,
   Shield,
+  Wifi,
+  WifiOff,
+  Zap,
 } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -102,6 +105,13 @@ export default function DashboardPage() {
   const incubatingInboxes = infrastructure.lifecycle_distribution.incubating;
   const warningInboxes = infrastructure.lifecycle_distribution.warning;
 
+  // Connection status (CRITICAL for accuracy)
+  const connectedInboxes = infrastructure.connected_inboxes ?? liveInboxes;
+  const disconnectedInboxes = infrastructure.disconnected_inboxes ?? 0;
+  const operationalCapacity = infrastructure.operational_capacity ?? 0;
+  const potentialCapacity = infrastructure.potential_capacity ?? 0;
+  const hasDisconnectedInboxes = disconnectedInboxes > 0;
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 via-white to-purple-50">
       {/* Header */}
@@ -138,21 +148,78 @@ export default function DashboardPage() {
       </div>
 
       <div className="max-w-7xl mx-auto px-6 py-8 space-y-8">
+        {/* Connection Status Warning Banner */}
+        {hasDisconnectedInboxes && (
+          <Card className="bg-gradient-to-r from-amber-500 to-orange-500 text-white border-0">
+            <CardContent className="py-4">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-4">
+                  <div className="p-3 bg-white/20 rounded-full">
+                    <WifiOff className="h-6 w-6" />
+                  </div>
+                  <div>
+                    <h3 className="text-lg font-bold">
+                      {formatNumber(disconnectedInboxes)} Inboxes Need Reconnection
+                    </h3>
+                    <p className="text-amber-100">
+                      OAuth expired - these inboxes cannot send until reconnected in EmailBison
+                    </p>
+                  </div>
+                </div>
+                <div className="text-right">
+                  <div className="text-2xl font-bold">
+                    {formatNumber(potentialCapacity - operationalCapacity)}
+                  </div>
+                  <div className="text-amber-100 text-sm">capacity lost/day</div>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        )}
+
         {/* Key Metrics Row */}
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-          {/* Total Inboxes */}
-          <Card className="bg-gradient-to-br from-blue-500 to-blue-600 text-white">
+          {/* Operational Inboxes (Connected + Live) */}
+          <Card className="bg-gradient-to-br from-green-500 to-green-600 text-white">
             <CardHeader className="pb-3">
-              <CardTitle className="text-sm font-medium text-blue-100">
-                Total Inboxes
+              <CardTitle className="text-sm font-medium text-green-100 flex items-center gap-2">
+                <Wifi className="h-4 w-4" />
+                Operational Inboxes
               </CardTitle>
             </CardHeader>
             <CardContent>
               <div className="flex items-center justify-between">
                 <div>
-                  <div className="text-4xl font-bold">{formatNumber(totalInboxes)}</div>
+                  <div className="text-4xl font-bold">{formatNumber(connectedInboxes)}</div>
+                  <div className="text-sm text-green-100 mt-1">
+                    {hasDisconnectedInboxes
+                      ? `${formatNumber(disconnectedInboxes)} disconnected`
+                      : `of ${formatNumber(liveInboxes)} live`
+                    }
+                  </div>
+                </div>
+                <CheckCircle className="h-12 w-12 text-green-200" />
+              </div>
+            </CardContent>
+          </Card>
+
+          {/* Daily Capacity */}
+          <Card className="bg-gradient-to-br from-blue-500 to-blue-600 text-white">
+            <CardHeader className="pb-3">
+              <CardTitle className="text-sm font-medium text-blue-100 flex items-center gap-2">
+                <Zap className="h-4 w-4" />
+                Daily Capacity
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="flex items-center justify-between">
+                <div>
+                  <div className="text-4xl font-bold">{formatNumber(operationalCapacity)}</div>
                   <div className="text-sm text-blue-100 mt-1">
-                    {formatNumber(liveInboxes)} live · {formatNumber(deadInboxes)} retired
+                    {hasDisconnectedInboxes
+                      ? `${formatNumber(potentialCapacity)} if reconnected`
+                      : 'emails/day'
+                    }
                   </div>
                 </div>
                 <Server className="h-12 w-12 text-blue-200" />
@@ -161,9 +228,9 @@ export default function DashboardPage() {
           </Card>
 
           {/* Health Score */}
-          <Card className="bg-gradient-to-br from-green-500 to-green-600 text-white">
+          <Card className="bg-gradient-to-br from-purple-500 to-purple-600 text-white">
             <CardHeader className="pb-3">
-              <CardTitle className="text-sm font-medium text-green-100">
+              <CardTitle className="text-sm font-medium text-purple-100">
                 Health Score
               </CardTitle>
             </CardHeader>
@@ -171,31 +238,11 @@ export default function DashboardPage() {
               <div className="flex items-center justify-between">
                 <div>
                   <div className="text-4xl font-bold">{Math.round(healthScore)}</div>
-                  <div className="text-sm text-green-100 mt-1">
+                  <div className="text-sm text-purple-100 mt-1">
                     {healthScore >= 80 ? 'Excellent' : healthScore >= 60 ? 'Good' : 'Needs Attention'}
                   </div>
                 </div>
-                <Activity className="h-12 w-12 text-green-200" />
-              </div>
-            </CardContent>
-          </Card>
-
-          {/* Survival Rate */}
-          <Card className="bg-gradient-to-br from-purple-500 to-purple-600 text-white">
-            <CardHeader className="pb-3">
-              <CardTitle className="text-sm font-medium text-purple-100">
-                Survival Rate
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="flex items-center justify-between">
-                <div>
-                  <div className="text-4xl font-bold">{formatPercent(survivalRate)}</div>
-                  <div className="text-sm text-purple-100 mt-1">
-                    {formatNumber(liveInboxes)} of {formatNumber(totalInboxes)} active
-                  </div>
-                </div>
-                <CheckCircle className="h-12 w-12 text-purple-200" />
+                <Activity className="h-12 w-12 text-purple-200" />
               </div>
             </CardContent>
           </Card>
@@ -402,46 +449,71 @@ export default function DashboardPage() {
         <Card>
           <CardHeader>
             <CardTitle>Email Provider Distribution</CardTitle>
-            <CardDescription>Inbox allocation by provider</CardDescription>
+            <CardDescription>Inbox allocation by provider with connection status</CardDescription>
           </CardHeader>
           <CardContent>
             <div className="space-y-3">
-              {infrastructure.providers.map((provider) => (
-                <div key={provider.name} className="flex items-center justify-between py-3 border-b last:border-0">
-                  <div className="flex-1">
-                    <div className="flex items-center gap-3">
-                      <Mail className="h-5 w-5 text-gray-400" />
-                      <span className="font-medium text-gray-900">{provider.name}</span>
+              {infrastructure.providers.map((provider) => {
+                const connectedCount = provider.connected_count ?? provider.live_count;
+                const disconnectedCount = provider.disconnected_count ?? 0;
+                const hasDisconnected = disconnectedCount > 0;
+
+                return (
+                  <div key={provider.name} className="flex items-center justify-between py-3 border-b last:border-0">
+                    <div className="flex-1">
+                      <div className="flex items-center gap-3">
+                        <Mail className="h-5 w-5 text-gray-400" />
+                        <span className="font-medium text-gray-900">{provider.name}</span>
+                        {hasDisconnected && (
+                          <Badge variant="warning" className="text-xs">
+                            {formatNumber(disconnectedCount)} disconnected
+                          </Badge>
+                        )}
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-6">
+                      <div className="text-right">
+                        <div className="text-sm text-gray-500 flex items-center gap-1">
+                          <Wifi className="h-3 w-3" />
+                          Operational
+                        </div>
+                        <div className="text-lg font-semibold text-green-600">
+                          {formatNumber(connectedCount)}
+                        </div>
+                      </div>
+                      {hasDisconnected && (
+                        <div className="text-right">
+                          <div className="text-sm text-gray-500 flex items-center gap-1">
+                            <WifiOff className="h-3 w-3" />
+                            Disconnected
+                          </div>
+                          <div className="text-lg font-semibold text-amber-600">
+                            {formatNumber(disconnectedCount)}
+                          </div>
+                        </div>
+                      )}
+                      <div className="text-right">
+                        <div className="text-sm text-gray-500">Retired</div>
+                        <div className="text-lg font-semibold text-gray-400">
+                          {formatNumber(provider.dead_count)}
+                        </div>
+                      </div>
+                      <div className="text-right">
+                        <div className="text-sm text-gray-500">Health</div>
+                        <div className={cn(
+                          "text-lg font-semibold",
+                          provider.avg_health_score >= 80 ? "text-green-600" :
+                          provider.avg_health_score >= 60 ? "text-yellow-600" :
+                          provider.avg_health_score >= 40 ? "text-orange-600" :
+                          "text-red-600"
+                        )}>
+                          {Math.round(provider.avg_health_score)}
+                        </div>
+                      </div>
                     </div>
                   </div>
-                  <div className="flex items-center gap-6">
-                    <div className="text-right">
-                      <div className="text-sm text-gray-500">Live</div>
-                      <div className="text-lg font-semibold text-green-600">
-                        {formatNumber(provider.live_count)}
-                      </div>
-                    </div>
-                    <div className="text-right">
-                      <div className="text-sm text-gray-500">Dead</div>
-                      <div className="text-lg font-semibold text-red-600">
-                        {formatNumber(provider.dead_count)}
-                      </div>
-                    </div>
-                    <div className="text-right">
-                      <div className="text-sm text-gray-500">Health</div>
-                      <div className={cn(
-                        "text-lg font-semibold",
-                        provider.avg_health_score >= 80 ? "text-green-600" :
-                        provider.avg_health_score >= 60 ? "text-yellow-600" :
-                        provider.avg_health_score >= 40 ? "text-orange-600" :
-                        "text-red-600"
-                      )}>
-                        {Math.round(provider.avg_health_score)}
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           </CardContent>
         </Card>

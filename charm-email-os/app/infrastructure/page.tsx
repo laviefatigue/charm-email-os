@@ -147,12 +147,15 @@ export default function InfrastructurePage() {
     domainIds: string[];
     provider: ProviderType;
     orderCount: number;
+    senderNames: { firstName: string; lastName: string }[];
   }) => {
     const workspaceId = useWaterfallStore.getState().workspaceId;
     if (!selectedClientId || !workspaceId) {
       throw new Error('Missing client or workspace');
     }
     try {
+      // Note: senderNames are passed for future API support
+      // Currently API reads sender names from client's onboarding_data
       const result = await api.infrastructure.createHyperTideOrder({
         clientId: selectedClientId,
         workspaceId,
@@ -160,7 +163,7 @@ export default function InfrastructurePage() {
         domainIds: request.domainIds,
         orderCount: request.orderCount,
       });
-      console.log('HyperTide order created:', result);
+      console.log('HyperTide order created:', result, 'with sender names:', request.senderNames);
       // Refresh after short delay to allow job to start
       setTimeout(() => refreshWaterfall(), 1000);
     } catch (err) {
@@ -594,6 +597,7 @@ export default function InfrastructurePage() {
         open={showHyperTideModal}
         onOpenChange={setShowHyperTideModal}
         provider={selectedProvider}
+        clientId={selectedClientId ?? ''}
         onConfirm={handleHyperTideOrder}
       />
     </div>

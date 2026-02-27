@@ -3,29 +3,42 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { cn } from '@/lib/utils';
-import { Server, Lightbulb, Users, HeartPulse, Building2 } from 'lucide-react';
+import { Server, Building2, ArrowLeft } from 'lucide-react';
 
 interface TabNavigationProps {
   clientId: string;
 }
 
+// Simplified tabs for Domain Manager app
 const tabs = [
-  { name: 'Profile', href: 'profile', icon: Building2 },
-  { name: 'Infrastructure', href: 'inboxes', icon: Server },
-  { name: 'Strategy', href: 'strategy', icon: Lightbulb },
-  { name: 'Leads', href: 'leads', icon: Users },
-  { name: 'Health', href: 'health', icon: HeartPulse },
+  { name: 'Profile', href: '', icon: Building2 },
+  { name: 'Infrastructure', href: 'infrastructure', icon: Server },
 ];
 
 export function TabNavigation({ clientId }: TabNavigationProps) {
   const pathname = usePathname();
+  const baseUrl = `/clients/${clientId}`;
 
   return (
-    <div className="border-b bg-background">
-      <nav className="flex gap-1 px-6">
+    <div className="border-b bg-background mb-6">
+      <nav className="flex items-center gap-1 px-6">
+        {/* Back to Clients */}
+        <Link
+          href="/clients"
+          className="flex items-center gap-2 px-4 py-3 text-sm font-medium text-muted-foreground hover:text-foreground transition-colors border-b-2 border-transparent"
+        >
+          <ArrowLeft className="h-4 w-4" />
+          Clients
+        </Link>
+
+        <div className="w-px h-6 bg-border mx-2" />
+
+        {/* Page tabs */}
         {tabs.map((tab) => {
-          const href = `/clients/${clientId}/${tab.href}`;
-          const isActive = pathname === href;
+          const href = tab.href ? `${baseUrl}/${tab.href}` : baseUrl;
+          const isActive = tab.href
+            ? pathname.startsWith(href)
+            : pathname === baseUrl;
 
           return (
             <Link

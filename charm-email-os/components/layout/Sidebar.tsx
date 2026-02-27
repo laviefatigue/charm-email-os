@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { Users, Settings, Mail } from 'lucide-react';
+import { Users, Settings, Globe } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 
@@ -17,10 +17,10 @@ export function Sidebar() {
     <div className="flex h-screen w-64 flex-col border-r bg-sidebar">
       {/* Logo */}
       <div className="flex h-16 items-center gap-2 border-b px-6">
-        <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary">
-          <Mail className="h-4 w-4 text-primary-foreground" />
+        <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-linear-to-br from-indigo-500 to-purple-600">
+          <Globe className="h-4 w-4 text-white" />
         </div>
-        <span className="text-lg font-semibold">Charm Email OS</span>
+        <span className="text-lg font-semibold">Domain Manager</span>
       </div>
 
       {/* Navigation */}

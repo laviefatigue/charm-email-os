@@ -16,11 +16,8 @@ import {
   Server,
   AlertTriangle,
   XCircle,
-  Mail,
   Zap,
   Plus,
-  Wifi,
-  WifiOff,
 } from 'lucide-react';
 import type { ProviderSummary, ProviderType } from '@/lib/types/infrastructure';
 
@@ -43,10 +40,11 @@ const PROVIDER_METRICS = {
 interface ProviderCardProps {
   provider: ProviderType;
   summary: ProviderSummary;
+  packageName?: string | null;
   onCreateOrder: (provider: ProviderType) => void;
 }
 
-function ProviderCard({ provider, summary, onCreateOrder }: ProviderCardProps) {
+function ProviderCard({ provider, summary, packageName, onCreateOrder }: ProviderCardProps) {
   const config = PROVIDER_METRICS[provider];
   const isEntra = provider === 'entra';
 
@@ -163,26 +161,6 @@ function ProviderCard({ provider, summary, onCreateOrder }: ProviderCardProps) {
             </span>
             <span className="text-sm text-gray-400">/{liveInboxes.toLocaleString()}</span>
           </div>
-          <div className="flex items-center gap-2 mt-1.5 text-xs flex-wrap">
-            {connectedInboxes > 0 && (
-              <span className="flex items-center gap-1 text-green-600">
-                <Wifi className="w-3 h-3" />
-                {connectedInboxes} connected
-              </span>
-            )}
-            {disconnectedInboxes > 0 && (
-              <span className="flex items-center gap-1 text-amber-600">
-                <WifiOff className="w-3 h-3" />
-                {disconnectedInboxes} disconnected
-              </span>
-            )}
-            {deadInboxes > 0 && (
-              <span className="flex items-center gap-1 text-red-600">
-                <XCircle className="w-3 h-3" />
-                {deadInboxes} dead
-              </span>
-            )}
-          </div>
         </div>
 
         {/* 3. DAILY CAPACITY: Based on emails/day/inbox */}
@@ -202,30 +180,24 @@ function ProviderCard({ provider, summary, onCreateOrder }: ProviderCardProps) {
           </div>
         </div>
 
-        {/* 4. PACKAGES: Used / Available */}
+        {/* 4. PACKAGES: Package name and count */}
         <div className="bg-white/60 rounded-lg p-3 border border-gray-100">
           <div className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider mb-1">
             Packages
           </div>
           <div className="flex items-baseline gap-1">
-            <span className={`text-2xl font-bold ${
-              usedPackages > availablePackages ? 'text-amber-600' : 'text-gray-900'
-            }`}>
+            <span className="text-2xl font-bold text-gray-900">
               {usedPackages}
             </span>
             <span className="text-sm text-gray-400">/{availablePackages}</span>
           </div>
           <div className="text-xs mt-1.5">
-            {usedPackages > availablePackages ? (
-              <span className="text-amber-600 font-medium">
-                {usedPackages - availablePackages} over limit
-              </span>
-            ) : usedPackages === availablePackages ? (
-              <span className="text-amber-600 font-medium">
-                At capacity
+            {packageName ? (
+              <span className="text-gray-600 font-medium">
+                {packageName}
               </span>
             ) : (
-              <span className="text-green-600 font-medium">
+              <span className="text-gray-400">
                 {availablePackages - usedPackages} available
               </span>
             )}
@@ -300,11 +272,13 @@ export function InfraSummaryHeader({ onCreateOrder }: InfraSummaryHeaderProps) {
         <ProviderCard
           provider="entra"
           summary={infraSummary.entra}
+          packageName={infraSummary.packageName}
           onCreateOrder={onCreateOrder}
         />
         <ProviderCard
           provider="google"
           summary={infraSummary.google}
+          packageName={infraSummary.packageName}
           onCreateOrder={onCreateOrder}
         />
       </div>

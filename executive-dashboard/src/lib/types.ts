@@ -7,6 +7,12 @@ export interface Infrastructure {
   avg_health_score: number;
   flagged_domains: number;
   clean_domains: number;
+  // Connection status (CRITICAL for accuracy)
+  connected_inboxes: number;  // Live + Connected = Operational (can send NOW)
+  disconnected_inboxes: number;  // Live + Not connected = OAuth expired (CANNOT send)
+  // Capacity metrics
+  operational_capacity: number;  // SUM(daily_limit) for connected inboxes only
+  potential_capacity: number;  // SUM(daily_limit) for all live inboxes (if reconnected)
   health_distribution: {
     healthy: number;
     good: number;
@@ -25,6 +31,8 @@ export interface Infrastructure {
     live_count: number;
     dead_count: number;
     avg_health_score: number;
+    connected_count: number;  // Operational inboxes
+    disconnected_count: number;  // Needs OAuth reconnection
   }>;
   last_sync: string;
   sync_source: string;

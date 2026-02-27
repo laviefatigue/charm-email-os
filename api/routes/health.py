@@ -1260,6 +1260,10 @@ async def get_infrastructure_health(client_id: UUID):
             live_inboxes=0,
             dead_inboxes=0,
             avg_health_score=0.0,
+            connected_inboxes=0,
+            disconnected_inboxes=0,
+            operational_capacity=0,
+            potential_capacity=0,
             providers=[],
             health_distribution=HealthDistribution(
                 healthy=0, good=0, warning=0, critical=0, total=0
@@ -1273,11 +1277,20 @@ async def get_infrastructure_health(client_id: UUID):
         )
 
     # Get inbox summary stats from sender_accounts
+    # CRITICAL: Track connection status separately from inbox_state
+    # - inbox_state = 'live' or 'dead' (kill-based lifecycle)
+    # - status = 'Connected', 'Not connected', 'Disabled' (OAuth connection)
     inbox_stats = await fetch_one("""
         SELECT
             COUNT(*) as total,
             COUNT(*) FILTER (WHERE inbox_state = 'live') as live,
             COUNT(*) FILTER (WHERE inbox_state = 'dead') as dead,
+            -- Connection status breakdown (for live inboxes)
+            COUNT(*) FILTER (WHERE inbox_state = 'live' AND status = 'Connected') as connected,
+            COUNT(*) FILTER (WHERE inbox_state = 'live' AND status != 'Connected') as disconnected,
+            -- Capacity metrics (OPERATIONAL = connected only)
+            COALESCE(SUM(daily_limit) FILTER (WHERE inbox_state = 'live' AND status = 'Connected'), 0) as operational_capacity,
+            COALESCE(SUM(daily_limit) FILTER (WHERE inbox_state = 'live'), 0) as potential_capacity,
             COALESCE(AVG(health_score) FILTER (WHERE inbox_state = 'live'), 0) as avg_health
         FROM sender_accounts
         WHERE workspace_id = $1
@@ -1325,12 +1338,16 @@ async def get_infrastructure_health(client_id: UUID):
     """, workspace_id)
 
     # Get provider breakdown from sender_accounts.esp
+    # Include connection status for accurate operational capacity per provider
     provider_stats = await fetch_all("""
         SELECT
             COALESCE(esp, 'other') as provider,
             COUNT(*) as total,
             COUNT(*) FILTER (WHERE inbox_state = 'live') as live,
             COUNT(*) FILTER (WHERE inbox_state = 'dead') as dead,
+            -- Connection breakdown (crucial for external dashboard)
+            COUNT(*) FILTER (WHERE inbox_state = 'live' AND status = 'Connected') as connected,
+            COUNT(*) FILTER (WHERE inbox_state = 'live' AND status != 'Connected') as disconnected,
             COALESCE(AVG(health_score) FILTER (WHERE inbox_state = 'live'), 0) as avg_health
         FROM sender_accounts
         WHERE workspace_id = $1
@@ -1386,14 +1403,16 @@ async def get_infrastructure_health(client_id: UUID):
         WHERE workspace_id = $1
     """, workspace_id)
 
-    # Build provider metrics
+    # Build provider metrics with connection status
     providers = [
         ProviderMetrics(
             name=p["provider"],
             count=p["total"],
             live_count=p["live"],
             dead_count=p["dead"],
-            avg_health_score=float(p["avg_health"] or 0)
+            avg_health_score=float(p["avg_health"] or 0),
+            connected_count=p["connected"],
+            disconnected_count=p["disconnected"]
         )
         for p in provider_stats
     ]
@@ -1430,6 +1449,11 @@ async def get_infrastructure_health(client_id: UUID):
         live_inboxes=inbox_stats["live"] if inbox_stats else 0,
         dead_inboxes=inbox_stats["dead"] if inbox_stats else 0,
         avg_health_score=float(inbox_stats["avg_health"] if inbox_stats else 0),
+        # Connection status - CRITICAL for external dashboard accuracy
+        connected_inboxes=inbox_stats["connected"] if inbox_stats else 0,
+        disconnected_inboxes=inbox_stats["disconnected"] if inbox_stats else 0,
+        operational_capacity=inbox_stats["operational_capacity"] if inbox_stats else 0,
+        potential_capacity=inbox_stats["potential_capacity"] if inbox_stats else 0,
         providers=providers,
         health_distribution=HealthDistribution(
             healthy=health_dist["healthy"] if health_dist else 0,

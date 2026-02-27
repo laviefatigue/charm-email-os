@@ -79,9 +79,18 @@ class EventSyncModule:
                         folder='bounced'
                     )
 
-                    if inbox_count > 0 or bounce_count > 0:
+                    # Sync spam folder - leads who reported us as spam
+                    # CRITICAL: These are spam complaints that should trigger kills
+                    spam_count = await self.sync_campaign_replies(
+                        local_campaign_id=campaign['local_id'],
+                        eb_campaign_id=int(campaign['emailbison_campaign_id']),
+                        workspace_id=campaign['workspace_id'],
+                        folder='spam'
+                    )
+
+                    if inbox_count > 0 or bounce_count > 0 or spam_count > 0:
                         audit.increment_updated()
-                        print(f"    [{campaign['campaign_name']}] {inbox_count} replies, {bounce_count} bounces")
+                        print(f"    [{campaign['campaign_name']}] {inbox_count} replies, {bounce_count} bounces, {spam_count} spam")
 
                 except EmailBisonAPIError as e:
                     audit.add_error(
@@ -310,13 +319,19 @@ class EventSyncModule:
             await self.increment_inbox_bounces(sender_account_id, bounce_type)
 
         # Detect spam complaints - Per v3 spec: 1 spam complaint = death, no exceptions
-        # Check in TWO places:
-        # 1. INBOX responses: Lead explicitly says they marked us as spam
-        # 2. BOUNCE messages: FBL (Feedback Loop) patterns indicating spam report
+        # Check in THREE places:
+        # 1. SPAM folder: Direct spam report - lead clicked "Report as Spam" in their email client
+        # 2. INBOX responses: Lead explicitly says they marked us as spam
+        # 3. BOUNCE messages: FBL (Feedback Loop) patterns indicating spam report
         if sender_account_id:
             is_spam = False
 
-            if folder == 'inbox':
+            if folder == 'spam':
+                # SPAM FOLDER: This is a DIRECT spam complaint - most definitive signal
+                # The lead clicked "Report as Spam" in their email client
+                is_spam = True
+                print(f"      [SPAM FOLDER] Direct spam complaint detected for {to_inbox}")
+            elif folder == 'inbox':
                 # Analyze lead response text for spam complaint indicators
                 is_spam = self.detect_spam_in_response(body, subject)
             elif folder == 'bounced' and bounce_type == 'hard_blocked':
@@ -484,6 +499,8 @@ class EventSyncModule:
         """Determine event type for campaign_events table."""
         if folder == 'bounced':
             return 'bounce'
+        if folder == 'spam':
+            return 'spam_complaint'
         if is_interested:
             return 'interested_reply'
         if is_automated:

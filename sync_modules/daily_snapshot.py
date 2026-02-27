@@ -69,12 +69,18 @@ class DailySnapshotModule:
 
         async with self.db.acquire() as conn:
             # Get capacity metrics as of now (represents end of snapshot_date)
+            #
+            # IMPORTANT: daily_capacity = CONNECTED live inboxes only
+            # A live but disconnected inbox has 0 operational capacity
             capacity = await conn.fetchrow("""
                 SELECT
                     COUNT(*) FILTER (WHERE inbox_state = 'live') as live_inboxes,
+                    COUNT(*) FILTER (WHERE inbox_state = 'live' AND status = 'Connected') as connected_inboxes,
+                    COUNT(*) FILTER (WHERE inbox_state = 'live' AND status IN ('Not connected', 'Disconnected')) as disconnected_inboxes,
                     COUNT(*) FILTER (WHERE inventory_lifecycle_status = 'incubating') as incubating_inboxes,
                     COUNT(*) FILTER (WHERE inbox_state = 'dead') as dead_inboxes,
-                    COALESCE(SUM(daily_limit) FILTER (WHERE inbox_state = 'live'), 0) as daily_capacity
+                    -- Only CONNECTED live inboxes contribute to operational capacity
+                    COALESCE(SUM(daily_limit) FILTER (WHERE inbox_state = 'live' AND status = 'Connected'), 0) as daily_capacity
                 FROM sender_accounts
                 WHERE workspace_id = $1
             """, workspace_id)
@@ -88,17 +94,31 @@ class DailySnapshotModule:
             """, workspace_id, snapshot_date)
 
             # Try to get sending volume from campaign data
-            # Option 1: If campaign_snapshots table exists with daily data
+            # Uses campaign_snapshots table - get LATEST snapshot per campaign for the day
+            #
+            # IMPORTANT: campaign_snapshots contains CUMULATIVE values (total to date).
+            # Multiple snapshots per day means we must use MAX (latest) per campaign,
+            # then SUM across campaigns. Using SUM directly would cause 24x inflation
+            # if hourly snapshots exist.
             volume = await conn.fetchrow("""
+                WITH latest_daily_snapshots AS (
+                    -- Get the latest snapshot per campaign for the target date
+                    SELECT DISTINCT ON (cs.campaign_id)
+                        cs.campaign_id,
+                        cs.emails_sent,
+                        cs.bounced
+                    FROM campaign_snapshots cs
+                    JOIN emailbison_campaigns ec ON cs.campaign_id = ec.id
+                    WHERE ec.workspace_id = $1
+                      AND DATE(cs.snapshot_timestamp) = $2
+                    ORDER BY cs.campaign_id, cs.snapshot_timestamp DESC
+                )
                 SELECT
-                    COALESCE(SUM(sent), 0) as emails_sent,
-                    COALESCE(SUM(delivered), 0) as emails_delivered,
-                    COALESCE(SUM(hard_bounces + soft_bounces), 0) as emails_bounced,
-                    COALESCE(SUM(spam_complaints), 0) as emails_complained
-                FROM campaign_snapshots cs
-                JOIN emailbison_campaigns ec ON cs.campaign_id = ec.emailbison_id
-                WHERE ec.workspace_id = $1
-                  AND DATE(cs.snapshot_date) = $2
+                    COALESCE(SUM(emails_sent), 0) as emails_sent,
+                    COALESCE(SUM(emails_sent) - SUM(bounced), 0) as emails_delivered,
+                    COALESCE(SUM(bounced), 0) as emails_bounced,
+                    0 as emails_complained  -- Not tracked in campaign_snapshots
+                FROM latest_daily_snapshots
             """, workspace_id, snapshot_date)
 
             # Use zeros if no campaign data found
@@ -162,18 +182,26 @@ class DailySnapshotModule:
             'emails_sent': emails_sent,
             'daily_capacity': capacity['daily_capacity'],
             'live_inboxes': capacity['live_inboxes'],
+            'connected_inboxes': capacity['connected_inboxes'],
+            'disconnected_inboxes': capacity['disconnected_inboxes'],
             'incubating_inboxes': capacity['incubating_inboxes'],
             'dead_inboxes': capacity['dead_inboxes'],
             'utilization_pct': round(utilization_pct, 2),
             'kills': kills or 0
         }
 
+        # Calculate operational percentage for visibility
+        operational_pct = (
+            (capacity['connected_inboxes'] / capacity['live_inboxes'] * 100)
+            if capacity['live_inboxes'] > 0 else 0
+        )
+
         logger.info(
             f"✅ Snapshot complete: {workspace_id} | "
             f"Date: {snapshot_date} | "
             f"Sent: {emails_sent} | "
-            f"Capacity: {capacity['daily_capacity']} | "
-            f"Utilization: {utilization_pct:.1f}% | "
+            f"Capacity: {capacity['daily_capacity']} (connected only) | "
+            f"Operational: {operational_pct:.0f}% ({capacity['connected_inboxes']}/{capacity['live_inboxes']} live) | "
             f"Kills: {kills or 0}"
         )
 

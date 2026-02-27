@@ -16,8 +16,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Charm Email OS",
-  description: "Client management platform for outbound email campaigns",
+  title: "Domain Manager",
+  description: "Email infrastructure provisioning and domain management",
 };
 
 export default function RootLayout({

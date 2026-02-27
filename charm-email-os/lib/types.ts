@@ -11,6 +11,16 @@ export type {
   KillTriggerSeverity,
 } from './types/health';
 
+// Re-export infrastructure types
+export type {
+  WaterfallDomain,
+  WaterfallResponse,
+  HyperTideOrderRequest,
+  HyperTideOrderResponse,
+  SenderName as InfraSenderName,
+  SenderNamesResponse,
+} from './types/infrastructure';
+
 // ===== WORKSPACE (from OwnRBL workspaces table) =====
 export interface Workspace {
   id: string;
@@ -47,6 +57,10 @@ export interface Client {
   campaignCount?: number;
   // Workspace sync control
   syncEnabled?: boolean;  // Maps to workspace.is_active - controls whether sync worker processes this workspace
+  // Capacity metrics for operational status
+  connectedInboxCount?: number;  // Live inboxes with Connected status
+  packageInboxTarget?: number;   // Expected inboxes from subscription package
+  packageName?: string;          // Name of subscription package (e.g., "Starter", "Growth")
 }
 
 // Onboarding data collected during client setup
@@ -186,6 +200,9 @@ export interface Domain {
   inboxCount?: number;
   liveInboxCount?: number;
   deadInboxCount?: number;
+  // Connection status counts (for operational capacity)
+  connectedInboxCount?: number;    // Live + Connected to EmailBison
+  disconnectedInboxCount?: number; // Live but OAuth expired, needs reconnection
   // Blacklist details (names of RBLs domain is listed on)
   blacklistNames?: string[];
   // Domain source tracking (how this domain was acquired)
@@ -240,8 +257,15 @@ export type InboxStatus =
   | 'paused'        // OwnRBL: paused
   | 'dead';         // OwnRBL: dead
 
-// Inbox state (v3.0 health state)
+// Inbox state (v3.0 health state) - kill-based, NOT connection status
 export type InboxState = 'live' | 'dead';
+
+// ESP connection status (from EmailBison API)
+// IMPORTANT: This is SEPARATE from InboxState:
+//   - InboxState = 'live'/'dead' based on kill triggers (bounces, spam complaints)
+//   - EspConnectionStatus = OAuth connection to EmailBison
+//   - A 'live' inbox can be 'Not connected' (needs reconnection but hasn't been killed)
+export type EspConnectionStatus = 'Connected' | 'Not connected' | 'Disconnected' | 'Disabled';
 
 // ESP type
 export type ESPType = 'gmail' | 'microsoft' | 'other';
@@ -256,6 +280,7 @@ export type OwnRBLKillTriggerType =
   | 'spam_complaint'
   | 'rbl_critical'
   | 'warmup_failed'
+  | 'disconnected_timeout'  // NEW: Inbox disconnected for 21+ days
   | 'manual';
 
 // Inbox entity (from OwnRBL sender_accounts table)
@@ -271,7 +296,9 @@ export interface Inbox {
   lastName: string;
   displayName?: string;  // OwnRBL
   status: InboxStatus;
-  inboxState?: InboxState;  // v3.0 health state
+  inboxState?: InboxState;  // v3.0 health state (kill-based: live/dead)
+  espConnectionStatus?: EspConnectionStatus;  // OAuth connection to EmailBison
+  disconnectedAt?: Date;  // When OAuth connection was lost (for 21-day timeout)
   espType?: ESPType;  // OwnRBL
   // Warmup metrics
   warmupEnabled?: boolean;
