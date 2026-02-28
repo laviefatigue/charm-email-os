@@ -21,7 +21,7 @@ import {
 } from '@/components/ui/select';
 import { Textarea } from '@/components/ui/textarea';
 import { Slider } from '@/components/ui/slider';
-import type { SubscriptionWithUsage, PackageTemplate, Client } from '@/lib/types';
+import type { SubscriptionWithUsage, PackageTemplate, Client, OnboardingData } from '@/lib/types';
 import { subscriptionApi, clientApi } from '@/lib/api';
 
 interface SubscriptionEditModalProps {
@@ -113,9 +113,9 @@ export function SubscriptionEditModal({
       if (primaryDomain !== currentPrimaryDomain) {
         await clientApi.update(clientId, {
           onboardingData: {
-            ...client?.onboardingData,
+            ...(client?.onboardingData || {}),
             primaryDomain: primaryDomain || '',
-          },
+          } as OnboardingData,
         });
       }
 
