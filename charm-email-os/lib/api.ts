@@ -3935,6 +3935,7 @@ export const infrastructureApi = {
    * Bulk purchase multiple domains
    */
   async bulkPurchase(
+    clientId: string,
     domainIds: string[],
     provider?: 'porkbun' | 'dynadot'
   ): Promise<{ jobId: string; totalDomains: number; status: string }> {
@@ -3943,7 +3944,7 @@ export const infrastructureApi = {
       `/api/infrastructure/bulk-purchase${params}`,
       {
         method: 'POST',
-        body: JSON.stringify({ domain_ids: domainIds }),
+        body: JSON.stringify({ client_id: clientId, domain_ids: domainIds }),
       }
     );
     return toCamelCase<{ jobId: string; totalDomains: number; status: string }>(response);
