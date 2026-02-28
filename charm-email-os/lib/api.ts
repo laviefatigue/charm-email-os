@@ -80,7 +80,19 @@ async function fetchApi<T>(endpoint: string, options?: RequestInit): Promise<T> 
       let detail: string | undefined;
       try {
         const errorData = await response.json();
-        detail = errorData.detail;
+        // Handle FastAPI validation errors (detail is array) vs regular errors (detail is string)
+        if (Array.isArray(errorData.detail)) {
+          // Extract error messages from validation error array
+          detail = errorData.detail
+            .map((err: { msg?: string; message?: string }) => err.msg || err.message || 'Validation error')
+            .join('; ');
+        } else if (typeof errorData.detail === 'string') {
+          detail = errorData.detail;
+        } else if (errorData.detail) {
+          detail = JSON.stringify(errorData.detail);
+        } else if (errorData.message) {
+          detail = errorData.message;
+        }
       } catch {
         // Ignore JSON parse error
       }
