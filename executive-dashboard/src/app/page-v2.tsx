@@ -34,7 +34,6 @@ import {
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Progress } from '@/components/ui/progress';
-import { Tooltip } from '@/components/ui/tooltip';
 import { HealthScoreGauge } from '@/components/charts/HealthScoreGauge';
 import { KillVelocityChart } from '@/components/charts/KillVelocityChart';
 import { KillBreakdownPie } from '@/components/charts/KillBreakdownPie';
