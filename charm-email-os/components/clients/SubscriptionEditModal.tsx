@@ -114,7 +114,7 @@ export function SubscriptionEditModal({
         await clientApi.update(clientId, {
           onboardingData: {
             ...client?.onboardingData,
-            primaryDomain: primaryDomain || undefined,
+            primaryDomain: primaryDomain || '',
           },
         });
       }
