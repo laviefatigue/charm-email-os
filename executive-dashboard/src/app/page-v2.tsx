@@ -225,7 +225,7 @@ export default function DashboardPageV2() {
                 <CardTitle className="text-sm font-medium text-blue-100">
                   Total Inboxes
                 </CardTitle>
-                <Info className="h-4 w-4 text-blue-200 cursor-help" title="Total provisioned email sending accounts across all providers" />
+                <Info className="h-4 w-4 text-blue-200" />
               </div>
             </CardHeader>
             <CardContent>
@@ -259,7 +259,7 @@ export default function DashboardPageV2() {
                 <CardTitle className="text-sm font-medium text-green-100">
                   Health Score
                 </CardTitle>
-                <Info className="h-4 w-4 text-green-200 cursor-help" title="Average health score across all live inboxes (0-100). Based on connection status, bounce rates, and sending behavior." />
+                <Info className="h-4 w-4 text-green-200" />
               </div>
             </CardHeader>
             <CardContent>
@@ -285,7 +285,7 @@ export default function DashboardPageV2() {
                 <CardTitle className="text-sm font-medium text-purple-100">
                   Survival Rate
                 </CardTitle>
-                <Info className="h-4 w-4 text-purple-200 cursor-help" title="Percentage of total inboxes that are currently active. Target: >85%" />
+                <Info className="h-4 w-4 text-purple-200" />
               </div>
             </CardHeader>
             <CardContent>
@@ -320,9 +320,9 @@ export default function DashboardPageV2() {
                   Domain Status
                 </CardTitle>
                 <Info className={cn(
-                  "h-4 w-4 cursor-help",
+                  "h-4 w-4",
                   infrastructure.flagged_domains > 0 ? "text-red-200" : "text-teal-200"
-                )} title="Number of domains flagged on blacklists. Clean domains maintain good sender reputation." />
+                )} />
               </div>
             </CardHeader>
             <CardContent>
@@ -380,7 +380,7 @@ export default function DashboardPageV2() {
             <CardHeader>
               <CardTitle className="flex items-center gap-2">
                 Health Distribution
-                <Info className="h-4 w-4 text-gray-400 cursor-help" title="Inbox health score ranges: Healthy (80-100), Good (60-80), Warning (40-60), Critical (0-40)" />
+                <Info className="h-4 w-4 text-gray-400" />
               </CardTitle>
               <CardDescription className="space-y-2">
                 <p>Inbox health breakdown by score range</p>
@@ -441,7 +441,7 @@ export default function DashboardPageV2() {
             <CardHeader>
               <CardTitle className="flex items-center gap-2">
                 Lifecycle Status
-                <Info className="h-4 w-4 text-gray-400 cursor-help" title="Inbox deployment stages: Deployed (active in campaigns), Reserve (ready), Incubating (warming), Warning (has bounces)" />
+                <Info className="h-4 w-4 text-gray-400" />
               </CardTitle>
               <CardDescription>
                 Inbox deployment stages
@@ -483,7 +483,7 @@ export default function DashboardPageV2() {
                 <div className="flex-1">
                   <CardTitle className="flex items-center gap-2">
                     Kill Velocity
-                    <Info className="h-4 w-4 text-gray-400 cursor-help" title="Tracks automated inbox retirements due to bad sending behavior. Manual deactivations are excluded." />
+                    <Info className="h-4 w-4 text-gray-400" />
                   </CardTitle>
                   <CardDescription className="mt-1">
                     Weekly inbox deaths from send quality issues
@@ -549,7 +549,7 @@ export default function DashboardPageV2() {
             <CardHeader>
               <CardTitle className="flex items-center gap-2">
                 Kill Trigger Analysis
-                <Info className="h-4 w-4 text-gray-400 cursor-help" title="Shows WHY inboxes died - broken down by trigger type (spam complaints, blocks, bounces, etc.)" />
+                <Info className="h-4 w-4 text-gray-400" />
               </CardTitle>
               <CardDescription>
                 Root cause analysis of inbox deaths
@@ -605,7 +605,7 @@ export default function DashboardPageV2() {
                 <div className="flex-1">
                   <CardTitle className="flex items-center gap-2">
                     Email Volume & Capacity
-                    <Info className="h-4 w-4 text-gray-400 cursor-help" title="Daily sending volume compared to available capacity. Shows how efficiently you're using your infrastructure." />
+                    <Info className="h-4 w-4 text-gray-400" />
                   </CardTitle>
                   <CardDescription>
                     30-day sending history with capacity utilization
