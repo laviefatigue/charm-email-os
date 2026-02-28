@@ -133,7 +133,7 @@ export default function InfrastructurePage() {
   const handleBulkPurchase = async (domainIds: string[]) => {
     if (!selectedClientId) return;
     try {
-      const result = await api.infrastructure.bulkPurchase(domainIds);
+      const result = await api.infrastructure.bulkPurchase(selectedClientId, domainIds);
       console.log('Bulk purchase job created:', result);
       // Refresh after short delay to allow job to start
       setTimeout(() => refreshWaterfall(), 1000);
