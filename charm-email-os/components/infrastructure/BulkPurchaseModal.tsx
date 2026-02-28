@@ -57,7 +57,18 @@ export function BulkPurchaseModal({
       clearSelection();
       onOpenChange(false);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to purchase domains');
+      // Extract error message from various error types
+      let errorMessage = 'Failed to purchase domains';
+      if (err instanceof Error) {
+        errorMessage = err.message;
+      } else if (typeof err === 'object' && err !== null) {
+        // Handle object errors (e.g., API error responses)
+        const errObj = err as Record<string, unknown>;
+        errorMessage = String(errObj.detail || errObj.message || errObj.error || JSON.stringify(err));
+      } else if (typeof err === 'string') {
+        errorMessage = err;
+      }
+      setError(errorMessage);
     } finally {
       setIsSubmitting(false);
     }

@@ -572,10 +572,7 @@ async def process_domain_purchase_job(job: dict):
 
             try:
                 # Check availability first
-                if registrar == 'dynadot':
-                    avail = await service.check_availability(domain_name)
-                else:
-                    avail = await service.check(domain_name)
+                avail = await service.check_availability(domain_name)
 
                 if not avail.available:
                     results.append({
