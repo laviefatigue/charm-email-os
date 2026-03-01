@@ -10,7 +10,9 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 import httpx
 
-EMAILBISON_API_URL = os.getenv('EMAILBISON_API_URL', 'https://spellcast.hirecharm.com/api')
+_raw_api_url = os.getenv('EMAILBISON_API_URL', 'https://spellcast.hirecharm.com/api')
+# Ensure URL ends with /api (some configs miss this)
+EMAILBISON_API_URL = _raw_api_url if _raw_api_url.endswith('/api') else f"{_raw_api_url.rstrip('/')}/api"
 EMAILBISON_API_KEY = os.getenv('EMAILBISON_API_KEY', '')
 
 DEFAULT_TIMEOUT = 60.0
