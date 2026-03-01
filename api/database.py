@@ -784,6 +784,19 @@ async def _backfill_charm_purchase_record() -> None:
             logger.info("activatecharm.com not found for Charm")
             return
         if result.get("job_id"):
+            # Ensure purchased_at is set even if job exists
+            fix_sql = """
+                UPDATE domains d
+                SET purchased_at = '2026-02-28 00:00:00+00'::timestamptz,
+                    cached_price = 9.99,
+                    selected_provider = 'porkbun'
+                FROM clients c
+                WHERE d.workspace_id = c.workspace_id
+                AND c.id = $1
+                AND d.domain_name = 'activatecharm.com'
+                AND d.purchased_at IS NULL
+            """
+            await execute(fix_sql, charm_client_id)
             logger.info("activatecharm.com purchase record already exists")
             return
     except Exception as e:
@@ -819,7 +832,10 @@ async def _backfill_charm_purchase_record() -> None:
             RETURNING id, domain_ids
         )
         UPDATE domains
-        SET job_id = new_job.id, selected_provider = 'porkbun'
+        SET job_id = new_job.id,
+            selected_provider = 'porkbun',
+            purchased_at = '2026-02-28 00:00:00+00'::timestamptz,
+            cached_price = 9.99
         FROM new_job
         WHERE domains.id = ANY(new_job.domain_ids)
     """
