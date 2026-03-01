@@ -176,10 +176,18 @@ class DynadotService:
                 header = root.find('.//SetNsHeader')
 
             if header is not None:
-                # SuccessCode: 0 = success, -1 = error
+                # SuccessCode: 0 = success, non-zero = error
                 success_code = header.findtext('SuccessCode', '-1')
                 result['status'] = 'success' if success_code == '0' else 'error'
-                result['error'] = header.findtext('Error', '')
+                # Dynadot puts errors in <Error> element, but sometimes in <Status> element
+                # (e.g. "insufficient_funds" for registration failures)
+                error_msg = header.findtext('Error', '')
+                if not error_msg and success_code != '0':
+                    # Check Status field for error message (e.g., "insufficient_funds")
+                    status_text = header.findtext('Status', '')
+                    if status_text and status_text.lower() != 'success':
+                        error_msg = status_text.replace('_', ' ')
+                result['error'] = error_msg
                 result['success_code'] = success_code
             else:
                 # Check if root element indicates success
@@ -529,7 +537,11 @@ class DynadotService:
             response = await self.client.get(self.base_url, params=params)
             response.raise_for_status()
 
+            # Log raw response for debugging purchase issues
+            logger.info(f"Dynadot register response for {domain}: {response.text[:1000]}")
+
             data = self._parse_xml_response(response.text)
+            logger.info(f"Dynadot register parsed data for {domain}: {data}")
 
             if data.get("status", "").lower() == "success":
                 reg_info = data.get("registration", {})

@@ -53,6 +53,7 @@ export interface WaterfallDomain {
   purchaseRegistrar?: 'porkbun' | 'dynadot' | null;
   purchasePrice?: number | null;
   purchaseStatus: PurchaseStatus;
+  purchaseJobId?: string | null;  // Active purchase job (shows "Purchasing..." when set but not purchased)
 
   // Column 3: DNS
   dnsStatus: DNSStatus;

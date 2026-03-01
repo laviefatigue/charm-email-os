@@ -132,15 +132,26 @@ export default function InfrastructurePage() {
 
   const handleBulkPurchase = async (domainIds: string[]) => {
     if (!selectedClientId) return;
-    try {
-      const result = await api.infrastructure.bulkPurchase(selectedClientId, domainIds);
-      console.log('Bulk purchase job created:', result);
-      // Refresh after short delay to allow job to start
-      setTimeout(() => refreshWaterfall(), 1000);
-    } catch (err) {
-      console.error('Bulk purchase failed:', err);
-      throw err;
+
+    // Use bulkPurchaseAndWait to poll for completion
+    const result = await api.infrastructure.bulkPurchaseAndWait(selectedClientId, domainIds);
+
+    // Refresh waterfall after completion
+    setTimeout(() => refreshWaterfall(), 500);
+
+    // If any domains failed, throw error to show in modal
+    if (!result.success) {
+      // Build error message from results
+      const failedDomains = result.results
+        .filter(r => !r.success)
+        .map(r => `${r.domain}: ${r.error || 'Unknown error'}`)
+        .join('\n');
+
+      const errorMsg = result.errorMessage || failedDomains || 'Purchase failed';
+      throw new Error(errorMsg);
     }
+
+    console.log('Bulk purchase completed:', result);
   };
 
   const handleHyperTideOrder = async (request: {

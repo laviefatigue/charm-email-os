@@ -20,6 +20,37 @@ interface PricingCellProps {
 export function PricingCell({ domain, onBuy, isSelected }: PricingCellProps) {
   const [checking, setChecking] = useState(false);
 
+  // Purchase in progress - show loading state
+  // purchaseJobId is set when job created, purchasedAt set when complete
+  const isPurchasing = domain.purchaseJobId && !domain.purchasedAt && !domain.isPurchased;
+
+  if (isPurchasing) {
+    return (
+      <div className="space-y-2">
+        {/* Processing indicator */}
+        <div className="flex items-center gap-2">
+          <Loader2 className="w-4 h-4 animate-spin text-indigo-500" />
+          <span className="text-sm font-medium text-indigo-600">Purchasing...</span>
+        </div>
+
+        {/* Progress bar */}
+        <div className="w-full h-1.5 bg-indigo-100 rounded-full overflow-hidden">
+          <div
+            className="h-full bg-indigo-500 rounded-full animate-pulse"
+            style={{ width: '60%' }}
+          />
+        </div>
+
+        {/* Show expected prices while purchasing */}
+        {domain.bestPrice && domain.bestRegistrar && (
+          <div className="text-xs text-gray-500">
+            ${domain.bestPrice.toFixed(2)} via {domain.bestRegistrar}
+          </div>
+        )}
+      </div>
+    );
+  }
+
   // Already purchased (or legacy domain with inboxes)
   if (domain.isPurchased) {
     // Check if this is a legacy domain (externally purchased, has inboxes)

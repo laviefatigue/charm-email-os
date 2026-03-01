@@ -30,6 +30,7 @@ import time
 import socket
 import logging
 import json
+import asyncio
 import httpx
 from datetime import datetime, timedelta
 from decimal import Decimal
@@ -218,7 +219,7 @@ def _generate_slack_order_specification(job: dict, client_name: str) -> dict:
     job_id = str(job.get("id", "unknown"))
     provider_type = job.get("provider_type", "entra")
     domain_names = job.get("domain_names", [])
-    request_data = job.get('request_data', {})
+    request_data = job.get('request_data') or {}  # Handle NULL from DB
 
     # Calculate values based on provider type
     is_entra = provider_type == "entra"
@@ -352,7 +353,9 @@ def get_pending_domain_purchase_job() -> Optional[dict]:
     try:
         cur = conn.cursor()
         cur.execute("""
-            SELECT id, client_id, workspace_id, domain_ids, domain_names,
+            SELECT id, client_id, workspace_id,
+                   domain_ids::text[] as domain_ids,
+                   domain_names::text[] as domain_names,
                    registrar, retry_count, max_retries
             FROM domain_purchase_jobs
             WHERE status = 'pending'
@@ -385,8 +388,10 @@ def get_pending_inbox_purchase_job() -> Optional[dict]:
     try:
         cur = conn.cursor()
         cur.execute("""
-            SELECT id, client_id, workspace_id, provider_type, domain_ids,
-                   domain_names, request_data, override_age_check, custom_purchase,
+            SELECT id, client_id, workspace_id, provider_type,
+                   domain_ids::text[] as domain_ids,
+                   domain_names::text[] as domain_names,
+                   request_data, override_age_check, custom_purchase,
                    retry_count, max_retries
             FROM inbox_purchase_jobs
             WHERE status = 'pending'
@@ -524,23 +529,25 @@ def update_domain_purchase_job(job_id: str, status: str, current_domain: str = N
 
 
 async def process_domain_purchase_job(job: dict):
-    """Process a domain purchase job via registrar APIs."""
+    """Process a domain purchase job via registrar APIs.
+
+    IMPORTANT: This function performs FRESH price checks at purchase time to ensure
+    we always buy from the cheapest registrar. The registrar field in the job is
+    ignored - we compare real-time prices from BOTH registrars for each domain.
+    """
     job_id = str(job['id'])
-    registrar = job['registrar']
     domain_ids = job['domain_ids']
     domain_names = job.get('domain_names', [])
 
-    logger.info(f"Processing domain purchase job {job_id}: {len(domain_ids)} domains via {registrar}")
+    logger.info(f"Processing domain purchase job {job_id}: {len(domain_ids)} domains (will check both registrars for best price)")
 
     # Import services
     from services.porkbun import PorkbunService
     from services.dynadot import DynadotService
 
-    # Select service based on registrar
-    if registrar == 'dynadot':
-        service = DynadotService()
-    else:
-        service = PorkbunService()
+    # Initialize BOTH services - we'll check prices from both before deciding
+    porkbun_service = PorkbunService()
+    dynadot_service = DynadotService()
 
     results = []
     successful_count = 0
@@ -568,24 +575,60 @@ async def process_domain_purchase_job(job: dict):
             domain_name = domain_row['domain_name']
             update_domain_purchase_job(job_id, 'processing', current_domain=domain_name)
 
-            logger.info(f"  [{i+1}/{len(domain_ids)}] Purchasing {domain_name} via {registrar}")
+            logger.info(f"  [{i+1}/{len(domain_ids)}] Checking FRESH prices for {domain_name}")
 
             try:
-                # Check availability first
-                avail = await service.check_availability(domain_name)
+                # ===== FRESH PRICE CHECK FROM BOTH REGISTRARS =====
+                # Check Dynadot first (fast, no rate limits)
+                dynadot_result = await dynadot_service.check_availability(domain_name)
+                dynadot_price = dynadot_result.price if dynadot_result.available else None
+                logger.info(f"    Dynadot: {'$' + str(dynadot_price) if dynadot_price else 'unavailable'}")
 
-                if not avail.available:
+                # Check Porkbun (slower due to rate limits)
+                # Add delay to respect Porkbun's rate limit (~1 request per 10 seconds)
+                await asyncio.sleep(10)
+                porkbun_result = await porkbun_service.check_availability(domain_name)
+                porkbun_price = porkbun_result.price if porkbun_result.available else None
+                logger.info(f"    Porkbun: {'$' + str(porkbun_price) if porkbun_price else 'unavailable'}")
+
+                # ===== SELECT CHEAPEST REGISTRAR =====
+                chosen_registrar = None
+                chosen_service = None
+                chosen_price = None
+
+                if dynadot_price is not None and porkbun_price is not None:
+                    # Both available - pick cheapest
+                    if porkbun_price < dynadot_price:
+                        chosen_registrar = 'porkbun'
+                        chosen_service = porkbun_service
+                        chosen_price = porkbun_price
+                    else:
+                        chosen_registrar = 'dynadot'
+                        chosen_service = dynadot_service
+                        chosen_price = dynadot_price
+                elif dynadot_price is not None:
+                    chosen_registrar = 'dynadot'
+                    chosen_service = dynadot_service
+                    chosen_price = dynadot_price
+                elif porkbun_price is not None:
+                    chosen_registrar = 'porkbun'
+                    chosen_service = porkbun_service
+                    chosen_price = porkbun_price
+                else:
+                    # Neither available
                     results.append({
                         "domain_id": str(domain_id),
                         "domain": domain_name,
                         "success": False,
-                        "error": "Domain no longer available"
+                        "error": "Domain not available at either registrar"
                     })
                     failed_count += 1
                     continue
 
-                # Purchase domain
-                purchase_result = await service.purchase(domain_name)
+                logger.info(f"    → Best price: ${chosen_price} via {chosen_registrar}")
+
+                # ===== EXECUTE PURCHASE =====
+                purchase_result = await chosen_service.purchase(domain_name, price=chosen_price)
 
                 if purchase_result.success:
                     results.append({
@@ -593,23 +636,30 @@ async def process_domain_purchase_job(job: dict):
                         "domain": domain_name,
                         "success": True,
                         "order_id": purchase_result.order_id,
-                        "price": float(avail.price) if avail.price else None
+                        "price": float(chosen_price),
+                        "registrar": chosen_registrar
                     })
                     successful_count += 1
-                    if avail.price:
-                        total_cost += avail.price
+                    total_cost += chosen_price
 
-                    # Update domain status
+                    # Update domain with ACTUAL registrar and price used
                     cur.execute("""
                         UPDATE domains
                         SET approval_status = 'purchased',
                             purchased_at = NOW(),
+                            selected_provider = %s,
+                            cached_price = %s,
+                            porkbun_price = %s,
+                            dynadot_price = %s,
                             updated_at = NOW()
                         WHERE id = %s
-                    """, (domain_id,))
+                    """, (chosen_registrar, float(chosen_price),
+                          float(porkbun_price) if porkbun_price else None,
+                          float(dynadot_price) if dynadot_price else None,
+                          domain_id))
                     conn.commit()
 
-                    logger.info(f"    ✓ Purchased {domain_name}")
+                    logger.info(f"    ✓ Purchased {domain_name} for ${chosen_price} via {chosen_registrar}")
                 else:
                     results.append({
                         "domain_id": str(domain_id),
@@ -632,7 +682,8 @@ async def process_domain_purchase_job(job: dict):
 
         cur.close()
         conn.close()
-        await service.close()
+        await porkbun_service.close()
+        await dynadot_service.close()
 
         # Update job as completed
         final_status = 'completed' if failed_count == 0 else ('failed' if successful_count == 0 else 'completed')

@@ -274,6 +274,7 @@ class PorkbunService:
         domain: str,
         years: int = 1,
         nameservers: Optional[list[str]] = None,
+        price: Optional[Decimal] = None,
     ) -> PurchaseResult:
         """
         Purchase a domain.
@@ -282,36 +283,81 @@ class PorkbunService:
             domain: Full domain name to purchase
             years: Registration period (default 1 year)
             nameservers: Custom nameservers to set (optional)
+            price: Known price in dollars (avoids extra API call if provided)
 
         Returns:
             PurchaseResult with success status
         """
-        payload = {
-            **self._auth_payload(),
-            "years": years,
-        }
-
-        # Add nameservers if provided
-        if nameservers:
-            for i, ns in enumerate(nameservers[:4], 1):
-                payload[f"ns{i}"] = ns
-
         try:
+            # If price not provided, fetch it (with rate limit handling)
+            if price is None:
+                # Wait to avoid rate limit (Porkbun allows 1 check per 10 seconds)
+                await asyncio.sleep(10)
+
+                check_resp = await self.client.post(
+                    f"{self.base_url}/domain/checkDomain/{domain}",
+                    json=self._auth_payload(),
+                )
+                check_resp.raise_for_status()
+                check_data = check_resp.json()
+
+                if check_data.get("status") != "SUCCESS":
+                    return PurchaseResult(
+                        domain=domain,
+                        success=False,
+                        error=check_data.get("message", "Failed to check domain availability"),
+                    )
+
+                resp_data = check_data.get("response", {})
+                if resp_data.get("avail") != "yes":
+                    return PurchaseResult(
+                        domain=domain,
+                        success=False,
+                        error="Domain no longer available",
+                    )
+
+                price = Decimal(resp_data.get("price", "0"))
+
+            # Convert price to pennies (API requires cost in pennies)
+            cost_pennies = int(price * 100 * years)
+
+            logger.info(f"Porkbun: {domain} price=${price}, cost_pennies={cost_pennies} for {years} year(s)")
+
+            # Build purchase payload - use /domain/create/ endpoint
+            payload = {
+                **self._auth_payload(),
+                "cost": cost_pennies,
+                "agreeToTerms": "yes",
+            }
+
+            # Add nameservers if provided
+            if nameservers:
+                for i, ns in enumerate(nameservers[:4], 1):
+                    payload[f"ns{i}"] = ns
+
             response = await self.client.post(
-                f"{self.base_url}/domain/register/{domain}",
+                f"{self.base_url}/domain/create/{domain}",
                 json=payload,
             )
-            response.raise_for_status()
-            data = response.json()
+
+            # Log the raw response for debugging
+            logger.info(f"Porkbun create response for {domain}: status={response.status_code}, body={response.text[:500]}")
+
+            # Try to parse response even on error status codes
+            try:
+                data = response.json()
+            except Exception:
+                response.raise_for_status()  # Re-raise if can't parse JSON
+                data = {}
 
             if data.get("status") == "SUCCESS":
                 return PurchaseResult(
                     domain=domain,
                     success=True,
-                    order_id=data.get("domain", domain),
+                    order_id=data.get("orderId", data.get("domain", domain)),
                 )
             else:
-                error_msg = data.get("message", "Unknown error")
+                error_msg = data.get("message", f"HTTP {response.status_code}")
                 logger.error(f"Porkbun purchase failed for {domain}: {error_msg}")
                 return PurchaseResult(
                     domain=domain,

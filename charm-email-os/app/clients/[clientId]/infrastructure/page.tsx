@@ -112,13 +112,35 @@ export default function ClientInfrastructurePage() {
 
   const handleBulkPurchase = async (domainIds: string[]) => {
     if (!clientId) return;
-    try {
-      const result = await api.infrastructure.bulkPurchase(clientId, domainIds);
-      console.log('Bulk purchase job created:', result);
-      setTimeout(() => refreshWaterfall(), 1000);
-    } catch (err) {
-      console.error('Bulk purchase failed:', err);
-      throw err;
+
+    // Create purchase job - don't wait for completion
+    // The table row will show "Purchasing..." state via purchaseJobId
+    const result = await api.infrastructure.bulkPurchase(clientId, domainIds);
+
+    console.log('Purchase job created:', result);
+
+    // Refresh waterfall to show "Purchasing..." state in the row
+    setTimeout(() => refreshWaterfall(), 500);
+
+    // Start polling for completion in background (for auto-refresh when done)
+    pollForCompletion(result.jobId);
+  };
+
+  // Poll for purchase job completion and refresh when done
+  const pollForCompletion = async (jobId: string) => {
+    const maxAttempts = 120; // 4 minutes max (2s intervals)
+    for (let i = 0; i < maxAttempts; i++) {
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      try {
+        const status = await api.infrastructure.getPurchaseJobStatus(jobId);
+        if (status.status === 'completed' || status.status === 'failed') {
+          // Job done - refresh to show final state
+          refreshWaterfall();
+          break;
+        }
+      } catch (e) {
+        console.error('Poll error:', e);
+      }
     }
   };
 

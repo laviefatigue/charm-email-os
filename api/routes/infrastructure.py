@@ -395,6 +395,7 @@ def transform_domain(row: dict) -> dict:
         'purchase_registrar': row.get('selected_provider'),
         'purchase_price': float(row['cached_price']) if row.get('cached_price') else None,
         'purchase_status': purchase_status,
+        'purchase_job_id': str(row['domain_purchase_job_id']) if row.get('domain_purchase_job_id') else None,
 
         # Column 3: DNS
         'dns_status': dns_status,
@@ -750,6 +751,7 @@ async def get_waterfall_by_client(
                 v.dynadot_price,
                 v.dynadot_available,
                 v.purchased_at,
+                v.domain_purchase_job_id,
                 v.purchase_job_id,
                 v.nameservers_updated_at,
                 v.nameserver_status,
@@ -1001,10 +1003,12 @@ async def bulk_purchase(request: BulkPurchaseRequest, registrar: Optional[str] =
         )
 
         # Update domains with job reference
+        # Note: Using job_id (no FK constraint) for domain purchases
+        # purchase_job_id is reserved for inbox purchases (FK to inbox_purchase_jobs)
         await execute(
             """
             UPDATE domains
-            SET purchase_job_id = $1,
+            SET job_id = $1,
                 purchase_job_status = 'pending',
                 updated_at = NOW()
             WHERE id = ANY($2::uuid[])
@@ -1030,6 +1034,56 @@ async def bulk_purchase(request: BulkPurchaseRequest, registrar: Optional[str] =
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("/purchase-job/{job_id}")
+async def get_purchase_job_status(job_id: str):
+    """
+    Get the status of a domain purchase job.
+    Used by frontend to poll for completion and show results.
+    """
+    try:
+        job = await fetch_one(
+            """
+            SELECT
+                id,
+                status,
+                registrar,
+                successful_count,
+                failed_count,
+                total_cost,
+                results,
+                error_message,
+                created_at,
+                started_at,
+                completed_at
+            FROM domain_purchase_jobs
+            WHERE id = $1
+            """,
+            job_id
+        )
+
+        if not job:
+            raise HTTPException(status_code=404, detail="Job not found")
+
+        return {
+            "jobId": str(job["id"]),
+            "status": job["status"],
+            "registrar": job["registrar"],
+            "successfulCount": job["successful_count"] or 0,
+            "failedCount": job["failed_count"] or 0,
+            "totalCost": float(job["total_cost"]) if job["total_cost"] else 0,
+            "results": job["results"],
+            "errorMessage": job["error_message"],
+            "createdAt": job["created_at"].isoformat() if job["created_at"] else None,
+            "startedAt": job["started_at"].isoformat() if job["started_at"] else None,
+            "completedAt": job["completed_at"].isoformat() if job["completed_at"] else None,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error fetching purchase job {job_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.post("/hypertide-order")
 async def create_hypertide_order(request: HyperTideOrderRequest):
     """
@@ -1051,6 +1105,13 @@ async def create_hypertide_order(request: HyperTideOrderRequest):
     job_id = str(uuid.uuid4())
 
     try:
+        # Fetch domain names for the Slack specification
+        domain_rows = await fetch_all(
+            "SELECT domain_name FROM domains WHERE id = ANY($1::uuid[])",
+            request.domain_ids
+        )
+        domain_names = [row['domain_name'] for row in domain_rows]
+
         # Create inbox_purchase_job record
         inboxes_per_domain = 50 if request.provider == 'entra' else 3
         total_inboxes = len(request.domain_ids) * inboxes_per_domain
@@ -1064,10 +1125,12 @@ async def create_hypertide_order(request: HyperTideOrderRequest):
                 status,
                 provider_type,
                 domain_ids,
+                domain_names,
                 orders_total,
                 total_inboxes,
-                monthly_cost
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                monthly_cost,
+                worker_mode
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
             """,
             job_id,
             request.client_id,
@@ -1075,9 +1138,11 @@ async def create_hypertide_order(request: HyperTideOrderRequest):
             'pending',
             request.provider,
             request.domain_ids,
+            domain_names,
             request.order_count,
             total_inboxes,
             request.order_count * 50,  # $50 per order
+            'worker',  # Use 'worker' mode so hypertide_worker picks it up
         )
 
         # Update domains with job reference

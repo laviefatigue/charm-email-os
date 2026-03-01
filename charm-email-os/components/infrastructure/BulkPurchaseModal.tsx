@@ -212,9 +212,9 @@ export function BulkPurchaseModal({
 
           {/* Error */}
           {error && (
-            <div className="flex items-center gap-2 text-sm text-red-600 bg-red-50 rounded-lg p-3">
-              <AlertTriangle className="w-4 h-4" />
-              {error}
+            <div className="flex items-start gap-2 text-sm text-red-600 bg-red-50 rounded-lg p-3">
+              <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+              <span className="whitespace-pre-wrap">{error}</span>
             </div>
           )}
         </div>
@@ -227,7 +227,7 @@ export function BulkPurchaseModal({
             {isSubmitting ? (
               <>
                 <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                Purchasing...
+                Purchasing (this may take a minute)...
               </>
             ) : (
               <>

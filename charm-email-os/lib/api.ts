@@ -3951,6 +3951,92 @@ export const infrastructureApi = {
   },
 
   /**
+   * Get purchase job status
+   */
+  async getPurchaseJobStatus(jobId: string): Promise<{
+    jobId: string;
+    status: string;
+    registrar: string;
+    successfulCount: number;
+    failedCount: number;
+    totalCost: number;
+    results: Array<{
+      domain: string;
+      success: boolean;
+      error?: string;
+      orderId?: string;
+    }> | null;
+    errorMessage: string | null;
+  }> {
+    const response = await fetchApi<Record<string, unknown>>(
+      `/api/infrastructure/purchase-job/${jobId}`
+    );
+    return toCamelCase(response);
+  },
+
+  /**
+   * Execute bulk purchase and wait for completion
+   * Polls job status until complete, returns final result
+   */
+  async bulkPurchaseAndWait(
+    clientId: string,
+    domainIds: string[],
+    provider?: 'porkbun' | 'dynadot',
+    onProgress?: (status: string, message: string) => void
+  ): Promise<{
+    success: boolean;
+    successfulCount: number;
+    failedCount: number;
+    totalCost: number;
+    results: Array<{
+      domain: string;
+      success: boolean;
+      error?: string;
+    }>;
+    errorMessage?: string;
+  }> {
+    // Create the job
+    onProgress?.('creating', 'Creating purchase job...');
+    const { jobId } = await this.bulkPurchase(clientId, domainIds, provider);
+
+    // Poll for completion
+    const maxAttempts = 60; // 60 * 2s = 2 minutes max
+    const pollInterval = 2000; // 2 seconds
+
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, pollInterval));
+
+      const job = await this.getPurchaseJobStatus(jobId);
+
+      if (job.status === 'processing') {
+        onProgress?.('processing', 'Purchasing domains...');
+      }
+
+      if (job.status === 'completed' || job.status === 'failed') {
+        const allSucceeded = job.failedCount === 0 && job.successfulCount > 0;
+        return {
+          success: allSucceeded,
+          successfulCount: job.successfulCount,
+          failedCount: job.failedCount,
+          totalCost: job.totalCost,
+          results: job.results || [],
+          errorMessage: job.errorMessage || undefined,
+        };
+      }
+    }
+
+    // Timeout
+    return {
+      success: false,
+      successfulCount: 0,
+      failedCount: domainIds.length,
+      totalCost: 0,
+      results: [],
+      errorMessage: 'Purchase job timed out. Check job status manually.',
+    };
+  },
+
+  /**
    * Set nameservers to DNSimple for multiple domains
    */
   async setNameservers(domainIds: string[]): Promise<{ jobId: string; totalDomains: number }> {
