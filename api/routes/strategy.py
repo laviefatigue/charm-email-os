@@ -953,7 +953,7 @@ async def push_to_emailbison(suggestion_id: UUID):
         async with httpx.AsyncClient(timeout=30.0) as client:
             # CRITICAL: Switch to correct workspace first
             switch_response = await client.post(
-                f"{EMAILBISON_API_URL}/api/workspaces/v1.1/switch-workspace",
+                f"{EMAILBISON_API_URL}/api/workspaces/switch-workspace",
                 headers={
                     "Authorization": f"Bearer {EMAILBISON_API_KEY}",
                     "Content-Type": "application/json",
@@ -1456,7 +1456,7 @@ async def push_sequence_to_emailbison(sequence_id: UUID):
         async with httpx.AsyncClient(timeout=30.0) as client:
             # Step 1: Switch workspace
             switch_response = await client.post(
-                f"{EMAILBISON_API_URL}/api/workspaces/v1.1/switch-workspace",
+                f"{EMAILBISON_API_URL}/api/workspaces/switch-workspace",
                 headers={
                     "Authorization": f"Bearer {EMAILBISON_API_KEY}",
                     "Content-Type": "application/json",
@@ -2878,7 +2878,7 @@ async def push_campaign_to_emailbison(document_id: UUID):
         async with httpx.AsyncClient(timeout=30.0) as client:
             # Step 1: Switch workspace
             switch_response = await client.post(
-                f"{EMAILBISON_API_URL}/api/workspaces/v1.1/switch-workspace",
+                f"{EMAILBISON_API_URL}/api/workspaces/switch-workspace",
                 headers={
                     "Authorization": f"Bearer {EMAILBISON_API_KEY}",
                     "Content-Type": "application/json",

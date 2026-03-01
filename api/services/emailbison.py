@@ -132,7 +132,7 @@ class EmailBisonService:
         """Switch to a specific workspace context."""
         try:
             response = await self._client.post(
-                f"{self.base_url}/api/workspaces/v1.1/switch-workspace",
+                f"{self.base_url}/api/workspaces/switch-workspace",
                 json={"team_id": workspace_id}
             )
             response.raise_for_status()

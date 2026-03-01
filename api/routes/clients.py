@@ -1831,7 +1831,7 @@ async def _sync_workspace_data(
     try:
         # Switch to workspace context
         switch_response = await http_client.post(
-            f"{EMAILBISON_API_URL}/api/workspaces/v1.1/switch-workspace",
+            f"{EMAILBISON_API_URL}/api/workspaces/switch-workspace",
             headers={
                 "Authorization": f"Bearer {EMAILBISON_API_KEY}",
                 "Content-Type": "application/json",
