@@ -630,16 +630,18 @@ async def _ensure_infrastructure_waterfall_view() -> None:
             AND column_name = 'domain_purchase_job_id'
         ) as col_exists
     """
+    view_needs_update = True
     try:
         result = await fetch_one(check_col)
         if result and result.get("col_exists"):
             logger.info("Infrastructure waterfall view already up to date")
-            return
+            view_needs_update = False
     except Exception:
         pass  # View might not exist, we'll create it
 
-    # Drop and recreate view with latest schema
-    logger.info("Recreating v_infrastructure_waterfall view...")
+    # Drop and recreate view with latest schema if needed
+    if view_needs_update:
+        logger.info("Recreating v_infrastructure_waterfall view...")
     create_view_sql = """
         DROP VIEW IF EXISTS v_infrastructure_waterfall;
 
@@ -727,13 +729,14 @@ async def _ensure_infrastructure_waterfall_view() -> None:
         ) inbox_stats ON true
         WHERE d.is_active = true;
     """
-    try:
-        await execute(create_view_sql)
-        logger.info("Infrastructure waterfall view created successfully")
-    except Exception as e:
-        logger.error(f"Failed to create infrastructure waterfall view: {e}")
+    if view_needs_update:
+        try:
+            await execute(create_view_sql)
+            logger.info("Infrastructure waterfall view created successfully")
+        except Exception as e:
+            logger.error(f"Failed to create infrastructure waterfall view: {e}")
 
-    # Backfill Charm's purchase record if missing
+    # Backfill Charm's purchase record if missing (always runs)
     await _backfill_charm_purchase_record()
 
 
