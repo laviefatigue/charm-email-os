@@ -13,6 +13,7 @@ import logging
 from config import settings
 import database
 from hypertide_session import init_hypertide_session
+from migration_runner import run_pending_migrations
 
 # Configure logging
 logging.basicConfig(
@@ -37,10 +38,14 @@ async def lifespan(app: FastAPI):
         logger.debug("No Hypertide session to initialize")
 
     try:
-        await database.create_pool()
+        pool = await database.create_pool()
         logger.info("Database pool initialized successfully")
         # Initialize schema (create tables if they don't exist)
         await database.init_schema()
+        # Run pending database migrations
+        migrations_applied = await run_pending_migrations(pool)
+        if migrations_applied > 0:
+            logger.info(f"Applied {migrations_applied} database migration(s)")
     except Exception as e:
         logger.error(f"Failed to connect to database: {e}")
         logger.warning("API will start without database - endpoints requiring DB will fail")
