@@ -111,7 +111,7 @@ class EmailBisonClient:
         try:
             await self._request(
                 'POST',
-                '/workspaces/v1.1/switch-workspace',
+                '/workspaces/switch-workspace',  # v1.1 endpoint deprecated
                 json_data={'team_id': int(workspace_id)}
             )
             self.current_workspace_id = workspace_id
