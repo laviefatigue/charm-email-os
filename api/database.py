@@ -732,3 +732,80 @@ async def _ensure_infrastructure_waterfall_view() -> None:
         logger.info("Infrastructure waterfall view created successfully")
     except Exception as e:
         logger.error(f"Failed to create infrastructure waterfall view: {e}")
+
+    # Backfill Charm's purchase record if missing
+    await _backfill_charm_purchase_record()
+
+
+async def _backfill_charm_purchase_record() -> None:
+    """Backfill domain purchase record for Charm's historical purchases."""
+    charm_client_id = "4bd07dc0-059a-448b-b6f4-3275d0c104a9"
+
+    # Check if Charm has purchased domains without a job_id
+    check_sql = """
+        SELECT COUNT(*) as count
+        FROM domains d
+        JOIN clients c ON d.workspace_id = c.workspace_id
+        WHERE c.id = $1
+        AND d.purchased_at IS NOT NULL
+        AND d.job_id IS NULL
+    """
+    try:
+        result = await fetch_one(check_sql, charm_client_id)
+        if not result or result.get("count", 0) == 0:
+            logger.info("Charm purchase records already up to date")
+            return
+    except Exception as e:
+        logger.warning(f"Could not check Charm purchase records: {e}")
+        return
+
+    # Create a historical purchase job and update domains
+    backfill_sql = """
+        WITH charm_data AS (
+            SELECT
+                c.id as client_id,
+                c.workspace_id,
+                ARRAY_AGG(d.id) as domain_ids,
+                ARRAY_AGG(d.domain_name) as domain_names
+            FROM domains d
+            JOIN clients c ON d.workspace_id = c.workspace_id
+            WHERE c.id = $1
+            AND d.purchased_at IS NOT NULL
+            AND d.job_id IS NULL
+            GROUP BY c.id, c.workspace_id
+        ),
+        new_job AS (
+            INSERT INTO domain_purchase_jobs (
+                id, client_id, workspace_id, domain_ids, domain_names,
+                registrar, status, successful_count, failed_count, total_cost,
+                results, created_at, started_at, completed_at
+            )
+            SELECT
+                gen_random_uuid(),
+                client_id,
+                workspace_id,
+                domain_ids,
+                domain_names,
+                'dynadot',
+                'completed',
+                array_length(domain_ids, 1),
+                0,
+                0,
+                jsonb_build_object('note', 'Backfilled historical purchase record', 'backfilled_at', NOW()),
+                '2026-02-12 02:16:46.274593+00'::timestamptz,
+                '2026-02-12 02:16:46.274593+00'::timestamptz,
+                '2026-02-12 02:16:46.274593+00'::timestamptz
+            FROM charm_data
+            RETURNING id, domain_ids
+        )
+        UPDATE domains
+        SET job_id = new_job.id
+        FROM new_job
+        WHERE domains.id = ANY(new_job.domain_ids)
+        RETURNING domains.id
+    """
+    try:
+        await execute(backfill_sql, charm_client_id)
+        logger.info("Backfilled Charm domain purchase record")
+    except Exception as e:
+        logger.warning(f"Could not backfill Charm purchase record: {e}")
