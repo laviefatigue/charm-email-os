@@ -2,9 +2,10 @@
 """
 Hypertide Worker - External worker for domain purchases and inbox provisioning.
 
-Processes two job types:
+Processes three job types:
 1. domain_purchase_jobs - Purchase domains from Dynadot/Porkbun registrars
-2. inbox_purchase_jobs - Provision inboxes via Hypertide browser automation
+2. inbox_purchase_jobs (worker_mode='worker') - Send Slack specification for manual order
+3. inbox_purchase_jobs (worker_mode='api') - Automated order via Hypertide REST API
 
 This worker runs separately from the API, allowing:
 - Independent deployment and updates
@@ -20,6 +21,7 @@ Environment variables:
     WORKER_ID (default: auto-generated hostname-based)
     STALE_JOB_MINUTES (default: 30 - reclaim jobs from crashed workers)
     HYPERTIDE_HEADLESS (default: true)
+    HYPERTIDE_API_KEY - Required for API mode orders
     PORKBUN_API_KEY, PORKBUN_API_SECRET
     DYNADOT_API_KEY
 """
@@ -42,6 +44,22 @@ from psycopg2.extras import RealDictCursor, Json
 
 # Add the api directory to path for imports
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'api'))
+
+# Import Hypertide API client (for API mode orders)
+try:
+    from hypertide_api.client import HypertideAPIClient, HypertideAPIError
+    from hypertide_api.models import (
+        PlanType,
+        BisonCredentials,
+        InboxUser,
+        SingleOrderRequest,
+        PLAN_SPECS,
+    )
+    from hypertide_api.service import HypertideOrderService
+    HYPERTIDE_API_AVAILABLE = True
+except ImportError as e:
+    HYPERTIDE_API_AVAILABLE = False
+    print(f"Warning: hypertide_api package not available: {e}")
 
 # Configure logging
 logging.basicConfig(
@@ -66,6 +84,12 @@ POLL_INTERVAL = int(os.getenv("POLL_INTERVAL", "10"))
 WORKER_ID = os.getenv("WORKER_ID", f"worker-{socket.gethostname()}")
 STALE_JOB_MINUTES = int(os.getenv("STALE_JOB_MINUTES", "30"))
 SLACK_ORDERS_WEBHOOK_URL = os.getenv("SLACK_ORDERS_WEBHOOK_URL", "")
+HYPERTIDE_API_KEY = os.getenv("HYPERTIDE_API_KEY", "")
+
+# Default EmailBison credentials (used when workspace doesn't have specific creds)
+EMAILBISON_USERNAME = os.getenv("EMAILBISON_USERNAME", "")
+EMAILBISON_PASSWORD = os.getenv("EMAILBISON_PASSWORD", "")
+EMAILBISON_API_URL = os.getenv("EMAILBISON_API_URL", "https://spellcast.hirecharm.com")
 
 # =============================================================================
 # Slack Notification Functions
@@ -383,7 +407,7 @@ def get_pending_domain_purchase_job() -> Optional[dict]:
 
 
 def get_pending_inbox_purchase_job() -> Optional[dict]:
-    """Get next pending inbox purchase job (worker mode only)."""
+    """Get next pending inbox purchase job (worker mode only - sends Slack spec)."""
     conn = get_db_connection()
     try:
         cur = conn.cursor()
@@ -412,6 +436,50 @@ def get_pending_inbox_purchase_job() -> Optional[dict]:
                 WHERE id = %s
             """, (WORKER_ID, row['id']))
             conn.commit()
+            return dict(row)
+        return None
+    finally:
+        cur.close()
+        conn.close()
+
+
+def get_pending_inbox_purchase_job_api() -> Optional[dict]:
+    """Get next pending inbox purchase job (API mode - automated via REST API)."""
+    if not HYPERTIDE_API_AVAILABLE:
+        return None
+    if not HYPERTIDE_API_KEY:
+        return None
+
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT id, client_id, workspace_id, provider_type,
+                   domain_ids::text[] as domain_ids,
+                   domain_names::text[] as domain_names,
+                   request_data, override_age_check, custom_purchase,
+                   retry_count, max_retries
+            FROM inbox_purchase_jobs
+            WHERE status = 'pending'
+            AND worker_mode = 'api'
+            ORDER BY created_at ASC
+            LIMIT 1
+            FOR UPDATE SKIP LOCKED
+        """)
+        row = cur.fetchone()
+        if row:
+            # Mark as processing
+            cur.execute("""
+                UPDATE inbox_purchase_jobs
+                SET status = 'executing',
+                    current_step = 'Claimed by API worker',
+                    worker_id = %s,
+                    worker_started_at = NOW(),
+                    started_at = COALESCE(started_at, NOW())
+                WHERE id = %s
+            """, (WORKER_ID, row['id']))
+            conn.commit()
+            logger.info(f"API job claimed: {row['id']}")
             return dict(row)
         return None
     finally:
@@ -857,16 +925,314 @@ async def process_inbox_purchase_job(job: dict):
 
 
 # =============================================================================
-# Main Worker Loop
+# Inbox Purchase Processing (Hypertide API Mode)
 # =============================================================================
 
-import asyncio
+def _get_bison_credentials_from_workspace(workspace_id: str) -> Optional[dict]:
+    """Get EmailBison credentials from workspace settings."""
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT
+                bison_username,
+                bison_password,
+                workspace_name as bison_workspace,
+                bison_url,
+                bison_api_key
+            FROM workspaces
+            WHERE id = %s
+        """, (workspace_id,))
+        row = cur.fetchone()
+        if row and row.get('bison_username'):
+            return dict(row)
+        return None
+    finally:
+        cur.close()
+        conn.close()
+
+
+def _get_workspace_name(workspace_id: str) -> str:
+    """Get workspace name from database."""
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT workspace_name FROM workspaces WHERE id = %s", (workspace_id,))
+        row = cur.fetchone()
+        return row['workspace_name'] if row else "Unknown"
+    finally:
+        cur.close()
+        conn.close()
+
+
+async def process_inbox_purchase_job_api(job: dict):
+    """
+    Process an inbox purchase job via Hypertide REST API.
+
+    This is the automated flow - no manual intervention required.
+    Creates the order directly via the Hypertide API.
+    """
+    job_id = str(job['id'])
+    client_id = str(job.get('client_id', ''))
+    provider_type = job.get('provider_type', 'entra')
+    domain_names = job.get('domain_names', [])
+    request_data = job.get('request_data') or {}
+    workspace_id = job.get('workspace_id')
+
+    # Get client name for notifications
+    client_name = _get_client_name(client_id) if client_id else request_data.get('client_name', 'Unknown')
+
+    logger.info(f"Processing inbox purchase job {job_id} via API for {client_name}")
+    logger.info(f"  Provider: {provider_type}, Domains: {len(domain_names)}")
+    logger.info(f"  Domains: {', '.join(domain_names)}")
+
+    # Calculate order details for notifications
+    inboxes_per_domain = 50 if provider_type == 'entra' else 3
+    total_inboxes = len(domain_names) * inboxes_per_domain
+    domains_per_order = 2 if provider_type == 'entra' else 5
+    order_count = max(1, (len(domain_names) + domains_per_order - 1) // domains_per_order)
+    monthly_cost = order_count * 50
+
+    # Send "Order Initiated" Slack notification
+    _send_slack_notification({
+        "attachments": [{
+            "color": "#3498db",  # Blue - order started
+            "blocks": [
+                {
+                    "type": "header",
+                    "text": {"type": "plain_text", "text": "🚀 HyperTide Order Initiated", "emoji": True}
+                },
+                {
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": f"*Client:* {client_name}\n*Provider:* {provider_type.upper()}\n*Domains:* {len(domain_names)}\n*Expected Inboxes:* {total_inboxes}\n*Est. Cost:* ${monthly_cost}/mo"
+                    }
+                },
+                {
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": f"*Domains:*\n```{chr(10).join(domain_names[:10])}{'...' if len(domain_names) > 10 else ''}```"
+                    }
+                },
+                {
+                    "type": "context",
+                    "elements": [{"type": "mrkdwn", "text": f"Job ID: `{job_id[:8]}...` | Processing via Hypertide REST API"}]
+                }
+            ]
+        }],
+        "text": f"HyperTide order initiated for {client_name}"
+    })
+
+    try:
+        # Phase 1: Validate inputs
+        update_inbox_purchase_job(job_id, 'executing', current_step='Validating inputs')
+
+        plan = PlanType(provider_type) if provider_type in ('entra', 'google') else PlanType.ENTRA
+
+        # Get Bison credentials from workspace or request_data
+        bison_creds = None
+        if workspace_id:
+            ws_creds = _get_bison_credentials_from_workspace(str(workspace_id))
+            if ws_creds and ws_creds.get('bison_username'):
+                bison_creds = BisonCredentials(
+                    username=ws_creds['bison_username'],
+                    password=ws_creds['bison_password'],
+                    workspace=ws_creds['bison_workspace'],
+                    bison_url=ws_creds.get('bison_url') or "https://spellcast.hirecharm.com",
+                    api_key=ws_creds.get('bison_api_key') or "",
+                )
+                logger.info(f"  Loaded Bison credentials from workspace")
+
+        if not bison_creds:
+            # Try request_data first
+            bison_creds = BisonCredentials(
+                username=request_data.get('bison_username', ''),
+                password=request_data.get('bison_password', ''),
+                workspace=request_data.get('bison_workspace', ''),
+                bison_url=request_data.get('bison_url', EMAILBISON_API_URL),
+            )
+
+        # Fallback to environment variables if still missing
+        if not bison_creds.username or not bison_creds.password:
+            if EMAILBISON_USERNAME and EMAILBISON_PASSWORD:
+                # Get workspace name from database
+                ws_name = _get_workspace_name(str(workspace_id)) if workspace_id else client_name
+                bison_creds = BisonCredentials(
+                    username=EMAILBISON_USERNAME,
+                    password=EMAILBISON_PASSWORD,
+                    workspace=ws_name,
+                    bison_url=EMAILBISON_API_URL,
+                )
+                logger.info(f"  Using default Bison credentials from environment")
+            else:
+                error_msg = "Missing Bison credentials - cannot create order"
+                logger.error(f"  {error_msg}")
+                update_inbox_purchase_job(job_id, 'failed', error=error_msg)
+                return
+
+        # Phase 2: Build order request
+        update_inbox_purchase_job(job_id, 'executing', current_step='Building order request')
+
+        sender_names = request_data.get('sender_names', [])
+        users = []
+        for sn in sender_names:
+            if isinstance(sn, dict) and sn.get('firstName') and sn.get('lastName'):
+                users.append(InboxUser(first_name=sn['firstName'], last_name=sn['lastName']))
+
+        # Default to Chris Booth if no sender names provided
+        if not users:
+            users = [InboxUser(first_name='Chris', last_name='Booth')]
+
+        forwarding_domain = request_data.get('forwarding_domain', '')
+        if not forwarding_domain and domain_names:
+            parts = domain_names[0].split('.')
+            if len(parts) >= 2:
+                forwarding_domain = '.'.join(parts[-2:])
+
+        order_request = SingleOrderRequest(
+            job_id=UUID(job_id),
+            client_id=UUID(client_id),
+            client_name=client_name,
+            plan=plan,
+            domains=domain_names,
+            forwarding_domain=forwarding_domain,
+            bison_credentials=bison_creds,
+            users=users,
+        )
+
+        # Phase 3: Create order via Hypertide API
+        update_inbox_purchase_job(job_id, 'executing', current_step='Calling Hypertide API')
+        logger.info(f"  Creating order via Hypertide API...")
+
+        async with HypertideOrderService(
+            api_key=HYPERTIDE_API_KEY,
+            check_db_duplicates=False,
+            check_pending_jobs=False,
+            check_api_duplicates=True,  # Check if domain exists in Hypertide
+            verify_orders=True,
+        ) as service:
+            service._client.job_id = job_id
+            result = await service.create_single_order(order_request)
+
+        # Phase 4: Process result
+        if result.success:
+            logger.info(f"  ✓ Order created successfully!")
+            logger.info(f"    Inboxes created: {result.inboxes_created}")
+            logger.info(f"    Order IDs: {result.hypertide_order_ids}")
+
+            update_inbox_purchase_job(
+                job_id, 'completed',
+                current_step='Order created successfully',
+                results={
+                    'hypertide_order_ids': result.hypertide_order_ids,
+                    'inboxes_created': result.inboxes_created,
+                    'monthly_cost': result.monthly_cost,
+                    'nameservers': result.nameservers,
+                    'domains': domain_names,
+                }
+            )
+
+            # Update domains with infrastructure_type
+            conn = get_db_connection()
+            try:
+                cur = conn.cursor()
+                cur.execute("""
+                    UPDATE domains
+                    SET infrastructure_type = %s,
+                        purchase_job_status = 'completed',
+                        updated_at = NOW()
+                    WHERE domain_name = ANY(%s)
+                """, (provider_type, domain_names))
+                conn.commit()
+            finally:
+                cur.close()
+                conn.close()
+
+            # Send success Slack notification
+            _send_slack_notification({
+                "attachments": [{
+                    "color": "#36a64f",  # Green
+                    "blocks": [
+                        {
+                            "type": "header",
+                            "text": {"type": "plain_text", "text": "✅ HyperTide Order Complete", "emoji": True}
+                        },
+                        {
+                            "type": "section",
+                            "text": {
+                                "type": "mrkdwn",
+                                "text": f"*Client:* {client_name}\n*Provider:* {provider_type.upper()}\n*Domains:* {len(domain_names)}\n*Inboxes Created:* {result.inboxes_created}"
+                            }
+                        }
+                    ]
+                }],
+                "text": f"HyperTide order completed for {client_name}"
+            })
+
+        else:
+            error_msg = result.error_message or "Unknown error"
+            logger.error(f"  ✗ Order failed: {error_msg}")
+
+            update_inbox_purchase_job(
+                job_id, 'failed',
+                current_step='Order failed',
+                error=error_msg,
+            )
+
+            # Send failure Slack notification
+            _send_slack_notification({
+                "attachments": [{
+                    "color": "#ff0000",  # Red
+                    "blocks": [
+                        {
+                            "type": "header",
+                            "text": {"type": "plain_text", "text": "❌ HyperTide Order Failed", "emoji": True}
+                        },
+                        {
+                            "type": "section",
+                            "text": {
+                                "type": "mrkdwn",
+                                "text": f"*Client:* {client_name}\n*Provider:* {provider_type.upper()}\n*Domains:* {len(domain_names)}\n*Error:* {error_msg}"
+                            }
+                        }
+                    ]
+                }],
+                "text": f"HyperTide order failed for {client_name}"
+            })
+
+    except HypertideAPIError as e:
+        error_msg = f"Hypertide API error: {e.message} ({e.error_type.value})"
+        logger.error(f"  ✗ {error_msg}")
+        update_inbox_purchase_job(job_id, 'failed', error=error_msg)
+
+        _send_slack_notification({
+            "attachments": [{
+                "color": "#ff0000",
+                "blocks": [
+                    {"type": "header", "text": {"type": "plain_text", "text": "❌ HyperTide API Error"}},
+                    {"type": "section", "text": {"type": "mrkdwn", "text": f"*Client:* {client_name}\n*Error:* {error_msg}"}}
+                ]
+            }]
+        })
+
+    except Exception as e:
+        error_msg = str(e)
+        logger.error(f"Inbox purchase job {job_id} (API mode) failed with exception: {error_msg}")
+        update_inbox_purchase_job(job_id, 'failed', error=error_msg)
+
+
+# =============================================================================
+# Main Worker Loop
+# =============================================================================
 
 async def run_worker():
     """Main worker loop."""
     logger.info(f"Hypertide Worker starting (ID: {WORKER_ID})")
     logger.info(f"  Poll interval: {POLL_INTERVAL}s")
     logger.info(f"  Stale job threshold: {STALE_JOB_MINUTES} minutes")
+    logger.info(f"  Hypertide API: {'enabled' if HYPERTIDE_API_KEY else 'disabled (no API key)'}")
 
     last_stale_check = datetime.utcnow()
     stale_check_interval = timedelta(minutes=5)
@@ -884,7 +1250,13 @@ async def run_worker():
                 await process_domain_purchase_job(job)
                 continue  # Check for more work immediately
 
-            # Priority 2: Inbox purchase jobs (slower, browser automation)
+            # Priority 2: Inbox purchase jobs - API mode (automated via REST API)
+            job = get_pending_inbox_purchase_job_api()
+            if job:
+                await process_inbox_purchase_job_api(job)
+                continue
+
+            # Priority 3: Inbox purchase jobs - Worker mode (sends Slack spec)
             job = get_pending_inbox_purchase_job()
             if job:
                 await process_inbox_purchase_job(job)

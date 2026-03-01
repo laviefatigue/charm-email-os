@@ -1142,7 +1142,7 @@ async def create_hypertide_order(request: HyperTideOrderRequest):
             request.order_count,
             total_inboxes,
             request.order_count * 50,  # $50 per order
-            'worker',  # Use 'worker' mode so hypertide_worker picks it up
+            'api',  # Use 'api' mode for automated Hypertide REST API orders
         )
 
         # Update domains with job reference
