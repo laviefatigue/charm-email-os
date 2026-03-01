@@ -770,7 +770,24 @@ async def _backfill_charm_purchase_record() -> None:
     except Exception as e:
         logger.warning(f"Could not delete incorrect backfill jobs: {e}")
 
-    # Check if activatecharm.com already has a job_id
+    # Always ensure activatecharm.com is marked as purchased
+    fix_sql = """
+        UPDATE domains d
+        SET purchased_at = COALESCE(d.purchased_at, '2026-02-28 00:00:00+00'::timestamptz),
+            cached_price = COALESCE(d.cached_price, 9.99),
+            selected_provider = COALESCE(d.selected_provider, 'porkbun')
+        FROM clients c
+        WHERE d.workspace_id = c.workspace_id
+        AND c.id = $1
+        AND d.domain_name = 'activatecharm.com'
+    """
+    try:
+        await execute(fix_sql, charm_client_id)
+        logger.info("Ensured activatecharm.com is marked as purchased")
+    except Exception as e:
+        logger.warning(f"Could not update activatecharm.com: {e}")
+
+    # Check if activatecharm.com needs a purchase job
     check_sql = """
         SELECT d.id, d.job_id
         FROM domains d
@@ -784,20 +801,7 @@ async def _backfill_charm_purchase_record() -> None:
             logger.info("activatecharm.com not found for Charm")
             return
         if result.get("job_id"):
-            # Ensure purchased_at is set even if job exists
-            fix_sql = """
-                UPDATE domains d
-                SET purchased_at = '2026-02-28 00:00:00+00'::timestamptz,
-                    cached_price = 9.99,
-                    selected_provider = 'porkbun'
-                FROM clients c
-                WHERE d.workspace_id = c.workspace_id
-                AND c.id = $1
-                AND d.domain_name = 'activatecharm.com'
-                AND d.purchased_at IS NULL
-            """
-            await execute(fix_sql, charm_client_id)
-            logger.info("activatecharm.com purchase record already exists")
+            logger.info("activatecharm.com purchase job already exists")
             return
     except Exception as e:
         logger.warning(f"Could not check activatecharm.com: {e}")
