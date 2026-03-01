@@ -744,6 +744,32 @@ async def _backfill_charm_purchase_record() -> None:
     """Ensure activatecharm.com has proper purchase record (only actual purchase)."""
     charm_client_id = "4bd07dc0-059a-448b-b6f4-3275d0c104a9"
 
+    # First, clear incorrect job_id links from legacy domains (not activatecharm.com)
+    cleanup_sql = """
+        UPDATE domains d
+        SET job_id = NULL
+        FROM clients c
+        WHERE d.workspace_id = c.workspace_id
+        AND c.id = $1
+        AND d.domain_name != 'activatecharm.com'
+        AND d.job_id IS NOT NULL
+    """
+    try:
+        await execute(cleanup_sql, charm_client_id)
+    except Exception as e:
+        logger.warning(f"Could not clean up legacy domain links: {e}")
+
+    # Delete any incorrect backfill jobs
+    delete_sql = """
+        DELETE FROM domain_purchase_jobs
+        WHERE client_id = $1
+        AND results->>'note' LIKE 'Backfilled%'
+    """
+    try:
+        await execute(delete_sql, charm_client_id)
+    except Exception as e:
+        logger.warning(f"Could not delete incorrect backfill jobs: {e}")
+
     # Check if activatecharm.com already has a job_id
     check_sql = """
         SELECT d.id, d.job_id
