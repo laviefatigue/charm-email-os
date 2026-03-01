@@ -696,7 +696,11 @@ async def process_domain_purchase_job(job: dict):
                 logger.info(f"    → Best price: ${chosen_price} via {chosen_registrar}")
 
                 # ===== EXECUTE PURCHASE =====
-                purchase_result = await chosen_service.purchase(domain_name, price=chosen_price)
+                # Porkbun requires price parameter, Dynadot does not
+                if chosen_registrar == 'porkbun':
+                    purchase_result = await chosen_service.purchase(domain_name, price=chosen_price)
+                else:
+                    purchase_result = await chosen_service.purchase(domain_name)
 
                 if purchase_result.success:
                     results.append({
