@@ -15,9 +15,6 @@ _raw_api_url = os.getenv('EMAILBISON_API_URL', 'https://spellcast.hirecharm.com/
 EMAILBISON_API_URL = _raw_api_url if _raw_api_url.endswith('/api') else f"{_raw_api_url.rstrip('/')}/api"
 EMAILBISON_API_KEY = os.getenv('EMAILBISON_API_KEY', '')
 
-# Debug: Log the actual URL being used (v2 - with /api fix)
-print(f"[EmailBison Client v2] API URL: {EMAILBISON_API_URL}")
-
 DEFAULT_TIMEOUT = 60.0
 DEFAULT_RETRIES = 3
 DEFAULT_RETRY_DELAY = 5.0
