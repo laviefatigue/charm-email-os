@@ -85,7 +85,7 @@ services:
       - POSTGRES_SCHEMA=${POSTGRES_SCHEMA:-public}
       # Email Bison API
       - EMAILBISON_API_KEY=${EMAILBISON_API_KEY:-}
-      - EMAILBISON_API_URL=${EMAILBISON_API_URL:-https://spellcast.hirecharm.com}
+      - EMAILBISON_API_URL=${EMAILBISON_API_URL:-https://spellcast.hirecharm.com/api}
       # Domain Registrar APIs
       - DYNADOT_API_KEY=${DYNADOT_API_KEY:-}
       - PORKBUN_API_KEY=${PORKBUN_API_KEY:-}
