@@ -73,6 +73,9 @@ RUN touch /app/api/__init__.py
 # Copy Hypertide automation modules
 COPY Hypertide/ /app/Hypertide/
 
+# Copy Hypertide API client package (for REST API orders)
+COPY hypertide_api/ /app/hypertide_api/
+
 # Copy the worker script
 COPY hypertide_worker.py /app/
 
@@ -99,6 +102,9 @@ ENV HYPERTIDE_SESSION_B64=""
 
 # Slack notifications
 ENV SLACK_ORDERS_WEBHOOK_URL=""
+
+# Hypertide REST API (automated orders)
+ENV HYPERTIDE_API_KEY=""
 
 # EmailBison credentials (for Hypertide Email Tool Connection)
 ENV EMAILBISON_API_URL=""
