@@ -12,6 +12,7 @@ Usage:
     await module.snapshot_all_workspaces()
 """
 import asyncio
+import json
 import logging
 from datetime import date, timedelta
 from typing import Optional, Dict, List, Any
@@ -269,14 +270,19 @@ class DailySnapshotModule:
             f"Total kills: {summary['total_kills']}"
         )
 
-        # Log audit event
-        if self.audit_logger:
-            await self.audit_logger.log_event(
-                event_type='daily_snapshot',
-                module='daily_snapshot',
-                data=summary,
-                status='completed' if not errors else 'partial'
-            )
+        # Log to sync_audit_log table directly (AuditLogger doesn't have log_event)
+        if self.db:
+            try:
+                await self.db.execute("""
+                    INSERT INTO sync_audit_log (sync_type, workspace_id, status, records_processed, metadata, completed_at)
+                    VALUES ('daily_snapshot', NULL, $1, $2, $3, NOW())
+                """,
+                'completed' if not errors else 'partial',
+                len(results),
+                json.dumps(summary, default=str)
+                )
+            except Exception as e:
+                logger.warning(f"Failed to log audit event: {e}")
 
         # Alert on failures
         if errors and self.alerter:
