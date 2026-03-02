@@ -188,8 +188,8 @@ class SyncOrchestrator:
                     await self.run_daily_snapshot()
                     self.last_daily_snapshot = now
 
-                # Daily Slack audit (send audit summary to #inbox-audits)
-                if self._should_run_daily(self.last_slack_audit):
+                # Daily Slack audit at 6 AM UTC (send audit summary to #inbox-audits)
+                if self._should_run_slack_audit(self.last_slack_audit):
                     await self.run_slack_audit()
                     self.last_slack_audit = now
 
@@ -501,6 +501,20 @@ class SyncOrchestrator:
         now = datetime.now()
         # Run if last run was before today
         return last_run.date() < now.date()
+
+    def _should_run_slack_audit(self, last_run: Optional[datetime]) -> bool:
+        """Check if we should run Slack audit (6 AM UTC daily)."""
+        from datetime import timezone
+        now_utc = datetime.now(timezone.utc)
+
+        # Only run between 6:00 and 6:05 AM UTC
+        if now_utc.hour != 6 or now_utc.minute >= 5:
+            return False
+
+        # Check if already ran today
+        if last_run is None:
+            return True
+        return last_run.date() < now_utc.date()
 
     def _handle_shutdown(self, signum, frame):
         """Handle shutdown signals gracefully."""

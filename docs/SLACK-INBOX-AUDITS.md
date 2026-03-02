@@ -75,13 +75,17 @@ Add to your deployment:
 
 ```bash
 # Slack Audit Configuration
-SLACK_AUDIT_WEBHOOK_URL=https://hooks.slack.com/services/T.../B.../xxx
-SLACK_BOT_TOKEN=xoxb-your-bot-token
-SLACK_SIGNING_SECRET=your-signing-secret
+SLACK_AUDIT_WEBHOOK_URL=https://hooks.slack.com/services/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
+SLACK_SIGNING_SECRET=140a65354f13e535a249b94a1eeeae08
 
 # API URLs
 PUBLIC_API_URL=http://nckgggwww8sggg0kc4wo00o8.187.77.19.81.sslip.io
 ```
+
+### Slack App Details
+- **App ID:** A0AHXEBSAH1
+- **Created:** March 2, 2026
+- **Channel:** #inbox-audits
 
 ## Database Setup
 
@@ -152,8 +156,8 @@ resolved_by=username&resolution_notes=Fixed
 Add to emailbison_sync_worker.py:
 
 ```python
-# In poll loop, check if it's audit time (e.g., 9 AM UTC)
-if datetime.utcnow().hour == 9 and datetime.utcnow().minute < 5:
+# In poll loop, check if it's audit time (6 AM UTC)
+if datetime.utcnow().hour == 6 and datetime.utcnow().minute < 5:
     if not audit_sent_today:
         await send_daily_audit()
         audit_sent_today = True
@@ -162,7 +166,7 @@ if datetime.utcnow().hour == 9 and datetime.utcnow().minute < 5:
 Or use a cron job:
 
 ```bash
-0 9 * * * curl -X POST http://charm-api:8000/api/slack/trigger-audit
+0 6 * * * curl -X POST http://charm-api:8000/api/slack/trigger-audit
 ```
 
 ## Testing
