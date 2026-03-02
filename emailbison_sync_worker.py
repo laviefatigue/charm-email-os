@@ -37,6 +37,7 @@ from sync_modules import (
     RetentionManager,
     OAuthSyncModule,
     DailySnapshotModule,
+    LifecycleTagSyncModule,
 )
 
 # Configuration from environment
@@ -79,6 +80,7 @@ class SyncOrchestrator:
         self.last_oauth_queue_check: Optional[datetime] = None
         self.last_oauth_verify: Optional[datetime] = None
         self.last_daily_snapshot: Optional[datetime] = None
+        self.last_lifecycle_tag_sync: Optional[datetime] = None
 
     async def start(self, single_pass: bool = False):
         """Initialize connections and start the sync worker."""
@@ -163,6 +165,12 @@ class SyncOrchestrator:
                 if self._should_run(self.last_warmup_sync, POLL_INTERVAL_WARMUP):
                     await self.run_warmup_sync()
                     self.last_warmup_sync = now
+
+                # Lifecycle tag sync - runs with warmup sync
+                # Manages 'incubating' and 'live' tags in EmailBison based on warmup age
+                if self._should_run(self.last_lifecycle_tag_sync, POLL_INTERVAL_WARMUP):
+                    await self.run_lifecycle_tag_sync()
+                    self.last_lifecycle_tag_sync = now
 
                 # Daily retention cleanup (run at midnight)
                 if self._should_run_daily(self.last_retention_cleanup):
@@ -323,6 +331,36 @@ class SyncOrchestrator:
 
             if total_auto_enabled > 0:
                 print(f"  Auto-enabled warmup for {total_auto_enabled} connected inboxes")
+
+    async def run_lifecycle_tag_sync(self):
+        """Sync lifecycle tags in EmailBison based on warmup age.
+
+        Manages tags to control which inboxes can be assigned to campaigns:
+        - 'incubating': Inbox in warmup period (< 14 days from warmup_started_at)
+        - 'live': Inbox graduated from incubation and available for campaigns
+
+        Team uses 'live' tag in EmailBison to filter inboxes for campaign assignment.
+        Kill processor removes 'live' tag when inbox is killed.
+        """
+        print(f"[{datetime.now()}] Lifecycle tag sync...")
+
+        async with EmailBisonClient() as client:
+            lifecycle_sync = LifecycleTagSyncModule(
+                db=self.db,
+                client=client,
+                audit_logger=self.audit_logger,
+                alerter=self.alerter
+            )
+            results = await lifecycle_sync.sync_all_workspaces()
+
+            total_graduated = sum(r.metadata.get('graduated', 0) for r in results if r.metadata)
+            total_tagged = sum(r.metadata.get('new_incubating', 0) for r in results if r.metadata)
+            total_removed = sum(r.metadata.get('live_removed_dead', 0) for r in results if r.metadata)
+            failed_count = sum(1 for r in results if not r.success)
+
+            if total_graduated > 0 or total_tagged > 0 or total_removed > 0:
+                status = 'FAILED' if failed_count > 0 else 'OK'
+                print(f"  Lifecycle Tags: {total_graduated} graduated to live, {total_tagged} new incubating, {total_removed} dead removed [{status}]")
 
     async def run_retention_cleanup(self):
         """Run data retention cleanup."""

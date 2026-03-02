@@ -456,3 +456,23 @@ class CapacityInsight(BaseModel):
     icon: str = ""  # Emoji icon
     message: str = ""  # Insight text
     severity: str = "info"  # info, warning, critical
+
+
+class FlaggedInboxItem(BaseModel):
+    """Single flagged/killed inbox for export."""
+
+    workspace_name: str
+    domain_name: Optional[str] = None
+    email_address: str
+    kill_trigger: Optional[str] = None
+    killed_at: Optional[datetime] = None
+    days_before_kill: Optional[int] = None
+    inbox_state: str
+    connection_status: Optional[str] = None
+    warmup_started_at: Optional[datetime] = None
+    hard_bounces_24h: int = 0
+    hard_blocked_24h: int = 0
+    hard_unknown_24h: int = 0
+    complaints_lifetime: int = 0
+    trigger_value: Optional[float] = None
+    trigger_threshold: Optional[float] = None

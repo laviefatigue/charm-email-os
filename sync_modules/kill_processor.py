@@ -162,6 +162,24 @@ class KillProcessor:
                             tag_id=tag_id
                         )
 
+                        # Remove 'live' tag since inbox is no longer live
+                        # This ensures the team can't accidentally assign dead inboxes
+                        live_tag_id = tag_cache.get('live')
+                        if not live_tag_id:
+                            live_tag = await self.client.get_or_create_tag('live')
+                            live_tag_id = live_tag.get('id')
+                            if live_tag_id:
+                                tag_cache['live'] = live_tag_id
+
+                        if live_tag_id:
+                            try:
+                                await self.client.untag_inbox(
+                                    account_id=int(item['emailbison_account_id']),
+                                    tag_id=live_tag_id
+                                )
+                            except EmailBisonAPIError:
+                                pass  # May not have the tag - that's fine
+
                         # Update queue status to 'flagged' (final state - no deletion)
                         await self.db.execute("""
                             UPDATE kill_queue

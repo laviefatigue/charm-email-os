@@ -92,6 +92,9 @@ class EventSyncModule:
                         audit.increment_updated()
                         print(f"    [{campaign['campaign_name']}] {inbox_count} replies, {bounce_count} bounces, {spam_count} spam")
 
+                    # Add delay between campaigns to avoid rate limiting
+                    await self.client.inter_batch_delay(1.0)
+
                 except EmailBisonAPIError as e:
                     audit.add_error(
                         record_id=campaign['campaign_name'],
@@ -231,8 +234,19 @@ class EventSyncModule:
             sentiment = self.classify_sentiment(body, is_interested, is_automated)
 
         # Lookup sender account
+        # Primary: use sender_email_id from EmailBison (maps to our emailbison_account_id)
+        # Fallback: match by email address if sender_email_id not available
+        eb_sender_id = reply.get('sender_email_id')
         sender_account_id = None
-        if to_inbox:
+
+        if eb_sender_id:
+            sender_account_id = await self.db.fetchval("""
+                SELECT id FROM sender_accounts
+                WHERE emailbison_account_id = $1 AND workspace_id = $2
+            """, str(eb_sender_id), workspace_id)
+
+        # Fallback to email address lookup if sender_email_id not found
+        if not sender_account_id and to_inbox:
             sender_account_id = await self.db.fetchval("""
                 SELECT id FROM sender_accounts
                 WHERE LOWER(email_address) = $1 AND workspace_id = $2

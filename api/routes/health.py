@@ -2,7 +2,7 @@
 Health monitoring routes - Aggregated from OwnRBL metrics
 """
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Response
 from pydantic import BaseModel
 from typing import Optional
 from uuid import UUID
@@ -19,6 +19,7 @@ from models.health import (
     InfrastructureHealthResponse, ProviderMetrics, HealthDistribution, LifecycleDistribution,
     WarningLevelDistribution,
     DailyVolumeSnapshot, KillEventAnnotation, DailyVolumeHistoryResponse,
+    FlaggedInboxItem,
 )
 
 router = APIRouter()
@@ -440,7 +441,7 @@ async def _build_kill_triggers(workspace_id: UUID) -> list[KillTriggerItem]:
                     COALESCE(sa.hard_bounces_7d, 0)::float / NULLIF(sa.total_sends_7d, 0) > 0.005)
                 OR (COALESCE(sa.total_sends_7d, 0) > 0 AND
                     COALESCE(sa.hard_bounces_7d, 0)::float / NULLIF(sa.total_sends_7d, 0) > 0.05)
-                OR (COALESCE(sa.hard_bounces_24h, 0) >= 1 AND sa.created_at > NOW() - INTERVAL '14 days')
+                OR (COALESCE(sa.hard_bounces_24h, 0) >= 1 AND (sa.warmup_started_at IS NULL OR sa.warmup_started_at > NOW() - INTERVAL '14 days'))
             )
         ORDER BY COALESCE(sa.complaints_lifetime, 0) DESC, COALESCE(sa.hard_bounces_24h, 0) DESC
         LIMIT 200
@@ -1309,13 +1310,13 @@ async def get_infrastructure_health(client_id: UUID):
     """, workspace_id)
 
     # Get lifecycle distribution for inventory visibility
-    # Lifecycle: incubating (< 14 days old), active (mature), dead
+    # Lifecycle: incubating (< 14 days warmup), active (graduated), dead
     # Pool: deployed (in campaigns), reserve (ready), warning (has bounces)
     lifecycle_dist = await fetch_one("""
         SELECT
-            -- Lifecycle states
-            COUNT(*) FILTER (WHERE inbox_state = 'live' AND created_at > NOW() - INTERVAL '14 days') as incubating,
-            COUNT(*) FILTER (WHERE inbox_state = 'live' AND created_at <= NOW() - INTERVAL '14 days') as active,
+            -- Lifecycle states (based on warmup_started_at, not created_at)
+            COUNT(*) FILTER (WHERE inbox_state = 'live' AND (warmup_started_at IS NULL OR warmup_started_at > NOW() - INTERVAL '14 days')) as incubating,
+            COUNT(*) FILTER (WHERE inbox_state = 'live' AND warmup_started_at IS NOT NULL AND warmup_started_at <= NOW() - INTERVAL '14 days') as active,
             COUNT(*) FILTER (WHERE inbox_state = 'dead') as dead,
             -- Pool status (live inboxes only)
             COUNT(*) FILTER (
@@ -2216,4 +2217,119 @@ async def get_daily_volume_history(
         avg_daily_capacity=avg_capacity,
         avg_utilization_pct=round(avg_utilization, 2),
         total_kills=total_kills
+    )
+
+
+@router.get("/export/flagged-inboxes")
+async def export_flagged_inboxes():
+    """Export all flagged/killed inboxes as CSV for team review.
+
+    Returns a comprehensive list sorted by workspace, then grouped by domain,
+    then by killed_at date descending for easy investigation.
+
+    CSV columns:
+    - workspace_name, domain_name, email_address
+    - kill_trigger, killed_at, days_before_kill (how long inbox lasted)
+    - inbox_state, connection_status
+    - hard_bounces_24h, hard_blocked_24h, hard_unknown_24h, complaints_lifetime
+    - trigger_value, trigger_threshold (what triggered the kill)
+    """
+    rows = await fetch_all("""
+        SELECT
+            w.workspace_name,
+            d.domain_name,
+            sa.email_address,
+            sa.kill_trigger,
+            sa.killed_at,
+            sa.inbox_state,
+            sa.status as connection_status,
+            sa.warmup_started_at,
+            -- Days between warmup start and kill (how long inbox lasted)
+            CASE
+                WHEN sa.warmup_started_at IS NOT NULL AND sa.killed_at IS NOT NULL THEN
+                    EXTRACT(DAY FROM sa.killed_at - sa.warmup_started_at)::INTEGER
+                ELSE NULL
+            END as days_before_kill,
+            COALESCE(sa.hard_bounces_24h, 0) as hard_bounces_24h,
+            COALESCE(sa.hard_blocked_24h, 0) as hard_blocked_24h,
+            COALESCE(sa.hard_unknown_24h, 0) as hard_unknown_24h,
+            COALESCE(sa.complaints_lifetime, 0) as complaints_lifetime,
+            kq.trigger_value,
+            kq.trigger_threshold
+        FROM sender_accounts sa
+        JOIN workspaces w ON sa.workspace_id = w.id
+        LEFT JOIN domains d ON sa.domain_id = d.id
+        LEFT JOIN kill_queue kq ON kq.inbox_id = sa.id AND kq.status = 'flagged'
+        WHERE sa.inbox_state = 'dead'
+           OR sa.kill_trigger IS NOT NULL
+        ORDER BY w.workspace_name, d.domain_name, sa.killed_at DESC NULLS LAST
+    """)
+
+    if not rows:
+        return Response(
+            content="No flagged inboxes found",
+            media_type="text/csv",
+            headers={"Content-Disposition": "attachment; filename=flagged-inboxes.csv"}
+        )
+
+    # Build CSV content
+    csv_lines = []
+
+    # Header row
+    csv_lines.append(",".join([
+        "workspace_name",
+        "domain_name",
+        "email_address",
+        "kill_trigger",
+        "killed_at",
+        "days_before_kill",
+        "inbox_state",
+        "connection_status",
+        "warmup_started_at",
+        "hard_bounces_24h",
+        "hard_blocked_24h",
+        "hard_unknown_24h",
+        "complaints_lifetime",
+        "trigger_value",
+        "trigger_threshold"
+    ]))
+
+    # Data rows
+    for row in rows:
+        # Escape commas and quotes in string fields
+        def escape_csv(val):
+            if val is None:
+                return ""
+            s = str(val)
+            if "," in s or '"' in s or "\n" in s:
+                return '"' + s.replace('"', '""') + '"'
+            return s
+
+        csv_lines.append(",".join([
+            escape_csv(row["workspace_name"]),
+            escape_csv(row["domain_name"]),
+            escape_csv(row["email_address"]),
+            escape_csv(row["kill_trigger"]),
+            escape_csv(row["killed_at"].isoformat() if row["killed_at"] else None),
+            escape_csv(row["days_before_kill"]),
+            escape_csv(row["inbox_state"]),
+            escape_csv(row["connection_status"]),
+            escape_csv(row["warmup_started_at"].isoformat() if row["warmup_started_at"] else None),
+            escape_csv(row["hard_bounces_24h"]),
+            escape_csv(row["hard_blocked_24h"]),
+            escape_csv(row["hard_unknown_24h"]),
+            escape_csv(row["complaints_lifetime"]),
+            escape_csv(row["trigger_value"]),
+            escape_csv(row["trigger_threshold"])
+        ]))
+
+    csv_content = "\n".join(csv_lines)
+
+    # Generate filename with date
+    today = datetime.now().strftime("%Y-%m-%d")
+
+    return Response(
+        content=csv_content,
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename=flagged-inboxes-{today}.csv"}
     )

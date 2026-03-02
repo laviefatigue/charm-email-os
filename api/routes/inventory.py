@@ -56,15 +56,16 @@ async def _get_inventory_counts_direct(workspace_id: UUID):
                 sa.id,
                 sa.inbox_state,
                 sa.kill_trigger,
-                -- Calculate lifecycle status
+                -- Calculate lifecycle status (based on warmup_started_at, not created_at)
                 CASE
                     WHEN sa.inbox_state = 'dead' THEN 'dead'
-                    WHEN sa.created_at > NOW() - INTERVAL '14 days' THEN 'incubating'
+                    WHEN sa.warmup_started_at IS NULL THEN 'incubating'
+                    WHEN sa.warmup_started_at > NOW() - INTERVAL '14 days' THEN 'incubating'
                     ELSE 'active'
                 END as lifecycle_status,
                 -- Calculate pool status
-                -- Reserve requires: 14+ days old, warmup enabled, not on campaigns
-                -- Incubating: under 14 days or warmup not enabled
+                -- Reserve requires: 14+ days of warmup, warmup enabled, not on campaigns
+                -- Incubating: warmup not started or under 14 days
                 CASE
                     WHEN sa.inbox_state = 'dead' THEN NULL
                     WHEN COALESCE(sa.hard_bounces_24h, 0) >= 1
@@ -76,11 +77,12 @@ async def _get_inventory_counts_direct(workspace_id: UUID):
                         AND ci.is_active = TRUE
                         AND ec.campaign_status IN ('active', 'running', 'sending')
                     ) THEN 'deployed'
-                    -- Reserve: 14+ days AND warmup enabled (ready to deploy)
-                    WHEN sa.created_at <= NOW() - INTERVAL '14 days'
+                    -- Reserve: 14+ days warmup AND warmup enabled (ready to deploy)
+                    WHEN sa.warmup_started_at IS NOT NULL
+                         AND sa.warmup_started_at <= NOW() - INTERVAL '14 days'
                          AND COALESCE(sa.warmup_enabled, TRUE) = TRUE THEN 'reserve'
-                    -- Incubating: under 14 days OR warmup not enabled
-                    ELSE 'incubating'
+                    -- Incubating: warmup not started or under 14 days
+                    ELSE NULL
                 END as pool_status
             FROM sender_accounts sa
             WHERE sa.workspace_id = $1
@@ -261,15 +263,15 @@ async def _get_inboxes_direct(workspace_id: UUID, pool_status: Optional[str], li
             sa.inbox_state,
             SPLIT_PART(sa.email_address, '@', 2) as domain_name,
             EXTRACT(DAY FROM NOW() - sa.created_at)::INTEGER as age_days,
-            -- Calculate lifecycle status inline
+            -- Calculate lifecycle status inline (based on warmup_started_at)
             CASE
                 WHEN sa.inbox_state = 'dead' THEN 'dead'
-                WHEN sa.created_at > NOW() - INTERVAL '14 days' THEN 'incubating'
+                WHEN sa.warmup_started_at IS NULL THEN 'incubating'
+                WHEN sa.warmup_started_at > NOW() - INTERVAL '14 days' THEN 'incubating'
                 ELSE 'active'
             END as calculated_lifecycle_status,
             -- Calculate pool status inline
-            -- Reserve requires: 14+ days old, warmup enabled, not on campaigns
-            -- Incubating: under 14 days or warmup not enabled
+            -- Reserve requires: 14+ days of warmup, warmup enabled, not on campaigns
             CASE
                 WHEN sa.inbox_state = 'dead' THEN NULL
                 WHEN COALESCE(sa.hard_bounces_24h, 0) >= 1
@@ -281,11 +283,12 @@ async def _get_inboxes_direct(workspace_id: UUID, pool_status: Optional[str], li
                     AND ci.is_active = TRUE
                     AND ec.campaign_status IN ('active', 'running', 'sending')
                 ) THEN 'deployed'
-                -- Reserve: 14+ days AND warmup enabled (ready to deploy)
-                WHEN sa.created_at <= NOW() - INTERVAL '14 days'
+                -- Reserve: 14+ days warmup AND warmup enabled (ready to deploy)
+                WHEN sa.warmup_started_at IS NOT NULL
+                     AND sa.warmup_started_at <= NOW() - INTERVAL '14 days'
                      AND COALESCE(sa.warmup_enabled, TRUE) = TRUE THEN 'reserve'
-                -- Incubating: under 14 days OR warmup not enabled
-                ELSE 'incubating'
+                -- Incubating: warmup not started or under 14 days
+                ELSE NULL
             END as calculated_pool_status,
             -- Get associated campaign IDs
             (

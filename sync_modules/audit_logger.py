@@ -26,6 +26,7 @@ class SyncResult:
     error_message: Optional[str] = None
     errors: List[Dict] = field(default_factory=list)
     duration_seconds: float = 0.0
+    metadata: Optional[Dict] = None  # Additional context data for callers
 
     @property
     def success(self) -> bool:
@@ -150,7 +151,8 @@ class AuditContext:
     async def complete(
         self,
         status: str = 'completed',
-        error_message: str = None
+        error_message: str = None,
+        metadata: Dict = None
     ) -> SyncResult:
         """
         Complete the audit and update the database.
@@ -158,6 +160,7 @@ class AuditContext:
         Args:
             status: 'completed', 'failed', or 'partial'
             error_message: Top-level error message if failed
+            metadata: Additional context data to include in result
         """
         completed_at = datetime.now()
         duration = (completed_at - self.started_at).total_seconds()
@@ -202,7 +205,8 @@ class AuditContext:
             records_failed=self.records_failed,
             error_message=error_message,
             errors=self.errors,
-            duration_seconds=duration
+            duration_seconds=duration,
+            metadata=metadata
         )
 
     async def fail(self, error: Exception) -> SyncResult:

@@ -3,9 +3,17 @@ EmailBison API Client
 
 Shared async client with workspace switching, pagination, and retry logic.
 Based on patterns from OwnRBL/clients/emailbison_client.py
+
+Rate Limiting:
+    EmailBison API enforces rate limits that manifest as 403 errors after
+    ~30-40 rapid consecutive requests. This client implements:
+    - Request throttling: Minimum delay between requests
+    - 403 retry: Treat 403 as rate limit, wait and retry
+    - Exponential backoff: Increasing delays on repeated failures
 """
 import asyncio
 import os
+import time
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 import httpx
@@ -19,9 +27,14 @@ DEFAULT_TIMEOUT = 60.0
 DEFAULT_RETRIES = 3
 DEFAULT_RETRY_DELAY = 5.0
 
+# Rate limiting configuration
+MIN_REQUEST_INTERVAL = 0.25  # 250ms between requests (4 req/sec max)
+RATE_LIMIT_RETRY_DELAY = 5.0  # Wait 5s on 403 before retry
+MAX_RATE_LIMIT_RETRIES = 3  # Retry 403s up to 3 times
+
 
 class EmailBisonClient:
-    """Async EmailBison API client with workspace context management."""
+    """Async EmailBison API client with workspace context management and rate limiting."""
 
     def __init__(
         self,
@@ -29,15 +42,20 @@ class EmailBisonClient:
         api_key: str = None,
         timeout: float = DEFAULT_TIMEOUT,
         max_retries: int = DEFAULT_RETRIES,
-        retry_delay: float = DEFAULT_RETRY_DELAY
+        retry_delay: float = DEFAULT_RETRY_DELAY,
+        min_request_interval: float = MIN_REQUEST_INTERVAL
     ):
         self.api_url = api_url or EMAILBISON_API_URL
         self.api_key = api_key or EMAILBISON_API_KEY
         self.timeout = timeout
         self.max_retries = max_retries
         self.retry_delay = retry_delay
+        self.min_request_interval = min_request_interval
         self.client: Optional[httpx.AsyncClient] = None
         self.current_workspace_id: Optional[int] = None
+        # Rate limiting state
+        self._last_request_time: float = 0
+        self._request_count: int = 0
 
     async def __aenter__(self):
         self.client = httpx.AsyncClient(
@@ -55,16 +73,41 @@ class EmailBisonClient:
             await self.client.aclose()
             self.client = None
 
+    def get_request_count(self) -> int:
+        """Get the number of requests made in this session."""
+        return self._request_count
+
+    async def inter_batch_delay(self, seconds: float = 1.0):
+        """Add a delay between batch operations to reduce rate limit risk.
+
+        Call this between processing different campaigns or workspaces
+        to give the API a breather.
+        """
+        await asyncio.sleep(seconds)
+
+    async def _throttle(self):
+        """Enforce minimum delay between requests to avoid rate limiting."""
+        now = time.monotonic()
+        elapsed = now - self._last_request_time
+        if elapsed < self.min_request_interval:
+            await asyncio.sleep(self.min_request_interval - elapsed)
+        self._last_request_time = time.monotonic()
+        self._request_count += 1
+
     async def _request(
         self,
         method: str,
         endpoint: str,
         params: Dict = None,
         json_data: Dict = None,
-        retry_count: int = 0
+        retry_count: int = 0,
+        rate_limit_retry: int = 0
     ) -> Dict:
-        """Make HTTP request with retry logic."""
+        """Make HTTP request with retry logic and rate limiting."""
         url = f"{self.api_url}{endpoint}"
+
+        # Throttle requests to avoid rate limiting
+        await self._throttle()
 
         try:
             response = await self.client.request(
@@ -78,24 +121,35 @@ class EmailBisonClient:
 
         except httpx.HTTPStatusError as e:
             error_text = e.response.text[:500] if e.response else 'No response'
-            if retry_count < self.max_retries and e.response.status_code >= 500:
+            status_code = e.response.status_code
+
+            # Handle 403 as potential rate limiting
+            if status_code == 403 and rate_limit_retry < MAX_RATE_LIMIT_RETRIES:
+                wait_time = RATE_LIMIT_RETRY_DELAY * (rate_limit_retry + 1)
+                print(f"[RATE LIMIT] 403 on {endpoint}, waiting {wait_time}s (attempt {rate_limit_retry + 1}/{MAX_RATE_LIMIT_RETRIES})")
+                await asyncio.sleep(wait_time)
+                return await self._request(method, endpoint, params, json_data, retry_count, rate_limit_retry + 1)
+
+            # Retry on 5xx errors
+            if retry_count < self.max_retries and status_code >= 500:
                 await asyncio.sleep(self.retry_delay * (retry_count + 1))
-                return await self._request(method, endpoint, params, json_data, retry_count + 1)
+                return await self._request(method, endpoint, params, json_data, retry_count + 1, rate_limit_retry)
+
             raise EmailBisonAPIError(
-                f"HTTP {e.response.status_code}: {error_text}",
-                status_code=e.response.status_code
+                f"HTTP {status_code}: {error_text}",
+                status_code=status_code
             )
 
         except httpx.TimeoutException:
             if retry_count < self.max_retries:
                 await asyncio.sleep(self.retry_delay * (retry_count + 1))
-                return await self._request(method, endpoint, params, json_data, retry_count + 1)
+                return await self._request(method, endpoint, params, json_data, retry_count + 1, rate_limit_retry)
             raise EmailBisonAPIError(f"Timeout connecting to {url}")
 
         except httpx.RequestError as e:
             if retry_count < self.max_retries:
                 await asyncio.sleep(self.retry_delay * (retry_count + 1))
-                return await self._request(method, endpoint, params, json_data, retry_count + 1)
+                return await self._request(method, endpoint, params, json_data, retry_count + 1, rate_limit_retry)
             raise EmailBisonAPIError(f"Connection error: {str(e)}")
 
     # =========================================================================

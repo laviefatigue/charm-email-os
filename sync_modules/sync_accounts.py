@@ -146,6 +146,9 @@ class AccountSyncModule:
                         records_processed=result.records_processed
                     )
 
+                # Add delay between workspaces to avoid rate limiting
+                await self.client.inter_batch_delay(1.0)
+
             except Exception as e:
                 print(f"[AccountSync] Error syncing {ws['workspace_name']}: {e}")
                 # Continue with other workspaces
@@ -351,22 +354,26 @@ class AccountSyncModule:
                 bounces_all_time = EXCLUDED.bounces_all_time,
                 daily_limit = EXCLUDED.daily_limit,
                 is_active = EXCLUDED.is_active,
-                -- Update inventory lifecycle status based on current state
+                -- Update inventory lifecycle status based on warmup_started_at (not created_at)
+                -- Incubation = 14 days from when warmup was enabled, not from record creation
                 inventory_lifecycle_status = CASE
                     WHEN sender_accounts.killed_at IS NOT NULL THEN 'dead'
                     WHEN EXCLUDED.inbox_state = 'dead' THEN 'dead'
-                    WHEN sender_accounts.created_at > NOW() - INTERVAL '14 days' THEN 'incubating'
+                    WHEN sender_accounts.warmup_started_at IS NULL THEN 'incubating'
+                    WHEN sender_accounts.warmup_started_at > NOW() - INTERVAL '14 days' THEN 'incubating'
                     ELSE 'active'
                 END,
                 -- Update inventory pool status (NULL for dead, else calculate)
+                -- Reserve requires 14+ days of warmup completed
                 inventory_pool_status = CASE
                     WHEN sender_accounts.killed_at IS NOT NULL THEN NULL
                     WHEN EXCLUDED.inbox_state = 'dead' THEN NULL
                     WHEN COALESCE(sender_accounts.hard_bounces_24h, 0) >= 1
                          OR COALESCE(sender_accounts.hard_bounces_7d, 0) >= 3 THEN 'warning'
-                    WHEN sender_accounts.created_at <= NOW() - INTERVAL '14 days'
+                    WHEN sender_accounts.warmup_started_at IS NOT NULL
+                         AND sender_accounts.warmup_started_at <= NOW() - INTERVAL '14 days'
                          AND COALESCE(EXCLUDED.warmup_enabled, TRUE) = TRUE THEN 'reserve'
-                    ELSE 'incubating'
+                    ELSE NULL
                 END,
                 last_seen_at = NOW(),
                 last_synced_at = NOW(),
