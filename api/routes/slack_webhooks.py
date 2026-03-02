@@ -109,6 +109,13 @@ async def handle_slack_interaction(request: Request):
         if action_id == "complete_hypertide_order":
             return await _handle_complete_order(action_value, payload)
 
+        # Handle inbox audit actions
+        if action_id == "audit_confirmed":
+            return await _handle_audit_confirmed(action_value, payload)
+
+        if action_id == "audit_issues":
+            return await _handle_audit_issues(action_value, payload)
+
         # Unknown action
         logger.warning(f"Unknown Slack action_id: {action_id}")
         return JSONResponse(content={"text": f"Unknown action: {action_id}"})
@@ -201,4 +208,297 @@ async def test_slack_webhooks():
         "status": "ok",
         "message": "Slack webhooks router is active",
         "signing_secret_configured": bool(SLACK_SIGNING_SECRET)
+    }
+
+
+# ============================================================================
+# INBOX AUDIT HANDLERS
+# ============================================================================
+
+async def _handle_audit_confirmed(audit_id: str, payload: dict) -> JSONResponse:
+    """Handle 'Confirmed - All Correct' button click for inbox audits."""
+    user_name = payload.get("user", {}).get("name", "unknown")
+
+    logger.info(f"Audit {audit_id} confirmed by {user_name}")
+
+    # Update audit status
+    await execute("""
+        UPDATE inbox_audits
+        SET
+            status = 'confirmed',
+            reviewed_by = $1,
+            reviewed_at = NOW()
+        WHERE id = $2
+    """, user_name, int(audit_id))
+
+    # Log to history
+    await execute("""
+        INSERT INTO inbox_audit_history (audit_id, action, actor, details)
+        VALUES ($1, 'confirmed', $2, $3)
+    """, int(audit_id), user_name, json.dumps({"source": "slack_button"}))
+
+    # Update the original message
+    return JSONResponse(content={
+        "response_type": "in_channel",
+        "replace_original": True,
+        "blocks": [
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": f":white_check_mark: *Audit Confirmed*\n\nReviewed by @{user_name} at {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}\n\nAudit ID: `{audit_id}`"
+                }
+            }
+        ]
+    })
+
+
+async def _handle_audit_issues(audit_id: str, payload: dict) -> JSONResponse:
+    """Handle 'Issues Found' button click - update message with instructions."""
+    user_name = payload.get("user", {}).get("name", "unknown")
+
+    logger.info(f"Audit {audit_id} flagged with issues by {user_name}")
+
+    # Update audit status
+    await execute("""
+        UPDATE inbox_audits
+        SET
+            status = 'issues_found',
+            reviewed_by = $1,
+            reviewed_at = NOW()
+        WHERE id = $2
+    """, user_name, int(audit_id))
+
+    # Log to history
+    await execute("""
+        INSERT INTO inbox_audit_history (audit_id, action, actor, details)
+        VALUES ($1, 'issues_found', $2, $3)
+    """, int(audit_id), user_name, json.dumps({"source": "slack_button"}))
+
+    # Get API URL for corrections endpoint
+    api_url = os.getenv("PUBLIC_API_URL", "http://charm-api:8000")
+
+    # Update message with correction instructions
+    return JSONResponse(content={
+        "response_type": "in_channel",
+        "replace_original": True,
+        "blocks": [
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": f":warning: *Audit Issues Reported*\n\nFlagged by @{user_name} at {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}"
+                }
+            },
+            {
+                "type": "divider"
+            },
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": "*To submit corrections:*\n\n1. Download the CSV from the original audit message\n2. Add a `correction_type` column with one of:\n   • `wrong_kill` - Inbox shouldn't have been killed\n   • `false_positive` - Trigger was incorrect\n   • `should_restore` - Need to restore this inbox\n3. Add an optional `reason` column\n4. Upload to the corrections endpoint"
+                }
+            },
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": f"*Upload corrections:*\n```\ncurl -X POST '{api_url}/api/slack/corrections/{audit_id}' \\\n  -F 'file=@corrections.csv'\n```"
+                }
+            },
+            {
+                "type": "context",
+                "elements": [
+                    {
+                        "type": "mrkdwn",
+                        "text": f"Audit ID: `{audit_id}`"
+                    }
+                ]
+            }
+        ]
+    })
+
+
+# ============================================================================
+# CORRECTIONS ENDPOINTS
+# ============================================================================
+
+import csv
+import io
+from fastapi import UploadFile, File, Form
+
+@router.post("/corrections/{audit_id}")
+async def submit_corrections(
+    audit_id: int,
+    file: UploadFile = File(...),
+):
+    """
+    Upload a CSV with corrections for incorrectly flagged inboxes.
+
+    CSV format:
+    - email_address (required)
+    - correction_type (required): wrong_kill, false_positive, should_restore
+    - reason (optional): Explanation
+
+    Returns count of corrections processed.
+    """
+    logger.info(f"Receiving corrections for audit {audit_id}")
+
+    # Verify audit exists
+    audit = await fetch_one("SELECT id, status FROM inbox_audits WHERE id = $1", audit_id)
+    if not audit:
+        raise HTTPException(status_code=404, detail=f"Audit {audit_id} not found")
+
+    # Read and parse CSV
+    content = await file.read()
+    try:
+        text_content = content.decode("utf-8")
+    except UnicodeDecodeError:
+        text_content = content.decode("latin-1")
+
+    reader = csv.DictReader(io.StringIO(text_content))
+
+    corrections_added = 0
+    errors = []
+
+    for i, row in enumerate(reader, start=2):
+        email = row.get("email_address", "").strip()
+        correction_type = row.get("correction_type", "").strip().lower()
+        reason = row.get("reason", "").strip()
+
+        if not email:
+            continue
+
+        if correction_type not in ["wrong_kill", "false_positive", "should_restore", "other"]:
+            errors.append(f"Row {i}: Invalid correction_type '{correction_type}'")
+            continue
+
+        await execute("""
+            INSERT INTO inbox_audit_corrections (
+                audit_id, email_address, correction_type, reason
+            ) VALUES ($1, $2, $3, $4)
+        """, audit_id, email, correction_type, reason or None)
+
+        corrections_added += 1
+
+    # Log to history
+    await execute("""
+        INSERT INTO inbox_audit_history (audit_id, action, actor, details)
+        VALUES ($1, 'corrections_uploaded', 'api', $2)
+    """, audit_id, json.dumps({
+        "corrections_added": corrections_added,
+        "errors": errors[:10]
+    }))
+
+    logger.info(f"Processed {corrections_added} corrections for audit {audit_id}")
+
+    return {
+        "success": True,
+        "audit_id": audit_id,
+        "corrections_added": corrections_added,
+        "errors": errors
+    }
+
+
+@router.get("/corrections/{audit_id}")
+async def get_corrections(audit_id: int):
+    """Get all corrections for an audit."""
+    corrections = await fetch_one("""
+        SELECT
+            c.id,
+            c.email_address,
+            c.correction_type,
+            c.reason,
+            c.resolved,
+            c.resolved_by,
+            c.resolved_at,
+            c.created_at
+        FROM inbox_audit_corrections c
+        WHERE c.audit_id = $1
+        ORDER BY c.created_at DESC
+    """, audit_id)
+
+    return {
+        "audit_id": audit_id,
+        "corrections": corrections or []
+    }
+
+
+@router.post("/corrections/{audit_id}/{correction_id}/resolve")
+async def resolve_correction(
+    audit_id: int,
+    correction_id: int,
+    resolved_by: str = Form(...),
+    resolution_notes: str = Form(None)
+):
+    """Mark a correction as resolved."""
+    await execute("""
+        UPDATE inbox_audit_corrections
+        SET
+            resolved = TRUE,
+            resolved_by = $1,
+            resolved_at = NOW(),
+            resolution_notes = $2
+        WHERE id = $3 AND audit_id = $4
+    """, resolved_by, resolution_notes, correction_id, audit_id)
+
+    return {"success": True, "correction_id": correction_id}
+
+
+@router.post("/trigger-audit")
+async def trigger_manual_audit():
+    """Manually trigger an audit message (for testing)."""
+    try:
+        from sync_modules.slack_audit import send_daily_audit
+        result = await send_daily_audit()
+        return result
+    except Exception as e:
+        logger.error(f"Failed to trigger audit: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@router.get("/audits")
+async def list_audits(limit: int = 10):
+    """List recent audits."""
+    audits = await fetch_one("""
+        SELECT
+            id,
+            audit_date,
+            status,
+            reviewed_by,
+            reviewed_at,
+            total_kills,
+            total_disconnected,
+            created_at
+        FROM inbox_audits
+        ORDER BY created_at DESC
+        LIMIT $1
+    """, limit)
+
+    return {"audits": audits or []}
+
+
+@router.get("/audits/{audit_id}")
+async def get_audit(audit_id: int):
+    """Get audit details including corrections."""
+    audit = await fetch_one("SELECT * FROM inbox_audits WHERE id = $1", audit_id)
+
+    if not audit:
+        raise HTTPException(status_code=404, detail=f"Audit {audit_id} not found")
+
+    corrections = await fetch_one(
+        "SELECT * FROM inbox_audit_corrections WHERE audit_id = $1",
+        audit_id
+    )
+
+    history = await fetch_one(
+        "SELECT * FROM inbox_audit_history WHERE audit_id = $1 ORDER BY created_at",
+        audit_id
+    )
+
+    return {
+        "audit": dict(audit) if audit else None,
+        "corrections": corrections or [],
+        "history": history or []
     }

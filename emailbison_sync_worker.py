@@ -81,6 +81,7 @@ class SyncOrchestrator:
         self.last_oauth_verify: Optional[datetime] = None
         self.last_daily_snapshot: Optional[datetime] = None
         self.last_lifecycle_tag_sync: Optional[datetime] = None
+        self.last_slack_audit: Optional[datetime] = None
 
     async def start(self, single_pass: bool = False):
         """Initialize connections and start the sync worker."""
@@ -186,6 +187,11 @@ class SyncOrchestrator:
                 if self._should_run_daily(self.last_daily_snapshot):
                     await self.run_daily_snapshot()
                     self.last_daily_snapshot = now
+
+                # Daily Slack audit (send audit summary to #inbox-audits)
+                if self._should_run_daily(self.last_slack_audit):
+                    await self.run_slack_audit()
+                    self.last_slack_audit = now
 
                 # OAuth queue processing - every 5 min (for new workspaces)
                 if self._should_run(self.last_oauth_queue_check, POLL_INTERVAL_OAUTH_QUEUE):
@@ -419,6 +425,35 @@ class SyncOrchestrator:
                 f"Total capacity: {result['total_capacity']:,} | "
                 f"Kills: {result['total_kills']}"
             )
+
+    async def run_slack_audit(self):
+        """Send daily inbox audit summary to Slack #inbox-audits channel.
+
+        Includes:
+        - Kill trigger summary (last 24h)
+        - Disconnected inbox count
+        - Download buttons for CSVs
+        - Confirm/Issues buttons for team review
+        """
+        from sync_modules.slack_audit import send_daily_audit, SLACK_WEBHOOK_URL
+
+        if not SLACK_WEBHOOK_URL:
+            print(f"[{datetime.now()}] Slack audit skipped (SLACK_AUDIT_WEBHOOK_URL not configured)")
+            return
+
+        print(f"[{datetime.now()}] Sending daily Slack audit...")
+
+        result = await send_daily_audit()
+
+        if result.get("success"):
+            stats = result.get("stats", {})
+            print(
+                f"  Audit sent: {stats.get('total_kills', 0)} kills | "
+                f"{stats.get('new_disconnected', 0)} new disconnected | "
+                f"audit_id={result.get('audit_id')}"
+            )
+        else:
+            print(f"  Audit failed: {result.get('error')}")
 
     async def run_oauth_queue(self):
         """Process OAuth sync queue (newly created workspaces)."""
