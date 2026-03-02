@@ -123,12 +123,20 @@ class EmailBisonClient:
             error_text = e.response.text[:500] if e.response else 'No response'
             status_code = e.response.status_code
 
-            # Handle 403 as potential rate limiting
-            if status_code == 403 and rate_limit_retry < MAX_RATE_LIMIT_RETRIES:
-                wait_time = RATE_LIMIT_RETRY_DELAY * (rate_limit_retry + 1)
-                print(f"[RATE LIMIT] 403 on {endpoint}, waiting {wait_time}s (attempt {rate_limit_retry + 1}/{MAX_RATE_LIMIT_RETRIES})")
-                await asyncio.sleep(wait_time)
-                return await self._request(method, endpoint, params, json_data, retry_count, rate_limit_retry + 1)
+            # Handle 403 - distinguish rate limits from auth errors
+            if status_code == 403:
+                # Auth errors contain "unauthorized" - don't retry these
+                if 'unauthorized' in error_text.lower():
+                    raise EmailBisonAPIError(
+                        f"HTTP 403 (auth): {error_text}",
+                        status_code=status_code
+                    )
+                # Rate limits don't have "unauthorized" - retry with backoff
+                if rate_limit_retry < MAX_RATE_LIMIT_RETRIES:
+                    wait_time = RATE_LIMIT_RETRY_DELAY * (rate_limit_retry + 1)
+                    print(f"[RATE LIMIT] 403 on {endpoint}, waiting {wait_time}s (attempt {rate_limit_retry + 1}/{MAX_RATE_LIMIT_RETRIES})")
+                    await asyncio.sleep(wait_time)
+                    return await self._request(method, endpoint, params, json_data, retry_count, rate_limit_retry + 1)
 
             # Retry on 5xx errors
             if retry_count < self.max_retries and status_code >= 500:
