@@ -2333,3 +2333,207 @@ async def export_flagged_inboxes():
         media_type="text/csv",
         headers={"Content-Disposition": f"attachment; filename=flagged-inboxes-{today}.csv"}
     )
+
+
+@router.get("/export/kill-triggers")
+async def export_kill_triggers():
+    """Export inboxes caught by kill triggers for manual team review.
+
+    CSV structure optimized for Google Sheets:
+    - Sorted by workspace → domain → inbox
+    - First columns: workspace_name, emailbison_workspace_id
+    - Then domain and inbox details with kill trigger info
+
+    Use this to manually verify kill triggers are working correctly.
+    """
+    rows = await fetch_all("""
+        SELECT
+            w.workspace_name,
+            w.emailbison_workspace_id,
+            d.domain_name,
+            sa.email_address,
+            sa.kill_trigger,
+            sa.killed_at,
+            CASE
+                WHEN sa.warmup_started_at IS NOT NULL AND sa.killed_at IS NOT NULL THEN
+                    EXTRACT(DAY FROM sa.killed_at - sa.warmup_started_at)::INTEGER
+                ELSE NULL
+            END as days_active,
+            sa.inbox_state,
+            sa.status as connection_status,
+            sa.warmup_started_at,
+            COALESCE(sa.hard_bounces_24h, 0) as hard_bounces_24h,
+            COALESCE(sa.hard_blocked_24h, 0) as hard_blocked_24h,
+            COALESCE(sa.hard_unknown_24h, 0) as hard_unknown_24h,
+            COALESCE(sa.complaints_lifetime, 0) as complaints_lifetime,
+            kq.trigger_value,
+            kq.trigger_threshold
+        FROM sender_accounts sa
+        JOIN workspaces w ON sa.workspace_id = w.id
+        LEFT JOIN domains d ON sa.domain_id = d.id
+        LEFT JOIN kill_queue kq ON kq.inbox_id = sa.id AND kq.status = 'flagged'
+        WHERE sa.kill_trigger IS NOT NULL
+        AND w.is_active = TRUE
+        ORDER BY w.workspace_name, d.domain_name, sa.email_address
+    """)
+
+    if not rows:
+        return Response(
+            content="No kill trigger inboxes found",
+            media_type="text/csv",
+            headers={"Content-Disposition": "attachment; filename=kill-triggers.csv"}
+        )
+
+    def escape_csv(val):
+        if val is None:
+            return ""
+        s = str(val)
+        if "," in s or '"' in s or "\n" in s:
+            return '"' + s.replace('"', '""') + '"'
+        return s
+
+    csv_lines = []
+    csv_lines.append(",".join([
+        "workspace_name",
+        "emailbison_workspace_id",
+        "domain_name",
+        "email_address",
+        "kill_trigger",
+        "killed_at",
+        "days_active",
+        "inbox_state",
+        "connection_status",
+        "warmup_started_at",
+        "hard_bounces_24h",
+        "hard_blocked_24h",
+        "hard_unknown_24h",
+        "complaints_lifetime",
+        "trigger_value",
+        "trigger_threshold"
+    ]))
+
+    for row in rows:
+        csv_lines.append(",".join([
+            escape_csv(row["workspace_name"]),
+            escape_csv(row["emailbison_workspace_id"]),
+            escape_csv(row["domain_name"]),
+            escape_csv(row["email_address"]),
+            escape_csv(row["kill_trigger"]),
+            escape_csv(row["killed_at"].isoformat() if row["killed_at"] else None),
+            escape_csv(row["days_active"]),
+            escape_csv(row["inbox_state"]),
+            escape_csv(row["connection_status"]),
+            escape_csv(row["warmup_started_at"].isoformat() if row["warmup_started_at"] else None),
+            escape_csv(row["hard_bounces_24h"]),
+            escape_csv(row["hard_blocked_24h"]),
+            escape_csv(row["hard_unknown_24h"]),
+            escape_csv(row["complaints_lifetime"]),
+            escape_csv(row["trigger_value"]),
+            escape_csv(row["trigger_threshold"])
+        ]))
+
+    csv_content = "\n".join(csv_lines)
+    today = datetime.now().strftime("%Y-%m-%d")
+
+    return Response(
+        content=csv_content,
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename=kill-triggers-{today}.csv"}
+    )
+
+
+@router.get("/export/disconnected")
+async def export_disconnected():
+    """Export disconnected inboxes for manual team review.
+
+    CSV structure optimized for Google Sheets:
+    - Sorted by workspace → domain → inbox
+    - First columns: workspace_name, emailbison_workspace_id
+    - Shows inboxes with status != 'Connected'
+
+    Use this to identify and manage disconnected inboxes.
+    """
+    rows = await fetch_all("""
+        SELECT
+            w.workspace_name,
+            w.emailbison_workspace_id,
+            d.domain_name,
+            sa.email_address,
+            sa.status as connection_status,
+            sa.inbox_state,
+            sa.warmup_enabled,
+            sa.warmup_started_at,
+            sa.esp,
+            sa.daily_limit,
+            COALESCE(sa.total_sends_7d, 0) as total_sends_7d,
+            COALESCE(sa.hard_bounces_24h, 0) as hard_bounces_24h,
+            sa.last_synced_at,
+            sa.created_at
+        FROM sender_accounts sa
+        JOIN workspaces w ON sa.workspace_id = w.id
+        LEFT JOIN domains d ON sa.domain_id = d.id
+        WHERE sa.status != 'Connected'
+        AND sa.inbox_state = 'live'
+        AND w.is_active = TRUE
+        ORDER BY w.workspace_name, d.domain_name, sa.email_address
+    """)
+
+    if not rows:
+        return Response(
+            content="No disconnected inboxes found",
+            media_type="text/csv",
+            headers={"Content-Disposition": "attachment; filename=disconnected.csv"}
+        )
+
+    def escape_csv(val):
+        if val is None:
+            return ""
+        s = str(val)
+        if "," in s or '"' in s or "\n" in s:
+            return '"' + s.replace('"', '""') + '"'
+        return s
+
+    csv_lines = []
+    csv_lines.append(",".join([
+        "workspace_name",
+        "emailbison_workspace_id",
+        "domain_name",
+        "email_address",
+        "connection_status",
+        "inbox_state",
+        "warmup_enabled",
+        "warmup_started_at",
+        "esp",
+        "daily_limit",
+        "total_sends_7d",
+        "hard_bounces_24h",
+        "last_synced_at",
+        "created_at"
+    ]))
+
+    for row in rows:
+        csv_lines.append(",".join([
+            escape_csv(row["workspace_name"]),
+            escape_csv(row["emailbison_workspace_id"]),
+            escape_csv(row["domain_name"]),
+            escape_csv(row["email_address"]),
+            escape_csv(row["connection_status"]),
+            escape_csv(row["inbox_state"]),
+            escape_csv(row["warmup_enabled"]),
+            escape_csv(row["warmup_started_at"].isoformat() if row["warmup_started_at"] else None),
+            escape_csv(row["esp"]),
+            escape_csv(row["daily_limit"]),
+            escape_csv(row["total_sends_7d"]),
+            escape_csv(row["hard_bounces_24h"]),
+            escape_csv(row["last_synced_at"].isoformat() if row["last_synced_at"] else None),
+            escape_csv(row["created_at"].isoformat() if row["created_at"] else None)
+        ]))
+
+    csv_content = "\n".join(csv_lines)
+    today = datetime.now().strftime("%Y-%m-%d")
+
+    return Response(
+        content=csv_content,
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename=disconnected-{today}.csv"}
+    )
