@@ -3841,10 +3841,11 @@ export const infrastructureApi = {
   async getWaterfallByClient(
     clientId: string,
     options?: {
-      purchaseStatus?: 'all' | 'purchased' | 'not_purchased';
+      // Lifecycle stages: not_purchased → ready → complete
+      purchaseStatus?: 'all' | 'not_purchased' | 'ready' | 'complete' | 'purchased';
       tld?: 'com' | 'co' | 'info';
       provider?: 'entra' | 'google';
-      status?: 'live' | 'flagged' | 'dead';
+      rotationStatus?: 'all' | 'needs_attention' | 'healthy';
       showOverBudget?: boolean;
       showDeactivated?: boolean;
       showNeedsReconnection?: boolean;
@@ -3856,7 +3857,9 @@ export const infrastructureApi = {
     }
     if (options?.tld) params.set('tld', options.tld);
     if (options?.provider) params.set('provider', options.provider);
-    if (options?.status) params.set('status', options.status);
+    if (options?.rotationStatus && options.rotationStatus !== 'all') {
+      params.set('rotation_status', options.rotationStatus);
+    }
     if (options?.showOverBudget) params.set('show_over_budget', 'true');
     if (options?.showDeactivated) params.set('show_deactivated', 'true');
     if (options?.showNeedsReconnection) params.set('show_needs_reconnection', 'true');

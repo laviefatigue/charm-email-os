@@ -114,6 +114,7 @@ export function WaterfallTable({
     sortBy,
     sortDirection,
     setSort,
+    filters,
   } = useWaterfallStore();
 
   // Use prop domains if provided, otherwise use store domains
@@ -124,6 +125,12 @@ export function WaterfallTable({
 
   // Sort domains by lifecycle priority using useMemo to ensure proper reactivity
   const sortedDomains = useMemo(() => {
+    // When rotation filter is "needs_attention", preserve API sort order (rotation priority baked in)
+    // The API already sorts: monitor first, then consider_rotate, then rotate_now
+    if (filters.rotationStatus === 'needs_attention') {
+      return domains; // Preserve API order
+    }
+
     // Helper to get lifecycle priority (lower = higher priority, shown first)
     const getLifecyclePriority = (domain: WaterfallDomain): number => {
       // Over budget always at bottom
@@ -194,7 +201,7 @@ export function WaterfallTable({
           return direction * a.domainName.localeCompare(b.domainName);
       }
     });
-  }, [domains, sortBy, sortDirection]);
+  }, [domains, sortBy, sortDirection, filters.rotationStatus]);
 
   const finalDomains = sortedDomains;
 

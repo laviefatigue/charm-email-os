@@ -133,6 +133,19 @@ class WaterfallDomainResponse(BaseModel):
     last_inbox_synced_at: Optional[str] = None
     days_disconnected: Optional[int] = None  # Days since oldest live inbox became disconnected
 
+    # Fulfillment & Rotation (from migration 060/061, enhanced in 062)
+    max_inboxes_seen: int = 0  # Peak inbox count ever observed from HyperTide
+    fulfillment_status: str = "pending"  # pending | under_delivered | fulfilled | over_delivered
+    capacity_remaining_pct: Optional[float] = None  # connected / expected * 100
+    rotation_recommendation: str = "not_applicable"  # healthy | monitor | consider_rotate | rotate_now
+    recommended_action: str = "none"  # none | watch | reconnect | rotate
+
+    # Error history (from migration 062)
+    burn_breakdown: Optional[Dict[str, int]] = None  # e.g., {"spam_complaint": 2, "hard_blocked_24h": 1}
+    inboxes_with_complaints: int = 0
+    inboxes_with_blocks: int = 0
+    has_compromised_inboxes: bool = False  # True if spam complaints or hard blocks
+
     # Computed
     is_purchased: bool
     is_ready_for_hyper_tide: bool
@@ -343,9 +356,24 @@ def transform_domain(row: dict) -> dict:
         has_live_inboxes=live_inbox_count > 0,
     )
 
-    # Expected inbox count based on provider
+    # Expected inbox count - prefer database value, fallback to provider-based calculation
     assigned_provider = row.get('assigned_provider')
-    expected_inbox_count = 50 if assigned_provider == 'entra' else 3 if assigned_provider == 'google' else 0
+    expected_inbox_count = row.get('expected_inbox_count')
+    if not expected_inbox_count:
+        expected_inbox_count = 50 if assigned_provider == 'entra' else 3 if assigned_provider == 'google' else 0
+
+    # Fulfillment & rotation tracking (from migration 060/061, enhanced in 062)
+    max_inboxes_seen = row.get('max_inboxes_seen') or 0
+    fulfillment_status = row.get('fulfillment_status') or 'pending'
+    capacity_remaining_pct = float(row['capacity_remaining_pct']) if row.get('capacity_remaining_pct') else None
+    rotation_recommendation = row.get('rotation_recommendation') or 'not_applicable'
+    recommended_action = row.get('recommended_action') or 'none'
+
+    # Error history (from migration 062)
+    burn_breakdown = row.get('burn_breakdown')  # JSONB, already a dict or None
+    inboxes_with_complaints = row.get('inboxes_with_complaints') or 0
+    inboxes_with_blocks = row.get('inboxes_with_blocks') or 0
+    has_compromised_inboxes = row.get('has_compromised_inboxes', False)
 
     # Domain status - factors in both inbox_state AND connection status
     domain_status = calculate_domain_status(
@@ -436,6 +464,19 @@ def transform_domain(row: dict) -> dict:
         'connected_inbox_count': connected_inbox_count,
         'disconnected_inbox_count': disconnected_inbox_count,
         'days_disconnected': days_disconnected,  # Days since oldest inbox became disconnected
+
+        # Fulfillment & rotation tracking
+        'max_inboxes_seen': max_inboxes_seen,
+        'fulfillment_status': fulfillment_status,
+        'capacity_remaining_pct': capacity_remaining_pct,
+        'rotation_recommendation': rotation_recommendation,
+        'recommended_action': recommended_action,
+
+        # Error history
+        'burn_breakdown': burn_breakdown,
+        'inboxes_with_complaints': inboxes_with_complaints,
+        'inboxes_with_blocks': inboxes_with_blocks,
+        'has_compromised_inboxes': has_compromised_inboxes,
 
         # Computed
         'is_purchased': is_purchased,
@@ -733,10 +774,12 @@ async def get_client_infra_summary(client_id: str) -> dict:
 @router.get("/waterfall/client/{client_id}")
 async def get_waterfall_by_client(
     client_id: str,
-    purchase_status: Optional[str] = Query(None, regex="^(all|purchased|not_purchased)$"),
+    # Lifecycle stages: not_purchased → ready → complete (+ legacy 'purchased')
+    purchase_status: Optional[str] = Query(None, regex="^(all|not_purchased|ready|complete|purchased)$"),
     tld: Optional[str] = Query(None, regex="^(com|co|info)$"),
     provider: Optional[str] = Query(None, regex="^(entra|google)$"),
     status: Optional[str] = Query(None, regex="^(live|flagged|dead)$"),
+    rotation_status: Optional[str] = Query(None, regex="^(all|needs_attention|healthy)$"),
     show_over_budget: bool = Query(False),
     show_deactivated: bool = Query(False),
     show_needs_reconnection: bool = Query(False),
@@ -805,6 +848,18 @@ async def get_waterfall_by_client(
                 COALESCE(v.connected_inbox_count, 0) as connected_inbox_count,
                 COALESCE(v.disconnected_inbox_count, 0) as disconnected_inbox_count,
                 COALESCE(v.domain_source, 'legacy') as domain_source,
+                -- Fulfillment & rotation tracking (migration 060/061)
+                COALESCE(v.expected_inbox_count, 0) as expected_inbox_count,
+                COALESCE(v.max_inboxes_seen, 0) as max_inboxes_seen,
+                COALESCE(v.fulfillment_status, 'pending') as fulfillment_status,
+                v.capacity_remaining_pct,
+                COALESCE(v.rotation_recommendation, 'not_applicable') as rotation_recommendation,
+                -- Enhanced rotation tracking (from migration 062)
+                COALESCE(v.recommended_action, 'none') as recommended_action,
+                v.burn_breakdown,
+                COALESCE(v.inboxes_with_complaints, 0) as inboxes_with_complaints,
+                COALESCE(v.inboxes_with_blocks, 0) as inboxes_with_blocks,
+                COALESCE(v.has_compromised_inboxes, false) as has_compromised_inboxes,
                 -- Oldest disconnection date for live inboxes (for 21-day warning)
                 (SELECT MIN(sa.disconnected_at)
                  FROM sender_accounts sa
@@ -824,9 +879,22 @@ async def get_waterfall_by_client(
         all_transformed = [transform_domain(row) for row in all_rows]
 
         # Calculate filter counts
+        # Lifecycle stages:
+        # - not_purchased: Need to buy domain
+        # - ready: Purchased + DNS ready + no inboxes yet (need to order HyperTide)
+        # - complete: Has inboxes from EmailBison (operational)
         filter_counts = {
-            'purchased': sum(1 for d in all_transformed if d['is_purchased']),
             'not_purchased': sum(1 for d in all_transformed if not d['is_purchased']),
+            'ready': sum(
+                1 for d in all_transformed
+                if d['is_purchased'] and d['is_ready_for_hyper_tide'] and d['total_inbox_count'] == 0
+            ),
+            'complete': sum(
+                1 for d in all_transformed
+                if d['is_purchased'] and d['total_inbox_count'] > 0
+            ),
+            # Legacy: all purchased domains (for backwards compatibility)
+            'purchased': sum(1 for d in all_transformed if d['is_purchased']),
             'over_budget': sum(1 for d in all_transformed if d['is_over_budget']),
             'deactivated': sum(1 for d in all_transformed if d['is_deactivated']),
             'needs_reconnection': sum(
@@ -849,16 +917,48 @@ async def get_waterfall_by_client(
                 'dead': sum(1 for d in all_transformed if d['domain_status'] == 'dead'),
                 'pending': sum(1 for d in all_transformed if d['total_inbox_count'] == 0),
             },
+            'by_rotation': {
+                'healthy': sum(1 for d in all_transformed if d['rotation_recommendation'] == 'healthy'),
+                'monitor': sum(1 for d in all_transformed if d['rotation_recommendation'] == 'monitor'),
+                'consider_rotate': sum(1 for d in all_transformed if d['rotation_recommendation'] == 'consider_rotate'),
+                'rotate_now': sum(1 for d in all_transformed if d['rotation_recommendation'] == 'rotate_now'),
+            },
+            'by_fulfillment': {
+                'fulfilled': sum(1 for d in all_transformed if d['fulfillment_status'] == 'fulfilled'),
+                'over_delivered': sum(1 for d in all_transformed if d['fulfillment_status'] == 'over_delivered'),
+                'under_delivered': sum(1 for d in all_transformed if d['fulfillment_status'] == 'under_delivered'),
+                'pending': sum(1 for d in all_transformed if d['fulfillment_status'] == 'pending'),
+            },
+            'by_action': {
+                'rotate': sum(1 for d in all_transformed if d['recommended_action'] == 'rotate'),
+                'reconnect': sum(1 for d in all_transformed if d['recommended_action'] == 'reconnect'),
+                'watch': sum(1 for d in all_transformed if d['recommended_action'] == 'watch'),
+                'none': sum(1 for d in all_transformed if d['recommended_action'] == 'none'),
+            },
+            'compromised': sum(1 for d in all_transformed if d['has_compromised_inboxes']),
         }
 
         # Apply filters
         filtered_domains = all_transformed
 
-        # Purchase status filter
-        if purchase_status == 'purchased':
-            filtered_domains = [d for d in filtered_domains if d['is_purchased']]
-        elif purchase_status == 'not_purchased':
+        # Purchase status filter (lifecycle stages)
+        if purchase_status == 'not_purchased':
             filtered_domains = [d for d in filtered_domains if not d['is_purchased']]
+        elif purchase_status == 'ready':
+            # Purchased + DNS ready + no inboxes yet (need to order HyperTide)
+            filtered_domains = [
+                d for d in filtered_domains
+                if d['is_purchased'] and d['is_ready_for_hyper_tide'] and d['total_inbox_count'] == 0
+            ]
+        elif purchase_status == 'complete':
+            # Has inboxes from EmailBison (operational)
+            filtered_domains = [
+                d for d in filtered_domains
+                if d['is_purchased'] and d['total_inbox_count'] > 0
+            ]
+        elif purchase_status == 'purchased':
+            # Legacy: all purchased domains
+            filtered_domains = [d for d in filtered_domains if d['is_purchased']]
 
         # TLD filter
         if tld:
@@ -887,8 +987,31 @@ async def get_waterfall_by_client(
                 if d['live_inbox_count'] > 0 and d['connected_inbox_count'] == 0
             ]
 
-        # Sort: over-budget domains at bottom
-        filtered_domains.sort(key=lambda d: (d['is_over_budget'], not d['is_purchased']))
+        # Rotation status filter
+        if rotation_status == 'needs_attention':
+            # Show domains that need attention: monitor, consider_rotate, rotate_now
+            filtered_domains = [
+                d for d in filtered_domains
+                if d['rotation_recommendation'] in ('monitor', 'consider_rotate', 'rotate_now')
+            ]
+            # Sort by rotation priority: monitor (watchlist) first, then consider_rotate, then rotate_now (critical)
+            rotation_priority = {'monitor': 0, 'consider_rotate': 1, 'rotate_now': 2}
+            filtered_domains.sort(key=lambda d: (
+                rotation_priority.get(d['rotation_recommendation'], 99),
+                d['is_over_budget'],
+                not d['is_purchased']
+            ))
+        elif rotation_status == 'healthy':
+            # Show only healthy domains
+            filtered_domains = [
+                d for d in filtered_domains
+                if d['rotation_recommendation'] == 'healthy'
+            ]
+            # Standard sort for healthy domains
+            filtered_domains.sort(key=lambda d: (d['is_over_budget'], not d['is_purchased']))
+        else:
+            # Default sort: over-budget domains at bottom
+            filtered_domains.sort(key=lambda d: (d['is_over_budget'], not d['is_purchased']))
 
         # Get infrastructure summary
         summary = await get_client_infra_summary(client_id)
@@ -905,6 +1028,7 @@ async def get_waterfall_by_client(
                     'tld': tld or 'all',
                     'provider': provider or 'all',
                     'status': status or 'all',
+                    'rotation_status': rotation_status or 'all',
                     'show_over_budget': show_over_budget,
                     'show_deactivated': show_deactivated,
                     'show_needs_reconnection': show_needs_reconnection,
@@ -923,10 +1047,12 @@ async def get_waterfall_by_client(
 @router.get("/waterfall/workspace/{workspace_id}")
 async def get_waterfall_by_workspace(
     workspace_id: str,
-    purchase_status: Optional[str] = Query(None, regex="^(all|purchased|not_purchased)$"),
+    # Lifecycle stages: not_purchased → ready → complete (+ legacy 'purchased')
+    purchase_status: Optional[str] = Query(None, regex="^(all|not_purchased|ready|complete|purchased)$"),
     tld: Optional[str] = Query(None, regex="^(com|co|info)$"),
     provider: Optional[str] = Query(None, regex="^(entra|google)$"),
     status: Optional[str] = Query(None, regex="^(live|flagged|dead)$"),
+    rotation_status: Optional[str] = Query(None, regex="^(all|needs_attention|healthy)$"),
     show_over_budget: bool = Query(False),
     show_deactivated: bool = Query(False),
     show_needs_reconnection: bool = Query(False),
@@ -951,6 +1077,7 @@ async def get_waterfall_by_workspace(
                 tld=tld,
                 provider=provider,
                 status=status,
+                rotation_status=rotation_status,
                 show_over_budget=show_over_budget,
                 show_deactivated=show_deactivated,
                 show_needs_reconnection=show_needs_reconnection,

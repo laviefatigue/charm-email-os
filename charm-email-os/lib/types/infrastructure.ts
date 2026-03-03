@@ -90,6 +90,19 @@ export interface WaterfallDomain {
   disconnectedInboxCount: number;   // Live but needs reconnection via HyperTide
   daysDisconnected?: number | null; // Days since oldest live inbox became disconnected (for 21-day warning)
 
+  // Fulfillment & Rotation (from migrations 060/061, enhanced in 062)
+  maxInboxesSeen: number;           // Peak inboxes ever observed (fulfillment verification)
+  fulfillmentStatus: 'pending' | 'under_delivered' | 'fulfilled' | 'over_delivered';
+  capacityRemainingPct: number | null;  // connected / expected × 100
+  rotationRecommendation: 'not_applicable' | 'healthy' | 'monitor' | 'consider_rotate' | 'rotate_now';
+  recommendedAction: 'none' | 'watch' | 'reconnect' | 'rotate';  // What action to take
+
+  // Error history (from migration 062)
+  burnBreakdown?: Record<string, number> | null;  // e.g., {"spam_complaint": 2, "hard_blocked_24h": 1}
+  inboxesWithComplaints: number;    // Count of inboxes with spam complaints
+  inboxesWithBlocks: number;        // Count of inboxes with hard blocks
+  hasCompromisedInboxes: boolean;   // True if spam complaints or hard blocks exist
+
   // Computed
   isPurchased: boolean;
   isReadyForHyperTide: boolean; // purchased + dns ready + no active order
@@ -101,13 +114,16 @@ export interface WaterfallDomain {
 // ===========================================
 
 export interface WaterfallFilters {
-  // Primary filter (hierarchy root)
-  purchaseStatus: 'all' | 'purchased' | 'not_purchased';
+  // Primary filter (hierarchy root) - lifecycle stages
+  // not_purchased: Need to buy domain
+  // ready: Purchased + DNS ready, need to order HyperTide
+  // complete: Has inboxes from EmailBison (operational)
+  purchaseStatus: 'all' | 'not_purchased' | 'ready' | 'complete';
 
   // Secondary filters
   tld: TLD | 'all';
   provider: ProviderType | 'all';
-  status: DomainStatus | 'all';
+  rotationStatus: 'all' | 'needs_attention' | 'healthy'; // needs_attention = monitor + consider_rotate + rotate_now
 
   // Toggles
   showOverBudget: boolean; // Show domains >$15 (default: false)
@@ -167,14 +183,19 @@ export interface WaterfallResponse {
   filters: {
     appliedFilters: WaterfallFilters;
     counts: {
-      purchased: number;
-      notPurchased: number;
+      // Lifecycle stages
+      notPurchased: number;         // Need to buy domain
+      ready: number;                // Purchased + DNS ready, need to order HyperTide
+      complete: number;             // Has inboxes from EmailBison (operational)
+      purchased: number;            // Legacy: all purchased domains
       overBudget: number;
       deactivated: number;
-      needsReconnection: number; // Domains where all live inboxes are disconnected
+      needsReconnection: number;    // Domains where all live inboxes are disconnected
       byTld: Record<TLD, number>;
       byProvider: Record<ProviderType | 'unassigned', number>;
       byStatus: Record<DomainStatus | 'pending', number>;
+      byRotation: Record<'healthy' | 'monitor' | 'consider_rotate' | 'rotate_now', number>;
+      byFulfillment: Record<'pending' | 'under_delivered' | 'fulfilled' | 'over_delivered', number>;
     };
   };
 }

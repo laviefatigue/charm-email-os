@@ -13,21 +13,29 @@ import type {
   ClientInfraSummary,
   TLD,
   ProviderType,
-  DomainStatus,
   BulkPurchasePreview,
   HyperTideOrderPreview,
 } from '@/lib/types/infrastructure';
 import { PRICE_BUDGET_LIMIT, PROVIDER_CONFIG } from '@/lib/types/infrastructure';
 
+type RotationStatus = 'healthy' | 'monitor' | 'consider_rotate' | 'rotate_now';
+type FulfillmentStatus = 'pending' | 'under_delivered' | 'fulfilled' | 'over_delivered';
+type DomainStatus = 'live' | 'flagged' | 'dead';
+
 interface FilterCounts {
-  purchased: number;
-  notPurchased: number;
+  // Lifecycle stage counts
+  notPurchased: number;        // Need to buy domain
+  ready: number;               // Purchased + DNS ready, need to order HyperTide
+  complete: number;            // Has inboxes from EmailBison (operational)
+  purchased: number;           // Legacy: all purchased domains (ready + complete + in-progress)
   overBudget: number;
   deactivated: number;
-  needsReconnection: number; // Domains where all live inboxes are disconnected
+  needsReconnection: number;   // Domains where all live inboxes are disconnected
   byTld: Record<TLD, number>;
   byProvider: Record<ProviderType | 'unassigned', number>;
   byStatus: Record<DomainStatus | 'pending', number>;
+  byRotation: Record<RotationStatus, number>;
+  byFulfillment: Record<FulfillmentStatus, number>;
 }
 
 interface WaterfallState {
@@ -88,21 +96,25 @@ const defaultFilters: WaterfallFilters = {
   purchaseStatus: 'all',
   tld: 'all',
   provider: 'all',
-  status: 'all',
+  rotationStatus: 'all',
   showOverBudget: false,
   showDeactivated: false,
   showNeedsReconnection: false,
 };
 
 const defaultFilterCounts: FilterCounts = {
-  purchased: 0,
   notPurchased: 0,
+  ready: 0,
+  complete: 0,
+  purchased: 0,
   overBudget: 0,
   deactivated: 0,
   needsReconnection: 0,
   byTld: { com: 0, co: 0, info: 0 },
   byProvider: { entra: 0, google: 0, unassigned: 0 },
   byStatus: { live: 0, flagged: 0, dead: 0, pending: 0 },
+  byRotation: { healthy: 0, monitor: 0, consider_rotate: 0, rotate_now: 0 },
+  byFulfillment: { pending: 0, under_delivered: 0, fulfilled: 0, over_delivered: 0 },
 };
 
 export const useWaterfallStore = create<WaterfallState>((set, get) => ({
@@ -149,7 +161,7 @@ export const useWaterfallStore = create<WaterfallState>((set, get) => ({
           purchaseStatus: filters.purchaseStatus,
           tld: filters.tld === 'all' ? undefined : filters.tld,
           provider: filters.provider === 'all' ? undefined : filters.provider,
-          status: filters.status === 'all' ? undefined : filters.status,
+          rotationStatus: filters.rotationStatus === 'all' ? undefined : filters.rotationStatus,
           showOverBudget: filters.showOverBudget,
           showDeactivated: filters.showDeactivated,
           showNeedsReconnection: filters.showNeedsReconnection,

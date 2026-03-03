@@ -15,9 +15,9 @@ import {
 } from '@/components/ui/select';
 import { Switch } from '@/components/ui/switch';
 import { Label } from '@/components/ui/label';
-import { RefreshCw, X, RotateCcw } from 'lucide-react';
+import { RefreshCw, X, RotateCcw, Eye, AlertOctagon } from 'lucide-react';
 import { ALLOWED_TLDS, TLD_DISPLAY, PRICE_BUDGET_LIMIT } from '@/lib/types/infrastructure';
-import type { TLD, ProviderType, DomainStatus } from '@/lib/types/infrastructure';
+import type { TLD, ProviderType, WaterfallFilters } from '@/lib/types/infrastructure';
 
 export function InfraFilterBar() {
   const {
@@ -34,21 +34,21 @@ export function InfraFilterBar() {
     filters.purchaseStatus !== 'all' ||
     filters.tld !== 'all' ||
     filters.provider !== 'all' ||
-    filters.status !== 'all' ||
+    filters.rotationStatus !== 'all' ||
     filters.showOverBudget;
 
   return (
     <div className="space-y-4">
       {/* Main Filter Row */}
       <div className="flex items-end gap-4 flex-wrap">
-        {/* Purchase Status */}
-        <div className="min-w-[160px]">
+        {/* Purchase Status - Lifecycle Stage */}
+        <div className="min-w-[180px]">
           <label className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2 block">
-            Purchase Status
+            Lifecycle Stage
           </label>
           <Select
             value={filters.purchaseStatus}
-            onValueChange={(v) => setFilter('purchaseStatus', v as 'all' | 'purchased' | 'not_purchased')}
+            onValueChange={(v) => setFilter('purchaseStatus', v as 'all' | 'not_purchased' | 'ready' | 'complete')}
           >
             <SelectTrigger className="bg-gray-50 border-gray-200 rounded-lg focus:ring-2 focus:ring-indigo-500">
               <SelectValue />
@@ -59,24 +59,35 @@ export function InfraFilterBar() {
                   All Domains
                   {filterCounts && (
                     <span className="ml-2 text-gray-400 text-xs">
-                      {filterCounts.purchased + filterCounts.notPurchased}
+                      {filterCounts.notPurchased + (filterCounts.ready ?? 0) + (filterCounts.complete ?? 0)}
                     </span>
                   )}
                 </span>
               </SelectItem>
-              <SelectItem value="purchased">
-                <span className="flex items-center justify-between w-full">
-                  Purchased
+              <SelectItem value="not_purchased">
+                <span className="flex items-center gap-2">
+                  <span className="w-2 h-2 rounded-full bg-gray-400" />
+                  <span>Not Purchased</span>
                   {filterCounts && (
-                    <span className="ml-2 text-gray-400 text-xs">{filterCounts.purchased}</span>
+                    <span className="ml-auto text-gray-400 text-xs">{filterCounts.notPurchased}</span>
                   )}
                 </span>
               </SelectItem>
-              <SelectItem value="not_purchased">
-                <span className="flex items-center justify-between w-full">
-                  Not Purchased
+              <SelectItem value="ready">
+                <span className="flex items-center gap-2">
+                  <span className="w-2 h-2 rounded-full bg-amber-500" />
+                  <span>Ready for HyperTide</span>
                   {filterCounts && (
-                    <span className="ml-2 text-gray-400 text-xs">{filterCounts.notPurchased}</span>
+                    <span className="ml-auto text-gray-400 text-xs">{filterCounts.ready ?? 0}</span>
+                  )}
+                </span>
+              </SelectItem>
+              <SelectItem value="complete">
+                <span className="flex items-center gap-2">
+                  <span className="w-2 h-2 rounded-full bg-green-500" />
+                  <span>Complete</span>
+                  {filterCounts && (
+                    <span className="ml-auto text-gray-400 text-xs">{filterCounts.complete ?? 0}</span>
                   )}
                 </span>
               </SelectItem>
@@ -152,44 +163,39 @@ export function InfraFilterBar() {
           </Select>
         </div>
 
-        {/* Status Filter */}
-        <div className="min-w-[130px]">
+        {/* Rotation Filter - Primary health indicator for operational domains */}
+        <div className="min-w-40">
           <label className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2 block">
-            Status
+            Rotation
           </label>
           <Select
-            value={filters.status}
-            onValueChange={(v) => setFilter('status', v as DomainStatus | 'all')}
+            value={filters.rotationStatus}
+            onValueChange={(v) => setFilter('rotationStatus', v as WaterfallFilters['rotationStatus'])}
           >
             <SelectTrigger className="bg-gray-50 border-gray-200 rounded-lg focus:ring-2 focus:ring-indigo-500">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="all">All Status</SelectItem>
-              <SelectItem value="live">
+              <SelectItem value="all">All Domains</SelectItem>
+              <SelectItem value="needs_attention">
+                <span className="flex items-center gap-2">
+                  <AlertOctagon className="w-3.5 h-3.5 text-rose-600" />
+                  <span>Needs Attention</span>
+                  {filterCounts && (
+                    <span className="text-gray-400 text-xs">
+                      {(filterCounts.byRotation?.monitor ?? 0) +
+                        (filterCounts.byRotation?.consider_rotate ?? 0) +
+                        (filterCounts.byRotation?.rotate_now ?? 0)}
+                    </span>
+                  )}
+                </span>
+              </SelectItem>
+              <SelectItem value="healthy">
                 <span className="flex items-center gap-2">
                   <span className="w-2 h-2 rounded-full bg-green-500" />
-                  Live
+                  <span>Healthy Only</span>
                   {filterCounts && (
-                    <span className="text-gray-400 text-xs">{filterCounts.byStatus.live}</span>
-                  )}
-                </span>
-              </SelectItem>
-              <SelectItem value="flagged">
-                <span className="flex items-center gap-2">
-                  <span className="w-2 h-2 rounded-full bg-amber-500" />
-                  Flagged
-                  {filterCounts && (
-                    <span className="text-gray-400 text-xs">{filterCounts.byStatus.flagged}</span>
-                  )}
-                </span>
-              </SelectItem>
-              <SelectItem value="dead">
-                <span className="flex items-center gap-2">
-                  <span className="w-2 h-2 rounded-full bg-red-500" />
-                  Dead
-                  {filterCounts && (
-                    <span className="text-gray-400 text-xs">{filterCounts.byStatus.dead}</span>
+                    <span className="text-gray-400 text-xs">{filterCounts.byRotation?.healthy ?? 0}</span>
                   )}
                 </span>
               </SelectItem>
@@ -246,7 +252,20 @@ export function InfraFilterBar() {
 
           {filters.purchaseStatus !== 'all' && (
             <FilterPill
-              label={filters.purchaseStatus === 'purchased' ? 'Purchased' : 'Not Purchased'}
+              label={
+                filters.purchaseStatus === 'not_purchased'
+                  ? 'Not Purchased'
+                  : filters.purchaseStatus === 'ready'
+                  ? 'Ready for HyperTide'
+                  : 'Complete'
+              }
+              className={
+                filters.purchaseStatus === 'not_purchased'
+                  ? 'bg-gray-100 text-gray-700'
+                  : filters.purchaseStatus === 'ready'
+                  ? 'bg-amber-50 text-amber-700'
+                  : 'bg-green-50 text-green-700'
+              }
               onRemove={() => setFilter('purchaseStatus', 'all')}
             />
           )}
@@ -267,17 +286,15 @@ export function InfraFilterBar() {
             />
           )}
 
-          {filters.status !== 'all' && (
+          {filters.rotationStatus !== 'all' && (
             <FilterPill
-              label={filters.status.charAt(0).toUpperCase() + filters.status.slice(1)}
-              dot={
-                filters.status === 'live'
-                  ? 'bg-green-500'
-                  : filters.status === 'flagged'
-                  ? 'bg-amber-500'
-                  : 'bg-red-500'
+              label={filters.rotationStatus === 'needs_attention' ? 'Needs Attention' : 'Healthy'}
+              className={
+                filters.rotationStatus === 'needs_attention'
+                  ? 'bg-rose-50 text-rose-700'
+                  : 'bg-green-50 text-green-700'
               }
-              onRemove={() => setFilter('status', 'all')}
+              onRemove={() => setFilter('rotationStatus', 'all')}
             />
           )}
 

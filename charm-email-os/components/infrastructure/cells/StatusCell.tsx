@@ -15,6 +15,11 @@ import {
   Clock,
   WifiOff,
   Skull,
+  Eye,
+  RefreshCw,
+  AlertOctagon,
+  ShieldAlert,
+  Plug,
 } from 'lucide-react';
 
 // Flagged reason type - explains WHY a domain is flagged
@@ -68,6 +73,34 @@ const FLAGGED_VARIANT_CONFIG = {
     label: 'Disconnected',
     icon: WifiOff,
     pillClass: 'bg-orange-50 text-orange-600 border-orange-200',
+  },
+} as const;
+
+// Rotation recommendation styling - only show when action needed
+// Using perceptually balanced colors (inspired by OKLCH design principles)
+const ROTATION_CONFIG = {
+  not_applicable: null,
+  healthy: null, // Don't show - everything is fine (intentional minimalism)
+  monitor: {
+    label: 'Monitor',
+    icon: Eye,
+    // Soft indigo - subtle attention without alarm
+    pillClass: 'bg-indigo-50 text-indigo-600 border-indigo-200',
+    animate: false,
+  },
+  consider_rotate: {
+    label: 'Consider Rotate',
+    icon: RefreshCw,
+    // Warm amber - moderate attention
+    pillClass: 'bg-amber-50 text-amber-700 border-amber-300',
+    animate: false,
+  },
+  rotate_now: {
+    label: 'Rotate Now',
+    icon: AlertOctagon,
+    // Warm rose - urgent but not harsh (softer than bootstrap red)
+    pillClass: 'bg-rose-50 text-rose-700 border-rose-300',
+    animate: true, // Subtle pulse
   },
 } as const;
 
@@ -131,8 +164,77 @@ export function StatusCell({ domain }: StatusCellProps) {
     return config.progressColor;
   };
 
+  // Get rotation config if action needed
+  const rotationConfig = domain.rotationRecommendation
+    ? ROTATION_CONFIG[domain.rotationRecommendation]
+    : null;
+
+  // Build tooltip with error context
+  const getRotationTooltip = () => {
+    const parts: string[] = [];
+    parts.push(`Capacity: ${domain.capacityRemainingPct?.toFixed(0) ?? '?'}%`);
+    parts.push(`Connected: ${domain.connectedInboxCount}/${domain.expectedInboxCount ?? domain.liveInboxCount}`);
+
+    if (domain.hasCompromisedInboxes) {
+      parts.push('⚠️ COMPROMISED - Do not reconnect');
+    }
+    if (domain.inboxesWithComplaints > 0) {
+      parts.push(`Spam complaints: ${domain.inboxesWithComplaints} inbox(es)`);
+    }
+    if (domain.inboxesWithBlocks > 0) {
+      parts.push(`Hard blocks: ${domain.inboxesWithBlocks} inbox(es)`);
+    }
+    if (domain.recommendedAction) {
+      const actionLabels: Record<string, string> = {
+        rotate: 'Action: Rotate domain',
+        reconnect: 'Action: Reconnect inboxes',
+        watch: 'Action: Monitor closely',
+        none: '',
+      };
+      if (actionLabels[domain.recommendedAction]) {
+        parts.push(actionLabels[domain.recommendedAction]);
+      }
+    }
+    return parts.join(' | ');
+  };
+
   return (
     <div className="space-y-2">
+      {/* Rotation Recommendation - only show when action needed */}
+      {rotationConfig && (
+        <div
+          className={`inline-flex items-center gap-1.5 px-2 py-1 rounded-md text-xs font-medium border ${rotationConfig.pillClass} ${
+            rotationConfig.animate ? 'animate-pulse' : ''
+          }`}
+          title={getRotationTooltip()}
+        >
+          <rotationConfig.icon className="w-3.5 h-3.5" />
+          {rotationConfig.label}
+        </div>
+      )}
+
+      {/* Compromised Indicator - shows WHY rotation is needed */}
+      {domain.hasCompromisedInboxes && (
+        <div
+          className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md text-xs font-medium border bg-red-50 text-red-700 border-red-200"
+          title="Domain has spam complaints or hard blocks. Rotation recommended - do not reconnect."
+        >
+          <ShieldAlert className="w-3.5 h-3.5" />
+          Compromised
+        </div>
+      )}
+
+      {/* Reconnect Candidate - show when worth saving */}
+      {domain.recommendedAction === 'reconnect' && !domain.hasCompromisedInboxes && (
+        <div
+          className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md text-xs font-medium border bg-blue-50 text-blue-700 border-blue-200"
+          title="Disconnected inboxes have clean history. Worth reconnecting."
+        >
+          <Plug className="w-3.5 h-3.5" />
+          Reconnect
+        </div>
+      )}
+
       {/* Status Badge - shows Disconnected/Flagged/Live/Dead */}
       <div className="flex flex-col gap-1">
         <div className={`inline-flex items-center gap-1.5 px-2 py-1 rounded-md text-xs font-medium border ${badgeConfig.pillClass}`}>
