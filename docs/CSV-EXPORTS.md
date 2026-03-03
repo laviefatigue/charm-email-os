@@ -2,7 +2,7 @@
 
 ## Overview
 
-Two CSV export endpoints for manual team review of inbox health. Both exports are structured for direct Google Sheets import with workspace → domain → inbox sorting.
+Three CSV export endpoints for manual team review of inbox health. All exports are structured for direct Google Sheets import with workspace → domain sorting.
 
 ## Endpoints
 
@@ -78,6 +78,56 @@ http://nckgggwww8sggg0kc4wo00o8.187.77.19.81.sslip.io/api/health/export/disconne
 
 ---
 
+### 3. Dead Domains Export
+
+**URL:** `/api/health/export/dead-domains`
+
+**Purpose:** Identify domains where ALL inboxes have been removed from EmailBison, alerting the team to cancel HyperTide subscriptions.
+
+**Production URL:**
+```
+http://nckgggwww8sggg0kc4wo00o8.187.77.19.81.sslip.io/api/health/export/dead-domains
+```
+
+**Columns:**
+
+| Column | Description |
+|--------|-------------|
+| workspace_name | Workspace name (first column for grouping) |
+| emailbison_workspace_id | EmailBison workspace ID |
+| domain_name | The dead domain |
+| provider | `entra` or `google` (for cancellation reference) |
+| purchased_at | When domain was purchased |
+| total_inboxes | How many inboxes existed on this domain |
+| inboxes_in_emailbison | Should be 0 (all gone) |
+| inboxes_gone | Count of removed inboxes |
+| status | Always `CANCEL` |
+
+**Key Concepts:**
+
+This export identifies **dead domains** - domains where every inbox has been completely removed from EmailBison (not just killed or disabled in our system).
+
+| Inbox State | Definition | In Dead Domains? |
+|-------------|------------|------------------|
+| Killed (`inbox_state=dead`) | Disabled in our system, still exists in EmailBison | No |
+| Removed (`is_active=FALSE`) | Completely deleted from EmailBison | Yes |
+| Live (`inbox_state=live`) | Active inbox | No |
+
+**How Removal is Detected:**
+
+The EmailBison sync worker (`sync_modules/sync_accounts.py`) marks inboxes as `is_active=FALSE` when they are no longer found in the EmailBison API. A domain is "dead" when:
+- It has at least one inbox in our database (`total_inboxes > 0`)
+- Zero of those inboxes are still active in EmailBison (`inboxes_in_emailbison = 0`)
+
+**Action Required:**
+
+When domains appear in this export, cancel the corresponding HyperTide subscription:
+1. Note the `provider` column (entra or google)
+2. Cancel subscription in the appropriate provider dashboard
+3. Domain can be marked as cancelled in the system
+
+---
+
 ## Google Sheets Import
 
 1. Download CSV from endpoint
@@ -100,35 +150,42 @@ http://nckgggwww8sggg0kc4wo00o8.187.77.19.81.sslip.io/api/health/export/disconne
 **By Domain:**
 - Filter `domain_name` column
 
-## Slack Message Format (Future)
+## Slack Audit Message
 
-For Slack notifications, format as:
+Daily audit messages are sent to Slack with download buttons for each CSV:
 
 ```
-📊 *Daily Inbox Health Report*
+📋 Daily Inbox Audit - March 2, 2026
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Kill Triggers (last 24h): X inboxes
+  🚫 hard_bounces_24h: X
+  🚨 spam_complaint: X
+  ...
 
-*Kill Triggers (last 24h):*
-• Charm: 5 inboxes killed
-  - 3 hard_bounces_24h
-  - 2 spam_complaint
+Top Workspaces:
+  • Workspace A: X
+  • Workspace B: X
 
-• EventPanda: 12 inboxes killed
-  - 10 fresh_inbox_bounce
-  - 2 hard_bounces_24h
-
-*Disconnected Inboxes:*
-• Charm: 158 disconnected
-• Sammy: 580 disconnected
-
-📎 Full reports: [Kill Triggers](url) | [Disconnected](url)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🔌 Disconnected Inboxes: X new (Y total)
+🪦 Dead Domains (Cancel Subscriptions): Z domains
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+[Kill Triggers CSV] [Disconnected CSV] [Dead Domains CSV]
 ```
+
+The dead domains count alerts the team when HyperTide subscriptions need cancellation.
 
 ## API Implementation
 
-Both endpoints are in `api/routes/health.py`:
-- `export_kill_triggers()` - Lines 2338-2433
-- `export_disconnected()` - Lines 2436-2539
+All endpoints are in `api/routes/health.py`:
+- `export_kill_triggers()` - Lines ~2338
+- `export_disconnected()` - Lines ~2436
+- `export_dead_domains()` - Lines ~2544
 
 Query filters:
-- Kill triggers: `WHERE sa.kill_trigger IS NOT NULL AND w.is_active = TRUE`
-- Disconnected: `WHERE sa.status != 'Connected' AND sa.inbox_state = 'live' AND w.is_active = TRUE`
+- **Kill triggers:** `WHERE sa.kill_trigger IS NOT NULL AND w.is_active = TRUE`
+- **Disconnected:** `WHERE sa.status != 'Connected' AND sa.inbox_state = 'live' AND w.is_active = TRUE`
+- **Dead domains:** Domain-level rollup where `inboxes_in_emailbison = 0` (all inboxes have `is_active = FALSE`)
+
+Slack integration is in `api/routes/slack_webhooks.py`:
+- Dead domains count query and download button added to daily audit message
