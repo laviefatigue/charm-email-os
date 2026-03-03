@@ -2261,7 +2261,7 @@ async def export_flagged_inboxes():
         LEFT JOIN domains d ON sa.domain_id = d.id
         LEFT JOIN kill_queue kq ON kq.inbox_id = sa.id AND kq.status = 'flagged'
         WHERE (sa.inbox_state = 'dead' OR sa.kill_trigger IS NOT NULL)
-        AND sa.emailbison_lead_id IS NOT NULL  -- Only show inboxes still in EmailBison
+        AND sa.emailbison_account_id IS NOT NULL  -- Only show inboxes still in EmailBison
         ORDER BY w.workspace_name, d.domain_name, sa.killed_at DESC NULLS LAST
     """)
 
@@ -2373,7 +2373,7 @@ async def export_kill_triggers():
         LEFT JOIN domains d ON sa.domain_id = d.id
         LEFT JOIN kill_queue kq ON kq.inbox_id = sa.id AND kq.status = 'flagged'
         WHERE sa.kill_trigger IS NOT NULL
-        AND sa.emailbison_lead_id IS NOT NULL  -- Only show inboxes still in EmailBison
+        AND sa.emailbison_account_id IS NOT NULL  -- Only show inboxes still in EmailBison
         AND w.is_active = TRUE
         ORDER BY w.workspace_name, d.domain_name, sa.email_address
     """)
@@ -2475,7 +2475,7 @@ async def export_disconnected():
         LEFT JOIN domains d ON sa.domain_id = d.id
         WHERE sa.status != 'Connected'
         AND sa.inbox_state = 'live'
-        AND sa.emailbison_lead_id IS NOT NULL  -- Only show inboxes still in EmailBison
+        AND sa.emailbison_account_id IS NOT NULL  -- Only show inboxes still in EmailBison
         AND w.is_active = TRUE
         ORDER BY w.workspace_name, d.domain_name, sa.email_address
     """)
