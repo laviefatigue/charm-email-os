@@ -18,6 +18,8 @@ import {
   XCircle,
   Zap,
   Plus,
+  TrendingDown,
+  Package,
 } from 'lucide-react';
 import type { ProviderSummary, ProviderType } from '@/lib/types/infrastructure';
 
@@ -231,6 +233,44 @@ function ProviderCard({ provider, summary, packageName, onCreateOrder }: Provide
               className="bg-amber-500 transition-all duration-300"
               style={{ width: `${liveInboxes > 0 ? ((disconnectedInboxes / liveInboxes) * 100) : 0}%` }}
             />
+          </div>
+        </div>
+      )}
+
+      {/* Capacity Recommendation Alert */}
+      {(summary.ordersNeeded > 0 || (summary.bufferRatio !== null && summary.bufferRatio < summary.targetBufferRatio)) && (
+        <div className={`mt-4 p-3 rounded-lg border ${
+          summary.ordersNeeded > 0
+            ? 'bg-red-50 border-red-200'
+            : 'bg-amber-50 border-amber-200'
+        }`}>
+          <div className="flex items-start gap-2">
+            {summary.ordersNeeded > 0 ? (
+              <TrendingDown className="w-4 h-4 text-red-600 mt-0.5 shrink-0" />
+            ) : (
+              <AlertTriangle className="w-4 h-4 text-amber-600 mt-0.5 shrink-0" />
+            )}
+            <div className="text-xs">
+              {summary.ordersNeeded > 0 && (
+                <div className={`font-medium ${summary.ordersNeeded > 0 ? 'text-red-700' : 'text-amber-700'}`}>
+                  <span className="flex items-center gap-1">
+                    <Package className="w-3 h-3" />
+                    Order {summary.ordersNeeded} {config.label} package{summary.ordersNeeded > 1 ? 's' : ''}
+                  </span>
+                  <span className="font-normal text-gray-600 ml-4">
+                    {summary.inboxGap} inboxes below target ({summary.inboxesTarget} needed)
+                  </span>
+                </div>
+              )}
+              {summary.bufferRatio !== null && summary.bufferRatio < summary.targetBufferRatio && !summary.ordersNeeded && (
+                <div className="text-amber-700">
+                  <span className="font-medium">Buffer running low</span>
+                  <span className="text-gray-600 ml-1">
+                    ({Math.round(summary.bufferRatio * 100)}% vs {Math.round(summary.targetBufferRatio * 100)}% target)
+                  </span>
+                </div>
+              )}
+            </div>
           </div>
         </div>
       )}

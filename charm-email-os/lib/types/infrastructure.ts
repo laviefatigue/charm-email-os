@@ -133,6 +133,13 @@ export interface ProviderSummary {
   inboxesDisconnected: number; // Live but status = 'Not connected' (needs reconnection)
   inboxesTotal: number;
   dailyCapacity: number; // Based on CONNECTED inboxes only
+  // Capacity recommendation fields
+  inboxesTarget: number; // Target inbox count from subscription
+  inboxGap: number; // How many inboxes below target (0 = at or above target)
+  domainGap: number; // How many domains below target
+  ordersNeeded: number; // HyperTide orders needed to fill gap
+  bufferRatio: number | null; // Current pipeline buffer (incubating+reserve / active)
+  targetBufferRatio: number; // Target spare ratio from subscription (default 0.15)
 }
 
 export interface ClientInfraSummary {

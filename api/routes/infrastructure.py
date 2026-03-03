@@ -47,6 +47,13 @@ class ProviderSummary(BaseModel):
     inboxes_disconnected: int = 0  # Live but status='Not connected' (needs reconnection)
     inboxes_total: int
     daily_capacity: int
+    # Capacity recommendation fields (from v_client_capacity view)
+    inboxes_target: int = 0  # Target inbox count from subscription
+    inbox_gap: int = 0  # How many inboxes below target (0 = at or above target)
+    domain_gap: int = 0  # How many domains below target
+    orders_needed: int = 0  # HyperTide orders needed to fill gap
+    buffer_ratio: Optional[float] = None  # Current pipeline buffer (incubating+reserve / active)
+    target_buffer_ratio: float = 0.15  # Target spare ratio from subscription
 
 class ClientInfraSummary(BaseModel):
     client_id: str
@@ -593,6 +600,12 @@ async def get_client_infra_summary(client_id: str) -> dict:
                 'inboxes_disconnected': 0,
                 'inboxes_total': 0,
                 'daily_capacity': 0,
+                'inboxes_target': 0,
+                'inbox_gap': 0,
+                'domain_gap': 0,
+                'orders_needed': 0,
+                'buffer_ratio': None,
+                'target_buffer_ratio': 0.15,
             },
             'google': {
                 'provider': 'google',
@@ -608,6 +621,12 @@ async def get_client_infra_summary(client_id: str) -> dict:
                 'inboxes_disconnected': 0,
                 'inboxes_total': 0,
                 'daily_capacity': 0,
+                'inboxes_target': 0,
+                'inbox_gap': 0,
+                'domain_gap': 0,
+                'orders_needed': 0,
+                'buffer_ratio': None,
+                'target_buffer_ratio': 0.15,
             },
             'total_domains': 0,
             'total_inboxes': 0,
@@ -667,6 +686,13 @@ async def get_client_infra_summary(client_id: str) -> dict:
             'inboxes_total': entra_inboxes_total,
             # CAPACITY: Only from connected inboxes on live domains
             'daily_capacity': entra_connected * 2,
+            # CAPACITY RECOMMENDATIONS (from v_client_capacity)
+            'inboxes_target': row.get('entra_inboxes_target') or 0,
+            'inbox_gap': row.get('entra_inbox_gap') or 0,
+            'domain_gap': row.get('entra_domain_gap') or 0,
+            'orders_needed': row.get('entra_orders_needed') or 0,
+            'buffer_ratio': float(row['entra_buffer_ratio']) if row.get('entra_buffer_ratio') else None,
+            'target_buffer_ratio': float(row['spare_ratio']) if row.get('spare_ratio') else 0.15,
         },
         'google': {
             'provider': 'google',
@@ -685,6 +711,13 @@ async def get_client_infra_summary(client_id: str) -> dict:
             'inboxes_total': google_inboxes_total,
             # CAPACITY: Only from connected inboxes on live domains
             'daily_capacity': google_connected * 20,
+            # CAPACITY RECOMMENDATIONS (from v_client_capacity)
+            'inboxes_target': row.get('google_inboxes_target') or 0,
+            'inbox_gap': row.get('google_inbox_gap') or 0,
+            'domain_gap': row.get('google_domain_gap') or 0,
+            'orders_needed': row.get('google_orders_needed') or 0,
+            'buffer_ratio': float(row['google_buffer_ratio']) if row.get('google_buffer_ratio') else None,
+            'target_buffer_ratio': float(row['spare_ratio']) if row.get('spare_ratio') else 0.15,
         },
         # TOTALS: Only live domains and their inboxes
         'total_domains': entra_live_domains + google_live_domains,
