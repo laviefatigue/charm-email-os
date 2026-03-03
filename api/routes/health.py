@@ -2572,8 +2572,8 @@ async def export_dead_domains():
         LEFT JOIN LATERAL (
             SELECT
                 COUNT(*) AS total_inboxes,
-                COUNT(*) FILTER (WHERE sa.emailbison_account_id IS NOT NULL) AS inboxes_in_emailbison,
-                COUNT(*) FILTER (WHERE sa.emailbison_account_id IS NULL) AS inboxes_gone,
+                COUNT(*) FILTER (WHERE sa.is_active = TRUE) AS inboxes_in_emailbison,
+                COUNT(*) FILTER (WHERE sa.is_active = FALSE) AS inboxes_gone,
                 CASE
                     WHEN COUNT(*) FILTER (WHERE sa.esp = 'microsoft') > 0 THEN 'entra'
                     WHEN COUNT(*) FILTER (WHERE sa.esp = 'gmail') > 0 THEN 'google'

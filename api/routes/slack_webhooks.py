@@ -498,7 +498,7 @@ async def trigger_manual_audit():
                 LEFT JOIN LATERAL (
                     SELECT
                         COUNT(*) AS total_inboxes,
-                        COUNT(*) FILTER (WHERE sa.emailbison_account_id IS NOT NULL) AS inboxes_in_emailbison
+                        COUNT(*) FILTER (WHERE sa.is_active = TRUE) AS inboxes_in_emailbison
                     FROM sender_accounts sa
                     WHERE sa.domain_id = d.id
                 ) inbox_stats ON true
