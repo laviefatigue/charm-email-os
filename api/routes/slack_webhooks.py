@@ -489,6 +489,26 @@ async def trigger_manual_audit():
             GROUP BY w.workspace_name ORDER BY count DESC LIMIT 5
         """)
 
+        # Dead domains (domains where ALL inboxes are gone from EmailBison - need to cancel subscriptions)
+        dead_domains = await fetch_one("""
+            SELECT COUNT(*) as count FROM (
+                SELECT d.id
+                FROM domains d
+                JOIN workspaces w ON d.workspace_id = w.id
+                LEFT JOIN LATERAL (
+                    SELECT
+                        COUNT(*) AS total_inboxes,
+                        COUNT(*) FILTER (WHERE sa.emailbison_account_id IS NOT NULL) AS inboxes_in_emailbison
+                    FROM sender_accounts sa
+                    WHERE sa.domain_id = d.id
+                ) inbox_stats ON true
+                WHERE w.is_active = TRUE
+                AND d.is_active = TRUE
+                AND inbox_stats.total_inboxes > 0
+                AND inbox_stats.inboxes_in_emailbison = 0
+            ) dead
+        """)
+
         # Create audit record
         audit_record = await fetch_one("""
             INSERT INTO inbox_audits (audit_date, status, total_kills, total_disconnected)
@@ -523,11 +543,13 @@ async def trigger_manual_audit():
             {"type": "section", "text": {"type": "mrkdwn", "text": f"*Top Workspaces:*\n{workspace_text}"}},
             {"type": "divider"},
             {"type": "section", "text": {"type": "mrkdwn", "text": f":electric_plug: *Disconnected Inboxes:* {new_disconnected['count'] if new_disconnected else 0} new ({total_disconnected['count'] if total_disconnected else 0} total)"}},
+            {"type": "section", "text": {"type": "mrkdwn", "text": f":headstone: *Dead Domains (Cancel Subscriptions):* {dead_domains['count'] if dead_domains else 0} domains"}},
             {"type": "divider"},
             {"type": "section", "text": {"type": "mrkdwn", "text": "*Download reports for review:*"}},
             {"type": "actions", "elements": [
                 {"type": "button", "text": {"type": "plain_text", "text": ":inbox_tray: Kill Triggers CSV", "emoji": True}, "url": f"{PUBLIC_API_URL}/api/health/export/kill-triggers", "action_id": "download_kill_triggers"},
-                {"type": "button", "text": {"type": "plain_text", "text": ":inbox_tray: Disconnected CSV", "emoji": True}, "url": f"{PUBLIC_API_URL}/api/health/export/disconnected", "action_id": "download_disconnected"}
+                {"type": "button", "text": {"type": "plain_text", "text": ":inbox_tray: Disconnected CSV", "emoji": True}, "url": f"{PUBLIC_API_URL}/api/health/export/disconnected", "action_id": "download_disconnected"},
+                {"type": "button", "text": {"type": "plain_text", "text": ":headstone: Dead Domains CSV", "emoji": True}, "url": f"{PUBLIC_API_URL}/api/health/export/dead-domains", "action_id": "download_dead_domains"}
             ]},
             {"type": "divider"},
             {"type": "section", "text": {"type": "mrkdwn", "text": "*After reviewing, confirm the audit:*"}},

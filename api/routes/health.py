@@ -2539,3 +2539,102 @@ async def export_disconnected():
         media_type="text/csv",
         headers={"Content-Disposition": f"attachment; filename=disconnected-{today}.csv"}
     )
+
+
+@router.get("/export/dead-domains")
+async def export_dead_domains():
+    """Export domains where ALL inboxes are gone from EmailBison.
+
+    These domains need their HyperTide subscriptions cancelled since
+    no inboxes remain active in the email sending platform.
+
+    CSV structure optimized for Google Sheets:
+    - Sorted by workspace → domain
+    - First columns: workspace_name, emailbison_workspace_id
+    - Shows domain details with inbox counts and CANCEL status
+
+    NOTE: This is different from inbox_state='dead' - this identifies
+    domains where inboxes have been completely removed from EmailBison.
+    """
+    rows = await fetch_all("""
+        SELECT
+            w.workspace_name,
+            w.emailbison_workspace_id,
+            d.domain_name,
+            COALESCE(d.infrastructure_type, inbox_stats.detected_provider) AS provider,
+            d.purchased_at,
+            inbox_stats.total_inboxes,
+            inbox_stats.inboxes_in_emailbison,
+            inbox_stats.inboxes_gone,
+            'CANCEL' AS status
+        FROM domains d
+        JOIN workspaces w ON d.workspace_id = w.id
+        LEFT JOIN LATERAL (
+            SELECT
+                COUNT(*) AS total_inboxes,
+                COUNT(*) FILTER (WHERE sa.emailbison_account_id IS NOT NULL) AS inboxes_in_emailbison,
+                COUNT(*) FILTER (WHERE sa.emailbison_account_id IS NULL) AS inboxes_gone,
+                CASE
+                    WHEN COUNT(*) FILTER (WHERE sa.esp = 'microsoft') > 0 THEN 'entra'
+                    WHEN COUNT(*) FILTER (WHERE sa.esp = 'gmail') > 0 THEN 'google'
+                    ELSE NULL
+                END AS detected_provider
+            FROM sender_accounts sa
+            WHERE sa.domain_id = d.id
+        ) inbox_stats ON true
+        WHERE w.is_active = TRUE
+        AND d.is_active = TRUE
+        AND inbox_stats.total_inboxes > 0
+        AND inbox_stats.inboxes_in_emailbison = 0
+        ORDER BY w.workspace_name, d.domain_name
+    """)
+
+    if not rows:
+        return Response(
+            content="No dead domains found",
+            media_type="text/csv",
+            headers={"Content-Disposition": "attachment; filename=dead-domains.csv"}
+        )
+
+    def escape_csv(val):
+        if val is None:
+            return ""
+        s = str(val)
+        if "," in s or '"' in s or "\n" in s:
+            return '"' + s.replace('"', '""') + '"'
+        return s
+
+    csv_lines = []
+    csv_lines.append(",".join([
+        "workspace_name",
+        "emailbison_workspace_id",
+        "domain_name",
+        "provider",
+        "purchased_at",
+        "total_inboxes",
+        "inboxes_in_emailbison",
+        "inboxes_gone",
+        "status"
+    ]))
+
+    for row in rows:
+        csv_lines.append(",".join([
+            escape_csv(row["workspace_name"]),
+            escape_csv(row["emailbison_workspace_id"]),
+            escape_csv(row["domain_name"]),
+            escape_csv(row["provider"]),
+            escape_csv(row["purchased_at"].isoformat() if row["purchased_at"] else None),
+            escape_csv(row["total_inboxes"]),
+            escape_csv(row["inboxes_in_emailbison"]),
+            escape_csv(row["inboxes_gone"]),
+            escape_csv(row["status"])
+        ]))
+
+    csv_content = "\n".join(csv_lines)
+    today = datetime.now().strftime("%Y-%m-%d")
+
+    return Response(
+        content=csv_content,
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename=dead-domains-{today}.csv"}
+    )
