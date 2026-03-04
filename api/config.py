@@ -30,7 +30,9 @@ class Settings(BaseSettings):
     DEBUG: bool = False
 
     # CORS Configuration - stored as string, parsed by property
-    CORS_ORIGINS_RAW: str = "*"
+    # SECURITY: Default to restrictive origins. Set CORS_ORIGINS_RAW env var in production.
+    # Use "*" only for local development.
+    CORS_ORIGINS_RAW: str = "https://app.wizardgrimoire.cloud,https://dashboard.wizardgrimoire.cloud,http://localhost:3000"
 
     @property
     def CORS_ORIGINS(self) -> list[str]:

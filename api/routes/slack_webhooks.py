@@ -35,9 +35,14 @@ SLACK_SIGNING_SECRET = os.getenv("SLACK_SIGNING_SECRET", "")
 def verify_slack_signature(request_body: bytes, timestamp: str, signature: str) -> bool:
     """Verify that the request came from Slack using signing secret."""
     if not SLACK_SIGNING_SECRET:
-        # If no signing secret configured, skip verification (development mode)
-        logger.warning("SLACK_SIGNING_SECRET not configured - skipping signature verification")
-        return True
+        # SECURITY: In production, reject requests without signing secret configured
+        # Only skip verification in development mode
+        import os
+        if os.getenv("DEBUG", "").lower() in ("true", "1"):
+            logger.warning("SLACK_SIGNING_SECRET not configured - skipping verification (DEBUG mode)")
+            return True
+        logger.error("SLACK_SIGNING_SECRET not configured - rejecting request in production")
+        return False
 
     # Check timestamp to prevent replay attacks
     if abs(int(timestamp) - datetime.now().timestamp()) > 60 * 5:

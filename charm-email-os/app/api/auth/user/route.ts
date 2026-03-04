@@ -16,12 +16,13 @@ export async function GET() {
   // Cloudflare Access injects this header for authenticated users
   let userEmail = headersList.get('cf-access-authenticated-user-email');
 
-  // For local development, check for a dev override header or use mock
-  if (!userEmail) {
+  // For local development ONLY, allow dev override header or use mock
+  // SECURITY: Never allow x-dev-user-email in production
+  if (!userEmail && process.env.NODE_ENV === 'development') {
     const devEmail = headersList.get('x-dev-user-email');
     if (devEmail) {
       userEmail = devEmail;
-    } else if (process.env.NODE_ENV === 'development') {
+    } else {
       // Mock user for local development
       userEmail = 'dev@hirecharm.com';
     }

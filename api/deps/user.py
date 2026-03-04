@@ -6,7 +6,10 @@ via the X-User-Email header. The API trusts this header because:
 1. Frontend is behind Cloudflare Access (only @hirecharm.com can access)
 2. API is only accessible via Cloudflare tunnel (no direct access)
 
-For activity logging, we also capture IP and User-Agent.
+SECURITY NOTES:
+- X-User-Email header is validated to be @hirecharm.com domain
+- Origin header is checked against allowed frontends
+- For activity logging, we also capture IP and User-Agent.
 """
 
 from fastapi import Header, Request
@@ -14,6 +17,7 @@ from typing import Optional
 from pydantic import BaseModel
 from uuid import UUID
 import logging
+import re
 
 # Import from parent directory
 import sys
@@ -22,6 +26,17 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from database import fetch_one, execute
 
 logger = logging.getLogger(__name__)
+
+# Allowed email domains for authenticated users
+ALLOWED_EMAIL_DOMAINS = ["hirecharm.com"]
+
+# Allowed origins for API requests (checked if Origin header present)
+ALLOWED_ORIGINS = [
+    "https://app.wizardgrimoire.cloud",
+    "https://dashboard.wizardgrimoire.cloud",
+    "http://localhost:3000",
+    "http://localhost:8000",
+]
 
 
 class CurrentUser(BaseModel):
@@ -46,10 +61,25 @@ async def get_current_user(
     Headers:
     - X-User-Email: Set by frontend from CF-Access-Authenticated-User-Email
 
-    This dependency auto-creates user records on first seen (upsert pattern).
+    SECURITY:
+    - Validates email domain is in ALLOWED_EMAIL_DOMAINS
+    - Optionally validates Origin header
+    - Auto-creates user records on first seen (upsert pattern).
     """
     if not x_user_email:
         return CurrentUser()
+
+    # SECURITY: Validate email domain
+    email_domain = x_user_email.split('@')[-1].lower() if '@' in x_user_email else None
+    if not email_domain or email_domain not in ALLOWED_EMAIL_DOMAINS:
+        logger.warning(f"Rejected X-User-Email with invalid domain: {x_user_email}")
+        return CurrentUser()  # Return unauthenticated user
+
+    # SECURITY: Validate Origin header if present (browser requests)
+    origin = request.headers.get("Origin")
+    if origin and origin not in ALLOWED_ORIGINS:
+        logger.warning(f"Rejected request from unauthorized origin: {origin}")
+        return CurrentUser()  # Return unauthenticated user
 
     # Get IP and User-Agent for logging
     # X-Forwarded-For may contain multiple IPs; take the first one

@@ -3,7 +3,7 @@ Infrastructure Provisioning Routes - Waterfall SPA API V2
 Handles bulk infrastructure provisioning workflow with 6-column layout
 """
 
-from fastapi import APIRouter, Query, HTTPException
+from fastapi import APIRouter, Query, HTTPException, Depends
 from typing import Optional, List, Dict, Any
 from pydantic import BaseModel
 from decimal import Decimal
@@ -13,6 +13,9 @@ import logging
 import json
 
 from database import fetch_all, fetch_one, execute
+from deps.user import get_current_user, CurrentUser
+from deps.activity import log_activity
+from deps.rate_limit import rate_limit, RateLimitConfig
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -1093,12 +1096,25 @@ async def get_waterfall_by_workspace(
 
 
 @router.post("/bulk-purchase")
-async def bulk_purchase(request: BulkPurchaseRequest, registrar: Optional[str] = Query(None)):
+async def bulk_purchase(
+    request: BulkPurchaseRequest,
+    registrar: Optional[str] = Query(None),
+    user: CurrentUser = Depends(get_current_user),
+    _rate_limit: None = Depends(rate_limit(RateLimitConfig(requests=10, window_seconds=60))),
+):
     """
     Bulk purchase multiple domains.
     Creates a domain_purchase_job and returns job ID.
     The hypertide_worker will pick up and process the job.
+
+    SECURITY:
+    - Requires authenticated user (X-User-Email header)
+    - Rate limited to 10 requests per minute per user
     """
+    # Security: Require authenticated user for purchase operations
+    if not user.email:
+        raise HTTPException(status_code=401, detail="Authentication required for domain purchases")
+
     job_id = str(uuid.uuid4())
 
     try:
@@ -1179,6 +1195,20 @@ async def bulk_purchase(request: BulkPurchaseRequest, registrar: Optional[str] =
 
         logger.info(f"Purchase job {job_id} created for {len(request.domain_ids)} domains via {registrar}")
 
+        # Log activity for audit trail
+        await log_activity(
+            user=user,
+            action="domain_purchase_initiated",
+            resource_type="domain_purchase_job",
+            resource_id=job_id,
+            details={
+                "domain_count": len(request.domain_ids),
+                "domain_names": domain_names,
+                "registrar": registrar,
+                "client_id": str(client['id']),
+            }
+        )
+
         return {
             "job_id": job_id,
             "total_domains": len(request.domain_ids),
@@ -1245,14 +1275,26 @@ async def get_purchase_job_status(job_id: str):
 
 
 @router.post("/hypertide-order")
-async def create_hypertide_order(request: HyperTideOrderRequest):
+async def create_hypertide_order(
+    request: HyperTideOrderRequest,
+    user: CurrentUser = Depends(get_current_user),
+    _rate_limit: None = Depends(rate_limit(RateLimitConfig(requests=5, window_seconds=60))),
+):
     """
     Create HyperTide order for specified domains.
     Auto-validates domain count matches provider requirements.
 
     Entra: 2 domains per order
     Google: 5 domains per order
+
+    SECURITY:
+    - Requires authenticated user (X-User-Email header)
+    - Rate limited to 5 requests per minute per user
     """
+    # Security: Require authenticated user for HyperTide orders
+    if not user.email:
+        raise HTTPException(status_code=401, detail="Authentication required for HyperTide orders")
+
     domains_per_order = 2 if request.provider == 'entra' else 5
     expected_domains = request.order_count * domains_per_order
 
@@ -1323,6 +1365,23 @@ async def create_hypertide_order(request: HyperTideOrderRequest):
         logger.info(
             f"HyperTide order {job_id} created: {request.order_count} {request.provider} orders, "
             f"{len(request.domain_ids)} domains, {total_inboxes} inboxes"
+        )
+
+        # Log activity for audit trail
+        await log_activity(
+            user=user,
+            action="hypertide_order_created",
+            resource_type="inbox_purchase_job",
+            resource_id=job_id,
+            details={
+                "provider": request.provider,
+                "order_count": request.order_count,
+                "domain_count": len(request.domain_ids),
+                "domain_names": domain_names,
+                "total_inboxes": total_inboxes,
+                "monthly_cost": request.order_count * 50,
+                "client_id": request.client_id,
+            }
         )
 
         return {
