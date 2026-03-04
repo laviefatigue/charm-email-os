@@ -553,7 +553,8 @@ async def trigger_manual_audit():
             {"type": "section", "text": {"type": "mrkdwn", "text": "*Download reports for review:*"}},
             {"type": "actions", "elements": [
                 {"type": "button", "text": {"type": "plain_text", "text": ":inbox_tray: Kill Triggers CSV", "emoji": True}, "url": f"{PUBLIC_API_URL}/api/health/export/kill-triggers", "action_id": "download_kill_triggers"},
-                {"type": "button", "text": {"type": "plain_text", "text": ":inbox_tray: Disconnected CSV", "emoji": True}, "url": f"{PUBLIC_API_URL}/api/health/export/disconnected", "action_id": "download_disconnected"},
+                {"type": "button", "text": {"type": "plain_text", "text": ":electric_plug: Disconnected CSV", "emoji": True}, "url": f"{PUBLIC_API_URL}/api/health/export/disconnected", "action_id": "download_disconnected"},
+                {"type": "button", "text": {"type": "plain_text", "text": ":arrows_counterclockwise: Rotation CSV", "emoji": True}, "url": f"{PUBLIC_API_URL}/api/health/export/rotation-summary", "action_id": "download_rotation_summary"},
                 {"type": "button", "text": {"type": "plain_text", "text": ":headstone: Dead Domains CSV", "emoji": True}, "url": f"{PUBLIC_API_URL}/api/health/export/dead-domains", "action_id": "download_dead_domains"}
             ]},
             {"type": "divider"},
