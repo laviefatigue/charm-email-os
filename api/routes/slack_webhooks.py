@@ -563,7 +563,7 @@ async def trigger_manual_audit():
                 {"type": "button", "text": {"type": "plain_text", "text": ":warning: Issues Found", "emoji": True}, "style": "danger", "action_id": "audit_issues", "value": audit_id}
             ]},
             {"type": "context", "elements": [{"type": "mrkdwn", "text": f"Audit ID: `{audit_id}` | Generated: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')} UTC"}]}
-        ])
+        ]
 
         # Send to Slack
         async with httpx.AsyncClient() as client:
