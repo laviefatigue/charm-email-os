@@ -2256,7 +2256,13 @@ async def export_flagged_inboxes():
         FROM sender_accounts sa
         JOIN workspaces w ON sa.workspace_id = w.id
         LEFT JOIN domains d ON sa.domain_id = d.id
-        LEFT JOIN kill_queue kq ON kq.inbox_id = sa.id
+        LEFT JOIN LATERAL (
+            SELECT trigger_value, trigger_threshold
+            FROM kill_queue
+            WHERE inbox_id = sa.id
+            ORDER BY created_at DESC
+            LIMIT 1
+        ) kq ON true
         WHERE (sa.inbox_state = 'dead' OR sa.kill_trigger IS NOT NULL)
         AND sa.emailbison_account_id IS NOT NULL  -- Only show inboxes still in EmailBison
         ORDER BY w.workspace_name, d.domain_name, sa.killed_at DESC NULLS LAST
@@ -2359,7 +2365,13 @@ async def export_kill_triggers():
         FROM sender_accounts sa
         JOIN workspaces w ON sa.workspace_id = w.id
         LEFT JOIN domains d ON sa.domain_id = d.id
-        LEFT JOIN kill_queue kq ON kq.inbox_id = sa.id
+        LEFT JOIN LATERAL (
+            SELECT trigger_value, trigger_threshold
+            FROM kill_queue
+            WHERE inbox_id = sa.id
+            ORDER BY created_at DESC
+            LIMIT 1
+        ) kq ON true
         WHERE sa.kill_trigger IS NOT NULL
         AND sa.emailbison_account_id IS NOT NULL  -- Only show inboxes still in EmailBison
         AND w.is_active = TRUE
