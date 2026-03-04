@@ -2638,3 +2638,117 @@ async def export_dead_domains():
         media_type="text/csv",
         headers={"Content-Disposition": f"attachment; filename=dead-domains-{today}.csv"}
     )
+
+
+@router.get("/export/rotation-summary")
+async def export_rotation_summary():
+    """Export domain rotation recommendations for manual review.
+
+    This uses the same v_infrastructure_waterfall view as the frontend,
+    showing domains that need rotation based on error history and capacity.
+
+    Rotation recommendations:
+    - rotate_now: Spam complaints, all disconnected, or below 80% capacity
+    - consider_rotate: 2+ hard blocks or approaching threshold
+    - monitor: 1 hard block or disconnected with clean history
+
+    CSV columns:
+    - workspace_name, domain_name
+    - rotation_recommendation, recommended_action
+    - has_compromised_inboxes (spam complaints/hard blocks)
+    - inboxes_with_complaints, inboxes_with_blocks
+    - connected_inbox_count, expected_inbox_count, capacity_pct
+    - assigned_provider
+
+    Sorted by urgency (rotate_now first) then workspace/domain.
+    """
+    rows = await fetch_all("""
+        SELECT
+            w.workspace_name,
+            w.emailbison_workspace_id,
+            viw.domain_name,
+            viw.rotation_recommendation,
+            viw.recommended_action,
+            viw.has_compromised_inboxes,
+            COALESCE(viw.inboxes_with_complaints, 0) as inboxes_with_complaints,
+            COALESCE(viw.inboxes_with_blocks, 0) as inboxes_with_blocks,
+            viw.connected_inbox_count,
+            COALESCE(viw.expected_inbox_count, viw.live_inbox_count) as expected_inbox_count,
+            viw.capacity_remaining_pct,
+            viw.assigned_provider,
+            viw.dead_inbox_count,
+            viw.disconnected_inbox_count
+        FROM v_infrastructure_waterfall viw
+        JOIN workspaces w ON viw.workspace_id = w.id
+        WHERE viw.synced_inbox_count > 0
+        AND viw.rotation_recommendation IN ('rotate_now', 'consider_rotate', 'monitor')
+        AND w.is_active = TRUE
+        ORDER BY
+            CASE viw.rotation_recommendation
+                WHEN 'rotate_now' THEN 1
+                WHEN 'consider_rotate' THEN 2
+                WHEN 'monitor' THEN 3
+            END,
+            w.workspace_name,
+            viw.domain_name
+    """)
+
+    if not rows:
+        return Response(
+            content="No rotation recommendations",
+            media_type="text/csv",
+            headers={"Content-Disposition": "attachment; filename=rotation-summary.csv"}
+        )
+
+    def escape_csv(val):
+        if val is None:
+            return ""
+        s = str(val)
+        if "," in s or '"' in s or "\n" in s:
+            return '"' + s.replace('"', '""') + '"'
+        return s
+
+    csv_lines = []
+    csv_lines.append(",".join([
+        "workspace_name",
+        "emailbison_workspace_id",
+        "domain_name",
+        "rotation_recommendation",
+        "recommended_action",
+        "compromised",
+        "spam_complaints",
+        "hard_blocks",
+        "connected",
+        "expected",
+        "capacity_pct",
+        "provider",
+        "dead_inboxes",
+        "disconnected"
+    ]))
+
+    for row in rows:
+        csv_lines.append(",".join([
+            escape_csv(row["workspace_name"]),
+            escape_csv(row["emailbison_workspace_id"]),
+            escape_csv(row["domain_name"]),
+            escape_csv(row["rotation_recommendation"]),
+            escape_csv(row["recommended_action"]),
+            escape_csv("YES" if row["has_compromised_inboxes"] else "NO"),
+            escape_csv(row["inboxes_with_complaints"]),
+            escape_csv(row["inboxes_with_blocks"]),
+            escape_csv(row["connected_inbox_count"]),
+            escape_csv(row["expected_inbox_count"]),
+            escape_csv(f"{int(row['capacity_remaining_pct'])}%" if row["capacity_remaining_pct"] else "N/A"),
+            escape_csv(row["assigned_provider"]),
+            escape_csv(row["dead_inbox_count"]),
+            escape_csv(row["disconnected_inbox_count"])
+        ]))
+
+    csv_content = "\n".join(csv_lines)
+    today = datetime.now().strftime("%Y-%m-%d")
+
+    return Response(
+        content=csv_content,
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename=rotation-summary-{today}.csv"}
+    )

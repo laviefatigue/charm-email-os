@@ -514,6 +514,34 @@ async def trigger_manual_audit():
             ) dead
         """)
 
+        # Rotation summary from infrastructure waterfall (matches frontend display)
+        rotation_domains = await fetch_all("""
+            SELECT
+                w.workspace_name,
+                viw.domain_name,
+                viw.rotation_recommendation,
+                viw.has_compromised_inboxes,
+                viw.recommended_action,
+                COALESCE(viw.inboxes_with_complaints, 0) as inboxes_with_complaints,
+                COALESCE(viw.inboxes_with_blocks, 0) as inboxes_with_blocks,
+                viw.connected_inbox_count,
+                COALESCE(viw.expected_inbox_count, viw.live_inbox_count) as expected_count,
+                viw.capacity_remaining_pct
+            FROM v_infrastructure_waterfall viw
+            JOIN workspaces w ON viw.workspace_id = w.id
+            WHERE viw.synced_inbox_count > 0
+            AND viw.rotation_recommendation IN ('rotate_now', 'consider_rotate', 'monitor')
+            AND w.is_active = TRUE
+            ORDER BY
+                CASE viw.rotation_recommendation
+                    WHEN 'rotate_now' THEN 1
+                    WHEN 'consider_rotate' THEN 2
+                    WHEN 'monitor' THEN 3
+                END,
+                w.workspace_name,
+                viw.domain_name
+        """)
+
         # Create audit record
         audit_record = await fetch_one("""
             INSERT INTO inbox_audits (audit_date, status, total_kills, total_disconnected)
@@ -542,6 +570,103 @@ async def trigger_manual_audit():
                 workspace_lines.append(f"• {ws['workspace_name']}: {ws['count']}")
         workspace_text = "\n".join(workspace_lines) if workspace_lines else "_None_"
 
+        # Build rotation summary (matches frontend RotationNeedsAttention component)
+        rotation_blocks = []
+        if rotation_domains:
+            # Group by rotation recommendation
+            rotate_now = [d for d in rotation_domains if d["rotation_recommendation"] == "rotate_now"]
+            consider_rotate = [d for d in rotation_domains if d["rotation_recommendation"] == "consider_rotate"]
+            monitor = [d for d in rotation_domains if d["rotation_recommendation"] == "monitor"]
+
+            def format_domain_line(d):
+                """Format a domain line matching frontend StatusCell display."""
+                parts = []
+                # Domain name with compromised indicator
+                domain_text = f"*{d['domain_name']}*"
+                if d["has_compromised_inboxes"]:
+                    domain_text += " :biohazard_sign: Compromised"
+
+                # Build reason string
+                reasons = []
+                if d["inboxes_with_complaints"] > 0:
+                    reasons.append(f"{d['inboxes_with_complaints']} spam complaint{'s' if d['inboxes_with_complaints'] > 1 else ''}")
+                if d["inboxes_with_blocks"] > 0:
+                    reasons.append(f"{d['inboxes_with_blocks']} hard block{'s' if d['inboxes_with_blocks'] > 1 else ''}")
+
+                # Capacity info
+                connected = d["connected_inbox_count"] or 0
+                expected = d["expected_count"] or 0
+                capacity_pct = d["capacity_remaining_pct"]
+                capacity_text = f"{connected}/{expected} connected"
+                if capacity_pct is not None:
+                    capacity_text += f" ({int(capacity_pct)}%)"
+
+                if reasons:
+                    return f"• {domain_text}\n    └ {', '.join(reasons)} | {capacity_text}"
+                else:
+                    return f"• {domain_text}\n    └ {capacity_text}"
+
+            def group_by_workspace(domains):
+                """Group domains by workspace."""
+                by_ws = {}
+                for d in domains:
+                    ws = d["workspace_name"]
+                    if ws not in by_ws:
+                        by_ws[ws] = []
+                    by_ws[ws].append(d)
+                return by_ws
+
+            # Rotate Now section
+            if rotate_now:
+                rotation_blocks.append({"type": "divider"})
+                rotation_blocks.append({
+                    "type": "section",
+                    "text": {"type": "mrkdwn", "text": f":rotating_light: *Rotate Now* - {len(rotate_now)} domain{'s' if len(rotate_now) > 1 else ''}"}
+                })
+                for ws_name, ws_domains in group_by_workspace(rotate_now).items():
+                    lines = [f"*{ws_name}*"]
+                    for d in ws_domains[:5]:  # Limit to 5 per workspace
+                        lines.append(format_domain_line(d))
+                    if len(ws_domains) > 5:
+                        lines.append(f"    _...and {len(ws_domains) - 5} more_")
+                    rotation_blocks.append({
+                        "type": "section",
+                        "text": {"type": "mrkdwn", "text": "\n".join(lines)}
+                    })
+
+            # Consider Rotate section
+            if consider_rotate:
+                rotation_blocks.append({"type": "divider"})
+                rotation_blocks.append({
+                    "type": "section",
+                    "text": {"type": "mrkdwn", "text": f":warning: *Consider Rotate* - {len(consider_rotate)} domain{'s' if len(consider_rotate) > 1 else ''}"}
+                })
+                for ws_name, ws_domains in group_by_workspace(consider_rotate).items():
+                    lines = [f"*{ws_name}*"]
+                    for d in ws_domains[:3]:  # Limit to 3 per workspace
+                        lines.append(format_domain_line(d))
+                    if len(ws_domains) > 3:
+                        lines.append(f"    _...and {len(ws_domains) - 3} more_")
+                    rotation_blocks.append({
+                        "type": "section",
+                        "text": {"type": "mrkdwn", "text": "\n".join(lines)}
+                    })
+
+            # Monitor section (summarized)
+            if monitor:
+                rotation_blocks.append({"type": "divider"})
+                reconnect_candidates = [d for d in monitor if d["recommended_action"] == "reconnect"]
+                watch_domains = [d for d in monitor if d["recommended_action"] != "reconnect"]
+                monitor_text = f":eyes: *Monitor* - {len(monitor)} domain{'s' if len(monitor) > 1 else ''}\n"
+                if reconnect_candidates:
+                    monitor_text += f"• {len(reconnect_candidates)} reconnect candidate{'s' if len(reconnect_candidates) > 1 else ''} (clean history - worth saving)\n"
+                if watch_domains:
+                    monitor_text += f"• {len(watch_domains)} watching (1 hard block each)"
+                rotation_blocks.append({
+                    "type": "section",
+                    "text": {"type": "mrkdwn", "text": monitor_text.strip()}
+                })
+
         blocks = [
             {"type": "header", "text": {"type": "plain_text", "text": f":clipboard: Daily Inbox Audit - {today}", "emoji": True}},
             {"type": "section", "text": {"type": "mrkdwn", "text": f"*Kill Triggers (last 24h):* {total_kills} inboxes\n{kill_text}"}},
@@ -549,11 +674,19 @@ async def trigger_manual_audit():
             {"type": "divider"},
             {"type": "section", "text": {"type": "mrkdwn", "text": f":electric_plug: *Disconnected Inboxes:* {new_disconnected['count'] if new_disconnected else 0} new ({total_disconnected['count'] if total_disconnected else 0} total)"}},
             {"type": "section", "text": {"type": "mrkdwn", "text": f":headstone: *Dead Domains (Cancel Subscriptions):* {dead_domains['count'] if dead_domains else 0} domains"}},
+        ]
+
+        # Insert rotation summary blocks
+        blocks.extend(rotation_blocks)
+
+        # Add download and confirmation sections
+        blocks.extend([
             {"type": "divider"},
             {"type": "section", "text": {"type": "mrkdwn", "text": "*Download reports for review:*"}},
             {"type": "actions", "elements": [
                 {"type": "button", "text": {"type": "plain_text", "text": ":inbox_tray: Kill Triggers CSV", "emoji": True}, "url": f"{PUBLIC_API_URL}/api/health/export/kill-triggers", "action_id": "download_kill_triggers"},
-                {"type": "button", "text": {"type": "plain_text", "text": ":inbox_tray: Disconnected CSV", "emoji": True}, "url": f"{PUBLIC_API_URL}/api/health/export/disconnected", "action_id": "download_disconnected"},
+                {"type": "button", "text": {"type": "plain_text", "text": ":electric_plug: Disconnected CSV", "emoji": True}, "url": f"{PUBLIC_API_URL}/api/health/export/disconnected", "action_id": "download_disconnected"},
+                {"type": "button", "text": {"type": "plain_text", "text": ":arrows_counterclockwise: Rotation CSV", "emoji": True}, "url": f"{PUBLIC_API_URL}/api/health/export/rotation-summary", "action_id": "download_rotation_summary"},
                 {"type": "button", "text": {"type": "plain_text", "text": ":headstone: Dead Domains CSV", "emoji": True}, "url": f"{PUBLIC_API_URL}/api/health/export/dead-domains", "action_id": "download_dead_domains"}
             ]},
             {"type": "divider"},
