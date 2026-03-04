@@ -67,10 +67,16 @@ class APIError extends Error {
 async function fetchApi<T>(endpoint: string, options?: RequestInit): Promise<T> {
   const url = `${API_BASE}${endpoint}`;
 
+  // Get user email from sessionStorage for activity tracking
+  const userEmail = typeof window !== 'undefined'
+    ? sessionStorage.getItem('user_email')
+    : null;
+
   try {
     const response = await fetch(url, {
       headers: {
         'Content-Type': 'application/json',
+        ...(userEmail && { 'X-User-Email': userEmail }),
         ...options?.headers,
       },
       ...options,

@@ -2,9 +2,10 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { Users, Settings, Globe } from 'lucide-react';
+import { Users, LogOut, Globe } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
+import { useUser } from '@/lib/contexts/UserContext';
 
 const navigation = [
   { name: 'Clients', href: '/clients', icon: Users },
@@ -12,6 +13,7 @@ const navigation = [
 
 export function Sidebar() {
   const pathname = usePathname();
+  const { user, isLoading, signOut } = useUser();
 
   return (
     <div className="flex h-screen w-64 flex-col border-r bg-sidebar">
@@ -50,15 +52,23 @@ export function Sidebar() {
         <div className="flex items-center gap-3">
           <Avatar className="h-8 w-8">
             <AvatarFallback className="bg-primary text-primary-foreground text-xs">
-              JD
+              {isLoading ? '...' : (user?.initials || '??')}
             </AvatarFallback>
           </Avatar>
           <div className="flex-1 min-w-0">
-            <p className="text-sm font-medium truncate">John Doe</p>
-            <p className="text-xs text-muted-foreground truncate">john@agency.com</p>
+            <p className="text-sm font-medium truncate">
+              {isLoading ? 'Loading...' : (user?.displayName || 'Not signed in')}
+            </p>
+            <p className="text-xs text-muted-foreground truncate">
+              {user?.email || ''}
+            </p>
           </div>
-          <button className="rounded-lg p-2 hover:bg-sidebar-accent transition-colors">
-            <Settings className="h-4 w-4 text-muted-foreground" />
+          <button
+            onClick={signOut}
+            className="rounded-lg p-2 hover:bg-sidebar-accent transition-colors"
+            title="Sign out"
+          >
+            <LogOut className="h-4 w-4 text-muted-foreground" />
           </button>
         </div>
       </div>
