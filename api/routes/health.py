@@ -2231,7 +2231,7 @@ async def export_flagged_inboxes():
     - workspace_name, domain_name, email_address
     - kill_trigger, killed_at, days_before_kill (how long inbox lasted)
     - inbox_state, connection_status
-    - hard_bounces_24h, hard_blocked_24h, hard_unknown_24h, complaints_lifetime
+    - complaints_lifetime
     - trigger_value, trigger_threshold (what triggered the kill)
     """
     rows = await fetch_all("""
@@ -2250,16 +2250,13 @@ async def export_flagged_inboxes():
                     EXTRACT(DAY FROM sa.killed_at - sa.warmup_started_at)::INTEGER
                 ELSE NULL
             END as days_before_kill,
-            COALESCE(sa.hard_bounces_24h, 0) as hard_bounces_24h,
-            COALESCE(sa.hard_blocked_24h, 0) as hard_blocked_24h,
-            COALESCE(sa.hard_unknown_24h, 0) as hard_unknown_24h,
             COALESCE(sa.complaints_lifetime, 0) as complaints_lifetime,
             kq.trigger_value,
             kq.trigger_threshold
         FROM sender_accounts sa
         JOIN workspaces w ON sa.workspace_id = w.id
         LEFT JOIN domains d ON sa.domain_id = d.id
-        LEFT JOIN kill_queue kq ON kq.inbox_id = sa.id AND kq.status = 'flagged'
+        LEFT JOIN kill_queue kq ON kq.inbox_id = sa.id
         WHERE (sa.inbox_state = 'dead' OR sa.kill_trigger IS NOT NULL)
         AND sa.emailbison_account_id IS NOT NULL  -- Only show inboxes still in EmailBison
         ORDER BY w.workspace_name, d.domain_name, sa.killed_at DESC NULLS LAST
@@ -2286,9 +2283,6 @@ async def export_flagged_inboxes():
         "inbox_state",
         "connection_status",
         "warmup_started_at",
-        "hard_bounces_24h",
-        "hard_blocked_24h",
-        "hard_unknown_24h",
         "complaints_lifetime",
         "trigger_value",
         "trigger_threshold"
@@ -2315,9 +2309,6 @@ async def export_flagged_inboxes():
             escape_csv(row["inbox_state"]),
             escape_csv(row["connection_status"]),
             escape_csv(row["warmup_started_at"].isoformat() if row["warmup_started_at"] else None),
-            escape_csv(row["hard_bounces_24h"]),
-            escape_csv(row["hard_blocked_24h"]),
-            escape_csv(row["hard_unknown_24h"]),
             escape_csv(row["complaints_lifetime"]),
             escape_csv(row["trigger_value"]),
             escape_csv(row["trigger_threshold"])
@@ -2362,16 +2353,13 @@ async def export_kill_triggers():
             sa.inbox_state,
             sa.status as connection_status,
             sa.warmup_started_at,
-            COALESCE(sa.hard_bounces_24h, 0) as hard_bounces_24h,
-            COALESCE(sa.hard_blocked_24h, 0) as hard_blocked_24h,
-            COALESCE(sa.hard_unknown_24h, 0) as hard_unknown_24h,
             COALESCE(sa.complaints_lifetime, 0) as complaints_lifetime,
             kq.trigger_value,
             kq.trigger_threshold
         FROM sender_accounts sa
         JOIN workspaces w ON sa.workspace_id = w.id
         LEFT JOIN domains d ON sa.domain_id = d.id
-        LEFT JOIN kill_queue kq ON kq.inbox_id = sa.id AND kq.status = 'flagged'
+        LEFT JOIN kill_queue kq ON kq.inbox_id = sa.id
         WHERE sa.kill_trigger IS NOT NULL
         AND sa.emailbison_account_id IS NOT NULL  -- Only show inboxes still in EmailBison
         AND w.is_active = TRUE
@@ -2405,9 +2393,6 @@ async def export_kill_triggers():
         "inbox_state",
         "connection_status",
         "warmup_started_at",
-        "hard_bounces_24h",
-        "hard_blocked_24h",
-        "hard_unknown_24h",
         "complaints_lifetime",
         "trigger_value",
         "trigger_threshold"
@@ -2425,9 +2410,6 @@ async def export_kill_triggers():
             escape_csv(row["inbox_state"]),
             escape_csv(row["connection_status"]),
             escape_csv(row["warmup_started_at"].isoformat() if row["warmup_started_at"] else None),
-            escape_csv(row["hard_bounces_24h"]),
-            escape_csv(row["hard_blocked_24h"]),
-            escape_csv(row["hard_unknown_24h"]),
             escape_csv(row["complaints_lifetime"]),
             escape_csv(row["trigger_value"]),
             escape_csv(row["trigger_threshold"])
