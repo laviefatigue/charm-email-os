@@ -1,0 +1,55 @@
+{
+  "mcpServers": {
+    "cloudflare": {
+      "command": "py",
+      "args": ["-m", "cloudflare_mcp.server"],
+      "cwd": "D:/Work/cloudflare-plugin",
+      "env": {
+        "PYTHONPATH": "D:/Work/cloudflare-plugin/src",
+        "CLOUDFLARE_API_TOKEN": "${CLOUDFLARE_API_TOKEN}",
+        "CLOUDFLARE_ACCOUNT_ID": "edc3f397f5bf38a27120797e8f1b361a"
+      },
+      "_notes": "Cloudflare management - DNS, Tunnel, Access"
+    },
+    "coolify": {
+      "command": "npx",
+      "args": ["coolify-mcp@latest"],
+      "env": {
+        "COOLIFY_API_URL": "https://coolify.wizardgrimoire.cloud",
+        "COOLIFY_API_TOKEN": "${COOLIFY_API_TOKEN}"
+      },
+      "_notes": "Coolify deployments, logs, status"
+    },
+    "hostinger-api": {
+      "command": "npx",
+      "args": ["hostinger-api-mcp@latest"],
+      "env": {
+        "API_TOKEN": "${HOSTINGER_API_TOKEN}"
+      },
+      "_notes": "Hostinger domain and VPS management"
+    },
+    "chrome-devtools": {
+      "command": "npx",
+      "args": ["chrome-devtools-mcp@latest"],
+      "_notes": "Browser automation for Coolify UI"
+    },
+    "emailbison": {
+      "command": "npx",
+      "args": ["emailbison-mcp@latest"],
+      "env": {
+        "EMAILBISON_API_KEY": "${EMAILBISON_API_KEY}"
+      },
+      "_notes": "EmailBison inbox management (if available)"
+    }
+  },
+  "_documentation": {
+    "purpose": "Combined MCP configuration for Charm production infrastructure",
+    "usage": "Copy relevant servers to ~/.mcp.json (global) or ./.mcp.json (project)",
+    "environment_variables": {
+      "CLOUDFLARE_API_TOKEN": "Cloudflare API token with Zone:Edit, Account:Edit permissions",
+      "COOLIFY_API_TOKEN": "Coolify API token from Settings > API",
+      "HOSTINGER_API_TOKEN": "Hostinger API token from hPanel",
+      "EMAILBISON_API_KEY": "EmailBison workspace API key"
+    }
+  }
+}
