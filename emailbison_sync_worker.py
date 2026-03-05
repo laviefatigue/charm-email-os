@@ -59,6 +59,11 @@ POLL_INTERVAL_OAUTH_VERIFY = int(os.getenv('SYNC_INTERVAL_OAUTH_VERIFY', 30 * 24
 # Slack webhook for alerts
 SLACK_WEBHOOK_URL = os.getenv('SLACK_WEBHOOK_URL', '')
 
+# Domain Engine V2 Local Development Flags
+# Set these to 'false' in local .env to disable EmailBison writes
+ENABLE_KILL_PROCESSING = os.getenv('ENABLE_KILL_PROCESSING', 'true').lower() == 'true'
+ENABLE_LIFECYCLE_TAGGING = os.getenv('ENABLE_LIFECYCLE_TAGGING', 'true').lower() == 'true'
+
 
 class SyncOrchestrator:
     """Main orchestrator for EmailBison sync operations."""
@@ -88,6 +93,8 @@ class SyncOrchestrator:
         print(f"[{datetime.now()}] EmailBison Sync Worker starting...")
         print(f"  Database: {POSTGRES_HOST}:{POSTGRES_PORT}/{POSTGRES_DB}")
         print(f"  Slack alerts: {'Enabled' if SLACK_WEBHOOK_URL else 'Disabled'}")
+        print(f"  Kill processing: {'Enabled' if ENABLE_KILL_PROCESSING else 'DISABLED'}")
+        print(f"  Lifecycle tagging: {'Enabled' if ENABLE_LIFECYCLE_TAGGING else 'DISABLED'}")
         print(f"  Intervals: events={POLL_INTERVAL_EVENTS}s, full={POLL_INTERVAL_FULL}s, health={POLL_INTERVAL_HEALTH}s, kill={POLL_INTERVAL_KILL}s, warmup={POLL_INTERVAL_WARMUP}s, oauth_queue={POLL_INTERVAL_OAUTH_QUEUE}s")
 
         try:
@@ -285,6 +292,10 @@ class SyncOrchestrator:
 
     async def run_kill_processing(self):
         """Process the kill queue (tag and flag inboxes as inactive - NO DELETION)."""
+        if not ENABLE_KILL_PROCESSING:
+            print(f"[{datetime.now()}] Kill queue processing DISABLED (ENABLE_KILL_PROCESSING=false)")
+            return
+
         print(f"[{datetime.now()}] Kill queue processing...")
 
         async with EmailBisonClient() as client:
@@ -348,6 +359,10 @@ class SyncOrchestrator:
         Team uses 'live' tag in EmailBison to filter inboxes for campaign assignment.
         Kill processor removes 'live' tag when inbox is killed.
         """
+        if not ENABLE_LIFECYCLE_TAGGING:
+            print(f"[{datetime.now()}] Lifecycle tag sync DISABLED (ENABLE_LIFECYCLE_TAGGING=false)")
+            return
+
         print(f"[{datetime.now()}] Lifecycle tag sync...")
 
         async with EmailBisonClient() as client:
@@ -503,18 +518,29 @@ class SyncOrchestrator:
         return last_run.date() < now.date()
 
     def _should_run_slack_audit(self, last_run: Optional[datetime]) -> bool:
-        """Check if we should run Slack audit (6 AM UTC daily)."""
+        """Check if we should run Slack audit (6 AM Pacific daily)."""
         from datetime import timezone
-        now_utc = datetime.now(timezone.utc)
+        from zoneinfo import ZoneInfo
 
-        # Only run between 6:00 and 6:05 AM UTC
-        if now_utc.hour != 6 or now_utc.minute >= 5:
+        # Get current time in Pacific timezone
+        pacific = ZoneInfo("America/Los_Angeles")
+        now_pacific = datetime.now(pacific)
+
+        # Only run between 6:00 and 6:05 AM Pacific
+        if now_pacific.hour != 6 or now_pacific.minute >= 5:
             return False
 
-        # Check if already ran today
+        # Check if already ran today (in Pacific time)
         if last_run is None:
             return True
-        return last_run.date() < now_utc.date()
+
+        # Convert last_run to Pacific for date comparison
+        if last_run.tzinfo is None:
+            last_run_pacific = last_run.replace(tzinfo=timezone.utc).astimezone(pacific)
+        else:
+            last_run_pacific = last_run.astimezone(pacific)
+
+        return last_run_pacific.date() < now_pacific.date()
 
     def _handle_shutdown(self, signum, frame):
         """Handle shutdown signals gracefully."""

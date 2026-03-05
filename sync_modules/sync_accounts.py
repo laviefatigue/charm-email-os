@@ -516,6 +516,35 @@ class AccountSyncModule:
         """)
         print(f"  Linked accounts to domains: {linked}")
 
+        # Set expected_inbox_count for domains that don't have it yet
+        # Based on detected provider from sender_accounts ESP
+        # Entra (microsoft) = 50 inboxes, Google (gmail) = 3 inboxes
+        await self.db.execute("""
+            UPDATE domains d
+            SET
+                expected_inbox_count = CASE
+                    WHEN detected.provider = 'entra' THEN 50
+                    WHEN detected.provider = 'google' THEN 3
+                    ELSE NULL
+                END,
+                updated_at = NOW()
+            FROM (
+                SELECT
+                    sa.domain_id,
+                    CASE
+                        WHEN COUNT(*) FILTER (WHERE sa.esp = 'microsoft') > 0 THEN 'entra'
+                        WHEN COUNT(*) FILTER (WHERE sa.esp = 'gmail') > 0 THEN 'google'
+                        ELSE NULL
+                    END as provider
+                FROM sender_accounts sa
+                WHERE sa.domain_id IS NOT NULL
+                GROUP BY sa.domain_id
+            ) detected
+            WHERE d.id = detected.domain_id
+            AND d.expected_inbox_count IS NULL
+            AND detected.provider IS NOT NULL
+        """)
+
         # Update domain health scores (average of inbox health scores)
         await self.db.execute("""
             UPDATE domains d
@@ -529,6 +558,37 @@ class AccountSyncModule:
                 FROM sender_accounts
                 WHERE domain_id IS NOT NULL
                 AND health_score IS NOT NULL
+                GROUP BY domain_id
+            ) sub
+            WHERE d.id = sub.domain_id
+        """)
+
+        # Update max_inboxes_seen and fulfillment_status for capacity tracking
+        # max_inboxes_seen = highest inbox count ever observed (for fulfillment verification)
+        # fulfillment_status = under_delivered if < 90% of expected
+        await self.db.execute("""
+            UPDATE domains d
+            SET
+                max_inboxes_seen = GREATEST(
+                    COALESCE(d.max_inboxes_seen, 0),
+                    COALESCE(sub.current_count, 0)
+                ),
+                fulfillment_status = CASE
+                    WHEN d.expected_inbox_count IS NULL THEN 'pending'
+                    WHEN GREATEST(COALESCE(d.max_inboxes_seen, 0), COALESCE(sub.current_count, 0))
+                        < d.expected_inbox_count * 0.9 THEN 'under_delivered'
+                    WHEN GREATEST(COALESCE(d.max_inboxes_seen, 0), COALESCE(sub.current_count, 0))
+                        > d.expected_inbox_count THEN 'over_delivered'
+                    ELSE 'fulfilled'
+                END,
+                updated_at = NOW()
+            FROM (
+                SELECT
+                    domain_id,
+                    COUNT(*) AS current_count
+                FROM sender_accounts
+                WHERE domain_id IS NOT NULL
+                AND is_active = TRUE
                 GROUP BY domain_id
             ) sub
             WHERE d.id = sub.domain_id
