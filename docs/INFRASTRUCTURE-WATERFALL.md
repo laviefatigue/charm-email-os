@@ -175,11 +175,13 @@ END AS rotation_recommendation
 
 ## Migrations
 
-| Migration | Purpose |
-|-----------|---------|
-| 060 | Domain fulfillment tracking (expected_inbox_count, max_inboxes_seen) |
-| 061 | Rotation recommendations in waterfall view |
-| 062 | Enhanced rotation with error history (burn_breakdown, compromised detection) |
+| Migration | Purpose | Status |
+|-----------|---------|--------|
+| 060 | Domain fulfillment tracking (expected_inbox_count, max_inboxes_seen) | ✅ Deployed 2026-03-03 |
+| 061 | Rotation recommendations in waterfall view | ✅ Deployed 2026-03-03 |
+| 062 | Enhanced rotation with error history (burn_breakdown, compromised detection) | ✅ Deployed 2026-03-03 |
+
+**Deployment Method:** Coolify Web Terminal (psql)
 
 ---
 
