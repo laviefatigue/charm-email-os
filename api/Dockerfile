@@ -7,10 +7,11 @@ ENV PYTHONUNBUFFERED=1
 
 WORKDIR /app
 
-# Install system dependencies for asyncpg
+# Install system dependencies for asyncpg and pg_dump (for admin db-export)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     libpq-dev \
+    postgresql-client \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Python dependencies FROM requirements.txt
