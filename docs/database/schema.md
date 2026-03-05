@@ -1,8 +1,8 @@
 ---
 title: Database Schema
 created: 2026-01-16
-updated: 2026-02-23
-tags: [database, schema, postgresql, health, warmup, metrics, daily-volume]
+updated: 2026-03-05
+tags: [database, schema, postgresql, health, warmup, metrics, daily-volume, audit, users]
 ---
 
 # Database Schema
@@ -100,6 +100,22 @@ CREATE INDEX idx_domains_status ON domains(approval_status);
 | purchase_job_id | UUID | FK to `inbox_purchase_jobs.id` — locks domain to a purchase job |
 | purchase_job_status | VARCHAR(50) | Lock status: `pending`, `processing`, `executing`, or NULL |
 | created_at | TIMESTAMP | Record creation time |
+
+#### Fulfillment Tracking (Migration 060)
+
+| Column | Type | Description |
+|--------|------|-------------|
+| expected_inbox_count | INTEGER | Expected inboxes from HyperTide (50 Entra, 3 Google) |
+| max_inboxes_seen | INTEGER | Peak inbox count ever observed |
+| fulfillment_status | VARCHAR(20) | `pending`, `under_delivered`, `fulfilled`, `over_delivered` |
+
+#### Error History (Migration 062)
+
+| Column | Type | Description |
+|--------|------|-------------|
+| burn_breakdown | JSONB | Counts by kill trigger type (e.g., `{"spam_complaint": 1}`) |
+| inboxes_with_complaints | INTEGER | Count of inboxes with spam complaints |
+| inboxes_with_blocks | INTEGER | Count of inboxes with hard blocks |
 
 ### sender_accounts
 
@@ -566,6 +582,303 @@ CREATE INDEX idx_daily_volume_date ON daily_volume_snapshots(snapshot_date DESC)
 **Data Source**: Backfilled from EmailBison API via `scripts/backfill_daily_volume.py`. Daily updates via sync worker's `run_daily_snapshot()`.
 
 **Initial Backfill (2026-02-23)**: 54,716 emails across 7 workspaces, covering Nov 25, 2025 - Feb 22, 2026.
+
+## User & Activity Tables
+
+### users (Migration 064)
+
+Authenticated users from Cloudflare Access Google OAuth (@hirecharm.com).
+
+```sql
+CREATE TABLE users (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    email VARCHAR(255) NOT NULL UNIQUE,
+    display_name VARCHAR(255),
+    first_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX idx_users_email ON users(email);
+CREATE INDEX idx_users_last_seen ON users(last_seen_at);
+```
+
+| Column | Type | Description |
+|--------|------|-------------|
+| id | UUID | Primary key |
+| email | VARCHAR(255) | Email from CF-Access-Authenticated-User-Email header |
+| display_name | VARCHAR(255) | Derived from email (e.g., elliott@hirecharm.com → Elliott) |
+| first_seen_at | TIMESTAMPTZ | First login timestamp |
+| last_seen_at | TIMESTAMPTZ | Most recent API request |
+| is_active | BOOLEAN | Active status |
+
+### activity_log (Migration 064)
+
+Audit trail of user actions for compliance and debugging.
+
+```sql
+CREATE TABLE activity_log (
+    id SERIAL PRIMARY KEY,
+    user_id UUID REFERENCES users(id) ON DELETE SET NULL,
+    user_email VARCHAR(255) NOT NULL,
+    action VARCHAR(100) NOT NULL,
+    resource_type VARCHAR(50),
+    resource_id VARCHAR(255),
+    details JSONB,
+    ip_address VARCHAR(45),
+    user_agent TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX idx_activity_log_user_email ON activity_log(user_email);
+CREATE INDEX idx_activity_log_action ON activity_log(action);
+CREATE INDEX idx_activity_log_resource ON activity_log(resource_type, resource_id);
+CREATE INDEX idx_activity_log_created ON activity_log(created_at DESC);
+```
+
+| Column | Type | Description |
+|--------|------|-------------|
+| user_id | UUID | FK to users table |
+| user_email | VARCHAR(255) | Denormalized for query performance |
+| action | VARCHAR(100) | Action type: `domain_purchased`, `hypertide_order_created`, etc. |
+| resource_type | VARCHAR(50) | `domain`, `inbox`, `client`, etc. |
+| resource_id | VARCHAR(255) | UUID or identifier of affected resource |
+| details | JSONB | Action-specific context (domain_name, price, etc.) |
+
+## Sync & Health Tables
+
+### sync_audit_log (Migration 020)
+
+Tracks every sync operation for debugging and monitoring.
+
+```sql
+CREATE TABLE sync_audit_log (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    sync_type VARCHAR(50) NOT NULL,
+    workspace_id UUID REFERENCES workspaces(id),
+    started_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    completed_at TIMESTAMP,
+    status VARCHAR(20) DEFAULT 'running',
+    records_processed INTEGER DEFAULT 0,
+    records_created INTEGER DEFAULT 0,
+    records_updated INTEGER DEFAULT 0,
+    records_failed INTEGER DEFAULT 0,
+    error_message TEXT,
+    error_details JSONB,
+    metadata JSONB,
+    created_at TIMESTAMP DEFAULT NOW()
+);
+```
+
+| sync_type Values | Description |
+|-----------------|-------------|
+| accounts | Sender account sync from EmailBison |
+| campaigns | Campaign sync from EmailBison |
+| events | Bounce/reply event sync |
+| health | Health check run |
+| kill_queue | Kill queue processing |
+| retention | Data retention cleanup |
+
+### kill_queue (Migration 020)
+
+Tracks inboxes queued for flagging with health monitoring.
+
+```sql
+CREATE TABLE kill_queue (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    inbox_id UUID NOT NULL REFERENCES sender_accounts(id),
+    workspace_id UUID NOT NULL REFERENCES workspaces(id),
+    trigger_type VARCHAR(50) NOT NULL,
+    trigger_value DECIMAL(10,4),
+    trigger_threshold DECIMAL(10,4),
+    queued_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    tagged_at TIMESTAMP,
+    tag_name VARCHAR(100),
+    scheduled_delete_at TIMESTAMP,
+    deleted_at TIMESTAMP,
+    status VARCHAR(20) DEFAULT 'pending',
+    error_message TEXT,
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW()
+);
+```
+
+| Column | Type | Description |
+|--------|------|-------------|
+| inbox_id | UUID | FK to sender_accounts |
+| trigger_type | VARCHAR(50) | Kill trigger: `spam_complaint`, `hard_blocked_24h`, `fresh_inbox_bounce`, etc. |
+| trigger_value | DECIMAL | Actual value that triggered (e.g., bounce count) |
+| trigger_threshold | DECIMAL | Threshold that was exceeded |
+| tag_name | VARCHAR(100) | EmailBison tag applied (e.g., `flagged_hard_blocked_24h`) |
+| status | VARCHAR(20) | `pending`, `tagged`, `deleted`, `cancelled`, `failed` |
+
+#### Kill Trigger Priority Order
+
+1. `spam_complaint` >= 1 (instant)
+2. `provider_block_{esp}` >= 1 (instant, ESP-specific)
+3. `hard_blocked_24h` >= 1 (instant)
+4. `hard_unknown_24h` >= 3 (instant)
+5. `hard_bounces_24h` >= 2 (fallback)
+6. `hard_bounce_rate_7d` > 0.5% (min 20 sends)
+7. `bounce_rate_all_7d` > 5% (min 20 sends)
+8. `fresh_inbox_bounce` (any bounce on <14 day inbox)
+9. `disconnected_timeout` (21+ days disconnected)
+
+### response_messages (Migration 020)
+
+Stores reply/bounce content for campaign analysis.
+
+```sql
+CREATE TABLE response_messages (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    campaign_event_id UUID REFERENCES campaign_events(id),
+    campaign_id UUID REFERENCES emailbison_campaigns(id),
+    workspace_id UUID REFERENCES workspaces(id),
+    folder VARCHAR(20) NOT NULL,
+    from_email VARCHAR(255),
+    to_inbox_email VARCHAR(255),
+    sender_account_id UUID REFERENCES sender_accounts(id),
+    subject TEXT,
+    body_preview TEXT,
+    body_full TEXT,
+    received_at TIMESTAMP,
+    is_interested BOOLEAN DEFAULT FALSE,
+    is_automated BOOLEAN DEFAULT FALSE,
+    sentiment VARCHAR(20),
+    bounce_type VARCHAR(50),
+    bounce_reason TEXT,
+    created_at TIMESTAMP DEFAULT NOW()
+);
+```
+
+| bounce_type Values | Description |
+|-------------------|-------------|
+| hard_unknown | Bad email address (550 5.1.x) |
+| hard_blocked | Reputation/policy rejection (550 5.7.x) |
+| soft_full | Mailbox full |
+| soft_temp | Temporary error |
+
+## Inbox Audit Tables
+
+### inbox_audits (Migration 063)
+
+Daily inbox health audits sent to Slack for team review.
+
+```sql
+CREATE TABLE inbox_audits (
+    id SERIAL PRIMARY KEY,
+    audit_date DATE NOT NULL DEFAULT CURRENT_DATE,
+    status VARCHAR(20) NOT NULL DEFAULT 'pending',
+    reviewed_by VARCHAR(255),
+    reviewed_at TIMESTAMPTZ,
+    notes TEXT,
+    total_kills INTEGER,
+    total_disconnected INTEGER,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+```
+
+| status Values | Description |
+|--------------|-------------|
+| pending | Awaiting review |
+| confirmed | Reviewed and approved |
+| issues_found | Problems identified |
+
+### inbox_audit_corrections (Migration 063)
+
+Corrections submitted when audit reveals incorrectly flagged inboxes.
+
+```sql
+CREATE TABLE inbox_audit_corrections (
+    id SERIAL PRIMARY KEY,
+    audit_id INTEGER NOT NULL REFERENCES inbox_audits(id),
+    email_address VARCHAR(255) NOT NULL,
+    correction_type VARCHAR(50) NOT NULL,
+    reason TEXT,
+    resolved BOOLEAN NOT NULL DEFAULT FALSE,
+    resolved_by VARCHAR(255),
+    resolved_at TIMESTAMPTZ,
+    resolution_notes TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+```
+
+| correction_type Values | Description |
+|-----------------------|-------------|
+| wrong_kill | Inbox killed incorrectly |
+| false_positive | Trigger was a false positive |
+| should_restore | Inbox should be restored |
+| other | Other correction needed |
+
+## Database Views
+
+### v_infrastructure_waterfall (Migration 062)
+
+Infrastructure waterfall view with error-aware rotation recommendations. Primary view for the Infrastructure Waterfall UI.
+
+**Key Columns:**
+
+| Column | Type | Description |
+|--------|------|-------------|
+| domain_id | UUID | Domain primary key |
+| domain_name | VARCHAR | Domain name |
+| assigned_provider | VARCHAR | `entra` or `google` |
+| detected_provider | VARCHAR | Provider detected from inbox ESP |
+
+**Pricing Columns:**
+
+| Column | Type | Description |
+|--------|------|-------------|
+| price_status | VARCHAR | `not_checked`, `stale`, `unavailable`, `valid` |
+| porkbun_price | DECIMAL | Porkbun price in dollars |
+| dynadot_price | DECIMAL | Dynadot price in dollars |
+| selected_provider | VARCHAR | Chosen registrar |
+
+**Inbox Count Columns:**
+
+| Column | Type | Description |
+|--------|------|-------------|
+| live_inbox_count | INTEGER | Inboxes with `inbox_state != 'dead'` |
+| dead_inbox_count | INTEGER | Inboxes with `inbox_state = 'dead'` |
+| connected_inbox_count | INTEGER | Live + Connected (operational capacity) |
+| disconnected_inbox_count | INTEGER | Live + Not connected |
+| synced_inbox_count | INTEGER | Total inboxes from EmailBison |
+
+**Fulfillment Columns:**
+
+| Column | Type | Description |
+|--------|------|-------------|
+| expected_inbox_count | INTEGER | What HyperTide should deliver |
+| max_inboxes_seen | INTEGER | Peak count ever observed |
+| capacity_remaining_pct | DECIMAL | (connected / expected) * 100 |
+
+**Error History Columns:**
+
+| Column | Type | Description |
+|--------|------|-------------|
+| burn_breakdown | JSONB | Counts by kill trigger type |
+| inboxes_with_complaints | INTEGER | Spam complaint count |
+| inboxes_with_blocks | INTEGER | Hard block count |
+| has_compromised_inboxes | BOOLEAN | TRUE if complaints or blocks exist |
+
+**Rotation Columns:**
+
+| Column | Type | Description |
+|--------|------|-------------|
+| rotation_recommendation | VARCHAR | `not_applicable`, `healthy`, `monitor`, `consider_rotate`, `rotate_now` |
+| recommended_action | VARCHAR | `none`, `watch`, `reconnect`, `rotate` |
+
+**Rotation Priority Logic:**
+1. Spam complaints → `rotate_now` (domain is burned)
+2. All disconnected → `rotate_now` (no capacity)
+3. Multiple hard blocks (2+) → `consider_rotate`
+4. Below capacity threshold → `consider_rotate`
+5. Single hard block → `monitor`
+6. Disconnected with clean history → `monitor` + `reconnect` action
+7. No issues → `healthy`
 
 ## Related
 
