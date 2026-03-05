@@ -107,21 +107,27 @@ async def export_database(
         output = io.StringIO()
         output.write("-- Charm Email OS Database Export\n")
         output.write(f"-- Generated: {datetime.now().isoformat()}\n")
-        output.write("-- Pure Python export (no pg_dump)\n")
-        output.write("-- Import with: psql -v ON_ERROR_STOP=0 -f dump.sql\n\n")
+        output.write("-- Pure Python export with schema\n\n")
 
-        # Disable triggers during import for speed
-        output.write("SET session_replication_role = 'replica';\n\n")
+        # Disable triggers and foreign key checks during import
+        output.write("SET session_replication_role = 'replica';\n")
+        output.write("SET client_min_messages = 'warning';\n\n")
 
         total_rows = 0
 
         for table in table_names:
-            # Get column info
+            # Get column info with full type details
             cols = await fetch_all(f"""
-                SELECT column_name, data_type
-                FROM information_schema.columns
-                WHERE table_name = '{table}' AND table_schema = 'public'
-                ORDER BY ordinal_position
+                SELECT
+                    c.column_name,
+                    c.data_type,
+                    c.udt_name,
+                    c.is_nullable,
+                    c.column_default,
+                    c.character_maximum_length
+                FROM information_schema.columns c
+                WHERE c.table_name = '{table}' AND c.table_schema = 'public'
+                ORDER BY c.ordinal_position
             """)
 
             if not cols:
@@ -129,16 +135,44 @@ async def export_database(
 
             col_names = [c["column_name"] for c in cols]
 
+            # Generate CREATE TABLE
+            output.write(f"-- Table: {table}\n")
+            output.write(f"DROP TABLE IF EXISTS {table} CASCADE;\n")
+
+            col_defs = []
+            for c in cols:
+                col_type = c["udt_name"]
+                # Map common types
+                if col_type == "int4":
+                    col_type = "INTEGER"
+                elif col_type == "int8":
+                    col_type = "BIGINT"
+                elif col_type == "float8":
+                    col_type = "DOUBLE PRECISION"
+                elif col_type == "bool":
+                    col_type = "BOOLEAN"
+                elif col_type == "varchar" and c["character_maximum_length"]:
+                    col_type = f"VARCHAR({c['character_maximum_length']})"
+                elif col_type == "timestamptz":
+                    col_type = "TIMESTAMP WITH TIME ZONE"
+                elif col_type == "timestamp":
+                    col_type = "TIMESTAMP"
+
+                nullable = "" if c["is_nullable"] == "YES" else " NOT NULL"
+                default = f" DEFAULT {c['column_default']}" if c["column_default"] else ""
+                col_defs.append(f"    {c['column_name']} {col_type.upper()}{nullable}{default}")
+
+            output.write(f"CREATE TABLE {table} (\n")
+            output.write(",\n".join(col_defs))
+            output.write("\n);\n\n")
+
             # Get all rows
             rows = await fetch_all(f"SELECT * FROM {table}")
 
             if rows:
-                output.write(f"-- Table: {table} ({len(rows)} rows)\n")
-                # Use INSERT ON CONFLICT DO UPDATE for upsert behavior
                 for row in rows:
                     values = [escape_sql_value(row[col]) for col in col_names]
-                    # Simple INSERT - will fail on conflicts but continue
-                    output.write(f"INSERT INTO {table} ({', '.join(col_names)}) VALUES ({', '.join(values)}) ON CONFLICT DO NOTHING;\n")
+                    output.write(f"INSERT INTO {table} ({', '.join(col_names)}) VALUES ({', '.join(values)});\n")
                 total_rows += len(rows)
                 output.write("\n")
 
