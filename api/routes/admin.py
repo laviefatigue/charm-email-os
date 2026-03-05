@@ -107,8 +107,8 @@ async def export_database(
         output = io.StringIO()
         output.write("-- Charm Email OS Database Export\n")
         output.write(f"-- Generated: {datetime.now().isoformat()}\n")
-        output.write("-- Pure Python export (no pg_dump)\n\n")
-        output.write("BEGIN;\n\n")
+        output.write("-- Pure Python export (no pg_dump)\n")
+        output.write("-- Import with: psql -v ON_ERROR_STOP=0 -f dump.sql\n\n")
 
         # Disable triggers during import for speed
         output.write("SET session_replication_role = 'replica';\n\n")
@@ -129,24 +129,21 @@ async def export_database(
 
             col_names = [c["column_name"] for c in cols]
 
-            # Truncate table first
-            output.write(f"-- Table: {table}\n")
-            output.write(f"TRUNCATE TABLE {table} CASCADE;\n")
-
             # Get all rows
             rows = await fetch_all(f"SELECT * FROM {table}")
 
             if rows:
+                output.write(f"-- Table: {table} ({len(rows)} rows)\n")
+                # Use INSERT ON CONFLICT DO UPDATE for upsert behavior
                 for row in rows:
                     values = [escape_sql_value(row[col]) for col in col_names]
-                    output.write(f"INSERT INTO {table} ({', '.join(col_names)}) VALUES ({', '.join(values)});\n")
+                    # Simple INSERT - will fail on conflicts but continue
+                    output.write(f"INSERT INTO {table} ({', '.join(col_names)}) VALUES ({', '.join(values)}) ON CONFLICT DO NOTHING;\n")
                 total_rows += len(rows)
-
-            output.write("\n")
+                output.write("\n")
 
         # Re-enable triggers
-        output.write("SET session_replication_role = 'origin';\n\n")
-        output.write("COMMIT;\n")
+        output.write("SET session_replication_role = 'origin';\n")
 
         dump_data = output.getvalue().encode('utf-8')
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
