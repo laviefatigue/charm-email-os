@@ -29,6 +29,18 @@ def verify_admin_key(key: str) -> bool:
     return key == ADMIN_KEY
 
 
+class SQLEncoder(json.JSONEncoder):
+    """JSON encoder that handles UUID, datetime, Decimal."""
+    def default(self, obj):
+        if isinstance(obj, UUID):
+            return str(obj)
+        elif isinstance(obj, (datetime, date)):
+            return obj.isoformat()
+        elif isinstance(obj, Decimal):
+            return float(obj)
+        return super().default(obj)
+
+
 def escape_sql_value(val):
     """Escape a value for SQL INSERT statement."""
     if val is None:
@@ -42,8 +54,8 @@ def escape_sql_value(val):
     elif isinstance(val, UUID):
         return f"'{str(val)}'"
     elif isinstance(val, (dict, list)):
-        # JSON fields
-        json_str = json.dumps(val).replace("'", "''")
+        # JSON fields - use custom encoder for nested UUIDs/dates
+        json_str = json.dumps(val, cls=SQLEncoder).replace("'", "''")
         return f"'{json_str}'"
     else:
         # String - escape single quotes
