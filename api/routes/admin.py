@@ -113,6 +113,24 @@ async def export_database(
         output.write("SET session_replication_role = 'replica';\n")
         output.write("SET client_min_messages = 'warning';\n\n")
 
+        # Export custom enum types
+        enums = await fetch_all("""
+            SELECT t.typname, string_agg(e.enumlabel, ',' ORDER BY e.enumsortorder) as labels
+            FROM pg_type t
+            JOIN pg_enum e ON t.oid = e.enumtypid
+            JOIN pg_namespace n ON t.typnamespace = n.oid
+            WHERE n.nspname = 'public'
+            GROUP BY t.typname
+        """)
+
+        if enums:
+            output.write("-- Custom enum types\n")
+            for enum in enums:
+                labels = ", ".join([f"'{l}'" for l in enum["labels"].split(",")])
+                output.write(f"DROP TYPE IF EXISTS {enum['typname']} CASCADE;\n")
+                output.write(f"CREATE TYPE {enum['typname']} AS ENUM ({labels});\n")
+            output.write("\n")
+
         total_rows = 0
 
         for table in table_names:
