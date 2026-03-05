@@ -6,11 +6,13 @@ These endpoints are protected by an admin key and should NOT be exposed publicly
 
 from fastapi import APIRouter, HTTPException, Query, Response
 from fastapi.responses import StreamingResponse
-import subprocess
 import os
 import io
 import logging
-from datetime import datetime
+import json
+from datetime import datetime, date
+from decimal import Decimal
+from uuid import UUID
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -27,15 +29,37 @@ def verify_admin_key(key: str) -> bool:
     return key == ADMIN_KEY
 
 
+def escape_sql_value(val):
+    """Escape a value for SQL INSERT statement."""
+    if val is None:
+        return "NULL"
+    elif isinstance(val, bool):
+        return "TRUE" if val else "FALSE"
+    elif isinstance(val, (int, float, Decimal)):
+        return str(val)
+    elif isinstance(val, (datetime, date)):
+        return f"'{val.isoformat()}'"
+    elif isinstance(val, UUID):
+        return f"'{str(val)}'"
+    elif isinstance(val, (dict, list)):
+        # JSON fields
+        json_str = json.dumps(val).replace("'", "''")
+        return f"'{json_str}'"
+    else:
+        # String - escape single quotes
+        escaped = str(val).replace("'", "''")
+        return f"'{escaped}'"
+
+
 @router.get("/db-export")
 async def export_database(
     key: str = Query(..., description="Admin key for authentication"),
     exclude_audit: bool = Query(True, description="Exclude large audit tables")
 ):
     """
-    Export the database as a SQL dump.
+    Export the database as SQL INSERT statements.
 
-    This endpoint runs pg_dump and streams the result.
+    Pure Python implementation - no pg_dump version issues.
     Protected by admin key.
 
     Usage (from local machine):
@@ -47,60 +71,76 @@ async def export_database(
     if not verify_admin_key(key):
         raise HTTPException(status_code=403, detail="Invalid admin key")
 
-    # Build pg_dump command
-    pg_host = os.getenv("POSTGRES_HOST", "localhost")
-    pg_port = os.getenv("POSTGRES_PORT", "5432")
-    pg_db = os.getenv("POSTGRES_DB", "postgres")
-    pg_user = os.getenv("POSTGRES_USER", "postgres")
-    pg_password = os.getenv("POSTGRES_PASSWORD", "")
+    from database import fetch_all, get_pool
 
-    # Build exclusions
-    exclude_tables = []
-    if exclude_audit:
-        exclude_tables = [
-            "--exclude-table=sync_audit_log",
-            "--exclude-table=response_messages",
-            "--exclude-table=activity_log",
-        ]
+    # Tables to exclude
+    excluded = {"sync_audit_log", "response_messages", "activity_log"} if exclude_audit else set()
 
-    cmd = [
-        "pg_dump",
-        f"--host={pg_host}",
-        f"--port={pg_port}",
-        f"--username={pg_user}",
-        f"--dbname={pg_db}",
-        "--no-owner",
-        "--no-privileges",
-        "--clean",
-        "--if-exists",
-    ] + exclude_tables
+    # Also exclude views and system tables
+    excluded.add("pg_stat_statements")
 
-    logger.info(f"Running pg_dump: host={pg_host}, db={pg_db}, exclude_audit={exclude_audit}")
+    logger.info(f"Starting database export, exclude_audit={exclude_audit}")
 
     try:
-        # Set password via environment
-        env = os.environ.copy()
-        env["PGPASSWORD"] = pg_password
+        # Get all user tables in dependency order (foreign keys)
+        tables = await fetch_all("""
+            SELECT tablename
+            FROM pg_tables
+            WHERE schemaname = 'public'
+            ORDER BY tablename
+        """)
 
-        # Run pg_dump
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            env=env,
-            timeout=300  # 5 minute timeout
-        )
+        table_names = [t["tablename"] for t in tables if t["tablename"] not in excluded]
 
-        if result.returncode != 0:
-            error_msg = result.stderr.decode("utf-8")
-            logger.error(f"pg_dump failed: {error_msg}")
-            raise HTTPException(status_code=500, detail=f"pg_dump failed: {error_msg}")
+        output = io.StringIO()
+        output.write("-- Charm Email OS Database Export\n")
+        output.write(f"-- Generated: {datetime.now().isoformat()}\n")
+        output.write("-- Pure Python export (no pg_dump)\n\n")
+        output.write("BEGIN;\n\n")
 
-        # Return as downloadable file
-        dump_data = result.stdout
+        # Disable triggers during import for speed
+        output.write("SET session_replication_role = 'replica';\n\n")
+
+        total_rows = 0
+
+        for table in table_names:
+            # Get column info
+            cols = await fetch_all(f"""
+                SELECT column_name, data_type
+                FROM information_schema.columns
+                WHERE table_name = '{table}' AND table_schema = 'public'
+                ORDER BY ordinal_position
+            """)
+
+            if not cols:
+                continue
+
+            col_names = [c["column_name"] for c in cols]
+
+            # Truncate table first
+            output.write(f"-- Table: {table}\n")
+            output.write(f"TRUNCATE TABLE {table} CASCADE;\n")
+
+            # Get all rows
+            rows = await fetch_all(f"SELECT * FROM {table}")
+
+            if rows:
+                for row in rows:
+                    values = [escape_sql_value(row[col]) for col in col_names]
+                    output.write(f"INSERT INTO {table} ({', '.join(col_names)}) VALUES ({', '.join(values)});\n")
+                total_rows += len(rows)
+
+            output.write("\n")
+
+        # Re-enable triggers
+        output.write("SET session_replication_role = 'origin';\n\n")
+        output.write("COMMIT;\n")
+
+        dump_data = output.getvalue().encode('utf-8')
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"charm_db_export_{timestamp}.sql"
 
-        logger.info(f"Database export successful: {len(dump_data)} bytes")
+        logger.info(f"Database export successful: {len(dump_data)} bytes, {total_rows} rows, {len(table_names)} tables")
 
         return Response(
             content=dump_data,
@@ -110,9 +150,6 @@ async def export_database(
             }
         )
 
-    except subprocess.TimeoutExpired:
-        logger.error("pg_dump timed out after 5 minutes")
-        raise HTTPException(status_code=504, detail="Database export timed out")
     except Exception as e:
         logger.error(f"Database export failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
