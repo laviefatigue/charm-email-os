@@ -3167,6 +3167,18 @@ async def analyze_kill_triggers_by_esp(workspace_id: Optional[UUID] = None):
         WHERE warmup_started_at IS NOT NULL {ws_filter}
     """, *ws_args)
 
+    # Check response_messages for bounces
+    response_bounce_data = await fetch_all(f"""
+        SELECT
+            COUNT(*) as total_response_messages,
+            COUNT(*) FILTER (WHERE folder = 'bounced') as bounced_messages,
+            COUNT(*) FILTER (WHERE folder = 'bounced' AND received_at > NOW() - INTERVAL '24 hours') as bounced_24h,
+            COUNT(*) FILTER (WHERE folder = 'bounced' AND received_at > NOW() - INTERVAL '7 days') as bounced_7d
+        FROM response_messages rm
+        JOIN sender_accounts sa ON rm.sender_account_id = sa.id
+        WHERE sa.warmup_started_at IS NOT NULL {ws_filter.replace('workspace_id', 'sa.workspace_id')}
+    """, *ws_args)
+
     return {
         "workspace_id": str(workspace_id) if workspace_id else "all",
         "esp_summary": [dict(row) for row in esp_summary] if esp_summary else [],
@@ -3174,7 +3186,8 @@ async def analyze_kill_triggers_by_esp(workspace_id: Optional[UUID] = None):
         "worst_domains": [dict(row) for row in domain_breakdown] if domain_breakdown else [],
         "lifecycle_by_esp": [dict(row) for row in lifecycle_by_esp] if lifecycle_by_esp else [],
         "raw_esp_values": [dict(row) for row in esp_values] if esp_values else [],
-        "bounce_data": dict(bounce_data[0]) if bounce_data else {}
+        "bounce_data": dict(bounce_data[0]) if bounce_data else {},
+        "response_messages_bounces": dict(response_bounce_data[0]) if response_bounce_data else {}
     }
 
 
