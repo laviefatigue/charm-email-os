@@ -238,6 +238,78 @@ The Charm Email OS API is a FastAPI-based REST API that manages email infrastruc
 
 ---
 
+### Health Analysis (`/api/health/analysis`)
+
+Endpoints for analyzing inbox health, kill triggers, and domain performance.
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/health/analysis/kill-trigger-by-esp` | Kill trigger breakdown by ESP (Google/Microsoft) |
+| GET | `/api/health/analysis/kill-trigger-lifecycle` | Kill triggers by lifecycle stage |
+| GET | `/api/health/analysis/domain-capacity-impact` | Domain lifespan and capacity loss analysis |
+| GET | `/api/health/analysis/domain-bounce-rollup` | Domains with bounces (filterable by workspace) |
+| GET | `/api/health/analysis/spam-complaint-timing` | When spam complaints occur in inbox lifecycle |
+| GET | `/api/health/workspace-sync-diagnosis` | Diagnose sync issues for a workspace |
+
+**Common Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `workspace_id` | UUID | Filter to specific workspace (recommended) |
+
+**Example - Domain Bounce Rollup:**
+```
+GET /api/health/analysis/domain-bounce-rollup?workspace_id=3fabfb3c-80d1-4991-8834-70cfbe0c97b9
+```
+
+**Response:**
+```json
+{
+  "workspace_id": "3fabfb3c-80d1-4991-8834-70cfbe0c97b9",
+  "summary": {
+    "domains_with_bounces": 36,
+    "total_bounces_24h": 281,
+    "inboxes_with_bounces_24h": 176
+  },
+  "domains": [
+    {
+      "domain": "enableselery.com",
+      "esp": "microsoft",
+      "total_inboxes": 52,
+      "inboxes_with_bounces_24h": 16,
+      "total_bounces_24h": 18,
+      "inboxes_with_bounces_alltime": 16,
+      "total_bounces_alltime": 18,
+      "dead_inboxes": 0,
+      "live_connected": 52
+    }
+  ]
+}
+```
+
+**Example - Kill Trigger by ESP:**
+```
+GET /api/health/analysis/kill-trigger-by-esp
+```
+
+**Response:**
+```json
+{
+  "esp_summary": [
+    {"provider": "microsoft", "total_inboxes": 3936, "dead_count": 914, "kill_rate_pct": 23.2},
+    {"provider": "google", "total_inboxes": 537, "dead_count": 216, "kill_rate_pct": 40.2}
+  ],
+  "triggers_by_esp": [
+    {"provider": "microsoft", "trigger_type": "fresh_inbox_bounce", "count": 659},
+    {"provider": "microsoft", "trigger_type": "spam_complaint", "count": 185},
+    {"provider": "google", "trigger_type": "hard_bounces_24h", "count": 127},
+    {"provider": "google", "trigger_type": "spam_complaint", "count": 20}
+  ]
+}
+```
+
+---
+
 ## Error Responses
 
 All endpoints return standard HTTP status codes:
