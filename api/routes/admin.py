@@ -85,8 +85,19 @@ async def export_database(
 
     from database import fetch_all, get_pool
 
-    # Tables to exclude
-    excluded = {"sync_audit_log", "response_messages", "activity_log"} if exclude_audit else set()
+    # Tables to exclude - large audit/snapshot tables not needed for local debugging
+    excluded = set()
+    if exclude_audit:
+        excluded.update({
+            # Audit logs
+            "sync_audit_log", "response_messages", "activity_log",
+            # Large snapshot tables (historical data, not critical)
+            "sender_warmup_snapshots",  # ~400k rows
+            "campaign_inboxes",          # ~30k rows
+            "campaign_events",           # ~25k rows
+            "campaign_burn_events",      # ~12k rows
+            "health_events",             # ~5k rows
+        })
 
     # Also exclude views and system tables
     excluded.add("pg_stat_statements")
