@@ -3042,3 +3042,105 @@ async def analyze_kill_trigger_lifecycle():
             "migration": "079_backfill_sending_started_at.sql backfills from campaign_inboxes.assigned_at"
         }
     }
+
+
+@router.get("/analysis/kill-trigger-by-esp")
+async def analyze_kill_triggers_by_esp():
+    """
+    Kill trigger analysis segmented by ESP (Microsoft vs Google).
+
+    Compares infrastructure performance:
+    - Kill rates by provider
+    - Trigger type distribution by provider
+    - Domain-level breakdown for worst performers
+    - Survival rates (live inboxes / total inboxes)
+    """
+    # Overall ESP comparison
+    esp_summary = await fetch_all("""
+        SELECT
+            CASE
+                WHEN LOWER(esp::text) IN ('microsoft', 'outlook', 'entra') THEN 'microsoft'
+                WHEN LOWER(esp::text) = 'google' THEN 'google'
+                ELSE 'other'
+            END as provider,
+            COUNT(*) as total_inboxes,
+            COUNT(*) FILTER (WHERE inbox_state = 'dead') as dead_count,
+            COUNT(*) FILTER (WHERE inbox_state = 'live') as live_count,
+            ROUND(100.0 * COUNT(*) FILTER (WHERE inbox_state = 'dead') / NULLIF(COUNT(*), 0), 1) as kill_rate_pct,
+            ROUND(AVG(EXTRACT(day FROM (killed_at - warmup_started_at))) FILTER (WHERE killed_at IS NOT NULL), 1) as avg_days_to_death
+        FROM sender_accounts
+        WHERE warmup_started_at IS NOT NULL
+        GROUP BY 1
+        ORDER BY total_inboxes DESC
+    """)
+
+    # Kill triggers by ESP
+    triggers_by_esp = await fetch_all("""
+        SELECT
+            CASE
+                WHEN LOWER(esp::text) IN ('microsoft', 'outlook', 'entra') THEN 'microsoft'
+                WHEN LOWER(esp::text) = 'google' THEN 'google'
+                ELSE 'other'
+            END as provider,
+            kill_trigger::text as trigger_type,
+            COUNT(*) as count,
+            ROUND(AVG(EXTRACT(day FROM (killed_at - sending_started_at))) FILTER (WHERE sending_started_at IS NOT NULL), 1) as avg_days_from_sending
+        FROM sender_accounts
+        WHERE kill_trigger IS NOT NULL
+          AND killed_at IS NOT NULL
+        GROUP BY 1, 2
+        ORDER BY 1, count DESC
+    """)
+
+    # Domain-level analysis (worst performing domains)
+    domain_breakdown = await fetch_all("""
+        SELECT
+            d.domain_name,
+            CASE
+                WHEN LOWER(sa.esp::text) IN ('microsoft', 'outlook', 'entra') THEN 'microsoft'
+                WHEN LOWER(sa.esp::text) = 'google' THEN 'google'
+                ELSE 'other'
+            END as provider,
+            COUNT(*) as total_inboxes,
+            COUNT(*) FILTER (WHERE sa.inbox_state = 'dead') as dead_count,
+            COUNT(*) FILTER (WHERE sa.inbox_state = 'live') as live_count,
+            ROUND(100.0 * COUNT(*) FILTER (WHERE sa.inbox_state = 'dead') / NULLIF(COUNT(*), 0), 1) as kill_rate_pct,
+            array_agg(DISTINCT sa.kill_trigger::text) FILTER (WHERE sa.kill_trigger IS NOT NULL) as trigger_types
+        FROM sender_accounts sa
+        LEFT JOIN domains d ON sa.domain_id = d.id
+        WHERE sa.warmup_started_at IS NOT NULL
+        GROUP BY d.domain_name, 2
+        HAVING COUNT(*) FILTER (WHERE sa.inbox_state = 'dead') > 0
+        ORDER BY dead_count DESC
+        LIMIT 30
+    """)
+
+    # Lifecycle comparison by ESP
+    lifecycle_by_esp = await fetch_all("""
+        SELECT
+            CASE
+                WHEN LOWER(esp::text) IN ('microsoft', 'outlook', 'entra') THEN 'microsoft'
+                WHEN LOWER(esp::text) = 'google' THEN 'google'
+                ELSE 'other'
+            END as provider,
+            CASE
+                WHEN sending_started_at IS NULL THEN 'killed_during_warmup'
+                WHEN killed_at < sending_started_at + INTERVAL '14 days' THEN 'first_2_weeks'
+                WHEN killed_at < sending_started_at + INTERVAL '30 days' THEN 'week_2_to_4'
+                ELSE 'beyond_month'
+            END AS lifecycle_stage,
+            COUNT(*) as count
+        FROM sender_accounts
+        WHERE kill_trigger IS NOT NULL
+          AND killed_at IS NOT NULL
+          AND warmup_started_at IS NOT NULL
+        GROUP BY 1, 2
+        ORDER BY 1, count DESC
+    """)
+
+    return {
+        "esp_summary": [dict(row) for row in esp_summary] if esp_summary else [],
+        "triggers_by_esp": [dict(row) for row in triggers_by_esp] if triggers_by_esp else [],
+        "worst_domains": [dict(row) for row in domain_breakdown] if domain_breakdown else [],
+        "lifecycle_by_esp": [dict(row) for row in lifecycle_by_esp] if lifecycle_by_esp else []
+    }
