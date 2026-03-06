@@ -556,22 +556,24 @@ async def trigger_manual_audit():
         # Build message
         today = datetime.now().strftime("%B %d, %Y")
 
-        # Kill trigger section
+        # Kill trigger section - clear visual separation between categories
         kill_lines = []
         if domain_killing:
-            kill_lines.append("*:rotating_light: Domain-Killing:*")
+            kill_lines.append(":rotating_light: *Domain-Killing* (reputation compromised)")
             for t in domain_killing:
                 workspaces = ", ".join(t["workspaces"][:3]) if t["workspaces"] else "unknown"
-                kill_lines.append(f"  • {t['trigger_type']}: *{t['count']}* ({t['domains_affected']} domains) - {workspaces}")
+                kill_lines.append(f"    `{t['trigger_type']}` → *{t['count']}* across {t['domains_affected']} domains ({workspaces})")
         if inbox_killing:
-            kill_lines.append("*:x: Inbox-Killing:*")
+            if domain_killing:
+                kill_lines.append("")  # Blank line separator
+            kill_lines.append(":x: *Inbox-Killing* (individual inbox issues)")
             for t in inbox_killing:
-                kill_lines.append(f"  • {t['trigger_type']}: *{t['count']}*")
-        kill_text = "\n".join(kill_lines) if kill_lines else "_No new kills_"
+                kill_lines.append(f"    `{t['trigger_type']}` → *{t['count']}*")
+        kill_text = "\n".join(kill_lines) if kill_lines else "_No new kills in last 24h_"
 
-        summary = f"*{total_kills} kills* "
+        summary = f"*{total_kills} total*"
         if domain_killing_count > 0:
-            summary += f"(:rotating_light: {domain_killing_count} domain-killing)"
+            summary += f" (:rotating_light: {domain_killing_count} domain-killing)"
 
         # Campaigns to watch section
         campaign_lines = []
@@ -587,20 +589,20 @@ async def trigger_manual_audit():
                 campaign_lines.append(f"• {c['campaign_name'][:30]} ({c['workspace_name']}): {', '.join(issues)}")
         campaign_text = "\n".join(campaign_lines) if campaign_lines else "_None_"
 
-        # Domains needing rotation section
+        # Domains needing rotation section - no per-domain icons, cleaner list
         rotation_lines = []
         for d in (domains_needing_rotation or [])[:5]:
-            emoji = ":biohazard_sign:" if d["rotation_reason"] == "spam_compromised" else ":skull:"
-            rotation_lines.append(f"{emoji} {d['domain_name']} ({d['workspace_name']}): {d['dead_inboxes']}/{d['total_inboxes']} dead")
+            reason_tag = "spam" if d["rotation_reason"] == "spam_compromised" else "dead"
+            rotation_lines.append(f"• `{d['domain_name']}` ({d['workspace_name']}) — {d['dead_inboxes']}/{d['total_inboxes']} dead [{reason_tag}]")
         rotation_text = "\n".join(rotation_lines) if rotation_lines else "_None_"
 
         blocks = [
             {"type": "header", "text": {"type": "plain_text", "text": f":clipboard: Daily Inbox Audit - {today}", "emoji": True}},
-            {"type": "section", "text": {"type": "mrkdwn", "text": f"*Kill Triggers (last 24h):* {summary}\n{kill_text}"}},
+            {"type": "section", "text": {"type": "mrkdwn", "text": f"*Kill Triggers (last 24h)* — {summary}\n\n{kill_text}"}},
             {"type": "divider"},
-            {"type": "section", "text": {"type": "mrkdwn", "text": f":eyes: *Campaigns to Watch:*\n{campaign_text}"}},
+            {"type": "section", "text": {"type": "mrkdwn", "text": f":eyes: *Campaigns to Watch*\n{campaign_text}"}},
             {"type": "divider"},
-            {"type": "section", "text": {"type": "mrkdwn", "text": f":recycle: *Domains Needing Rotation:*\n{rotation_text}"}},
+            {"type": "section", "text": {"type": "mrkdwn", "text": f":warning: *Domains Needing Rotation*\n{rotation_text}"}},
             {"type": "context", "elements": [{"type": "mrkdwn", "text": f":electric_plug: Disconnected: {disconnected['new_24h'] if disconnected else 0} new, {disconnected['total'] if disconnected else 0} total | _Rotation is client-driven_"}]},
             {"type": "divider"},
             {"type": "section", "text": {"type": "mrkdwn", "text": "*Download detailed reports:*"}},

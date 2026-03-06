@@ -239,28 +239,30 @@ def build_slack_message(stats: dict, audit_id: str) -> dict:
     today = datetime.now().strftime("%B %d, %Y")
     kill_stats = stats["kill_stats"]
 
-    # Build kill trigger section
+    # Build kill trigger section - clear visual separation between categories
     kill_lines = []
 
     # Domain-killing triggers (critical)
     if kill_stats["domain_killing"]:
-        kill_lines.append("*:rotating_light: Domain-Killing (reputation compromised):*")
+        kill_lines.append(":rotating_light: *Domain-Killing* (reputation compromised)")
         for t in kill_stats["domain_killing"]:
             workspaces = ", ".join(t["workspaces"][:3]) if t["workspaces"] else "unknown"
-            kill_lines.append(f"  • {t['trigger_type']}: *{t['count']}* ({t['domains_affected']} domains) - {workspaces}")
+            kill_lines.append(f"    `{t['trigger_type']}` → *{t['count']}* across {t['domains_affected']} domains ({workspaces})")
 
     # Inbox-killing triggers
     if kill_stats["inbox_killing"]:
-        kill_lines.append("*:x: Inbox-Killing:*")
+        if kill_stats["domain_killing"]:
+            kill_lines.append("")  # Blank line separator
+        kill_lines.append(":x: *Inbox-Killing* (individual inbox issues)")
         for t in kill_stats["inbox_killing"]:
-            kill_lines.append(f"  • {t['trigger_type']}: *{t['count']}*")
+            kill_lines.append(f"    `{t['trigger_type']}` → *{t['count']}*")
 
-    kill_text = "\n".join(kill_lines) if kill_lines else "_No new kills_"
+    kill_text = "\n".join(kill_lines) if kill_lines else "_No new kills in last 24h_"
 
     # Summary line
-    summary = f"*{kill_stats['total_kills']} kills* "
+    summary = f"*{kill_stats['total_kills']} total*"
     if kill_stats["domain_killing_count"] > 0:
-        summary += f"(:rotating_light: {kill_stats['domain_killing_count']} domain-killing)"
+        summary += f" (:rotating_light: {kill_stats['domain_killing_count']} domain-killing)"
 
     # Build campaigns to watch section
     campaign_lines = []
@@ -280,19 +282,19 @@ def build_slack_message(stats: dict, audit_id: str) -> dict:
 
     campaign_text = "\n".join(campaign_lines) if campaign_lines else "_None_"
 
-    # Build domains needing rotation section
+    # Build domains needing rotation section - no per-domain icons, cleaner list
     rotation_lines = []
     for d in stats["domains_needing_rotation"][:5]:
-        reason_emoji = {
-            "spam_compromised": ":biohazard_sign:",
-            "provider_blocked": ":no_entry:",
-            "all_dead": ":skull:",
-            "high_death_rate": ":warning:"
-        }.get(d["rotation_reason"], ":question:")
+        reason_tag = {
+            "spam_compromised": "spam",
+            "provider_blocked": "blocked",
+            "all_dead": "dead",
+            "high_death_rate": "failing"
+        }.get(d["rotation_reason"], "issue")
 
         rotation_lines.append(
-            f"{reason_emoji} {d['domain_name']} ({d['workspace_name']}): "
-            f"{d['dead_inboxes']}/{d['total_inboxes']} dead"
+            f"• `{d['domain_name']}` ({d['workspace_name']}) — "
+            f"{d['dead_inboxes']}/{d['total_inboxes']} dead [{reason_tag}]"
         )
 
     rotation_text = "\n".join(rotation_lines) if rotation_lines else "_None_"
@@ -324,7 +326,7 @@ def build_slack_message(stats: dict, audit_id: str) -> dict:
             "type": "section",
             "text": {
                 "type": "mrkdwn",
-                "text": f"*Kill Triggers (last 24h):* {summary}\n{kill_text}"
+                "text": f"*Kill Triggers (last 24h)* — {summary}\n\n{kill_text}"
             }
         },
         {
@@ -334,7 +336,7 @@ def build_slack_message(stats: dict, audit_id: str) -> dict:
             "type": "section",
             "text": {
                 "type": "mrkdwn",
-                "text": f":eyes: *Campaigns to Watch:*\n{campaign_text}"
+                "text": f":eyes: *Campaigns to Watch*\n{campaign_text}"
             }
         },
         {
@@ -344,7 +346,7 @@ def build_slack_message(stats: dict, audit_id: str) -> dict:
             "type": "section",
             "text": {
                 "type": "mrkdwn",
-                "text": f":recycle: *Domains Needing Rotation:*\n{rotation_text}"
+                "text": f":warning: *Domains Needing Rotation*\n{rotation_text}"
             }
         },
         {
@@ -354,7 +356,7 @@ def build_slack_message(stats: dict, audit_id: str) -> dict:
             "type": "section",
             "text": {
                 "type": "mrkdwn",
-                "text": f":bar_chart: *Client Capacity Status:*\n{capacity_text}"
+                "text": f":bar_chart: *Client Capacity Status*\n{capacity_text}"
             }
         },
         {
