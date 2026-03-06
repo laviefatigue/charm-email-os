@@ -266,7 +266,9 @@ class EmailBisonClient:
 
     async def create_tag(self, name: str) -> Dict:
         """Create a new tag in current workspace."""
-        return await self._request('POST', '/tags', json_data={'name': name})
+        response = await self._request('POST', '/tags', json_data={'name': name})
+        # API returns {"data": {...}}, extract the tag object
+        return response.get('data', response) if isinstance(response, dict) else response
 
     async def get_or_create_tag(self, name: str) -> Dict:
         """Get existing tag by name or create it."""
