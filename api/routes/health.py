@@ -3477,7 +3477,7 @@ async def analyze_domain_bounce_rollup(workspace_id: Optional[str] = None):
         params = []
 
         if workspace_id:
-            workspace_filter = "AND c.workspace_id = $1"
+            workspace_filter = "AND sa.workspace_id = $1"
             params.append(workspace_id)
 
         query = f"""
@@ -3497,7 +3497,7 @@ async def analyze_domain_bounce_rollup(workspace_id: Optional[str] = None):
                 COUNT(*) FILTER (WHERE sa.inbox_state = 'live' AND sa.status = 'Connected') as live_connected
             FROM sender_accounts sa
             JOIN domains d ON sa.domain_id = d.id
-            JOIN clients c ON sa.client_id = c.id
+                AND sa.workspace_id = d.workspace_id
             WHERE 1=1 {workspace_filter}
             GROUP BY d.domain_name, d.esp
             HAVING SUM(sa.hard_bounces_24h) > 0 OR SUM(sa.bounces_all_time) > 0
