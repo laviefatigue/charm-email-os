@@ -3187,7 +3187,40 @@ async def analyze_kill_triggers_by_esp(workspace_id: Optional[UUID] = None):
         "lifecycle_by_esp": [dict(row) for row in lifecycle_by_esp] if lifecycle_by_esp else [],
         "raw_esp_values": [dict(row) for row in esp_values] if esp_values else [],
         "bounce_data": dict(bounce_data[0]) if bounce_data else {},
-        "response_messages_bounces": dict(response_bounce_data[0]) if response_bounce_data else {}
+        "response_messages_bounces": dict(response_bounce_data[0]) if response_bounce_data else {},
+        "sync_diagnosis": await get_workspace_sync_diagnosis(workspace_id) if workspace_id else None
+    }
+
+
+async def get_workspace_sync_diagnosis(workspace_id: UUID):
+    """Check why events might not be syncing for a workspace."""
+    from database import fetch_one, fetch_all
+
+    workspace = await fetch_one("""
+        SELECT id, workspace_name, emailbison_workspace_id, is_active
+        FROM workspaces
+        WHERE id = $1
+    """, workspace_id)
+
+    if not workspace:
+        return {"error": "Workspace not found"}
+
+    campaigns = await fetch_all("""
+        SELECT campaign_name, campaign_status, emailbison_campaign_id
+        FROM emailbison_campaigns
+        WHERE workspace_id = $1
+    """, workspace_id)
+
+    active_campaigns = [c for c in campaigns if c['campaign_status'] in ('active', 'running', 'sending', 'paused')]
+
+    return {
+        "workspace_name": workspace['workspace_name'],
+        "is_active": workspace['is_active'],
+        "has_emailbison_id": workspace['emailbison_workspace_id'] is not None,
+        "total_campaigns": len(campaigns),
+        "active_campaigns": len(active_campaigns),
+        "campaign_statuses": [{"name": c['campaign_name'], "status": c['campaign_status']} for c in campaigns[:10]],
+        "sync_should_run": workspace['is_active'] and workspace['emailbison_workspace_id'] is not None and len(active_campaigns) > 0
     }
 
 
