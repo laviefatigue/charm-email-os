@@ -3060,7 +3060,7 @@ async def analyze_kill_triggers_by_esp():
         SELECT
             CASE
                 WHEN LOWER(esp::text) IN ('microsoft', 'outlook', 'entra') THEN 'microsoft'
-                WHEN LOWER(esp::text) = 'google' THEN 'google'
+                WHEN LOWER(esp::text) = 'gmail' THEN 'google'
                 ELSE 'other'
             END as provider,
             COUNT(*) as total_inboxes,
@@ -3079,7 +3079,7 @@ async def analyze_kill_triggers_by_esp():
         SELECT
             CASE
                 WHEN LOWER(esp::text) IN ('microsoft', 'outlook', 'entra') THEN 'microsoft'
-                WHEN LOWER(esp::text) = 'google' THEN 'google'
+                WHEN LOWER(esp::text) = 'gmail' THEN 'google'
                 ELSE 'other'
             END as provider,
             kill_trigger::text as trigger_type,
@@ -3120,7 +3120,7 @@ async def analyze_kill_triggers_by_esp():
         SELECT
             CASE
                 WHEN LOWER(esp::text) IN ('microsoft', 'outlook', 'entra') THEN 'microsoft'
-                WHEN LOWER(esp::text) = 'google' THEN 'google'
+                WHEN LOWER(esp::text) = 'gmail' THEN 'google'
                 ELSE 'other'
             END as provider,
             CASE
