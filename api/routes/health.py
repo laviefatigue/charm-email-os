@@ -2770,7 +2770,7 @@ async def export_capacity_gaps():
             COUNT(*) as compromised_inboxes
         FROM sender_accounts sa
         JOIN domains d ON sa.domain_id = d.id
-        WHERE sa.kill_trigger IN ('spam_complaint', 'provider_block_google', 'provider_block_microsoft')
+        WHERE sa.kill_trigger::text IN ('spam_complaint', 'provider_block_google', 'provider_block_microsoft')
         GROUP BY sa.workspace_id
     """)
     compromised_map = {str(c["workspace_id"]): c for c in compromised}
