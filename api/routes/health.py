@@ -3852,7 +3852,7 @@ async def analyze_warmup_status():
             ORDER BY COUNT(*) FILTER (WHERE sa.status = 'Connected' AND (sa.warmup_enabled = FALSE OR sa.warmup_enabled IS NULL)) DESC
         """)
 
-        # Sample of connected inboxes without warmup
+        # Sample of connected inboxes without warmup - include diagnostic fields
         samples = await fetch_all("""
             SELECT
                 sa.email_address,
@@ -3860,7 +3860,11 @@ async def analyze_warmup_status():
                 sa.status,
                 sa.warmup_enabled,
                 sa.warmup_started_at,
-                sa.inbox_state
+                sa.inbox_state,
+                sa.emailbison_account_id,
+                sa.is_active as inbox_is_active,
+                w.is_active as workspace_is_active,
+                w.emailbison_workspace_id
             FROM sender_accounts sa
             JOIN domains d ON sa.domain_id = d.id
             JOIN workspaces w ON d.workspace_id = w.id
