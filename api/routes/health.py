@@ -3025,15 +3025,7 @@ async def analyze_kill_trigger_lifecycle():
           AND killed_at IS NOT NULL
           AND warmup_started_at IS NOT NULL
         GROUP BY 1
-        ORDER BY
-            CASE lifecycle_stage
-                WHEN 'killed_during_warmup' THEN 1
-                WHEN 'first_2_weeks' THEN 2
-                WHEN 'week_2_to_4' THEN 3
-                WHEN 'month_1_to_2' THEN 4
-                WHEN 'month_2_to_3' THEN 5
-                ELSE 6
-            END
+        ORDER BY count DESC
     """)
 
     total_kills = sum(row["total"] for row in totals_by_trigger) if totals_by_trigger else 0
