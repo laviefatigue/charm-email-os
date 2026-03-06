@@ -3773,10 +3773,17 @@ async def backfill_kill_triggers(confirm: bool = False):
         }
 
     # Execute backfill from kill_queue (has trigger_type)
+    # Map old trigger names to valid enum values
     await execute("""
         UPDATE sender_accounts sa
         SET
-            kill_trigger = kq.trigger_type::kill_trigger_type,
+            kill_trigger = (
+                CASE kq.trigger_type
+                    WHEN 'fresh_inbox_hard_bounce' THEN 'fresh_inbox_bounce'
+                    WHEN 'hard_blocked' THEN 'hard_blocked_24h'
+                    ELSE kq.trigger_type
+                END
+            )::kill_trigger_type,
             killed_at = COALESCE(sa.killed_at, kq.tagged_at, kq.queued_at)
         FROM (
             SELECT DISTINCT ON (inbox_id)
