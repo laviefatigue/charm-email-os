@@ -3206,7 +3206,7 @@ async def get_workspace_sync_diagnosis(workspace_id: UUID):
         return {"error": "Workspace not found"}
 
     campaigns = await fetch_all("""
-        SELECT campaign_name, campaign_status, emailbison_campaign_id
+        SELECT campaign_name, campaign_status, emailbison_campaign_id, last_seen_at, updated_at
         FROM emailbison_campaigns
         WHERE workspace_id = $1
     """, workspace_id)
@@ -3219,7 +3219,7 @@ async def get_workspace_sync_diagnosis(workspace_id: UUID):
         "has_emailbison_id": workspace['emailbison_workspace_id'] is not None,
         "total_campaigns": len(campaigns),
         "active_campaigns": len(active_campaigns),
-        "campaign_statuses": [{"name": c['campaign_name'], "status": c['campaign_status']} for c in campaigns[:10]],
+        "campaign_statuses": [{"name": c['campaign_name'], "status": c['campaign_status'], "last_seen": str(c['last_seen_at']) if c['last_seen_at'] else None} for c in campaigns[:10]],
         "sync_should_run": workspace['is_active'] and workspace['emailbison_workspace_id'] is not None and len(active_campaigns) > 0
     }
 
