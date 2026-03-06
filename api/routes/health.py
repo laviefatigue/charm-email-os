@@ -3213,6 +3213,22 @@ async def get_workspace_sync_diagnosis(workspace_id: UUID):
 
     active_campaigns = [c for c in campaigns if c['campaign_status'] in ('active', 'running', 'sending', 'paused')]
 
+    # Get sync_status for campaigns
+    sync_status = await fetch_one("""
+        SELECT sync_type, last_successful_sync, last_sync_record_count, updated_at
+        FROM sync_status
+        WHERE workspace_id = $1 AND sync_type = 'campaigns'
+    """, workspace_id)
+
+    # Get recent sync audit logs for campaigns (last 5)
+    recent_syncs = await fetch_all("""
+        SELECT sync_type, started_at, completed_at, status, records_processed, records_updated, error_message
+        FROM sync_audit_log
+        WHERE workspace_id = $1 AND sync_type = 'campaigns'
+        ORDER BY started_at DESC
+        LIMIT 5
+    """, workspace_id)
+
     return {
         "workspace_name": workspace['workspace_name'],
         "is_active": workspace['is_active'],
@@ -3221,7 +3237,21 @@ async def get_workspace_sync_diagnosis(workspace_id: UUID):
         "total_campaigns": len(campaigns),
         "active_campaigns": len(active_campaigns),
         "campaign_statuses": [{"name": c['campaign_name'], "status": c['campaign_status'], "last_seen": str(c['last_seen_at']) if c['last_seen_at'] else None} for c in campaigns[:10]],
-        "sync_should_run": workspace['is_active'] and workspace['emailbison_workspace_id'] is not None and len(active_campaigns) > 0
+        "sync_should_run": workspace['is_active'] and workspace['emailbison_workspace_id'] is not None and len(active_campaigns) > 0,
+        "sync_status": {
+            "last_successful_sync": str(sync_status['last_successful_sync']) if sync_status and sync_status['last_successful_sync'] else None,
+            "last_record_count": sync_status['last_sync_record_count'] if sync_status else None,
+        } if sync_status else None,
+        "recent_syncs": [
+            {
+                "started_at": str(s['started_at']) if s['started_at'] else None,
+                "status": s['status'],
+                "records": s['records_processed'],
+                "updated": s['records_updated'],
+                "error": s['error_message'][:100] if s['error_message'] else None
+            }
+            for s in recent_syncs
+        ] if recent_syncs else []
     }
 
 
