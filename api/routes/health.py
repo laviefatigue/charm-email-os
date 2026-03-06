@@ -3548,7 +3548,7 @@ async def analyze_inbox_death_breakdown(workspace_id: Optional[str] = None):
             WITH inbox_status AS (
                 SELECT
                     sa.id,
-                    sa.email,
+                    sa.sender_email,
                     sa.status,
                     sa.inbox_state,
                     sa.killed_at,
