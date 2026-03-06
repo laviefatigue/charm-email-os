@@ -3156,6 +3156,46 @@ async def analyze_kill_triggers_by_esp():
     }
 
 
+@router.get("/analysis/verify-inbox/{emailbison_id}")
+async def verify_inbox_data(emailbison_id: int):
+    """
+    Verify our database matches EmailBison for a specific inbox.
+    Cross-reference tool for data integrity checks.
+    """
+    inbox = await fetch_one("""
+        SELECT
+            sa.id,
+            sa.emailbison_id,
+            sa.email,
+            sa.inbox_state,
+            sa.kill_trigger::text,
+            sa.killed_at,
+            sa.status,
+            sa.esp::text as esp,
+            sa.warmup_started_at,
+            sa.sending_started_at,
+            d.domain_name,
+            w.workspace_name
+        FROM sender_accounts sa
+        LEFT JOIN domains d ON sa.domain_id = d.id
+        LEFT JOIN workspaces w ON sa.workspace_id = w.id
+        WHERE sa.emailbison_id = $1
+    """, emailbison_id)
+
+    if not inbox:
+        return {"found": False, "emailbison_id": emailbison_id, "message": "Not found in our database"}
+
+    return {
+        "found": True,
+        "our_database": dict(inbox),
+        "verification_notes": {
+            "inbox_state_should_match": "dead if tagged flagged_*, live otherwise",
+            "kill_trigger_should_match": "tag name minus 'flagged_' prefix",
+            "status_from_emailbison": "Connected/Not connected synced from API"
+        }
+    }
+
+
 @router.get("/analysis/domain-capacity-impact")
 async def analyze_domain_capacity_impact():
     """
