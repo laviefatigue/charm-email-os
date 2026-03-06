@@ -3636,3 +3636,105 @@ async def analyze_inbox_death_breakdown(workspace_id: Optional[str] = None):
     except Exception as e:
         logger.error(f"inbox-death-breakdown failed: {type(e).__name__}: {e}")
         raise HTTPException(status_code=500, detail=f"Query failed: {str(e)}")
+
+
+@router.get("/analysis/kill-trigger-data-quality")
+async def analyze_kill_trigger_data_quality():
+    """
+    Diagnostic: Check kill trigger data quality before backfill.
+
+    Shows:
+    - Dead inboxes with/without kill_trigger
+    - Available data sources for backfill
+    - Breakdown by workspace
+    """
+    try:
+        # Overall summary
+        summary = await fetch_one("""
+            SELECT
+                COUNT(*) FILTER (WHERE inbox_state = 'dead') as total_dead,
+                COUNT(*) FILTER (WHERE inbox_state = 'dead' AND kill_trigger IS NOT NULL) as has_trigger,
+                COUNT(*) FILTER (WHERE inbox_state = 'dead' AND kill_trigger IS NULL) as missing_trigger,
+                COUNT(*) FILTER (WHERE inbox_state = 'dead' AND killed_at IS NOT NULL) as has_killed_at,
+                COUNT(*) FILTER (WHERE inbox_state = 'dead' AND killed_at IS NULL) as missing_killed_at
+            FROM sender_accounts
+        """)
+
+        # By workspace
+        by_workspace = await fetch_all("""
+            SELECT
+                w.workspace_name,
+                COUNT(*) as total_dead,
+                COUNT(*) FILTER (WHERE sa.kill_trigger IS NOT NULL) as has_trigger,
+                COUNT(*) FILTER (WHERE sa.kill_trigger IS NULL) as missing_trigger,
+                ROUND(100.0 * COUNT(*) FILTER (WHERE sa.kill_trigger IS NOT NULL) / NULLIF(COUNT(*), 0), 1) as pct_tracked
+            FROM sender_accounts sa
+            JOIN domains d ON sa.domain_id = d.id
+            JOIN workspaces w ON d.workspace_id = w.id
+            WHERE sa.inbox_state = 'dead'
+            GROUP BY w.workspace_name
+            ORDER BY missing_trigger DESC
+        """)
+
+        # Data sources available for untracked deaths
+        untracked_ids_subquery = """
+            SELECT id FROM sender_accounts WHERE inbox_state = 'dead' AND kill_trigger IS NULL
+        """
+
+        campaign_bounce = await fetch_one(f"""
+            SELECT COUNT(DISTINCT sender_account_id) as count
+            FROM campaign_events
+            WHERE event_type = 'bounce'
+              AND sender_account_id IN ({untracked_ids_subquery})
+        """)
+
+        campaign_spam = await fetch_one(f"""
+            SELECT COUNT(DISTINCT sender_account_id) as count
+            FROM campaign_events
+            WHERE event_type = 'spam'
+              AND sender_account_id IN ({untracked_ids_subquery})
+        """)
+
+        kill_queue_data = await fetch_one(f"""
+            SELECT COUNT(DISTINCT inbox_id) as count
+            FROM kill_queue
+            WHERE inbox_id IN ({untracked_ids_subquery})
+        """)
+
+        trigger_events_data = await fetch_one(f"""
+            SELECT COUNT(DISTINCT inbox_id) as count
+            FROM kill_trigger_events
+            WHERE inbox_id IN ({untracked_ids_subquery})
+        """)
+
+        # Metric inference potential
+        metric_inference = await fetch_all(f"""
+            SELECT
+                CASE
+                    WHEN complaints_lifetime > 0 THEN 'has_complaints'
+                    WHEN bounces_all_time > 0 THEN 'has_bounces'
+                    ELSE 'no_metrics'
+                END as inference_type,
+                COUNT(*) as count
+            FROM sender_accounts
+            WHERE inbox_state = 'dead'
+              AND kill_trigger IS NULL
+            GROUP BY 1
+            ORDER BY count DESC
+        """)
+
+        return {
+            "summary": dict(summary) if summary else {},
+            "by_workspace": [dict(row) for row in by_workspace] if by_workspace else [],
+            "data_sources_for_untracked": {
+                "campaign_events_bounce": campaign_bounce['count'] if campaign_bounce else 0,
+                "campaign_events_spam": campaign_spam['count'] if campaign_spam else 0,
+                "kill_queue": kill_queue_data['count'] if kill_queue_data else 0,
+                "kill_trigger_events": trigger_events_data['count'] if trigger_events_data else 0
+            },
+            "metric_inference_potential": [dict(row) for row in metric_inference] if metric_inference else [],
+            "recommendation": "Run migration 081_backfill_kill_triggers_historical.sql to backfill"
+        }
+    except Exception as e:
+        logger.error(f"kill-trigger-data-quality failed: {type(e).__name__}: {e}")
+        raise HTTPException(status_code=500, detail=f"Query failed: {str(e)}")
