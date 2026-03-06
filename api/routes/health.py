@@ -3154,3 +3154,154 @@ async def analyze_kill_triggers_by_esp():
         "lifecycle_by_esp": [dict(row) for row in lifecycle_by_esp] if lifecycle_by_esp else [],
         "raw_esp_values": [dict(row) for row in esp_values] if esp_values else []
     }
+
+
+@router.get("/analysis/domain-capacity-impact")
+async def analyze_domain_capacity_impact():
+    """
+    Domain lifespan and sending capacity impact analysis.
+
+    Capacity model:
+    - Microsoft/Entra: 50 inboxes/domain × 2 emails/day = 100 emails/day/domain
+    - Google: 3 inboxes/domain × 20 emails/day = 60 emails/day/domain
+
+    Analyzes:
+    - Domain lifespan by ESP (first inbox to domain death)
+    - Capacity lost per domain kill
+    - Domain-killing vs inbox-killing trigger distribution
+    """
+    # Domain lifespan by ESP
+    domain_lifespan = await fetch_all("""
+        WITH domain_stats AS (
+            SELECT
+                d.id,
+                d.domain_name,
+                d.provider,
+                d.domain_state,
+                d.killed_at as domain_killed_at,
+                MIN(sa.warmup_started_at) as first_inbox_warmup,
+                MAX(sa.killed_at) as last_inbox_killed,
+                COUNT(*) as total_inboxes,
+                COUNT(*) FILTER (WHERE sa.inbox_state = 'dead') as dead_inboxes,
+                COUNT(*) FILTER (WHERE sa.inbox_state = 'live') as live_inboxes,
+                COUNT(DISTINCT sa.kill_trigger) FILTER (WHERE sa.kill_trigger IN ('spam_complaint', 'provider_block_google', 'provider_block_microsoft', 'provider_block_yahoo')) as domain_killing_triggers
+            FROM domains d
+            LEFT JOIN sender_accounts sa ON sa.domain_id = d.id
+            WHERE d.provider IS NOT NULL
+            GROUP BY d.id, d.domain_name, d.provider, d.domain_state, d.killed_at
+        )
+        SELECT
+            CASE
+                WHEN LOWER(provider) IN ('microsoft', 'outlook', 'entra') THEN 'microsoft'
+                WHEN LOWER(provider) IN ('google', 'gmail') THEN 'google'
+                ELSE 'other'
+            END as esp,
+            COUNT(*) as total_domains,
+            COUNT(*) FILTER (WHERE domain_state = 'dead' OR dead_inboxes = total_inboxes) as dead_domains,
+            COUNT(*) FILTER (WHERE domain_killing_triggers > 0) as domains_with_spam_complaints,
+            ROUND(AVG(EXTRACT(day FROM (COALESCE(domain_killed_at, last_inbox_killed, NOW()) - first_inbox_warmup))) FILTER (WHERE first_inbox_warmup IS NOT NULL), 1) as avg_domain_lifespan_days,
+            ROUND(AVG(total_inboxes), 1) as avg_inboxes_per_domain,
+            SUM(dead_inboxes) as total_dead_inboxes,
+            SUM(live_inboxes) as total_live_inboxes
+        FROM domain_stats
+        GROUP BY 1
+        ORDER BY total_domains DESC
+    """)
+
+    # Capacity impact calculation
+    capacity_impact = await fetch_all("""
+        WITH domain_capacity AS (
+            SELECT
+                d.id,
+                d.domain_name,
+                CASE
+                    WHEN LOWER(d.provider) IN ('microsoft', 'outlook', 'entra') THEN 'microsoft'
+                    WHEN LOWER(d.provider) IN ('google', 'gmail') THEN 'google'
+                    ELSE 'other'
+                END as esp,
+                d.domain_state,
+                COUNT(*) FILTER (WHERE sa.inbox_state = 'live' AND sa.status = 'Connected') as live_connected,
+                COUNT(*) FILTER (WHERE sa.inbox_state = 'dead') as dead_inboxes,
+                CASE
+                    WHEN LOWER(d.provider) IN ('microsoft', 'outlook', 'entra') THEN 2
+                    WHEN LOWER(d.provider) IN ('google', 'gmail') THEN 20
+                    ELSE 2
+                END as emails_per_inbox
+            FROM domains d
+            LEFT JOIN sender_accounts sa ON sa.domain_id = d.id
+            WHERE d.provider IS NOT NULL
+            GROUP BY d.id, d.domain_name, d.provider, d.domain_state
+        )
+        SELECT
+            esp,
+            SUM(live_connected * emails_per_inbox) as current_daily_capacity,
+            SUM(dead_inboxes * emails_per_inbox) as lost_daily_capacity,
+            SUM((live_connected + dead_inboxes) * emails_per_inbox) as theoretical_max,
+            ROUND(100.0 * SUM(dead_inboxes * emails_per_inbox) / NULLIF(SUM((live_connected + dead_inboxes) * emails_per_inbox), 0), 1) as capacity_loss_pct,
+            COUNT(*) as total_domains,
+            COUNT(*) FILTER (WHERE domain_state = 'dead' OR live_connected = 0) as dead_domains
+        FROM domain_capacity
+        GROUP BY esp
+        ORDER BY current_daily_capacity DESC
+    """)
+
+    # Domain-killing trigger impact
+    domain_killing_impact = await fetch_all("""
+        SELECT
+            CASE
+                WHEN LOWER(sa.esp::text) IN ('microsoft', 'outlook', 'entra') THEN 'microsoft'
+                WHEN LOWER(sa.esp::text) = 'gmail' THEN 'google'
+                ELSE 'other'
+            END as esp,
+            COUNT(DISTINCT d.id) as domains_affected,
+            COUNT(*) as inboxes_killed,
+            CASE
+                WHEN LOWER(sa.esp::text) IN ('microsoft', 'outlook', 'entra') THEN COUNT(DISTINCT d.id) * 100
+                WHEN LOWER(sa.esp::text) = 'gmail' THEN COUNT(DISTINCT d.id) * 60
+                ELSE COUNT(DISTINCT d.id) * 100
+            END as capacity_lost_per_day
+        FROM sender_accounts sa
+        JOIN domains d ON sa.domain_id = d.id
+        WHERE sa.kill_trigger IN ('spam_complaint', 'provider_block_google', 'provider_block_microsoft')
+        AND sa.killed_at IS NOT NULL
+        GROUP BY 1
+        ORDER BY domains_affected DESC
+    """)
+
+    # Worst domains by capacity loss
+    worst_capacity_loss = await fetch_all("""
+        SELECT
+            d.domain_name,
+            CASE
+                WHEN LOWER(d.provider) IN ('microsoft', 'outlook', 'entra') THEN 'microsoft'
+                WHEN LOWER(d.provider) IN ('google', 'gmail') THEN 'google'
+                ELSE 'other'
+            END as esp,
+            COUNT(*) as total_inboxes,
+            COUNT(*) FILTER (WHERE sa.inbox_state = 'dead') as dead,
+            COUNT(*) FILTER (WHERE sa.inbox_state = 'live') as live,
+            EXTRACT(day FROM (MAX(sa.killed_at) - MIN(sa.warmup_started_at)))::int as lifespan_days,
+            array_agg(DISTINCT sa.kill_trigger::text) FILTER (WHERE sa.kill_trigger IS NOT NULL) as triggers,
+            CASE
+                WHEN LOWER(d.provider) IN ('microsoft', 'outlook', 'entra') THEN COUNT(*) FILTER (WHERE sa.inbox_state = 'dead') * 2
+                ELSE COUNT(*) FILTER (WHERE sa.inbox_state = 'dead') * 20
+            END as daily_capacity_lost
+        FROM domains d
+        JOIN sender_accounts sa ON sa.domain_id = d.id
+        WHERE d.provider IS NOT NULL
+        GROUP BY d.id, d.domain_name, d.provider
+        HAVING COUNT(*) FILTER (WHERE sa.inbox_state = 'dead') > 0
+        ORDER BY daily_capacity_lost DESC
+        LIMIT 20
+    """)
+
+    return {
+        "domain_lifespan_by_esp": [dict(row) for row in domain_lifespan] if domain_lifespan else [],
+        "capacity_impact_by_esp": [dict(row) for row in capacity_impact] if capacity_impact else [],
+        "domain_killing_trigger_impact": [dict(row) for row in domain_killing_impact] if domain_killing_impact else [],
+        "worst_capacity_loss_domains": [dict(row) for row in worst_capacity_loss] if worst_capacity_loss else [],
+        "capacity_model": {
+            "microsoft": {"inboxes_per_domain": 50, "emails_per_inbox": 2, "per_domain": 100},
+            "google": {"inboxes_per_domain": 3, "emails_per_inbox": 20, "per_domain": 60}
+        }
+    }
