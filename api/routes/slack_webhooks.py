@@ -454,31 +454,179 @@ async def resolve_correction(
 
 @router.post("/trigger-audit")
 async def trigger_manual_audit():
-    """Manually trigger an audit message using the centralized slack_audit module.
+    """Manually trigger an audit message (for testing).
 
-    This ensures consistency between manual triggers and scheduled audits.
+    Uses the same filters as the CSV exports for data consistency:
+    - Active workspaces only (w.is_active = TRUE)
+    - Inboxes with EmailBison IDs only (sa.emailbison_account_id IS NOT NULL)
     """
+    SLACK_WEBHOOK_URL = os.getenv("SLACK_AUDIT_WEBHOOK_URL")
+    PUBLIC_API_URL = os.getenv("PUBLIC_API_URL", "https://api.wizardgrimoire.cloud")
+
+    # Domain-killing triggers (entire domain reputation compromised)
+    DOMAIN_KILLING_TRIGGERS = {'spam_complaint', 'provider_block_google', 'provider_block_microsoft', 'provider_block_yahoo'}
+
+    if not SLACK_WEBHOOK_URL:
+        return {"success": False, "error": "SLACK_AUDIT_WEBHOOK_URL not configured"}
+
     try:
-        # Import here to avoid circular imports
-        import sys
-        sys.path.insert(0, '/app')
-        from sync_modules.slack_audit import send_daily_audit, get_daily_audit_stats
+        # Get kill stats (filtered to active workspaces and EmailBison inboxes)
+        kill_stats = await fetch_all("""
+            SELECT sa.kill_trigger::text as trigger_type, COUNT(*) as count,
+                   COUNT(DISTINCT sa.domain_id) as domains_affected,
+                   array_agg(DISTINCT w.workspace_name) as workspaces
+            FROM sender_accounts sa
+            JOIN workspaces w ON sa.workspace_id = w.id
+            WHERE sa.killed_at >= NOW() - INTERVAL '24 hours'
+            AND sa.kill_trigger IS NOT NULL
+            AND sa.emailbison_account_id IS NOT NULL
+            AND w.is_active = TRUE
+            GROUP BY sa.kill_trigger
+            ORDER BY count DESC
+        """)
 
-        # Get stats for the response
-        stats = await get_daily_audit_stats()
+        # Separate domain-killing from inbox-killing
+        domain_killing = []
+        inbox_killing = []
+        for row in kill_stats or []:
+            trigger = row['trigger_type']
+            if trigger in DOMAIN_KILLING_TRIGGERS or trigger.startswith('provider_block_'):
+                domain_killing.append(row)
+            else:
+                inbox_killing.append(row)
 
-        # Send the actual audit using the centralized module
-        result = await send_daily_audit()
+        total_kills = sum(row["count"] for row in kill_stats) if kill_stats else 0
+        domain_killing_count = sum(row["count"] for row in domain_killing)
 
-        if result["success"]:
-            return {
-                "success": True,
-                "audit_id": result.get("audit_id"),
-                "total_kills": stats["kill_stats"]["total_kills"],
-                "total_disconnected": stats["disconnected_total"]
-            }
-        else:
-            return result
+        # Get disconnected stats (filtered consistently)
+        disconnected = await fetch_one("""
+            SELECT
+                COUNT(*) FILTER (WHERE sa.updated_at >= NOW() - INTERVAL '24 hours') as new_24h,
+                COUNT(*) as total
+            FROM sender_accounts sa
+            JOIN workspaces w ON sa.workspace_id = w.id
+            WHERE sa.status != 'Connected'
+            AND sa.inbox_state = 'live'
+            AND sa.emailbison_account_id IS NOT NULL
+            AND w.is_active = TRUE
+        """)
+
+        # Campaigns to watch
+        campaigns_to_watch = await fetch_all("""
+            SELECT ec.campaign_name, w.workspace_name, ec.inboxes_burned_7d,
+                   ec.domains_burned_7d, ec.campaign_state
+            FROM emailbison_campaigns ec
+            JOIN workspaces w ON ec.workspace_id = w.id
+            WHERE w.is_active = TRUE
+            AND (ec.inboxes_burned_7d >= 2 OR ec.domains_burned_7d >= 2 OR ec.campaign_state = 'quarantined')
+            ORDER BY ec.inboxes_burned_7d DESC
+            LIMIT 5
+        """)
+
+        # Domains needing rotation
+        domains_needing_rotation = await fetch_all("""
+            SELECT d.domain_name, w.workspace_name,
+                   COUNT(*) as total_inboxes,
+                   COUNT(*) FILTER (WHERE sa.inbox_state = 'dead') as dead_inboxes,
+                   COUNT(*) FILTER (WHERE sa.kill_trigger = 'spam_complaint') as spam_complaints,
+                   CASE
+                       WHEN COUNT(*) FILTER (WHERE sa.kill_trigger = 'spam_complaint') > 0 THEN 'spam_compromised'
+                       WHEN COUNT(*) FILTER (WHERE sa.inbox_state = 'dead') = COUNT(*) THEN 'all_dead'
+                       ELSE 'high_death_rate'
+                   END as rotation_reason
+            FROM domains d
+            JOIN sender_accounts sa ON sa.domain_id = d.id
+            JOIN workspaces w ON d.workspace_id = w.id
+            WHERE w.is_active = TRUE
+            GROUP BY d.id, d.domain_name, w.workspace_name
+            HAVING COUNT(*) FILTER (WHERE sa.kill_trigger = 'spam_complaint') > 0
+                OR COUNT(*) FILTER (WHERE sa.inbox_state = 'dead') = COUNT(*)
+            ORDER BY CASE WHEN COUNT(*) FILTER (WHERE sa.kill_trigger = 'spam_complaint') > 0 THEN 1 ELSE 2 END
+            LIMIT 5
+        """)
+
+        # Create audit record
+        audit_record = await fetch_one("""
+            INSERT INTO inbox_audits (audit_date, status, total_kills, total_disconnected)
+            VALUES (CURRENT_DATE, 'pending', $1, $2)
+            RETURNING id
+        """, total_kills, disconnected["total"] if disconnected else 0)
+        audit_id = str(audit_record["id"])
+
+        # Build message
+        today = datetime.now().strftime("%B %d, %Y")
+
+        # Kill trigger section
+        kill_lines = []
+        if domain_killing:
+            kill_lines.append("*:rotating_light: Domain-Killing:*")
+            for t in domain_killing:
+                workspaces = ", ".join(t["workspaces"][:3]) if t["workspaces"] else "unknown"
+                kill_lines.append(f"  • {t['trigger_type']}: *{t['count']}* ({t['domains_affected']} domains) - {workspaces}")
+        if inbox_killing:
+            kill_lines.append("*:x: Inbox-Killing:*")
+            for t in inbox_killing:
+                kill_lines.append(f"  • {t['trigger_type']}: *{t['count']}*")
+        kill_text = "\n".join(kill_lines) if kill_lines else "_No new kills_"
+
+        summary = f"*{total_kills} kills* "
+        if domain_killing_count > 0:
+            summary += f"(:rotating_light: {domain_killing_count} domain-killing)"
+
+        # Campaigns to watch section
+        campaign_lines = []
+        for c in (campaigns_to_watch or [])[:3]:
+            issues = []
+            if c["inboxes_burned_7d"] and c["inboxes_burned_7d"] >= 2:
+                issues.append(f"{c['inboxes_burned_7d']} burns")
+            if c["domains_burned_7d"] and c["domains_burned_7d"] >= 2:
+                issues.append(f"{c['domains_burned_7d']} domains")
+            if c["campaign_state"] == "quarantined":
+                issues.append("QUARANTINED")
+            if issues:
+                campaign_lines.append(f"• {c['campaign_name'][:30]} ({c['workspace_name']}): {', '.join(issues)}")
+        campaign_text = "\n".join(campaign_lines) if campaign_lines else "_None_"
+
+        # Domains needing rotation section
+        rotation_lines = []
+        for d in (domains_needing_rotation or [])[:5]:
+            emoji = ":biohazard_sign:" if d["rotation_reason"] == "spam_compromised" else ":skull:"
+            rotation_lines.append(f"{emoji} {d['domain_name']} ({d['workspace_name']}): {d['dead_inboxes']}/{d['total_inboxes']} dead")
+        rotation_text = "\n".join(rotation_lines) if rotation_lines else "_None_"
+
+        blocks = [
+            {"type": "header", "text": {"type": "plain_text", "text": f":clipboard: Daily Inbox Audit - {today}", "emoji": True}},
+            {"type": "section", "text": {"type": "mrkdwn", "text": f"*Kill Triggers (last 24h):* {summary}\n{kill_text}"}},
+            {"type": "divider"},
+            {"type": "section", "text": {"type": "mrkdwn", "text": f":eyes: *Campaigns to Watch:*\n{campaign_text}"}},
+            {"type": "divider"},
+            {"type": "section", "text": {"type": "mrkdwn", "text": f":recycle: *Domains Needing Rotation:*\n{rotation_text}"}},
+            {"type": "context", "elements": [{"type": "mrkdwn", "text": f":electric_plug: Disconnected: {disconnected['new_24h'] if disconnected else 0} new, {disconnected['total'] if disconnected else 0} total | _Rotation is client-driven_"}]},
+            {"type": "divider"},
+            {"type": "section", "text": {"type": "mrkdwn", "text": "*Download detailed reports:*"}},
+            {"type": "actions", "elements": [
+                {"type": "button", "text": {"type": "plain_text", "text": ":skull: Kill Triggers", "emoji": True}, "url": f"{PUBLIC_API_URL}/api/health/export/kill-triggers", "action_id": "download_kill_triggers"},
+                {"type": "button", "text": {"type": "plain_text", "text": ":recycle: Rotation", "emoji": True}, "url": f"{PUBLIC_API_URL}/api/health/export/rotation-summary", "action_id": "download_rotation"},
+                {"type": "button", "text": {"type": "plain_text", "text": ":electric_plug: Disconnected", "emoji": True}, "url": f"{PUBLIC_API_URL}/api/health/export/disconnected", "action_id": "download_disconnected"},
+                {"type": "button", "text": {"type": "plain_text", "text": ":bar_chart: Capacity", "emoji": True}, "url": f"{PUBLIC_API_URL}/api/health/export/capacity-gaps", "action_id": "download_capacity"}
+            ]},
+            {"type": "divider"},
+            {"type": "actions", "block_id": f"audit_actions_{audit_id}", "elements": [
+                {"type": "button", "text": {"type": "plain_text", "text": ":white_check_mark: Reviewed", "emoji": True}, "style": "primary", "action_id": "audit_confirmed", "value": audit_id},
+                {"type": "button", "text": {"type": "plain_text", "text": ":warning: Issues Found", "emoji": True}, "style": "danger", "action_id": "audit_issues", "value": audit_id}
+            ]},
+            {"type": "context", "elements": [{"type": "mrkdwn", "text": f"Audit ID: `{audit_id}` | {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')} UTC"}]}
+        ]
+
+        # Send to Slack
+        async with httpx.AsyncClient() as client:
+            response = await client.post(SLACK_WEBHOOK_URL, json={"blocks": blocks}, headers={"Content-Type": "application/json"})
+
+            if response.status_code == 200:
+                logger.info(f"Daily audit sent successfully (audit_id={audit_id})")
+                return {"success": True, "audit_id": audit_id, "total_kills": total_kills, "total_disconnected": disconnected["total"] if disconnected else 0}
+            else:
+                return {"success": False, "error": f"Slack returned {response.status_code}: {response.text}"}
 
     except Exception as e:
         logger.error(f"Failed to trigger audit: {e}", exc_info=True)
