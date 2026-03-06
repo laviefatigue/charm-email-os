@@ -3484,9 +3484,9 @@ async def analyze_domain_bounce_rollup(workspace_id: Optional[str] = None):
             SELECT
                 d.domain_name as domain,
                 CASE
-                    WHEN LOWER(COALESCE(d.esp::text, 'unknown')) IN ('microsoft', 'outlook', 'entra') THEN 'microsoft'
-                    WHEN LOWER(COALESCE(d.esp::text, 'unknown')) = 'gmail' THEN 'google'
-                    ELSE COALESCE(d.esp::text, 'unknown')
+                    WHEN LOWER(COALESCE(sa.esp::text, 'unknown')) IN ('microsoft', 'outlook', 'entra') THEN 'microsoft'
+                    WHEN LOWER(COALESCE(sa.esp::text, 'unknown')) = 'gmail' THEN 'google'
+                    ELSE COALESCE(sa.esp::text, 'unknown')
                 END as esp,
                 COUNT(sa.id) as total_inboxes,
                 COUNT(*) FILTER (WHERE sa.hard_bounces_24h > 0) as inboxes_with_bounces_24h,
@@ -3499,7 +3499,7 @@ async def analyze_domain_bounce_rollup(workspace_id: Optional[str] = None):
             JOIN domains d ON sa.domain_id = d.id
                 AND sa.workspace_id = d.workspace_id
             WHERE 1=1 {workspace_filter}
-            GROUP BY d.domain_name, d.esp
+            GROUP BY d.domain_name, sa.esp
             HAVING SUM(sa.hard_bounces_24h) > 0 OR SUM(sa.bounces_all_time) > 0
             ORDER BY SUM(sa.hard_bounces_24h) DESC, SUM(sa.bounces_all_time) DESC
         """
