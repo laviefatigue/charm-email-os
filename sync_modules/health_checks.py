@@ -297,22 +297,28 @@ class HealthCheckModule:
         total_sends_7d = inbox.get('total_sends_7d') or 0
         warmup_started_at = inbox.get('warmup_started_at')
 
-        # Calculate incubation age from warmup_started_at (NOT first_seen_at)
+        # Calculate "sending age" for fresh_inbox_bounce trigger
         #
-        # IMPORTANT: The 2-week incubation period starts when:
-        # 1. Inbox is added to EmailBison AND
-        # 2. Warmup is enabled (warmup_started_at is set)
+        # Two separate concepts:
+        # 1. Incubation (warmup_started_at) - determines Live/Reserve classification
+        # 2. Sending age (sending_started_at) - determines fresh_inbox_bounce eligibility
         #
-        # This means:
-        # - inbox_age_days = days since warmup was first enabled
-        # - Fresh inbox protection applies during 2-week incubation (warmup period)
-        # - After 2 weeks, inbox is considered "mature" and normal thresholds apply
+        # An inbox is "fresh" when < 14 days from first campaign assignment.
+        # We use sending_started_at because:
+        # - It's set when inbox first assigned to active campaign
+        # - Warmup dates may be inaccurate due to backfilling/sync
+        # - The dangerous period is early SENDING, not early warmup
         #
-        # If warmup_started_at is NULL, inbox hasn't started incubation yet
-        # (either brand new or warmup not enabled) - treat as "mature" (no special protection)
-        inbox_age_days = None
-        if warmup_started_at:
-            inbox_age_days = (datetime.now(timezone.utc) - warmup_started_at.replace(tzinfo=timezone.utc)).days
+        # Fallback to warmup_started_at for legacy data without sending_started_at
+        sending_started_at = inbox.get('sending_started_at')
+        inbox_sending_age_days = None
+        if sending_started_at:
+            if isinstance(sending_started_at, str):
+                sending_started_at = datetime.fromisoformat(sending_started_at.replace('Z', '+00:00'))
+            inbox_sending_age_days = (datetime.now(timezone.utc) - sending_started_at.replace(tzinfo=timezone.utc)).days
+        elif warmup_started_at:
+            # Fallback for inboxes without sending_started_at
+            inbox_sending_age_days = (datetime.now(timezone.utc) - warmup_started_at.replace(tzinfo=timezone.utc)).days
 
         # Check each kill threshold (priority order: spam > provider_block > blocked > unknown > combined > rates)
         # 0. Spam complaints (HIGHEST PRIORITY - v3 spec: 1 complaint = death)
@@ -391,9 +397,9 @@ class HealthCheckModule:
                     'threshold': threshold['value']
                 })
 
-        # 4. Fresh inbox bounce (any bounce on inbox < 14 days old)
+        # 4. Fresh inbox bounce (any bounce on inbox < 14 days into sending)
         threshold = KILL_THRESHOLDS['fresh_inbox_bounce']
-        if inbox_age_days is not None and inbox_age_days < threshold.get('max_age_days', 14):
+        if inbox_sending_age_days is not None and inbox_sending_age_days < threshold.get('max_age_days', 14):
             if hard_bounces_24h >= threshold['value'] or hard_bounces_7d >= threshold['value']:
                 triggers.append({
                     'trigger_type': 'fresh_inbox_bounce',
