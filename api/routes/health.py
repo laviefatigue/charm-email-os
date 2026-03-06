@@ -3222,7 +3222,7 @@ async def get_workspace_sync_diagnosis(workspace_id: UUID):
 
     # Get recent sync audit logs for campaigns (last 5)
     recent_syncs = await fetch_all("""
-        SELECT sync_type, started_at, completed_at, status, records_processed, records_updated, error_message
+        SELECT sync_type, started_at, completed_at, status, records_processed, records_updated, records_failed, error_message, error_details
         FROM sync_audit_log
         WHERE workspace_id = $1 AND sync_type = 'campaigns'
         ORDER BY started_at DESC
@@ -3248,7 +3248,9 @@ async def get_workspace_sync_diagnosis(workspace_id: UUID):
                 "status": s['status'],
                 "records": s['records_processed'],
                 "updated": s['records_updated'],
-                "error": s['error_message'][:100] if s['error_message'] else None
+                "failed": s['records_failed'],
+                "error": s['error_message'][:100] if s['error_message'] else None,
+                "error_details": s['error_details'] if s['error_details'] else None
             }
             for s in recent_syncs
         ] if recent_syncs else []
