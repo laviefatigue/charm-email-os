@@ -9,6 +9,7 @@ Features:
 - Event & response message sync (every 5 min)
 - Health checks and kill trigger detection (every 15 min)
 - Kill queue processing with 24hr tagging (every 30 min)
+- Workspace discovery - auto-import new EmailBison workspaces (daily)
 - Data retention cleanup (daily)
 
 Usage:
@@ -38,6 +39,7 @@ from sync_modules import (
     OAuthSyncModule,
     DailySnapshotModule,
     LifecycleTagSyncModule,
+    SetTagSyncModule,
 )
 
 # Configuration from environment
@@ -87,6 +89,7 @@ class SyncOrchestrator:
         self.last_daily_snapshot: Optional[datetime] = None
         self.last_lifecycle_tag_sync: Optional[datetime] = None
         self.last_slack_audit: Optional[datetime] = None
+        self.last_workspace_discovery: Optional[datetime] = None
 
     async def start(self, single_pass: bool = False):
         """Initialize connections and start the sync worker."""
@@ -199,6 +202,11 @@ class SyncOrchestrator:
                 if self._should_run_slack_audit(self.last_slack_audit):
                     await self.run_slack_audit()
                     self.last_slack_audit = now
+
+                # Daily workspace discovery (find new EmailBison workspaces we've been added to)
+                if self._should_run_daily(self.last_workspace_discovery):
+                    await self.run_workspace_discovery()
+                    self.last_workspace_discovery = now
 
                 # OAuth queue processing - every 5 min (for new workspaces)
                 if self._should_run(self.last_oauth_queue_check, POLL_INTERVAL_OAUTH_QUEUE):
@@ -383,6 +391,42 @@ class SyncOrchestrator:
                 status = 'FAILED' if failed_count > 0 else 'OK'
                 print(f"  Lifecycle Tags: {total_graduated} graduated to live, {total_tagged} new incubating, {total_removed} dead removed [{status}]")
 
+            # Run A-Set/B-Set tagging after lifecycle graduation
+            await self._run_set_tag_sync(client)
+
+    async def _run_set_tag_sync(self, client: EmailBisonClient):
+        """
+        Run A-Set/B-Set tag sync after lifecycle graduation.
+
+        This assigns graduated inboxes to either A-Set (deployed) or B-Set (reserve)
+        based on provider capacity targets:
+        - Entra: 80% A-Set, 20% B-Set
+        - Google: 100% A-Set (no inbox-level B-Set)
+
+        Also promotes B-Set → A-Set when A-Set capacity drops.
+        """
+        if not ENABLE_LIFECYCLE_TAGGING:
+            return
+
+        print(f"  Running A-Set/B-Set tag sync...")
+
+        set_sync = SetTagSyncModule(
+            db=self.db,
+            client=client,
+            audit_logger=self.audit_logger,
+            alerter=self.alerter
+        )
+        results = await set_sync.sync_all_workspaces()
+
+        total_a_tagged = sum(r.metadata.get('tagged_a_set', 0) for r in results if r.metadata)
+        total_b_tagged = sum(r.metadata.get('tagged_b_set', 0) for r in results if r.metadata)
+        total_promoted = sum(r.metadata.get('promoted_to_a_set', 0) for r in results if r.metadata)
+        failed_count = sum(1 for r in results if not r.success)
+
+        if total_a_tagged > 0 or total_b_tagged > 0 or total_promoted > 0:
+            status = 'FAILED' if failed_count > 0 else 'OK'
+            print(f"  Set Tags: +{total_a_tagged} A-Set, +{total_b_tagged} B-Set, {total_promoted} promoted [{status}]")
+
     async def run_retention_cleanup(self):
         """Run data retention cleanup."""
         print(f"[{datetime.now()}] Retention cleanup...")
@@ -469,6 +513,147 @@ class SyncOrchestrator:
             )
         else:
             print(f"  Audit failed: {result.get('error')}")
+
+    async def run_workspace_discovery(self):
+        """Discover new EmailBison workspaces and create local records.
+
+        When we get added to a new EmailBison workspace externally,
+        this creates the corresponding local workspace + client records,
+        queues OAuth sync, and immediately backfills all account/domain data.
+        """
+        import httpx
+
+        EMAILBISON_API_URL = os.getenv('EMAILBISON_API_URL', 'https://spellcast.hirecharm.com')
+        EMAILBISON_API_KEY = os.getenv('EMAILBISON_API_KEY', '')
+
+        if not EMAILBISON_API_KEY:
+            print(f"[{datetime.now()}] Workspace discovery skipped (EMAILBISON_API_KEY not configured)")
+            return
+
+        print(f"[{datetime.now()}] Workspace discovery...")
+
+        try:
+            async with httpx.AsyncClient(timeout=60.0) as http_client:
+                # Fetch all workspaces from EmailBison
+                response = await http_client.get(
+                    f"{EMAILBISON_API_URL}/api/workspaces/v1.1",
+                    headers={
+                        "Authorization": f"Bearer {EMAILBISON_API_KEY}",
+                        "Accept": "application/json",
+                    },
+                )
+
+                if response.status_code != 200:
+                    print(f"  Discovery failed: EmailBison API {response.status_code}")
+                    return
+
+                data = response.json()
+                eb_workspaces = data if isinstance(data, list) else data.get('data', [])
+
+                # Get existing local workspace EmailBison IDs
+                existing_rows = await self.db.fetch(
+                    "SELECT emailbison_workspace_id FROM workspaces WHERE emailbison_workspace_id IS NOT NULL"
+                )
+                existing_eb_ids = {str(row['emailbison_workspace_id']) for row in existing_rows}
+
+                # Find new workspaces
+                new_workspaces = [
+                    ws for ws in eb_workspaces
+                    if str(ws.get('id')) not in existing_eb_ids
+                ]
+
+                if not new_workspaces:
+                    print(f"  No new workspaces found ({len(eb_workspaces)} total in EmailBison)")
+                    return
+
+                print(f"  Found {len(new_workspaces)} new workspaces to import")
+
+                # Track newly created workspaces for immediate backfill
+                created_workspaces = []
+
+                for eb_workspace in new_workspaces:
+                    eb_id = eb_workspace.get('id')
+                    eb_name = eb_workspace.get('name', f'Workspace {eb_id}')
+
+                    try:
+                        # Create local workspace record
+                        workspace_row = await self.db.fetchrow("""
+                            INSERT INTO workspaces (workspace_name, emailbison_workspace_id, automation_enabled)
+                            VALUES ($1, $2, TRUE)
+                            RETURNING id
+                        """, eb_name, str(eb_id))
+
+                        if not workspace_row:
+                            continue
+
+                        workspace_id = workspace_row['id']
+
+                        # Create client record linked to workspace
+                        await self.db.execute("""
+                            INSERT INTO clients (name, workspace_id, onboarding_complete)
+                            VALUES ($1, $2, FALSE)
+                        """, eb_name, workspace_id)
+
+                        # Queue OAuth config discovery
+                        await self.db.execute("""
+                            INSERT INTO oauth_sync_queue (workspace_id, emailbison_workspace_id)
+                            VALUES ($1, $2)
+                            ON CONFLICT (workspace_id) DO NOTHING
+                        """, workspace_id, eb_id)
+
+                        created_workspaces.append({
+                            'id': workspace_id,
+                            'name': eb_name,
+                            'eb_id': eb_id
+                        })
+                        print(f"    Created: {eb_name} (EmailBison ID: {eb_id})")
+
+                        # Alert on new workspace
+                        if self.alerter:
+                            await self.alerter.send_alert(
+                                f":new: New workspace discovered: {eb_name}",
+                                f"EmailBison ID: {eb_id}\nStarting immediate data backfill..."
+                            )
+
+                    except Exception as e:
+                        print(f"    Error creating {eb_name}: {e}")
+
+                # Immediate backfill: sync accounts/domains for all new workspaces
+                if created_workspaces:
+                    print(f"  Backfilling data for {len(created_workspaces)} new workspaces...")
+
+                    async with EmailBisonClient() as client:
+                        account_sync = AccountSyncModule(
+                            db=self.db,
+                            client=client,
+                            audit_logger=self.audit_logger,
+                            alerter=self.alerter
+                        )
+
+                        for ws in created_workspaces:
+                            try:
+                                result = await account_sync.sync_workspace(
+                                    workspace_id=ws['id'],
+                                    workspace_name=ws['name'],
+                                    emailbison_workspace_id=ws['eb_id']
+                                )
+                                status = 'OK' if result.success else 'FAILED'
+                                print(f"    Backfill {ws['name']}: {result.records_processed} accounts [{status}]")
+
+                                # Rate limit between workspaces
+                                await client.inter_batch_delay(1.0)
+
+                            except Exception as e:
+                                print(f"    Backfill error for {ws['name']}: {e}")
+
+                        # Sync domains after all accounts are imported
+                        await account_sync.sync_all_domains()
+                        print(f"    Domain sync complete")
+
+                print(f"  Discovery complete: {len(created_workspaces)} workspaces created and backfilled")
+
+        except Exception as e:
+            print(f"  Workspace discovery error: {e}")
 
     async def run_oauth_queue(self):
         """Process OAuth sync queue (newly created workspaces)."""

@@ -17,6 +17,7 @@ Modules:
 - sync_oauth: OAuth config scraping from EmailBison UI
 - daily_snapshot: Daily volume and capacity snapshots for dashboard charts
 - lifecycle_tag_sync: Lifecycle tag management (incubating/live) in EmailBison
+- set_tag_sync: A-Set/B-Set tag management and promotion in EmailBison
 """
 
 from .emailbison_client import EmailBisonClient
@@ -32,6 +33,7 @@ from .retention import RetentionManager
 from .sync_oauth import OAuthSyncModule
 from .daily_snapshot import DailySnapshotModule
 from .lifecycle_tag_sync import LifecycleTagSyncModule
+from .set_tag_sync import SetTagSyncModule
 
 __all__ = [
     'EmailBisonClient',
@@ -48,4 +50,5 @@ __all__ = [
     'OAuthSyncModule',
     'DailySnapshotModule',
     'LifecycleTagSyncModule',
+    'SetTagSyncModule',
 ]

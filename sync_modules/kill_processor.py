@@ -162,23 +162,41 @@ class KillProcessor:
                             tag_id=tag_id
                         )
 
-                        # Remove 'live' tag since inbox is no longer live
+                        # Remove A-Set tag (live or 'A Set' depending on workspace)
                         # This ensures the team can't accidentally assign dead inboxes
-                        live_tag_id = tag_cache.get('live')
-                        if not live_tag_id:
-                            live_tag = await self.client.get_or_create_tag('live')
-                            live_tag_id = live_tag.get('id')
-                            if live_tag_id:
-                                tag_cache['live'] = live_tag_id
+                        # Get workspace tag config
+                        ws_tags = await self.db.fetchrow("""
+                            SELECT a_set_tag_name FROM workspaces WHERE id = $1
+                        """, item['workspace_id'])
+                        a_set_tag_name = (ws_tags.get('a_set_tag_name') if ws_tags else None) or 'live'
 
-                        if live_tag_id:
+                        a_set_tag_id = tag_cache.get(a_set_tag_name)
+                        if not a_set_tag_id:
+                            a_set_tag = await self.client.get_or_create_tag(a_set_tag_name)
+                            a_set_tag_id = a_set_tag.get('id')
+                            if a_set_tag_id:
+                                tag_cache[a_set_tag_name] = a_set_tag_id
+
+                        if a_set_tag_id:
                             try:
                                 await self.client.untag_inbox(
                                     account_id=int(item['emailbison_account_id']),
-                                    tag_id=live_tag_id
+                                    tag_id=a_set_tag_id
                                 )
                             except EmailBisonAPIError:
                                 pass  # May not have the tag - that's fine
+
+                        # Also try to remove legacy 'live' if using different tag name
+                        if a_set_tag_name != 'live':
+                            try:
+                                live_tag = await self.client.get_or_create_tag('live')
+                                if live_tag.get('id'):
+                                    await self.client.untag_inbox(
+                                        account_id=int(item['emailbison_account_id']),
+                                        tag_id=live_tag['id']
+                                    )
+                            except EmailBisonAPIError:
+                                pass
 
                         # Update queue status to 'flagged' (final state - no deletion)
                         await self.db.execute("""
@@ -648,38 +666,147 @@ class KillProcessor:
 
     async def _promote_backup_inbox(self, killed_inbox_id: UUID, workspace_id: UUID):
         """
-        V3 Section 6: Promote backup inbox when primary is killed.
+        V3 Section 6: Promote B-Set inbox when A-Set inbox is killed.
 
-        Promotion sequence:
-        1. Hot Backup → Primary (immediate)
-        2. Warming → Hot Backup (immediate)
-        3. New Warming inbox needed (alert for manual action)
+        A-Set/B-Set System:
+        - A-Set (deployed): Actively assigned to campaigns
+        - B-Set (reserve): Warmed and ready to promote when A-Set dies
 
-        NOTE: This is a LOCAL promotion - updates pool_tier in database.
-        Human operators handle actual campaign reassignment in EmailBison.
+        When an A-Set inbox is killed:
+        1. Find best connected B-Set inbox from same domain
+        2. Promote to A-Set (update tag in EmailBison + local DB)
+        3. Log rotation history
+
+        NOTE: Also handles legacy pool_tier for backwards compatibility.
         """
-        # Get the killed inbox's domain and role
+        # Get the killed inbox's domain and pool status
         killed_inbox = await self.db.fetchrow("""
             SELECT
-                id, email_address, domain_id, pool_tier
-            FROM sender_accounts
-            WHERE id = $1
+                sa.id, sa.email_address, sa.domain_id,
+                sa.inventory_pool_status, sa.pool_tier,
+                d.domain_name,
+                w.emailbison_workspace_id,
+                w.a_set_tag_name, w.b_set_tag_name
+            FROM sender_accounts sa
+            JOIN domains d ON sa.domain_id = d.id
+            JOIN workspaces w ON sa.workspace_id = w.id
+            WHERE sa.id = $1
         """, killed_inbox_id)
 
         if not killed_inbox or not killed_inbox['domain_id']:
             return
 
         domain_id = killed_inbox['domain_id']
+        killed_pool = killed_inbox['inventory_pool_status']
+        eb_workspace_id = killed_inbox['emailbison_workspace_id']
+
+        # Only promote if the killed inbox was in A-Set (deployed)
+        if killed_pool != 'deployed':
+            # Also handle legacy pool_tier for backwards compatibility
+            killed_tier = killed_inbox['pool_tier'] or 'primary'
+            if killed_tier not in ('primary', 'hot_backup'):
+                return
+            # Legacy path - continue below
+
+        # ==========================================
+        # NEW A-SET / B-SET PROMOTION LOGIC
+        # ==========================================
+
+        # Find best B-Set inbox to promote (connected, oldest warmup, highest health)
+        candidate = await self.db.fetchrow("""
+            SELECT id, email_address, emailbison_account_id
+            FROM sender_accounts
+            WHERE domain_id = $1
+            AND workspace_id = $2
+            AND inbox_state = 'live'
+            AND status = 'Connected'
+            AND inventory_pool_status = 'reserve'
+            AND inventory_lifecycle_status = 'active'
+            ORDER BY
+                warmup_started_at ASC NULLS LAST,
+                health_score DESC NULLS LAST
+            LIMIT 1
+        """, domain_id, workspace_id)
+
+        if candidate and candidate['emailbison_account_id'] and eb_workspace_id:
+            try:
+                # Switch to workspace in EmailBison
+                await self.client.switch_workspace(int(eb_workspace_id))
+
+                # Get tag names (use workspace config or defaults)
+                a_tag_name = killed_inbox.get('a_set_tag_name') or 'live'
+                b_tag_name = killed_inbox.get('b_set_tag_name') or 'bset'
+
+                # Get tag IDs
+                a_tag = await self.client.get_or_create_tag(a_tag_name)
+                b_tag = await self.client.get_or_create_tag(b_tag_name)
+                a_tag_id = a_tag.get('id')
+                b_tag_id = b_tag.get('id')
+
+                eb_account_id = int(candidate['emailbison_account_id'])
+
+                # Remove B-Set tag
+                if b_tag_id:
+                    try:
+                        await self.client.untag_inbox(eb_account_id, b_tag_id)
+                    except EmailBisonAPIError:
+                        pass  # May not have tag
+
+                # Add A-Set tag
+                if a_tag_id:
+                    await self.client.tag_inbox(eb_account_id, a_tag_id)
+
+                # Update local database
+                await self.db.execute("""
+                    UPDATE sender_accounts
+                    SET
+                        inventory_pool_status = 'deployed',
+                        pool_tier = 'primary',
+                        updated_at = NOW()
+                    WHERE id = $1
+                """, candidate['id'])
+
+                # Log rotation history
+                await self.db.execute("""
+                    INSERT INTO inbox_rotation_history (
+                        workspace_id, rotation_type,
+                        source_inbox_id, source_inbox_email, source_pool,
+                        target_inbox_id, target_inbox_email, target_pool,
+                        reason, triggered_by
+                    ) VALUES ($1, 'promote', $2, $3, 'dead', $4, $5, 'deployed', $6, 'kill_trigger')
+                """,
+                    workspace_id,
+                    killed_inbox_id, killed_inbox['email_address'],
+                    candidate['id'], candidate['email_address'],
+                    f"B-Set promoted to A-Set after {killed_inbox['email_address']} killed"
+                )
+
+                print(f"    [PROMOTE] {candidate['email_address']}: B-Set → A-Set (replacing killed inbox)")
+
+            except EmailBisonAPIError as e:
+                print(f"    [ERROR] Failed to promote B-Set inbox: {e}")
+        else:
+            # No B-Set available - check if this is critical
+            domain_a_set_count = await self.db.fetchval("""
+                SELECT COUNT(*)
+                FROM sender_accounts
+                WHERE domain_id = $1
+                AND inbox_state = 'live'
+                AND status = 'Connected'
+                AND inventory_pool_status = 'deployed'
+            """, domain_id)
+
+            if domain_a_set_count == 0:
+                print(f"    [WARNING] No B-Set available and A-Set exhausted for {killed_inbox.get('domain_name', domain_id)}")
+                # Domain may need rotation - the waterfall view will flag this
+
+        # ==========================================
+        # LEGACY POOL_TIER HANDLING (backwards compat)
+        # ==========================================
         killed_tier = killed_inbox['pool_tier'] or 'primary'
 
-        # Only promote if the killed inbox was primary or hot_backup
-        if killed_tier not in ('primary', 'hot_backup'):
-            return
-
-        # Find the next inbox to promote from the same domain
-        # Priority: hot_backup (if primary died), then warming
-        if killed_tier == 'primary':
-            # Primary died - promote hot_backup to primary
+        if killed_tier == 'primary' and not candidate:
+            # Legacy path: promote hot_backup to primary
             backup = await self.db.fetchrow("""
                 SELECT id, email_address
                 FROM sender_accounts
@@ -698,7 +825,6 @@ class KillProcessor:
                     WHERE id = $1
                 """, backup['id'])
 
-                # Log the promotion
                 await self.db.execute("""
                     INSERT INTO inbox_rotation_history (
                         workspace_id, rotation_type,
@@ -710,16 +836,13 @@ class KillProcessor:
                     workspace_id,
                     killed_inbox_id, killed_inbox['email_address'],
                     backup['id'], backup['email_address'],
-                    f"Promoted from hot_backup after {killed_inbox['email_address']} killed"
+                    f"Legacy: Promoted from hot_backup after {killed_inbox['email_address']} killed"
                 )
 
-                print(f"    [PROMOTE] {backup['email_address']}: hot_backup -> primary")
-
-                # Now promote a warming inbox to hot_backup
+                print(f"    [PROMOTE] {backup['email_address']}: hot_backup -> primary (legacy)")
                 await self._promote_warming_to_hot_backup(domain_id, workspace_id)
 
         elif killed_tier == 'hot_backup':
-            # Hot backup died - promote warming to hot_backup
             await self._promote_warming_to_hot_backup(domain_id, workspace_id)
 
     async def _promote_warming_to_hot_backup(self, domain_id: UUID, workspace_id: UUID):
