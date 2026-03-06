@@ -3738,3 +3738,70 @@ async def analyze_kill_trigger_data_quality():
     except Exception as e:
         logger.error(f"kill-trigger-data-quality failed: {type(e).__name__}: {e}")
         raise HTTPException(status_code=500, detail=f"Query failed: {str(e)}")
+
+
+@router.post("/analysis/backfill-kill-triggers")
+async def backfill_kill_triggers(confirm: bool = False):
+    """
+    Backfill missing kill_trigger data for dead inboxes.
+
+    Uses data from kill_queue and campaign_events to fill gaps.
+    Only runs if confirm=true.
+    """
+    if not confirm:
+        # Just show what would be updated
+        preview = await fetch_all("""
+            SELECT
+                sa.id,
+                sa.email_address,
+                sa.inbox_state,
+                sa.kill_trigger,
+                kq.trigger_type as queue_trigger,
+                kq.queued_at,
+                kq.tagged_at
+            FROM sender_accounts sa
+            LEFT JOIN kill_queue kq ON kq.inbox_id = sa.id
+            WHERE sa.inbox_state = 'dead'
+              AND sa.kill_trigger IS NULL
+            ORDER BY sa.updated_at DESC
+        """)
+        return {
+            "mode": "preview",
+            "would_update": len(preview) if preview else 0,
+            "records": [dict(row) for row in preview] if preview else [],
+            "instruction": "Add ?confirm=true to execute backfill"
+        }
+
+    # Execute backfill from kill_queue (has trigger_type)
+    await execute("""
+        UPDATE sender_accounts sa
+        SET
+            kill_trigger = kq.trigger_type::kill_trigger_type,
+            killed_at = COALESCE(sa.killed_at, kq.tagged_at, kq.queued_at)
+        FROM (
+            SELECT DISTINCT ON (inbox_id)
+                inbox_id,
+                trigger_type,
+                tagged_at,
+                queued_at
+            FROM kill_queue
+            WHERE trigger_type IS NOT NULL
+            ORDER BY inbox_id, tagged_at DESC NULLS LAST
+        ) kq
+        WHERE sa.id = kq.inbox_id
+          AND sa.inbox_state = 'dead'
+          AND sa.kill_trigger IS NULL
+    """)
+
+    # Check remaining
+    remaining = await fetch_one("""
+        SELECT COUNT(*) as count
+        FROM sender_accounts
+        WHERE inbox_state = 'dead' AND kill_trigger IS NULL
+    """)
+
+    return {
+        "mode": "executed",
+        "remaining_untracked": remaining['count'] if remaining else 0,
+        "status": "backfill complete" if remaining['count'] == 0 else "some records still missing"
+    }
