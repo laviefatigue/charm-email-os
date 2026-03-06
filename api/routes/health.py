@@ -3138,9 +3138,19 @@ async def analyze_kill_triggers_by_esp():
         ORDER BY 1, count DESC
     """)
 
+    # Debug: show actual ESP values in database
+    esp_values = await fetch_all("""
+        SELECT esp::text as esp_value, COUNT(*) as count
+        FROM sender_accounts
+        WHERE esp IS NOT NULL
+        GROUP BY esp
+        ORDER BY count DESC
+    """)
+
     return {
         "esp_summary": [dict(row) for row in esp_summary] if esp_summary else [],
         "triggers_by_esp": [dict(row) for row in triggers_by_esp] if triggers_by_esp else [],
         "worst_domains": [dict(row) for row in domain_breakdown] if domain_breakdown else [],
-        "lifecycle_by_esp": [dict(row) for row in lifecycle_by_esp] if lifecycle_by_esp else []
+        "lifecycle_by_esp": [dict(row) for row in lifecycle_by_esp] if lifecycle_by_esp else [],
+        "raw_esp_values": [dict(row) for row in esp_values] if esp_values else []
     }
