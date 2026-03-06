@@ -198,10 +198,10 @@ class CampaignSyncModule:
         interested = int(details.get('interested', 0) or 0)
         unsubscribed = int(details.get('unsubscribed', 0) or 0)
 
-        # Calculate rates
-        open_rate = (opens / contacted * 100) if contacted > 0 else 0
-        reply_rate = (replies / contacted * 100) if contacted > 0 else 0
-        bounce_rate = (bounced / emails_sent) if emails_sent > 0 else 0  # Store as decimal
+        # Calculate rates (always use float for consistent DB type inference)
+        open_rate = float(opens / contacted * 100) if contacted > 0 else 0.0
+        reply_rate = float(replies / contacted * 100) if contacted > 0 else 0.0
+        bounce_rate = float(bounced / emails_sent) if emails_sent > 0 else 0.0
 
         # Period must have end > start (database constraint)
         period_start = now - timedelta(days=1)
