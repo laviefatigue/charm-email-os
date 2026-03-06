@@ -252,8 +252,37 @@ class SetTagSyncModule:
             WHERE id = $1
         """, workspace_id, a_tag_name, b_tag_name)
 
+    async def _is_domain_quarantined(self, domain_id: UUID) -> bool:
+        """
+        Check if a domain has been quarantined due to domain-killing triggers.
+
+        A domain is quarantined if:
+        1. It has inboxes with inventory_pool_status = 'quarantined'
+        2. OR it has a recent domain_rotation_event of type 'quarantine'
+
+        Quarantined domains should NOT have B-Set promoted - the domain is compromised.
+        """
+        result = await self.db.fetchrow("""
+            SELECT
+                COUNT(*) FILTER (WHERE inventory_pool_status = 'quarantined') as quarantined_count,
+                EXISTS (
+                    SELECT 1 FROM domain_rotation_events dre
+                    WHERE dre.domain_id = $1
+                    AND dre.event_type = 'quarantine'
+                    AND dre.created_at > NOW() - INTERVAL '30 days'
+                ) as has_recent_quarantine_event
+            FROM sender_accounts
+            WHERE domain_id = $1
+            AND inbox_state = 'live'
+        """, domain_id)
+
+        if not result:
+            return False
+
+        return (result['quarantined_count'] > 0) or result['has_recent_quarantine_event']
+
     async def _get_workspace_domains(self, workspace_id: UUID) -> List[Dict]:
-        """Get all domains with set configuration for a workspace."""
+        """Get all domains with ACTUAL graduated inbox counts for a workspace."""
         return await self.db.fetch("""
             SELECT
                 d.id as domain_id,
@@ -265,9 +294,20 @@ class SetTagSyncModule:
                         ELSE 'unknown'
                     END
                 ) as provider,
-                COALESCE(d.expected_inbox_count,
-                    CASE WHEN d.infrastructure_type = 'google' THEN 3 ELSE 50 END
-                ) as expected_inbox_count
+                -- Count ACTUAL graduated connected inboxes (not expected_inbox_count)
+                (
+                    SELECT COUNT(*)
+                    FROM sender_accounts sa
+                    WHERE sa.domain_id = d.id
+                    AND sa.is_active = TRUE
+                    AND sa.inbox_state = 'live'
+                    AND sa.status = 'Connected'
+                    AND COALESCE(sa.inventory_pool_status, 'reserve') != 'quarantined'
+                    AND (
+                        sa.inventory_lifecycle_status = 'active'
+                        OR (sa.warmup_started_at IS NOT NULL AND sa.warmup_started_at <= NOW() - INTERVAL '14 days')
+                    )
+                ) as graduated_inbox_count
             FROM domains d
             WHERE d.workspace_id = $1
             AND d.is_active = TRUE
@@ -297,15 +337,25 @@ class SetTagSyncModule:
         5. Promote B-Set → A-Set if A-Set below capacity
         """
         domain_id = domain['domain_id']
+        domain_name = domain['domain_name']
         provider = domain['provider']
-        expected = domain['expected_inbox_count']
-
-        # Calculate targets
-        a_set_pct = ENTRA_A_SET_PCT if provider == 'entra' else GOOGLE_A_SET_PCT
-        target_a = int(expected * a_set_pct)
-        target_b = expected - target_a if provider == 'entra' else 0
+        graduated_count = domain['graduated_inbox_count']
 
         result = {'tagged_a': 0, 'tagged_b': 0, 'promoted': 0}
+
+        # Skip domains with no graduated inboxes
+        if graduated_count == 0:
+            return result
+
+        # Check if domain is quarantined (domain-killing trigger fired)
+        if await self._is_domain_quarantined(domain_id):
+            print(f"    [SKIP] {domain_name}: Domain quarantined, skipping set sync")
+            return result
+
+        # Calculate targets from ACTUAL graduated count (not expected)
+        a_set_pct = ENTRA_A_SET_PCT if provider == 'entra' else GOOGLE_A_SET_PCT
+        target_a = int(graduated_count * a_set_pct)
+        target_b = graduated_count - target_a
 
         # Get priority-ranked graduated inboxes
         inboxes = await self._get_graduated_inboxes(domain_id)
@@ -404,6 +454,7 @@ class SetTagSyncModule:
         - Live inboxes (inbox_state = 'live')
         - Connected (status = 'Connected') - required for tagging
         - Graduated (inventory_lifecycle_status = 'active' OR 14+ days warmup)
+        - NOT quarantined (quarantined inboxes must not be promoted)
         """
         return await self.db.fetch("""
             SELECT
@@ -421,6 +472,7 @@ class SetTagSyncModule:
             AND is_active = TRUE
             AND inbox_state = 'live'
             AND status = 'Connected'
+            AND COALESCE(inventory_pool_status, 'reserve') != 'quarantined'
             AND (
                 inventory_lifecycle_status = 'active'
                 OR (
@@ -437,101 +489,8 @@ class SetTagSyncModule:
                 health_score DESC NULLS LAST
         """, domain_id)
 
-    async def promote_on_kill(
-        self,
-        domain_id: UUID,
-        killed_inbox_id: UUID,
-        workspace_id: UUID,
-        emailbison_workspace_id: int
-    ) -> Optional[Dict]:
-        """
-        Called by kill_processor when an A-Set inbox is killed.
-        Promotes the next B-Set inbox to A-Set.
-
-        Args:
-            domain_id: Domain of the killed inbox
-            killed_inbox_id: The inbox that was killed
-            workspace_id: Workspace UUID
-            emailbison_workspace_id: EmailBison workspace ID
-
-        Returns:
-            Dict with promoted inbox info, or None if no B-Set available
-        """
-        # Get workspace tag configuration
-        ws = await self.db.fetchrow("""
-            SELECT a_set_tag_name, b_set_tag_name
-            FROM workspaces
-            WHERE id = $1
-        """, workspace_id)
-
-        a_tag_name = ws.get('a_set_tag_name') or DEFAULT_A_SET_TAG
-        b_tag_name = ws.get('b_set_tag_name') or DEFAULT_B_SET_TAG
-
-        # Switch to workspace
-        if not await self.client.switch_workspace(emailbison_workspace_id):
-            return None
-
-        # Get tag IDs
-        a_set_tag = await self.client.get_or_create_tag(a_tag_name)
-        b_set_tag = await self.client.get_or_create_tag(b_tag_name)
-
-        a_set_tag_id = a_set_tag.get('id')
-        b_set_tag_id = b_set_tag.get('id')
-
-        # Find best B-Set inbox to promote
-        candidate = await self.db.fetchrow("""
-            SELECT
-                id,
-                email_address,
-                emailbison_account_id
-            FROM sender_accounts
-            WHERE domain_id = $1
-            AND is_active = TRUE
-            AND inbox_state = 'live'
-            AND status = 'Connected'
-            AND inventory_pool_status = 'reserve'
-            ORDER BY
-                warmup_started_at ASC NULLS LAST,
-                health_score DESC NULLS LAST
-            LIMIT 1
-        """, domain_id)
-
-        if not candidate:
-            print(f"    [NO B-SET] No reserve inbox available for promotion")
-            return None
-
-        eb_account_id = int(candidate['emailbison_account_id'])
-
-        try:
-            # Remove B-Set tag
-            try:
-                await self.client.untag_inbox(eb_account_id, b_set_tag_id)
-            except EmailBisonAPIError:
-                pass
-
-            # Add A-Set tag
-            await self.client.tag_inbox(eb_account_id, a_set_tag_id)
-
-            # Update local database
-            await self.db.execute("""
-                UPDATE sender_accounts
-                SET
-                    inventory_pool_status = 'deployed',
-                    updated_at = NOW()
-                WHERE id = $1
-            """, candidate['id'])
-
-            print(f"    [PROMOTE] {candidate['email_address']} B-Set → A-Set (replacing killed inbox)")
-
-            return {
-                'inbox_id': candidate['id'],
-                'email_address': candidate['email_address'],
-                'promoted_at': datetime.now(timezone.utc).isoformat()
-            }
-
-        except EmailBisonAPIError as e:
-            print(f"    [ERROR] Failed to promote {candidate['email_address']}: {e}")
-            return None
+    # NOTE: B-Set -> A-Set promotion on kill is handled by kill_processor._promote_backup_inbox()
+    # This module only handles periodic re-balancing of set assignments.
 
     async def get_set_distribution_summary(self, workspace_id: UUID) -> Dict:
         """
