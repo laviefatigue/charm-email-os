@@ -2,16 +2,16 @@
 Slack Audit Module - Daily inbox health audit notifications.
 
 Sends daily audit summaries to #inbox-audits channel with:
-- Kill trigger summary (new kills since last audit)
-- Disconnected inbox count
-- CSV download buttons
-- Confirmation/Issues buttons for team review
+- Kill trigger summary (domain-killing vs inbox-killing)
+- Campaigns to watch (high bounce/burn rates)
+- Domains needing rotation (spam complaints, high death rates)
+- Client capacity status (informational, rotation is client-driven)
+- CSV download buttons for detailed review
 """
 
 import os
-import json
 import httpx
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Optional
 from .database import fetch_all, fetch_one, execute
 
@@ -19,65 +19,191 @@ from .database import fetch_all, fetch_one, execute
 SLACK_WEBHOOK_URL = os.getenv("SLACK_AUDIT_WEBHOOK_URL")
 SLACK_BOT_TOKEN = os.getenv("SLACK_BOT_TOKEN")
 API_BASE_URL = os.getenv("API_BASE_URL", "http://charm-api:8000")
-PUBLIC_API_URL = os.getenv("PUBLIC_API_URL", "http://nckgggwww8sggg0kc4wo00o8.187.77.19.81.sslip.io")
+PUBLIC_API_URL = os.getenv("PUBLIC_API_URL", "https://api.wizardgrimoire.cloud")
+
+# Domain-killing triggers (entire domain reputation compromised)
+DOMAIN_KILLING_TRIGGERS = {'spam_complaint', 'provider_block_google', 'provider_block_microsoft', 'provider_block_yahoo'}
 
 
-async def get_daily_audit_stats() -> dict:
-    """Get audit statistics for the last 24 hours."""
+async def get_kill_trigger_stats() -> dict:
+    """Get kill trigger statistics for last 24 hours with severity classification."""
 
-    # Kill triggers in last 24h
+    # Kill triggers in last 24h with workspace info
     kill_stats = await fetch_all("""
         SELECT
-            kill_trigger,
-            COUNT(*) as count
-        FROM sender_accounts
-        WHERE killed_at >= NOW() - INTERVAL '24 hours'
-        AND kill_trigger IS NOT NULL
-        GROUP BY kill_trigger
-        ORDER BY count DESC
-    """)
-
-    # Total kills
-    total_kills = sum(row["count"] for row in kill_stats)
-
-    # New disconnections in last 24h (live inboxes that became disconnected)
-    disconnected_stats = await fetch_one("""
-        SELECT COUNT(*) as count
-        FROM sender_accounts
-        WHERE status != 'Connected'
-        AND inbox_state = 'live'
-        AND updated_at >= NOW() - INTERVAL '24 hours'
-    """)
-
-    # Total disconnected (for context)
-    total_disconnected = await fetch_one("""
-        SELECT COUNT(*) as count
-        FROM sender_accounts
-        WHERE status != 'Connected'
-        AND inbox_state = 'live'
-    """)
-
-    # Workspace breakdown for kills
-    workspace_kills = await fetch_all("""
-        SELECT
-            w.workspace_name,
-            COUNT(*) as count
+            sa.kill_trigger::text as trigger_type,
+            COUNT(*) as count,
+            COUNT(DISTINCT sa.domain_id) as domains_affected,
+            array_agg(DISTINCT w.workspace_name) as workspaces
         FROM sender_accounts sa
-        JOIN workspaces w ON sa.workspace_id = w.id
+        JOIN domains d ON sa.domain_id = d.id
+        JOIN workspaces w ON d.workspace_id = w.id
         WHERE sa.killed_at >= NOW() - INTERVAL '24 hours'
         AND sa.kill_trigger IS NOT NULL
-        AND w.is_active = TRUE
-        GROUP BY w.workspace_name
+        GROUP BY sa.kill_trigger
         ORDER BY count DESC
-        LIMIT 5
     """)
+
+    # Separate domain-killing from inbox-killing
+    domain_killing = []
+    inbox_killing = []
+
+    for row in kill_stats:
+        trigger = row['trigger_type']
+        if trigger in DOMAIN_KILLING_TRIGGERS or trigger.startswith('provider_block_'):
+            domain_killing.append(row)
+        else:
+            inbox_killing.append(row)
+
+    total_kills = sum(row['count'] for row in kill_stats)
+    domain_killing_count = sum(row['count'] for row in domain_killing)
 
     return {
         "total_kills": total_kills,
-        "kill_breakdown": {row["kill_trigger"]: row["count"] for row in kill_stats},
-        "new_disconnected": disconnected_stats["count"] if disconnected_stats else 0,
-        "total_disconnected": total_disconnected["count"] if total_disconnected else 0,
-        "top_workspaces": workspace_kills,
+        "domain_killing_count": domain_killing_count,
+        "inbox_killing_count": total_kills - domain_killing_count,
+        "domain_killing": domain_killing,
+        "inbox_killing": inbox_killing,
+        "all_triggers": kill_stats
+    }
+
+
+async def get_campaigns_to_watch() -> list:
+    """Get campaigns with concerning bounce/burn metrics."""
+
+    return await fetch_all("""
+        SELECT
+            ec.campaign_name,
+            w.workspace_name,
+            ec.inboxes_burned_7d,
+            ec.domains_burned_7d,
+            ec.campaign_state,
+            -- Calculate bounce rate from recent stats
+            CASE
+                WHEN COALESCE(cs.total_sent, 0) > 0
+                THEN ROUND(100.0 * COALESCE(cs.bounced, 0) / cs.total_sent, 1)
+                ELSE 0
+            END as bounce_rate_pct,
+            cs.total_sent,
+            cs.bounced
+        FROM emailbison_campaigns ec
+        JOIN workspaces w ON ec.workspace_id = w.id
+        LEFT JOIN LATERAL (
+            SELECT
+                SUM(sent) as total_sent,
+                SUM(bounced) as bounced
+            FROM campaign_snapshots
+            WHERE campaign_id = ec.id
+            AND snapshot_date >= CURRENT_DATE - INTERVAL '7 days'
+        ) cs ON true
+        WHERE w.is_active = TRUE
+        AND (
+            ec.inboxes_burned_7d >= 2
+            OR ec.domains_burned_7d >= 2
+            OR ec.campaign_state = 'quarantined'
+            OR (COALESCE(cs.total_sent, 0) > 100 AND COALESCE(cs.bounced, 0)::float / NULLIF(cs.total_sent, 0) > 0.05)
+        )
+        ORDER BY ec.inboxes_burned_7d DESC, ec.domains_burned_7d DESC
+        LIMIT 5
+    """)
+
+
+async def get_domains_needing_rotation() -> list:
+    """Get domains that need rotation due to reputation damage or high death rates."""
+
+    return await fetch_all("""
+        SELECT
+            d.domain_name,
+            w.workspace_name,
+            COUNT(*) as total_inboxes,
+            COUNT(*) FILTER (WHERE sa.inbox_state = 'dead') as dead_inboxes,
+            COUNT(*) FILTER (WHERE sa.kill_trigger = 'spam_complaint') as spam_complaints,
+            COUNT(*) FILTER (WHERE sa.kill_trigger::text LIKE 'provider_block_%') as provider_blocks,
+            ROUND(100.0 * COUNT(*) FILTER (WHERE sa.inbox_state = 'dead') / NULLIF(COUNT(*), 0), 0) as death_rate_pct,
+            CASE
+                WHEN COUNT(*) FILTER (WHERE sa.kill_trigger = 'spam_complaint') > 0 THEN 'spam_compromised'
+                WHEN COUNT(*) FILTER (WHERE sa.kill_trigger::text LIKE 'provider_block_%') > 0 THEN 'provider_blocked'
+                WHEN COUNT(*) FILTER (WHERE sa.inbox_state = 'dead') = COUNT(*) THEN 'all_dead'
+                WHEN 100.0 * COUNT(*) FILTER (WHERE sa.inbox_state = 'dead') / NULLIF(COUNT(*), 0) >= 80 THEN 'high_death_rate'
+                ELSE 'monitor'
+            END as rotation_reason
+        FROM domains d
+        JOIN sender_accounts sa ON sa.domain_id = d.id
+        JOIN workspaces w ON d.workspace_id = w.id
+        WHERE w.is_active = TRUE
+        GROUP BY d.id, d.domain_name, w.workspace_name
+        HAVING
+            COUNT(*) FILTER (WHERE sa.kill_trigger = 'spam_complaint') > 0
+            OR COUNT(*) FILTER (WHERE sa.kill_trigger::text LIKE 'provider_block_%') > 0
+            OR COUNT(*) FILTER (WHERE sa.inbox_state = 'dead') = COUNT(*)
+            OR (COUNT(*) >= 5 AND 100.0 * COUNT(*) FILTER (WHERE sa.inbox_state = 'dead') / COUNT(*) >= 80)
+        ORDER BY
+            CASE
+                WHEN COUNT(*) FILTER (WHERE sa.kill_trigger = 'spam_complaint') > 0 THEN 1
+                WHEN COUNT(*) FILTER (WHERE sa.kill_trigger::text LIKE 'provider_block_%') > 0 THEN 2
+                ELSE 3
+            END,
+            COUNT(*) FILTER (WHERE sa.inbox_state = 'dead') DESC
+        LIMIT 10
+    """)
+
+
+async def get_client_capacity_status() -> list:
+    """Get client capacity status (informational - rotation is client-driven)."""
+
+    return await fetch_all("""
+        SELECT
+            w.workspace_name as client_name,
+            COUNT(*) as total_inboxes,
+            COUNT(*) FILTER (WHERE sa.inbox_state = 'live' AND sa.status = 'Connected') as live_connected,
+            COUNT(*) FILTER (WHERE sa.inbox_state = 'dead') as dead,
+            COUNT(*) FILTER (WHERE sa.inbox_state = 'live' AND sa.status != 'Connected') as disconnected,
+            ROUND(100.0 * COUNT(*) FILTER (WHERE sa.inbox_state = 'live' AND sa.status = 'Connected') / NULLIF(COUNT(*), 0), 0) as health_pct,
+            COUNT(DISTINCT d.id) FILTER (WHERE sa.kill_trigger = 'spam_complaint') as compromised_domains
+        FROM sender_accounts sa
+        JOIN domains d ON sa.domain_id = d.id
+        JOIN workspaces w ON d.workspace_id = w.id
+        WHERE w.is_active = TRUE
+        GROUP BY w.id, w.workspace_name
+        HAVING COUNT(*) > 0
+        ORDER BY
+            ROUND(100.0 * COUNT(*) FILTER (WHERE sa.inbox_state = 'live' AND sa.status = 'Connected') / NULLIF(COUNT(*), 0), 0) ASC,
+            COUNT(*) DESC
+    """)
+
+
+async def get_daily_audit_stats() -> dict:
+    """Get comprehensive audit statistics for the last 24 hours."""
+
+    # Kill trigger stats with severity
+    kill_stats = await get_kill_trigger_stats()
+
+    # Campaigns to watch
+    campaigns_to_watch = await get_campaigns_to_watch()
+
+    # Domains needing rotation
+    domains_needing_rotation = await get_domains_needing_rotation()
+
+    # Client capacity status
+    capacity_status = await get_client_capacity_status()
+
+    # Disconnected inboxes (live but not connected - could reconnect)
+    disconnected = await fetch_one("""
+        SELECT
+            COUNT(*) FILTER (WHERE updated_at >= NOW() - INTERVAL '24 hours') as new_24h,
+            COUNT(*) as total
+        FROM sender_accounts
+        WHERE status != 'Connected'
+        AND inbox_state = 'live'
+    """)
+
+    return {
+        "kill_stats": kill_stats,
+        "campaigns_to_watch": campaigns_to_watch,
+        "domains_needing_rotation": domains_needing_rotation,
+        "capacity_status": capacity_status,
+        "disconnected_new": disconnected["new_24h"] if disconnected else 0,
+        "disconnected_total": disconnected["total"] if disconnected else 0,
         "generated_at": datetime.utcnow().isoformat()
     }
 
@@ -103,25 +229,79 @@ def build_slack_message(stats: dict, audit_id: str) -> dict:
     """Build Slack Block Kit message for audit notification."""
 
     today = datetime.now().strftime("%B %d, %Y")
+    kill_stats = stats["kill_stats"]
 
-    # Build kill trigger breakdown text
+    # Build kill trigger section
     kill_lines = []
-    for trigger, count in stats["kill_breakdown"].items():
-        emoji = {
-            "hard_bounces_24h": ":no_entry:",
-            "spam_complaint": ":rotating_light:",
-            "fresh_inbox_bounce": ":seedling:",
-            "disconnected_21d": ":electric_plug:"
-        }.get(trigger, ":x:")
-        kill_lines.append(f"{emoji} {trigger}: *{count}*")
+
+    # Domain-killing triggers (critical)
+    if kill_stats["domain_killing"]:
+        kill_lines.append("*:rotating_light: Domain-Killing (reputation compromised):*")
+        for t in kill_stats["domain_killing"]:
+            workspaces = ", ".join(t["workspaces"][:3]) if t["workspaces"] else "unknown"
+            kill_lines.append(f"  • {t['trigger_type']}: *{t['count']}* ({t['domains_affected']} domains) - {workspaces}")
+
+    # Inbox-killing triggers
+    if kill_stats["inbox_killing"]:
+        kill_lines.append("*:x: Inbox-Killing:*")
+        for t in kill_stats["inbox_killing"]:
+            kill_lines.append(f"  • {t['trigger_type']}: *{t['count']}*")
 
     kill_text = "\n".join(kill_lines) if kill_lines else "_No new kills_"
 
-    # Build workspace breakdown
-    workspace_lines = []
-    for ws in stats["top_workspaces"][:3]:
-        workspace_lines.append(f"• {ws['workspace_name']}: {ws['count']}")
-    workspace_text = "\n".join(workspace_lines) if workspace_lines else "_None_"
+    # Summary line
+    summary = f"*{kill_stats['total_kills']} kills* "
+    if kill_stats["domain_killing_count"] > 0:
+        summary += f"(:rotating_light: {kill_stats['domain_killing_count']} domain-killing)"
+
+    # Build campaigns to watch section
+    campaign_lines = []
+    for c in stats["campaigns_to_watch"][:3]:
+        issues = []
+        if c["inboxes_burned_7d"] >= 2:
+            issues.append(f"{c['inboxes_burned_7d']} burns")
+        if c["domains_burned_7d"] >= 2:
+            issues.append(f"{c['domains_burned_7d']} domains")
+        if c["bounce_rate_pct"] and c["bounce_rate_pct"] > 5:
+            issues.append(f"{c['bounce_rate_pct']}% bounce")
+        if c["campaign_state"] == "quarantined":
+            issues.append("QUARANTINED")
+
+        issue_text = ", ".join(issues)
+        campaign_lines.append(f"• {c['campaign_name'][:30]} ({c['workspace_name']}): {issue_text}")
+
+    campaign_text = "\n".join(campaign_lines) if campaign_lines else "_None_"
+
+    # Build domains needing rotation section
+    rotation_lines = []
+    for d in stats["domains_needing_rotation"][:5]:
+        reason_emoji = {
+            "spam_compromised": ":biohazard_sign:",
+            "provider_blocked": ":no_entry:",
+            "all_dead": ":skull:",
+            "high_death_rate": ":warning:"
+        }.get(d["rotation_reason"], ":question:")
+
+        rotation_lines.append(
+            f"{reason_emoji} {d['domain_name']} ({d['workspace_name']}): "
+            f"{d['dead_inboxes']}/{d['total_inboxes']} dead"
+        )
+
+    rotation_text = "\n".join(rotation_lines) if rotation_lines else "_None_"
+
+    # Build capacity status section (top 5 lowest health)
+    capacity_lines = []
+    for c in stats["capacity_status"][:5]:
+        if c["health_pct"] is None or c["health_pct"] >= 80:
+            continue  # Skip healthy clients
+        emoji = ":red_circle:" if c["health_pct"] < 50 else ":large_orange_circle:" if c["health_pct"] < 70 else ":large_yellow_circle:"
+        compromised = f" :biohazard_sign:{c['compromised_domains']}" if c["compromised_domains"] else ""
+        capacity_lines.append(
+            f"{emoji} {c['client_name']}: {c['live_connected']}/{c['total_inboxes']} live "
+            f"({c['health_pct']}%){compromised}"
+        )
+
+    capacity_text = "\n".join(capacity_lines) if capacity_lines else "_All clients healthy (>80%)_"
 
     blocks = [
         {
@@ -136,14 +316,7 @@ def build_slack_message(stats: dict, audit_id: str) -> dict:
             "type": "section",
             "text": {
                 "type": "mrkdwn",
-                "text": f"*Kill Triggers (last 24h):* {stats['total_kills']} inboxes\n{kill_text}"
-            }
-        },
-        {
-            "type": "section",
-            "text": {
-                "type": "mrkdwn",
-                "text": f"*Top Workspaces:*\n{workspace_text}"
+                "text": f"*Kill Triggers (last 24h):* {summary}\n{kill_text}"
             }
         },
         {
@@ -153,7 +326,7 @@ def build_slack_message(stats: dict, audit_id: str) -> dict:
             "type": "section",
             "text": {
                 "type": "mrkdwn",
-                "text": f":electric_plug: *Disconnected Inboxes:* {stats['new_disconnected']} new ({stats['total_disconnected']} total)"
+                "text": f":eyes: *Campaigns to Watch:*\n{campaign_text}"
             }
         },
         {
@@ -163,31 +336,25 @@ def build_slack_message(stats: dict, audit_id: str) -> dict:
             "type": "section",
             "text": {
                 "type": "mrkdwn",
-                "text": "*Download reports for review:*"
+                "text": f":recycle: *Domains Needing Rotation:*\n{rotation_text}"
             }
         },
         {
-            "type": "actions",
+            "type": "divider"
+        },
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": f":bar_chart: *Client Capacity Status:*\n{capacity_text}"
+            }
+        },
+        {
+            "type": "context",
             "elements": [
                 {
-                    "type": "button",
-                    "text": {
-                        "type": "plain_text",
-                        "text": ":inbox_tray: Kill Triggers CSV",
-                        "emoji": True
-                    },
-                    "url": f"{PUBLIC_API_URL}/api/health/export/kill-triggers",
-                    "action_id": "download_kill_triggers"
-                },
-                {
-                    "type": "button",
-                    "text": {
-                        "type": "plain_text",
-                        "text": ":inbox_tray: Disconnected CSV",
-                        "emoji": True
-                    },
-                    "url": f"{PUBLIC_API_URL}/api/health/export/disconnected",
-                    "action_id": "download_disconnected"
+                    "type": "mrkdwn",
+                    "text": f":electric_plug: Disconnected (not dead): {stats['disconnected_new']} new, {stats['disconnected_total']} total | _Rotation is client-driven_"
                 }
             ]
         },
@@ -198,8 +365,56 @@ def build_slack_message(stats: dict, audit_id: str) -> dict:
             "type": "section",
             "text": {
                 "type": "mrkdwn",
-                "text": "*After reviewing, confirm the audit:*"
+                "text": "*Download detailed reports:*"
             }
+        },
+        {
+            "type": "actions",
+            "elements": [
+                {
+                    "type": "button",
+                    "text": {
+                        "type": "plain_text",
+                        "text": ":skull: Kill Triggers",
+                        "emoji": True
+                    },
+                    "url": f"{PUBLIC_API_URL}/api/health/export/kill-triggers",
+                    "action_id": "download_kill_triggers"
+                },
+                {
+                    "type": "button",
+                    "text": {
+                        "type": "plain_text",
+                        "text": ":recycle: Rotation",
+                        "emoji": True
+                    },
+                    "url": f"{PUBLIC_API_URL}/api/health/export/rotation-summary",
+                    "action_id": "download_rotation"
+                },
+                {
+                    "type": "button",
+                    "text": {
+                        "type": "plain_text",
+                        "text": ":electric_plug: Disconnected",
+                        "emoji": True
+                    },
+                    "url": f"{PUBLIC_API_URL}/api/health/export/disconnected",
+                    "action_id": "download_disconnected"
+                },
+                {
+                    "type": "button",
+                    "text": {
+                        "type": "plain_text",
+                        "text": ":bar_chart: Capacity",
+                        "emoji": True
+                    },
+                    "url": f"{PUBLIC_API_URL}/api/health/export/capacity-gaps",
+                    "action_id": "download_capacity"
+                }
+            ]
+        },
+        {
+            "type": "divider"
         },
         {
             "type": "actions",
@@ -209,7 +424,7 @@ def build_slack_message(stats: dict, audit_id: str) -> dict:
                     "type": "button",
                     "text": {
                         "type": "plain_text",
-                        "text": ":white_check_mark: Confirmed - All Correct",
+                        "text": ":white_check_mark: Reviewed",
                         "emoji": True
                     },
                     "style": "primary",
@@ -234,7 +449,7 @@ def build_slack_message(stats: dict, audit_id: str) -> dict:
             "elements": [
                 {
                     "type": "mrkdwn",
-                    "text": f"Audit ID: `{audit_id}` | Generated: {stats['generated_at'][:19]} UTC"
+                    "text": f"Audit ID: `{audit_id}` | {stats['generated_at'][:19]} UTC"
                 }
             ]
         }
