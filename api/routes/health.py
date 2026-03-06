@@ -2727,3 +2727,206 @@ async def export_rotation_summary():
         media_type="text/csv",
         headers={"Content-Disposition": f"attachment; filename=rotation-summary-{today}.csv"}
     )
+
+
+@router.get("/export/capacity-gaps")
+async def export_capacity_gaps():
+    """Export client capacity gaps for package fulfillment review.
+
+    Shows clients where actual capacity is below purchased package target.
+    Includes compromised domain counts to explain capacity loss.
+    """
+    rows = await fetch_all("""
+        SELECT
+            client_name,
+            workspace_id,
+            -- Entra
+            COALESCE(entra_packages, 0) as entra_packages,
+            COALESCE(entra_inboxes_target, 0) as entra_target,
+            COALESCE(entra_inboxes_live, 0) as entra_live,
+            COALESCE(entra_inbox_gap, 0) as entra_gap,
+            COALESCE(entra_domains_target, 0) as entra_domains_target,
+            COALESCE(entra_domains_actual, 0) as entra_domains_actual,
+            -- Google
+            COALESCE(google_packages, 0) as google_packages,
+            COALESCE(google_inboxes_target, 0) as google_target,
+            COALESCE(google_inboxes_live, 0) as google_live,
+            COALESCE(google_inbox_gap, 0) as google_gap,
+            COALESCE(google_domains_target, 0) as google_domains_target,
+            COALESCE(google_domains_actual, 0) as google_domains_actual,
+            -- Buffer
+            COALESCE(entra_pipeline_buffer, 0) as entra_buffer,
+            COALESCE(google_pipeline_buffer, 0) as google_buffer
+        FROM v_client_capacity
+        WHERE entra_inbox_gap > 0 OR google_inbox_gap > 0
+        ORDER BY (COALESCE(entra_inbox_gap, 0) + COALESCE(google_inbox_gap, 0)) DESC
+    """)
+
+    # Get compromised domain counts per workspace
+    compromised = await fetch_all("""
+        SELECT
+            sa.workspace_id,
+            COUNT(DISTINCT d.id) as compromised_domains,
+            COUNT(*) as compromised_inboxes
+        FROM sender_accounts sa
+        JOIN domains d ON sa.domain_id = d.id
+        WHERE sa.kill_trigger IN ('spam_complaint', 'provider_block_google', 'provider_block_microsoft')
+        GROUP BY sa.workspace_id
+    """)
+    compromised_map = {str(c["workspace_id"]): c for c in compromised}
+
+    def escape_csv(val):
+        if val is None:
+            return ""
+        s = str(val)
+        if "," in s or '"' in s or "\n" in s:
+            return '"' + s.replace('"', '""') + '"'
+        return s
+
+    csv_lines = []
+    csv_lines.append(",".join([
+        "client_name",
+        "entra_packages",
+        "entra_target",
+        "entra_live",
+        "entra_gap",
+        "entra_pct",
+        "entra_domains_target",
+        "entra_domains_actual",
+        "google_packages",
+        "google_target",
+        "google_live",
+        "google_gap",
+        "google_pct",
+        "google_domains_target",
+        "google_domains_actual",
+        "compromised_domains",
+        "compromised_inboxes",
+        "entra_buffer",
+        "google_buffer"
+    ]))
+
+    for row in rows:
+        ws_id = str(row["workspace_id"])
+        comp = compromised_map.get(ws_id, {})
+
+        entra_pct = round(row["entra_live"] / row["entra_target"] * 100) if row["entra_target"] > 0 else ""
+        google_pct = round(row["google_live"] / row["google_target"] * 100) if row["google_target"] > 0 else ""
+
+        csv_lines.append(",".join([
+            escape_csv(row["client_name"]),
+            escape_csv(row["entra_packages"]),
+            escape_csv(row["entra_target"]),
+            escape_csv(row["entra_live"]),
+            escape_csv(row["entra_gap"]),
+            escape_csv(f"{entra_pct}%" if entra_pct else ""),
+            escape_csv(row["entra_domains_target"]),
+            escape_csv(row["entra_domains_actual"]),
+            escape_csv(row["google_packages"]),
+            escape_csv(row["google_target"]),
+            escape_csv(row["google_live"]),
+            escape_csv(row["google_gap"]),
+            escape_csv(f"{google_pct}%" if google_pct else ""),
+            escape_csv(row["google_domains_target"]),
+            escape_csv(row["google_domains_actual"]),
+            escape_csv(comp.get("compromised_domains", 0)),
+            escape_csv(comp.get("compromised_inboxes", 0)),
+            escape_csv(row["entra_buffer"]),
+            escape_csv(row["google_buffer"])
+        ]))
+
+    csv_content = "\n".join(csv_lines)
+    today = datetime.now().strftime("%Y-%m-%d")
+
+    return Response(
+        content=csv_content,
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename=capacity-gaps-{today}.csv"}
+    )
+
+
+@router.get("/analysis/spam-complaint-timing")
+async def analyze_spam_complaint_timing():
+    """
+    Analyze when spam complaints occur relative to inbox lifecycle.
+
+    Returns breakdown by lifecycle stage:
+    - killed_during_warmup: Before sending started
+    - first_2_weeks: Within 14 days of sending
+    - week_2_to_4: Days 15-30
+    - month_1_to_2: Days 31-60
+    - month_2_to_3: Days 61-90
+    - beyond_3_months: 90+ days
+    """
+    summary = await fetch_all("""
+        WITH spam_complaints AS (
+            SELECT
+                sa.id,
+                sa.email_address,
+                d.domain_name,
+                sa.warmup_started_at,
+                sa.sending_started_at,
+                sa.killed_at,
+                EXTRACT(day FROM (sa.killed_at - sa.warmup_started_at))::int AS days_since_warmup,
+                EXTRACT(day FROM (sa.killed_at - sa.sending_started_at))::int AS days_since_sending,
+                CASE
+                    WHEN sa.sending_started_at IS NULL THEN 'killed_during_warmup'
+                    WHEN sa.killed_at < sa.sending_started_at + INTERVAL '14 days' THEN 'first_2_weeks'
+                    WHEN sa.killed_at < sa.sending_started_at + INTERVAL '30 days' THEN 'week_2_to_4'
+                    WHEN sa.killed_at < sa.sending_started_at + INTERVAL '60 days' THEN 'month_1_to_2'
+                    WHEN sa.killed_at < sa.sending_started_at + INTERVAL '90 days' THEN 'month_2_to_3'
+                    ELSE 'beyond_3_months'
+                END AS lifecycle_stage
+            FROM sender_accounts sa
+            LEFT JOIN domains d ON sa.domain_id = d.id
+            WHERE sa.kill_trigger = 'spam_complaint'
+              AND sa.killed_at IS NOT NULL
+              AND sa.warmup_started_at IS NOT NULL
+        )
+        SELECT
+            lifecycle_stage,
+            COUNT(*) as count,
+            ROUND(100.0 * COUNT(*) / NULLIF(SUM(COUNT(*)) OVER (), 0), 1) as pct,
+            ROUND(AVG(days_since_warmup), 0) as avg_days_from_warmup,
+            ROUND(AVG(days_since_sending), 0) as avg_days_from_sending,
+            MIN(days_since_warmup) as min_days,
+            MAX(days_since_warmup) as max_days
+        FROM spam_complaints
+        GROUP BY lifecycle_stage
+        ORDER BY
+            CASE lifecycle_stage
+                WHEN 'killed_during_warmup' THEN 1
+                WHEN 'first_2_weeks' THEN 2
+                WHEN 'week_2_to_4' THEN 3
+                WHEN 'month_1_to_2' THEN 4
+                WHEN 'month_2_to_3' THEN 5
+                ELSE 6
+            END
+    """)
+
+    # Also get raw detail for deeper analysis
+    detail = await fetch_all("""
+        SELECT
+            sa.email_address,
+            d.domain_name,
+            sa.warmup_started_at,
+            sa.sending_started_at,
+            sa.killed_at,
+            EXTRACT(day FROM (sa.killed_at - sa.warmup_started_at))::int AS days_since_warmup,
+            EXTRACT(day FROM (sa.killed_at - sa.sending_started_at))::int AS days_since_sending
+        FROM sender_accounts sa
+        LEFT JOIN domains d ON sa.domain_id = d.id
+        WHERE sa.kill_trigger = 'spam_complaint'
+          AND sa.killed_at IS NOT NULL
+          AND sa.warmup_started_at IS NOT NULL
+        ORDER BY sa.killed_at DESC
+        LIMIT 50
+    """)
+
+    total = sum(row["count"] for row in summary) if summary else 0
+
+    return {
+        "total_spam_complaints": total,
+        "by_lifecycle_stage": [dict(row) for row in summary] if summary else [],
+        "recent_examples": [dict(row) for row in detail] if detail else []
+    }
