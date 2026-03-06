@@ -3216,6 +3216,7 @@ async def get_workspace_sync_diagnosis(workspace_id: UUID):
     return {
         "workspace_name": workspace['workspace_name'],
         "is_active": workspace['is_active'],
+        "emailbison_workspace_id": workspace['emailbison_workspace_id'],
         "has_emailbison_id": workspace['emailbison_workspace_id'] is not None,
         "total_campaigns": len(campaigns),
         "active_campaigns": len(active_campaigns),
