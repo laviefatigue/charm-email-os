@@ -54,6 +54,12 @@ RUN playwright install-deps chromium
 # Copy API application code
 COPY api/ .
 
+# Copy domain_engine module (Domain Engine V2)
+COPY domain_engine/ /app/domain_engine/
+
+# Copy migrations directory for automatic migration runner
+COPY migrations/ /migrations/
+
 # Copy Hypertide automation to expected path
 # The import code expects: Path(__file__).parent.parent.parent / "Hypertide" / "automation" / "src"
 # In container: /app/routes/inbox_purchasing.py -> parent.parent.parent = /
