@@ -9,7 +9,7 @@ from uuid import UUID
 from datetime import datetime, timezone, timedelta
 import logging
 
-from database import fetch_all, fetch_one
+from database import fetch_all, fetch_one, execute
 from models.health import (
     HealthOverview, HealthDashboard, InboxHealthMetrics,
     DomainHealthMetrics, Alert, KillTriggerStats,
