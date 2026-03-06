@@ -54,9 +54,6 @@ RUN playwright install-deps chromium
 # Copy API application code
 COPY api/ .
 
-# Copy domain_engine module (Domain Engine V2)
-COPY domain_engine/ /app/domain_engine/
-
 # Copy migrations directory for automatic migration runner
 COPY migrations/ /migrations/
 
