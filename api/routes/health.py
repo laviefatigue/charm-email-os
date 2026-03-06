@@ -2930,3 +2930,120 @@ async def analyze_spam_complaint_timing():
         "by_lifecycle_stage": [dict(row) for row in summary] if summary else [],
         "recent_examples": [dict(row) for row in detail] if detail else []
     }
+
+
+@router.get("/analysis/kill-trigger-lifecycle")
+async def analyze_kill_trigger_lifecycle():
+    """
+    Comprehensive kill trigger analysis by lifecycle stage.
+
+    Analyzes ALL kill triggers (not just spam complaints) to understand
+    when different failure modes occur relative to inbox lifecycle.
+
+    Lifecycle stages (based on sending_started_at):
+    - killed_during_warmup: Before any campaign sends
+    - first_2_weeks: 0-14 days after first campaign send
+    - week_2_to_4: 15-30 days
+    - month_1_to_2: 31-60 days
+    - month_2_to_3: 61-90 days
+    - beyond_3_months: 90+ days
+
+    NOTE: sending_started_at is set when inbox is first assigned to a campaign
+    (Migration 079, sync_campaigns.py). This is more accurate than warmup graduation.
+    """
+    # Get breakdown by trigger type AND lifecycle stage
+    by_trigger_and_stage = await fetch_all("""
+        WITH killed_inboxes AS (
+            SELECT
+                sa.id,
+                sa.kill_trigger::text as trigger_type,
+                sa.warmup_started_at,
+                sa.sending_started_at,
+                sa.killed_at,
+                EXTRACT(day FROM (sa.killed_at - sa.warmup_started_at))::int AS days_since_warmup,
+                EXTRACT(day FROM (sa.killed_at - sa.sending_started_at))::int AS days_since_sending,
+                CASE
+                    WHEN sa.sending_started_at IS NULL THEN 'killed_during_warmup'
+                    WHEN sa.killed_at < sa.sending_started_at + INTERVAL '14 days' THEN 'first_2_weeks'
+                    WHEN sa.killed_at < sa.sending_started_at + INTERVAL '30 days' THEN 'week_2_to_4'
+                    WHEN sa.killed_at < sa.sending_started_at + INTERVAL '60 days' THEN 'month_1_to_2'
+                    WHEN sa.killed_at < sa.sending_started_at + INTERVAL '90 days' THEN 'month_2_to_3'
+                    ELSE 'beyond_3_months'
+                END AS lifecycle_stage
+            FROM sender_accounts sa
+            WHERE sa.kill_trigger IS NOT NULL
+              AND sa.killed_at IS NOT NULL
+              AND sa.warmup_started_at IS NOT NULL
+        )
+        SELECT
+            trigger_type,
+            lifecycle_stage,
+            COUNT(*) as count,
+            ROUND(AVG(days_since_warmup), 0) as avg_days_from_warmup,
+            ROUND(AVG(days_since_sending), 0) as avg_days_from_sending
+        FROM killed_inboxes
+        GROUP BY trigger_type, lifecycle_stage
+        ORDER BY trigger_type,
+            CASE lifecycle_stage
+                WHEN 'killed_during_warmup' THEN 1
+                WHEN 'first_2_weeks' THEN 2
+                WHEN 'week_2_to_4' THEN 3
+                WHEN 'month_1_to_2' THEN 4
+                WHEN 'month_2_to_3' THEN 5
+                ELSE 6
+            END
+    """)
+
+    # Get totals by trigger type
+    totals_by_trigger = await fetch_all("""
+        SELECT
+            kill_trigger::text as trigger_type,
+            COUNT(*) as total,
+            COUNT(*) FILTER (WHERE sending_started_at IS NULL) as killed_during_warmup,
+            COUNT(*) FILTER (WHERE sending_started_at IS NOT NULL) as killed_after_campaign_start
+        FROM sender_accounts
+        WHERE kill_trigger IS NOT NULL
+          AND killed_at IS NOT NULL
+        GROUP BY kill_trigger
+        ORDER BY COUNT(*) DESC
+    """)
+
+    # Get totals by lifecycle stage (all triggers combined)
+    totals_by_stage = await fetch_all("""
+        SELECT
+            CASE
+                WHEN sending_started_at IS NULL THEN 'killed_during_warmup'
+                WHEN killed_at < sending_started_at + INTERVAL '14 days' THEN 'first_2_weeks'
+                WHEN killed_at < sending_started_at + INTERVAL '30 days' THEN 'week_2_to_4'
+                WHEN killed_at < sending_started_at + INTERVAL '60 days' THEN 'month_1_to_2'
+                WHEN killed_at < sending_started_at + INTERVAL '90 days' THEN 'month_2_to_3'
+                ELSE 'beyond_3_months'
+            END AS lifecycle_stage,
+            COUNT(*) as count
+        FROM sender_accounts
+        WHERE kill_trigger IS NOT NULL
+          AND killed_at IS NOT NULL
+          AND warmup_started_at IS NOT NULL
+        GROUP BY 1
+        ORDER BY
+            CASE
+                WHEN sending_started_at IS NULL THEN 1
+                ELSE 2
+            END,
+            MIN(killed_at - COALESCE(sending_started_at, killed_at))
+    """)
+
+    total_kills = sum(row["total"] for row in totals_by_trigger) if totals_by_trigger else 0
+
+    return {
+        "total_kills": total_kills,
+        "by_trigger_type": [dict(row) for row in totals_by_trigger] if totals_by_trigger else [],
+        "by_lifecycle_stage": [dict(row) for row in totals_by_stage] if totals_by_stage else [],
+        "detailed_breakdown": [dict(row) for row in by_trigger_and_stage] if by_trigger_and_stage else [],
+        "data_model_notes": {
+            "sending_started_at": "Set when inbox first assigned to campaign (not warmup graduation)",
+            "warmup_started_at": "Set when inbox first seen in EmailBison",
+            "killed_during_warmup": "Inbox died before ever being assigned to a campaign",
+            "migration": "079_backfill_sending_started_at.sql backfills from campaign_inboxes.assigned_at"
+        }
+    }

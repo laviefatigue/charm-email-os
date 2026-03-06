@@ -2,6 +2,22 @@
 Campaign & Metrics Sync Module
 
 Synchronizes campaigns and creates snapshots from EmailBison.
+
+IMPORTANT: sending_started_at Lifecycle Tracking
+----------------------------------------------
+This module sets `sender_accounts.sending_started_at` when an inbox is
+first assigned to a campaign. This timestamp is critical for:
+
+1. Kill trigger lifecycle analysis - distinguishes kills during warmup
+   vs kills during active campaign sending
+2. Data integrity - spam complaints only count if from campaign activity
+3. Reporting - accurate lifecycle stage categorization
+
+sending_started_at is set on first campaign_inboxes insert, NOT on warmup
+graduation (which only sets inventory_lifecycle_status='active').
+
+See: Migration 079_backfill_sending_started_at.sql for backfill logic
+See: /api/health/analysis/kill-trigger-lifecycle for analysis endpoint
 """
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional
