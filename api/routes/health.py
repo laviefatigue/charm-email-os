@@ -3812,3 +3812,71 @@ async def backfill_kill_triggers(confirm: bool = False):
         "remaining_untracked": remaining['count'] if remaining else 0,
         "status": "backfill complete" if remaining['count'] == 0 else "some records still missing"
     }
+
+
+@router.get("/analysis/warmup-status")
+async def analyze_warmup_status():
+    """
+    Check warmup status across all workspaces.
+
+    Shows:
+    - Connected inboxes without warmup (candidates for auto-enable)
+    - Warmup enabled vs disabled breakdown
+    - By workspace
+    """
+    try:
+        # Overall summary
+        summary = await fetch_one("""
+            SELECT
+                COUNT(*) FILTER (WHERE status = 'Connected') as total_connected,
+                COUNT(*) FILTER (WHERE status = 'Connected' AND warmup_enabled = TRUE) as warmup_enabled,
+                COUNT(*) FILTER (WHERE status = 'Connected' AND (warmup_enabled = FALSE OR warmup_enabled IS NULL)) as warmup_disabled,
+                COUNT(*) FILTER (WHERE status = 'Connected' AND inbox_state = 'live' AND (warmup_enabled = FALSE OR warmup_enabled IS NULL)) as live_no_warmup
+            FROM sender_accounts
+            WHERE is_active = TRUE
+        """)
+
+        # By workspace - connected without warmup
+        by_workspace = await fetch_all("""
+            SELECT
+                w.workspace_name,
+                COUNT(*) FILTER (WHERE sa.status = 'Connected') as connected,
+                COUNT(*) FILTER (WHERE sa.status = 'Connected' AND sa.warmup_enabled = TRUE) as warmup_on,
+                COUNT(*) FILTER (WHERE sa.status = 'Connected' AND (sa.warmup_enabled = FALSE OR sa.warmup_enabled IS NULL)) as warmup_off
+            FROM sender_accounts sa
+            JOIN domains d ON sa.domain_id = d.id
+            JOIN workspaces w ON d.workspace_id = w.id
+            WHERE sa.is_active = TRUE
+            GROUP BY w.workspace_name
+            HAVING COUNT(*) FILTER (WHERE sa.status = 'Connected' AND (sa.warmup_enabled = FALSE OR sa.warmup_enabled IS NULL)) > 0
+            ORDER BY COUNT(*) FILTER (WHERE sa.status = 'Connected' AND (sa.warmup_enabled = FALSE OR sa.warmup_enabled IS NULL)) DESC
+        """)
+
+        # Sample of connected inboxes without warmup
+        samples = await fetch_all("""
+            SELECT
+                sa.email_address,
+                w.workspace_name,
+                sa.status,
+                sa.warmup_enabled,
+                sa.warmup_started_at,
+                sa.inbox_state
+            FROM sender_accounts sa
+            JOIN domains d ON sa.domain_id = d.id
+            JOIN workspaces w ON d.workspace_id = w.id
+            WHERE sa.status = 'Connected'
+              AND (sa.warmup_enabled = FALSE OR sa.warmup_enabled IS NULL)
+              AND sa.is_active = TRUE
+            ORDER BY sa.updated_at DESC
+            LIMIT 10
+        """)
+
+        return {
+            "summary": dict(summary) if summary else {},
+            "workspaces_with_warmup_disabled": [dict(row) for row in by_workspace] if by_workspace else [],
+            "sample_no_warmup": [dict(row) for row in samples] if samples else [],
+            "auto_enable_note": "Warmup sync runs every 30 min and should auto-enable warmup for connected inboxes"
+        }
+    except Exception as e:
+        logger.error(f"warmup-status failed: {type(e).__name__}: {e}")
+        raise HTTPException(status_code=500, detail=f"Query failed: {str(e)}")
