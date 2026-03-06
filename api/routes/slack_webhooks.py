@@ -454,127 +454,31 @@ async def resolve_correction(
 
 @router.post("/trigger-audit")
 async def trigger_manual_audit():
-    """Manually trigger an audit message (for testing)."""
-    SLACK_WEBHOOK_URL = os.getenv("SLACK_AUDIT_WEBHOOK_URL")
-    PUBLIC_API_URL = os.getenv("PUBLIC_API_URL", "http://nckgggwww8sggg0kc4wo00o8.187.77.19.81.sslip.io")
+    """Manually trigger an audit message using the centralized slack_audit module.
 
-    if not SLACK_WEBHOOK_URL:
-        return {"success": False, "error": "SLACK_AUDIT_WEBHOOK_URL not configured"}
-
+    This ensures consistency between manual triggers and scheduled audits.
+    """
     try:
-        # Get kill stats
-        kill_stats = await fetch_all("""
-            SELECT kill_trigger, COUNT(*) as count
-            FROM sender_accounts
-            WHERE killed_at >= NOW() - INTERVAL '24 hours'
-            AND kill_trigger IS NOT NULL
-            GROUP BY kill_trigger
-            ORDER BY count DESC
-        """)
-        total_kills = sum(row["count"] for row in kill_stats) if kill_stats else 0
+        # Import here to avoid circular imports
+        import sys
+        sys.path.insert(0, '/app')
+        from sync_modules.slack_audit import send_daily_audit, get_daily_audit_stats
 
-        # Get disconnected stats
-        new_disconnected = await fetch_one("""
-            SELECT COUNT(*) as count FROM sender_accounts
-            WHERE status != 'Connected' AND inbox_state = 'live'
-            AND updated_at >= NOW() - INTERVAL '24 hours'
-        """)
-        total_disconnected = await fetch_one("""
-            SELECT COUNT(*) as count FROM sender_accounts
-            WHERE status != 'Connected' AND inbox_state = 'live'
-        """)
+        # Get stats for the response
+        stats = await get_daily_audit_stats()
 
-        # Top workspaces
-        workspace_kills = await fetch_all("""
-            SELECT w.workspace_name, COUNT(*) as count
-            FROM sender_accounts sa
-            JOIN workspaces w ON sa.workspace_id = w.id
-            WHERE sa.killed_at >= NOW() - INTERVAL '24 hours'
-            AND sa.kill_trigger IS NOT NULL AND w.is_active = TRUE
-            GROUP BY w.workspace_name ORDER BY count DESC LIMIT 5
-        """)
+        # Send the actual audit using the centralized module
+        result = await send_daily_audit()
 
-        # Dead domains (domains where ALL inboxes are gone from EmailBison - need to cancel subscriptions)
-        dead_domains = await fetch_one("""
-            SELECT COUNT(*) as count FROM (
-                SELECT d.id
-                FROM domains d
-                JOIN workspaces w ON d.workspace_id = w.id
-                LEFT JOIN LATERAL (
-                    SELECT
-                        COUNT(*) AS total_inboxes,
-                        COUNT(*) FILTER (WHERE sa.is_active = TRUE) AS inboxes_in_emailbison
-                    FROM sender_accounts sa
-                    WHERE sa.domain_id = d.id
-                ) inbox_stats ON true
-                WHERE w.is_active = TRUE
-                AND d.is_active = TRUE
-                AND inbox_stats.total_inboxes > 0
-                AND inbox_stats.inboxes_in_emailbison = 0
-            ) dead
-        """)
-
-        # Create audit record
-        audit_record = await fetch_one("""
-            INSERT INTO inbox_audits (audit_date, status, total_kills, total_disconnected)
-            VALUES (CURRENT_DATE, 'pending', $1, $2)
-            RETURNING id
-        """, total_kills, total_disconnected["count"] if total_disconnected else 0)
-        audit_id = str(audit_record["id"])
-
-        # Build message
-        today = datetime.now().strftime("%B %d, %Y")
-        kill_lines = []
-        if kill_stats:
-            for row in kill_stats:
-                emoji = {
-                    "hard_bounces_24h": ":no_entry:",
-                    "spam_complaint": ":rotating_light:",
-                    "fresh_inbox_bounce": ":seedling:",
-                    "disconnected_21d": ":electric_plug:"
-                }.get(row["kill_trigger"], ":x:")
-                kill_lines.append(f"{emoji} {row['kill_trigger']}: *{row['count']}*")
-        kill_text = "\n".join(kill_lines) if kill_lines else "_No new kills_"
-
-        workspace_lines = []
-        if workspace_kills:
-            for ws in workspace_kills[:3]:
-                workspace_lines.append(f"• {ws['workspace_name']}: {ws['count']}")
-        workspace_text = "\n".join(workspace_lines) if workspace_lines else "_None_"
-
-        blocks = [
-            {"type": "header", "text": {"type": "plain_text", "text": f":clipboard: Daily Inbox Audit - {today}", "emoji": True}},
-            {"type": "section", "text": {"type": "mrkdwn", "text": f"*Kill Triggers (last 24h):* {total_kills} inboxes\n{kill_text}"}},
-            {"type": "section", "text": {"type": "mrkdwn", "text": f"*Top Workspaces:*\n{workspace_text}"}},
-            {"type": "divider"},
-            {"type": "section", "text": {"type": "mrkdwn", "text": f":electric_plug: *Disconnected Inboxes:* {new_disconnected['count'] if new_disconnected else 0} new ({total_disconnected['count'] if total_disconnected else 0} total)"}},
-            {"type": "section", "text": {"type": "mrkdwn", "text": f":headstone: *Dead Domains (Cancel Subscriptions):* {dead_domains['count'] if dead_domains else 0} domains"}},
-            {"type": "divider"},
-            {"type": "section", "text": {"type": "mrkdwn", "text": "*Download reports for review:*"}},
-            {"type": "actions", "elements": [
-                {"type": "button", "text": {"type": "plain_text", "text": ":inbox_tray: Kill Triggers CSV", "emoji": True}, "url": f"{PUBLIC_API_URL}/api/health/export/kill-triggers", "action_id": "download_kill_triggers"},
-                {"type": "button", "text": {"type": "plain_text", "text": ":electric_plug: Disconnected CSV", "emoji": True}, "url": f"{PUBLIC_API_URL}/api/health/export/disconnected", "action_id": "download_disconnected"},
-                {"type": "button", "text": {"type": "plain_text", "text": ":arrows_counterclockwise: Rotation CSV", "emoji": True}, "url": f"{PUBLIC_API_URL}/api/health/export/rotation-summary", "action_id": "download_rotation_summary"},
-                {"type": "button", "text": {"type": "plain_text", "text": ":headstone: Dead Domains CSV", "emoji": True}, "url": f"{PUBLIC_API_URL}/api/health/export/dead-domains", "action_id": "download_dead_domains"}
-            ]},
-            {"type": "divider"},
-            {"type": "section", "text": {"type": "mrkdwn", "text": "*After reviewing, confirm the audit:*"}},
-            {"type": "actions", "block_id": f"audit_actions_{audit_id}", "elements": [
-                {"type": "button", "text": {"type": "plain_text", "text": ":white_check_mark: Confirmed - All Correct", "emoji": True}, "style": "primary", "action_id": "audit_confirmed", "value": audit_id},
-                {"type": "button", "text": {"type": "plain_text", "text": ":warning: Issues Found", "emoji": True}, "style": "danger", "action_id": "audit_issues", "value": audit_id}
-            ]},
-            {"type": "context", "elements": [{"type": "mrkdwn", "text": f"Audit ID: `{audit_id}` | Generated: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')} UTC"}]}
-        ]
-
-        # Send to Slack
-        async with httpx.AsyncClient() as client:
-            response = await client.post(SLACK_WEBHOOK_URL, json={"blocks": blocks}, headers={"Content-Type": "application/json"})
-
-            if response.status_code == 200:
-                logger.info(f"Daily audit sent successfully (audit_id={audit_id})")
-                return {"success": True, "audit_id": audit_id, "total_kills": total_kills, "total_disconnected": total_disconnected["count"] if total_disconnected else 0}
-            else:
-                return {"success": False, "error": f"Slack returned {response.status_code}: {response.text}"}
+        if result["success"]:
+            return {
+                "success": True,
+                "audit_id": result.get("audit_id"),
+                "total_kills": stats["kill_stats"]["total_kills"],
+                "total_disconnected": stats["disconnected_total"]
+            }
+        else:
+            return result
 
     except Exception as e:
         logger.error(f"Failed to trigger audit: {e}", exc_info=True)
