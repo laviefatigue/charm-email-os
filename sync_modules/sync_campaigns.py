@@ -348,6 +348,15 @@ class CampaignSyncModule:
                     eb_campaign_id,
                     eb_account_id  # Pass as integer
                 )
+
+                # Set sending_started_at on first campaign assignment
+                await self.db.execute("""
+                    UPDATE sender_accounts
+                    SET sending_started_at = NOW()
+                    WHERE id = $1
+                    AND sending_started_at IS NULL
+                """, sender_account_id)
+
                 total_synced += 1
 
             # Mark campaigns this inbox is no longer assigned to as inactive
