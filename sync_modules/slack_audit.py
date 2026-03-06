@@ -188,13 +188,17 @@ async def get_daily_audit_stats() -> dict:
     capacity_status = await get_client_capacity_status()
 
     # Disconnected inboxes (live but not connected - could reconnect)
+    # Filter to active workspaces and inboxes with EmailBison IDs (actionable)
     disconnected = await fetch_one("""
         SELECT
-            COUNT(*) FILTER (WHERE updated_at >= NOW() - INTERVAL '24 hours') as new_24h,
+            COUNT(*) FILTER (WHERE sa.updated_at >= NOW() - INTERVAL '24 hours') as new_24h,
             COUNT(*) as total
-        FROM sender_accounts
-        WHERE status != 'Connected'
-        AND inbox_state = 'live'
+        FROM sender_accounts sa
+        JOIN workspaces w ON sa.workspace_id = w.id
+        WHERE sa.status != 'Connected'
+        AND sa.inbox_state = 'live'
+        AND sa.emailbison_account_id IS NOT NULL
+        AND w.is_active = TRUE
     """)
 
     return {
