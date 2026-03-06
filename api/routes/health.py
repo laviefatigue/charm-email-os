@@ -3457,3 +3457,69 @@ async def analyze_domain_capacity_impact():
     except Exception as e:
         logger.error(f"domain-capacity-impact failed: {type(e).__name__}: {e}")
         raise HTTPException(status_code=500, detail=f"Query failed: {str(e)}")
+
+
+@router.get("/analysis/domain-bounce-rollup")
+async def analyze_domain_bounce_rollup(workspace_id: Optional[str] = None):
+    """
+    Domain-level bounce rollup showing which domains have inboxes with bounces.
+
+    Args:
+        workspace_id: Filter to a specific workspace (recommended)
+
+    Returns domains with:
+    - Total inboxes
+    - Inboxes with bounces (24h and all-time)
+    - Total bounce counts
+    """
+    try:
+        workspace_filter = ""
+        params = []
+
+        if workspace_id:
+            workspace_filter = "AND c.workspace_id = $1"
+            params.append(workspace_id)
+
+        query = f"""
+            SELECT
+                d.domain_name as domain,
+                CASE
+                    WHEN LOWER(COALESCE(d.esp::text, 'unknown')) IN ('microsoft', 'outlook', 'entra') THEN 'microsoft'
+                    WHEN LOWER(COALESCE(d.esp::text, 'unknown')) = 'gmail' THEN 'google'
+                    ELSE COALESCE(d.esp::text, 'unknown')
+                END as esp,
+                COUNT(sa.id) as total_inboxes,
+                COUNT(*) FILTER (WHERE sa.hard_bounces_24h > 0) as inboxes_with_bounces_24h,
+                COALESCE(SUM(sa.hard_bounces_24h), 0) as total_bounces_24h,
+                COUNT(*) FILTER (WHERE sa.bounces_all_time > 0) as inboxes_with_bounces_alltime,
+                COALESCE(SUM(sa.bounces_all_time), 0) as total_bounces_alltime,
+                COUNT(*) FILTER (WHERE sa.inbox_state = 'dead') as dead_inboxes,
+                COUNT(*) FILTER (WHERE sa.inbox_state = 'live' AND sa.status = 'Connected') as live_connected
+            FROM sender_accounts sa
+            JOIN domains d ON sa.domain_id = d.id
+            JOIN clients c ON sa.client_id = c.id
+            WHERE 1=1 {workspace_filter}
+            GROUP BY d.domain_name, d.esp
+            HAVING SUM(sa.hard_bounces_24h) > 0 OR SUM(sa.bounces_all_time) > 0
+            ORDER BY SUM(sa.hard_bounces_24h) DESC, SUM(sa.bounces_all_time) DESC
+        """
+
+        rows = await fetch_all(query, *params) if params else await fetch_all(query)
+
+        # Summary stats
+        total_domains = len(rows) if rows else 0
+        total_bounces_24h = sum(r['total_bounces_24h'] for r in rows) if rows else 0
+        total_inboxes_with_bounces = sum(r['inboxes_with_bounces_24h'] for r in rows) if rows else 0
+
+        return {
+            "workspace_id": workspace_id,
+            "summary": {
+                "domains_with_bounces": total_domains,
+                "total_bounces_24h": total_bounces_24h,
+                "inboxes_with_bounces_24h": total_inboxes_with_bounces
+            },
+            "domains": [dict(row) for row in rows] if rows else []
+        }
+    except Exception as e:
+        logger.error(f"domain-bounce-rollup failed: {type(e).__name__}: {e}")
+        raise HTTPException(status_code=500, detail=f"Query failed: {str(e)}")
