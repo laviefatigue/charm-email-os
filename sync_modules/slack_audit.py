@@ -29,6 +29,7 @@ async def get_kill_trigger_stats() -> dict:
     """Get kill trigger statistics for last 24 hours with severity classification."""
 
     # Kill triggers in last 24h with workspace info
+    # Filter to active workspaces and inboxes with EmailBison IDs (actionable)
     kill_stats = await fetch_all("""
         SELECT
             sa.kill_trigger::text as trigger_type,
@@ -36,10 +37,12 @@ async def get_kill_trigger_stats() -> dict:
             COUNT(DISTINCT sa.domain_id) as domains_affected,
             array_agg(DISTINCT w.workspace_name) as workspaces
         FROM sender_accounts sa
-        JOIN domains d ON sa.domain_id = d.id
-        JOIN workspaces w ON d.workspace_id = w.id
+        JOIN workspaces w ON sa.workspace_id = w.id
+        LEFT JOIN domains d ON sa.domain_id = d.id
         WHERE sa.killed_at >= NOW() - INTERVAL '24 hours'
         AND sa.kill_trigger IS NOT NULL
+        AND sa.emailbison_account_id IS NOT NULL
+        AND w.is_active = TRUE
         GROUP BY sa.kill_trigger
         ORDER BY count DESC
     """)
@@ -161,9 +164,10 @@ async def get_client_capacity_status() -> list:
             ROUND(100.0 * COUNT(*) FILTER (WHERE sa.inbox_state = 'live' AND sa.status = 'Connected') / NULLIF(COUNT(*), 0), 0) as health_pct,
             COUNT(DISTINCT d.id) FILTER (WHERE sa.kill_trigger = 'spam_complaint') as compromised_domains
         FROM sender_accounts sa
-        JOIN domains d ON sa.domain_id = d.id
-        JOIN workspaces w ON d.workspace_id = w.id
+        JOIN workspaces w ON sa.workspace_id = w.id
+        LEFT JOIN domains d ON sa.domain_id = d.id
         WHERE w.is_active = TRUE
+        AND sa.emailbison_account_id IS NOT NULL
         GROUP BY w.id, w.workspace_name
         HAVING COUNT(*) > 0
         ORDER BY
