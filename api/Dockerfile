@@ -14,11 +14,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Python dependencies FROM requirements.txt
-COPY requirements.txt .
+COPY api/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy ALL application code
-COPY . .
+# Copy API application code
+COPY api/ .
+
+# Copy domain_engine module (Domain Engine V2)
+COPY domain_engine/ /app/domain_engine/
+
+# Copy migrations directory for automatic migration runner
+COPY migrations/ /migrations/
 
 # Expose port
 EXPOSE 8000
