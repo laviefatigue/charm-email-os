@@ -227,6 +227,33 @@ async def export_database(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.post("/run-sql")
+async def run_sql(
+    key: str = Query(..., description="Admin key for authentication"),
+    sql: str = Query(..., description="SQL to execute")
+):
+    """
+    Run arbitrary SQL (admin only, use with caution).
+    For emergency migrations when deploy isn't working.
+    """
+    if not verify_admin_key(key):
+        raise HTTPException(status_code=403, detail="Invalid admin key")
+
+    from database import execute, fetch_all
+
+    try:
+        # Try as a query first
+        if sql.strip().upper().startswith("SELECT"):
+            rows = await fetch_all(sql)
+            return {"result": [dict(r) for r in rows]}
+        else:
+            await execute(sql)
+            return {"result": "OK"}
+    except Exception as e:
+        logger.error(f"SQL execution failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/db-tables")
 async def list_tables(
     key: str = Query(..., description="Admin key for authentication")
