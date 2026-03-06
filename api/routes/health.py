@@ -3523,3 +3523,117 @@ async def analyze_domain_bounce_rollup(workspace_id: Optional[str] = None):
     except Exception as e:
         logger.error(f"domain-bounce-rollup failed: {type(e).__name__}: {e}")
         raise HTTPException(status_code=500, detail=f"Query failed: {str(e)}")
+
+
+@router.get("/analysis/inbox-death-breakdown")
+async def analyze_inbox_death_breakdown(workspace_id: Optional[str] = None):
+    """
+    Breakdown of inbox deaths: killed by trigger vs just disconnected.
+
+    "Killed by trigger" = inbox has killed_at AND kill_trigger set (truly dead)
+    "Disconnected only" = status='Not connected' but no kill trigger (could reconnect)
+
+    Args:
+        workspace_id: Filter to a specific workspace (recommended)
+    """
+    try:
+        workspace_filter = ""
+        params = []
+
+        if workspace_id:
+            workspace_filter = "WHERE d.workspace_id = $1"
+            params.append(workspace_id)
+
+        query = f"""
+            WITH inbox_status AS (
+                SELECT
+                    sa.id,
+                    sa.email,
+                    sa.status,
+                    sa.inbox_state,
+                    sa.killed_at,
+                    sa.kill_trigger,
+                    CASE
+                        WHEN LOWER(COALESCE(sa.esp::text, 'unknown')) IN ('microsoft', 'outlook', 'entra') THEN 'microsoft'
+                        WHEN LOWER(COALESCE(sa.esp::text, 'unknown')) = 'gmail' THEN 'google'
+                        ELSE 'other'
+                    END as esp,
+                    CASE
+                        WHEN sa.killed_at IS NOT NULL AND sa.kill_trigger IS NOT NULL THEN 'killed_by_trigger'
+                        WHEN sa.status = 'Not connected' THEN 'disconnected_only'
+                        WHEN sa.status = 'Connected' AND sa.inbox_state = 'live' THEN 'live_connected'
+                        WHEN sa.status = 'Connected' AND sa.inbox_state != 'live' THEN 'connected_not_live'
+                        ELSE 'other'
+                    END as death_category
+                FROM sender_accounts sa
+                JOIN domains d ON sa.domain_id = d.id
+                {workspace_filter}
+            )
+            SELECT
+                esp,
+                death_category,
+                COUNT(*) as count
+            FROM inbox_status
+            GROUP BY esp, death_category
+            ORDER BY esp, death_category
+        """
+
+        rows = await fetch_all(query, *params) if params else await fetch_all(query)
+
+        # Also get kill trigger breakdown for killed inboxes
+        trigger_query = f"""
+            SELECT
+                CASE
+                    WHEN LOWER(COALESCE(sa.esp::text, 'unknown')) IN ('microsoft', 'outlook', 'entra') THEN 'microsoft'
+                    WHEN LOWER(COALESCE(sa.esp::text, 'unknown')) = 'gmail' THEN 'google'
+                    ELSE 'other'
+                END as esp,
+                sa.kill_trigger::text as trigger_type,
+                COUNT(*) as count
+            FROM sender_accounts sa
+            JOIN domains d ON sa.domain_id = d.id
+            {workspace_filter}
+                AND sa.killed_at IS NOT NULL
+                AND sa.kill_trigger IS NOT NULL
+            GROUP BY esp, sa.kill_trigger
+            ORDER BY esp, count DESC
+        """
+
+        trigger_rows = await fetch_all(trigger_query, *params) if params else await fetch_all(trigger_query)
+
+        # Build summary
+        summary = {
+            "microsoft": {"killed_by_trigger": 0, "disconnected_only": 0, "live_connected": 0, "total": 0},
+            "google": {"killed_by_trigger": 0, "disconnected_only": 0, "live_connected": 0, "total": 0},
+            "other": {"killed_by_trigger": 0, "disconnected_only": 0, "live_connected": 0, "total": 0}
+        }
+
+        for row in rows:
+            esp = row['esp']
+            cat = row['death_category']
+            count = row['count']
+            if esp in summary and cat in summary[esp]:
+                summary[esp][cat] = count
+            summary[esp]["total"] += count
+
+        # Calculate true kill rate (only killed_by_trigger / total)
+        for esp in summary:
+            total = summary[esp]["total"]
+            killed = summary[esp]["killed_by_trigger"]
+            summary[esp]["true_kill_rate_pct"] = round(killed / total * 100, 1) if total > 0 else 0
+
+        return {
+            "workspace_id": workspace_id,
+            "summary": summary,
+            "breakdown_by_esp": [dict(row) for row in rows] if rows else [],
+            "kill_triggers": [dict(row) for row in trigger_rows] if trigger_rows else [],
+            "definitions": {
+                "killed_by_trigger": "Inbox has killed_at AND kill_trigger set - truly dead, caught by health checks",
+                "disconnected_only": "Status is 'Not connected' but no kill trigger - could be temp disconnect, reconnect candidate",
+                "live_connected": "Active and sending",
+                "true_kill_rate": "Only counts inboxes with recorded kill triggers, not all disconnected"
+            }
+        }
+    except Exception as e:
+        logger.error(f"inbox-death-breakdown failed: {type(e).__name__}: {e}")
+        raise HTTPException(status_code=500, detail=f"Query failed: {str(e)}")
