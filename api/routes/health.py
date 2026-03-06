@@ -3045,7 +3045,7 @@ async def analyze_kill_trigger_lifecycle():
 
 
 @router.get("/analysis/kill-trigger-by-esp")
-async def analyze_kill_triggers_by_esp():
+async def analyze_kill_triggers_by_esp(workspace_id: Optional[UUID] = None):
     """
     Kill trigger analysis segmented by ESP (Microsoft vs Google).
 
@@ -3054,9 +3054,15 @@ async def analyze_kill_triggers_by_esp():
     - Trigger type distribution by provider
     - Domain-level breakdown for worst performers
     - Survival rates (live inboxes / total inboxes)
+
+    Optional workspace_id filter for client-specific analysis.
     """
+    # Build workspace filter
+    ws_filter = "AND workspace_id = $1" if workspace_id else ""
+    ws_args = [workspace_id] if workspace_id else []
+
     # Overall ESP comparison
-    esp_summary = await fetch_all("""
+    esp_summary = await fetch_all(f"""
         SELECT
             CASE
                 WHEN LOWER(esp::text) IN ('microsoft', 'outlook', 'entra') THEN 'microsoft'
@@ -3069,13 +3075,13 @@ async def analyze_kill_triggers_by_esp():
             ROUND(100.0 * COUNT(*) FILTER (WHERE inbox_state = 'dead') / NULLIF(COUNT(*), 0), 1) as kill_rate_pct,
             ROUND(AVG(EXTRACT(day FROM (killed_at - warmup_started_at))) FILTER (WHERE killed_at IS NOT NULL), 1) as avg_days_to_death
         FROM sender_accounts
-        WHERE warmup_started_at IS NOT NULL
+        WHERE warmup_started_at IS NOT NULL {ws_filter}
         GROUP BY 1
         ORDER BY total_inboxes DESC
-    """)
+    """, *ws_args)
 
     # Kill triggers by ESP
-    triggers_by_esp = await fetch_all("""
+    triggers_by_esp = await fetch_all(f"""
         SELECT
             CASE
                 WHEN LOWER(esp::text) IN ('microsoft', 'outlook', 'entra') THEN 'microsoft'
@@ -3087,13 +3093,13 @@ async def analyze_kill_triggers_by_esp():
             ROUND(AVG(EXTRACT(day FROM (killed_at - sending_started_at))) FILTER (WHERE sending_started_at IS NOT NULL), 1) as avg_days_from_sending
         FROM sender_accounts
         WHERE kill_trigger IS NOT NULL
-          AND killed_at IS NOT NULL
+          AND killed_at IS NOT NULL {ws_filter}
         GROUP BY 1, 2
         ORDER BY 1, count DESC
-    """)
+    """, *ws_args)
 
     # Domain-level analysis (worst performing domains)
-    domain_breakdown = await fetch_all("""
+    domain_breakdown = await fetch_all(f"""
         SELECT
             d.domain_name,
             CASE
@@ -3108,15 +3114,15 @@ async def analyze_kill_triggers_by_esp():
             array_agg(DISTINCT sa.kill_trigger::text) FILTER (WHERE sa.kill_trigger IS NOT NULL) as trigger_types
         FROM sender_accounts sa
         LEFT JOIN domains d ON sa.domain_id = d.id
-        WHERE sa.warmup_started_at IS NOT NULL
+        WHERE sa.warmup_started_at IS NOT NULL {ws_filter.replace('workspace_id', 'sa.workspace_id')}
         GROUP BY d.domain_name, 2
         HAVING COUNT(*) FILTER (WHERE sa.inbox_state = 'dead') > 0
         ORDER BY dead_count DESC
         LIMIT 30
-    """)
+    """, *ws_args)
 
     # Lifecycle comparison by ESP
-    lifecycle_by_esp = await fetch_all("""
+    lifecycle_by_esp = await fetch_all(f"""
         SELECT
             CASE
                 WHEN LOWER(esp::text) IN ('microsoft', 'outlook', 'entra') THEN 'microsoft'
@@ -3133,19 +3139,19 @@ async def analyze_kill_triggers_by_esp():
         FROM sender_accounts
         WHERE kill_trigger IS NOT NULL
           AND killed_at IS NOT NULL
-          AND warmup_started_at IS NOT NULL
+          AND warmup_started_at IS NOT NULL {ws_filter}
         GROUP BY 1, 2
         ORDER BY 1, count DESC
-    """)
+    """, *ws_args)
 
     # Debug: show actual ESP values in database
-    esp_values = await fetch_all("""
+    esp_values = await fetch_all(f"""
         SELECT esp::text as esp_value, COUNT(*) as count
         FROM sender_accounts
-        WHERE esp IS NOT NULL
+        WHERE esp IS NOT NULL {ws_filter}
         GROUP BY esp
         ORDER BY count DESC
-    """)
+    """, *ws_args)
 
     return {
         "esp_summary": [dict(row) for row in esp_summary] if esp_summary else [],
