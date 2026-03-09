@@ -2375,7 +2375,7 @@ async def export_kill_triggers():
         WHERE sa.kill_trigger IS NOT NULL
         AND sa.emailbison_account_id IS NOT NULL  -- Only show inboxes still in EmailBison
         AND w.is_active = TRUE
-        ORDER BY w.workspace_name, d.domain_name, sa.email_address
+        ORDER BY sa.killed_at DESC NULLS LAST, w.workspace_name, d.domain_name
     """)
 
     if not rows:
@@ -2471,7 +2471,7 @@ async def export_disconnected():
         AND sa.inbox_state = 'live'
         AND sa.emailbison_account_id IS NOT NULL  -- Only show inboxes still in EmailBison
         AND w.is_active = TRUE
-        ORDER BY w.workspace_name, d.domain_name, sa.email_address
+        ORDER BY sa.last_synced_at DESC NULLS LAST, w.workspace_name, d.domain_name
     """)
 
     if not rows:
