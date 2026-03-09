@@ -1,32 +1,33 @@
 # Slack Integration
 
-## Daily Inbox Audit
+## Inbox Audit Notifications
 
-Automated daily notifications sent to `#inbox-audit` channel.
+Automated notifications sent to `#inbox-audit` channel **twice daily**.
 
 ### Schedule
-- **Time**: 6:00 AM Pacific (7 AM PDT during daylight saving)
-- **Method**: Coolify Scheduled Task (cron)
-- **Cron**: `0 14 * * *` (2 PM UTC)
+| Time (Pacific) | Purpose |
+|----------------|---------|
+| **6:00 AM** | Morning check before sending ramps up |
+| **1:00 PM** | Afternoon check to catch issues from morning sends |
 
-### Coolify Configuration
+- **Method**: Sync worker scheduled check (not Coolify cron)
+- **Implementation**: `emailbison_sync_worker.py` → `_should_run_slack_audit()`
 
-The daily audit is triggered via a **Coolify Scheduled Task**, not application code.
+### Implementation
 
-**Location**: Coolify → emailbison-sync → Scheduled Tasks
+The audit is triggered by the sync worker's poll loop, checking if current time falls within a 5-minute window at each scheduled hour.
 
-| Setting | Value |
-|---------|-------|
-| Task Name | Daily Inbox Audit |
-| Command | `curl -X POST https://api.wizardgrimoire.cloud/api/slack/trigger-audit` |
-| Frequency | `0 14 * * *` |
-| Container | emailbison-sync |
+```python
+# In emailbison_sync_worker.py
+audit_hours = [6, 13]  # 6 AM and 1 PM Pacific
+if now_pacific.hour in audit_hours and now_pacific.minute < 5:
+    # Run audit if not already run this hour
+```
 
-**Why Coolify scheduled tasks instead of code?**
-- Decoupled from application restarts (no lost state)
-- No 5-minute timing window fragility
-- Visible in Coolify UI with run history
-- Easy to modify schedule without code deploy
+**Why sync worker instead of Coolify cron?**
+- Integrated with sync cycle (data is fresh)
+- No separate scheduled task to manage
+- Automatic retry on next poll if missed
 
 ### Notification Contents
 
@@ -43,9 +44,12 @@ The daily audit is triggered via a **Coolify Scheduled Task**, not application c
 |--------|----------|----------|
 | Kill Triggers CSV | `/api/health/export/kill-triggers` | All killed inboxes with trigger details |
 | Disconnected CSV | `/api/health/export/disconnected` | Live inboxes that are disconnected |
-| Dead Domains CSV | `/api/health/export/dead-domains` | Domains with no live inboxes |
+| Rotation CSV | `/api/health/export/rotation-summary` | Domains needing rotation |
+| Capacity CSV | `/api/health/export/capacity-gaps` | Client capacity gaps |
 
 CSVs are generated on-demand when clicked (fresh data).
+
+**Sorting**: Most recent items appear first (kill triggers by `killed_at`, disconnected by `last_synced_at`).
 
 ### Action Buttons
 
@@ -89,13 +93,13 @@ Response:
 
 ## Troubleshooting
 
-### No audit at 6 AM
-1. Check Coolify scheduled task exists and is enabled:
-   - Coolify → emailbison-sync → Scheduled Tasks → "Daily Inbox Audit"
-   - Verify cron is `0 14 * * *`
-2. Check scheduled task run history in Coolify UI
-3. Verify `SLACK_AUDIT_WEBHOOK_URL` is set in charm-api environment
-4. Test manually: `curl -X POST https://api.wizardgrimoire.cloud/api/slack/trigger-audit`
+### No audit at scheduled time
+1. Check sync worker is running:
+   - Coolify → emailbison-sync → Logs
+   - Look for `[SlackAudit]` log entries
+2. Verify `SLACK_AUDIT_WEBHOOK_URL` is set in emailbison-sync environment
+3. Test manually: `curl -X POST https://api.wizardgrimoire.cloud/api/slack/trigger-audit`
+4. Check worker didn't restart during the audit window (resets `last_slack_audit`)
 
 ### CSV download fails
 1. Verify `PUBLIC_API_URL` points to accessible API

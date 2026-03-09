@@ -2,7 +2,7 @@
 
 ## Overview
 
-Daily Slack notifications for inbox health audits with interactive buttons for team review.
+Slack notifications for inbox health audits sent **twice daily** (6 AM and 1 PM Pacific) with interactive buttons for team review.
 
 ## Flow
 
@@ -153,20 +153,25 @@ resolved_by=username&resolution_notes=Fixed
 
 ## Scheduled Audits
 
-Add to emailbison_sync_worker.py:
+Audits run automatically via `emailbison_sync_worker.py`:
 
 ```python
-# In poll loop, check if it's audit time (6 AM UTC)
-if datetime.utcnow().hour == 6 and datetime.utcnow().minute < 5:
-    if not audit_sent_today:
+# Runs at 6 AM and 1 PM Pacific (within 5-minute window)
+audit_hours = [6, 13]  # 6 AM and 1 PM
+if now_pacific.hour in audit_hours and now_pacific.minute < 5:
+    if not already_ran_this_hour:
         await send_daily_audit()
-        audit_sent_today = True
 ```
 
-Or use a cron job:
+| Time (Pacific) | Purpose |
+|----------------|---------|
+| 6:00 AM | Morning check before sending ramps up |
+| 1:00 PM | Afternoon check for issues from morning sends |
+
+Manual trigger:
 
 ```bash
-0 6 * * * curl -X POST http://charm-api:8000/api/slack/trigger-audit
+curl -X POST https://api.wizardgrimoire.cloud/api/slack/trigger-audit
 ```
 
 ## Testing
