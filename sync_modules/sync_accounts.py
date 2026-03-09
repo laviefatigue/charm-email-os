@@ -289,8 +289,10 @@ class AccountSyncModule:
         warmup_bounces_caused = account.get('warmup_bounces_caused_count', 0) or 0
 
         # Calculate initial inventory status for new inboxes
+        # inventory_pool_status = NULL means "dead or not yet assigned" (per migration 074)
+        # Incubating inboxes haven't been assigned to a pool yet, so they stay NULL
         initial_lifecycle = 'dead' if inbox_state == 'dead' else 'incubating'
-        initial_pool = None if inbox_state == 'dead' else 'incubating'
+        initial_pool = None  # Always NULL for new inboxes - pool assignment happens later
 
         result = await self.db.fetchrow("""
             INSERT INTO sender_accounts (
@@ -488,11 +490,13 @@ class AccountSyncModule:
 
         # Create missing domains (global unique on domain_name)
         # For new domains, use the workspace_id from the first sender_account found
+        # domain_source='legacy' marks these as pre-existing/discovered (not purchased via system)
         created = await self.db.execute("""
-            INSERT INTO domains (workspace_id, domain_name, approval_status, created_at, updated_at)
+            INSERT INTO domains (workspace_id, domain_name, approval_status, domain_source, created_at, updated_at)
             SELECT DISTINCT ON (SPLIT_PART(sa.email_address, '@', 2))
                 sa.workspace_id,
                 SPLIT_PART(sa.email_address, '@', 2),
+                'legacy',
                 'legacy',
                 NOW(),
                 NOW()
