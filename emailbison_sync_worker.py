@@ -198,7 +198,7 @@ class SyncOrchestrator:
                     await self.run_daily_snapshot()
                     self.last_daily_snapshot = now
 
-                # Daily Slack audit at 6 AM UTC (send audit summary to #inbox-audits)
+                # Slack audit at 6 AM and 1 PM Pacific (send audit summary to #inbox-audits)
                 if self._should_run_slack_audit(self.last_slack_audit):
                     await self.run_slack_audit()
                     self.last_slack_audit = now
@@ -577,9 +577,10 @@ class SyncOrchestrator:
 
                     try:
                         # Create local workspace record
+                        # Set is_active=TRUE so sync immediately picks up this workspace
                         workspace_row = await self.db.fetchrow("""
-                            INSERT INTO workspaces (workspace_name, emailbison_workspace_id, automation_enabled)
-                            VALUES ($1, $2, TRUE)
+                            INSERT INTO workspaces (workspace_name, emailbison_workspace_id, automation_enabled, is_active)
+                            VALUES ($1, $2, TRUE, TRUE)
                             RETURNING id
                         """, eb_name, str(eb_id))
 
@@ -703,7 +704,7 @@ class SyncOrchestrator:
         return last_run.date() < now.date()
 
     def _should_run_slack_audit(self, last_run: Optional[datetime]) -> bool:
-        """Check if we should run Slack audit (6 AM Pacific daily)."""
+        """Check if we should run Slack audit (6 AM and 1 PM Pacific daily)."""
         from datetime import timezone
         from zoneinfo import ZoneInfo
 
@@ -711,21 +712,26 @@ class SyncOrchestrator:
         pacific = ZoneInfo("America/Los_Angeles")
         now_pacific = datetime.now(pacific)
 
-        # Only run between 6:00 and 6:05 AM Pacific
-        if now_pacific.hour != 6 or now_pacific.minute >= 5:
+        # Run at 6 AM and 1 PM Pacific (within 5 min window)
+        audit_hours = [6, 13]  # 6 AM and 1 PM
+        if now_pacific.hour not in audit_hours or now_pacific.minute >= 5:
             return False
 
-        # Check if already ran today (in Pacific time)
+        # Check if already ran in this time slot
         if last_run is None:
             return True
 
-        # Convert last_run to Pacific for date comparison
+        # Convert last_run to Pacific for comparison
         if last_run.tzinfo is None:
             last_run_pacific = last_run.replace(tzinfo=timezone.utc).astimezone(pacific)
         else:
             last_run_pacific = last_run.astimezone(pacific)
 
-        return last_run_pacific.date() < now_pacific.date()
+        # Don't run if we already ran in the same hour slot today
+        if last_run_pacific.date() == now_pacific.date() and last_run_pacific.hour == now_pacific.hour:
+            return False
+
+        return True
 
     def _handle_shutdown(self, signum, frame):
         """Handle shutdown signals gracefully."""
