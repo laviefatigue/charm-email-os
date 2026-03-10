@@ -164,13 +164,14 @@ async def get_workspace_capacity(db: asyncpg.Pool, workspace_name: str) -> Optio
 
 async def get_workspace_domains(db: asyncpg.Pool, workspace_id: str) -> List[DomainHealth]:
     """Get all domains with health metrics for a workspace."""
+    # Note: pool_status column may not exist yet (migration 076 pending)
     rows = await db.fetch("""
         WITH domain_metrics AS (
             SELECT
                 d.id as domain_id,
                 d.domain_name,
                 d.workspace_id,
-                d.pool_status,
+                NULL as pool_status,
                 CASE
                     WHEN sa.esp = 'microsoft' THEN 'entra'
                     WHEN sa.esp = 'gmail' THEN 'google'
@@ -181,15 +182,15 @@ async def get_workspace_domains(db: asyncpg.Pool, workspace_id: str) -> List[Dom
                 AVG(sa.health_score) as avg_health_score,
                 AVG(COALESCE(sa.bounce_rate_7d, 0)) as avg_bounce_rate,
                 COUNT(sa.id) FILTER (WHERE COALESCE(sa.bounce_rate_7d, 0) > 0.02) as high_bounce_count,
-                COUNT(sa.id) FILTER (WHERE sa.kill_trigger = 'spam_complaint') > 0 as has_spam_complaints,
-                COUNT(sa.id) FILTER (WHERE sa.kill_trigger LIKE 'provider_block%%') > 0 as has_hard_blocks
+                COUNT(sa.id) FILTER (WHERE sa.kill_trigger::text = 'spam_complaint') > 0 as has_spam_complaints,
+                COUNT(sa.id) FILTER (WHERE sa.kill_trigger::text LIKE 'provider_block%%') > 0 as has_hard_blocks
             FROM domains d
             JOIN sender_accounts sa ON sa.domain_id = d.id
             WHERE d.workspace_id = $1::uuid
               AND d.is_active = TRUE
               AND sa.inbox_state = 'live'
               AND sa.is_active = TRUE
-            GROUP BY d.id, d.domain_name, d.workspace_id, d.pool_status, sa.esp
+            GROUP BY d.id, d.domain_name, d.workspace_id, sa.esp
         )
         SELECT * FROM domain_metrics
         WHERE inbox_count > 0
@@ -288,21 +289,24 @@ async def apply_allocation(
     # Process reserve domains
     for domain in reserve_domains:
         try:
-            # Update domain pool_status
+            # Update inbox pool_status (this column exists)
             await db.execute("""
-                UPDATE domains
-                SET pool_status = 'reserve', updated_at = NOW()
-                WHERE id = $1::uuid
-            """, domain.domain_id)
-
-            # Update inbox pool_status
-            updated = await db.execute("""
                 UPDATE sender_accounts
                 SET inventory_pool_status = 'reserve', updated_at = NOW()
                 WHERE domain_id = $1::uuid
                   AND inbox_state = 'live'
                   AND is_active = TRUE
             """, domain.domain_id)
+
+            # Try to update domain pool_status (may not exist yet - migration 076)
+            try:
+                await db.execute("""
+                    UPDATE domains
+                    SET pool_status = 'reserve', updated_at = NOW()
+                    WHERE id = $1::uuid
+                """, domain.domain_id)
+            except Exception:
+                pass  # Column doesn't exist yet
 
             result['inboxes_tagged_reserve'] += domain.inbox_count
 
@@ -336,14 +340,7 @@ async def apply_allocation(
     # Process live domains
     for domain in live_domains:
         try:
-            # Update domain pool_status
-            await db.execute("""
-                UPDATE domains
-                SET pool_status = 'live', updated_at = NOW()
-                WHERE id = $1::uuid
-            """, domain.domain_id)
-
-            # Update inbox pool_status
+            # Update inbox pool_status (this column exists)
             await db.execute("""
                 UPDATE sender_accounts
                 SET inventory_pool_status = 'deployed', updated_at = NOW()
@@ -351,6 +348,16 @@ async def apply_allocation(
                   AND inbox_state = 'live'
                   AND is_active = TRUE
             """, domain.domain_id)
+
+            # Try to update domain pool_status (may not exist yet - migration 076)
+            try:
+                await db.execute("""
+                    UPDATE domains
+                    SET pool_status = 'live', updated_at = NOW()
+                    WHERE id = $1::uuid
+                """, domain.domain_id)
+            except Exception:
+                pass  # Column doesn't exist yet
 
             result['inboxes_tagged_live'] += domain.inbox_count
 
