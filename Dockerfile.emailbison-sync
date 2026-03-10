@@ -31,8 +31,9 @@ RUN pip install --no-cache-dir -r requirements-sync.txt
 # Install Playwright browsers (Chromium only for smaller image)
 RUN playwright install chromium
 
-# Copy sync modules and worker
+# Copy sync modules, scripts, and worker
 COPY sync_modules/ ./sync_modules/
+COPY scripts/ ./scripts/
 COPY emailbison_sync_worker.py .
 
 # Create non-root user for security
