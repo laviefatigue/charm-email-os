@@ -2718,12 +2718,13 @@ async def allocate_domain_sets(
     google_reserve_cap = min(int(capacity['google_target'] * spare_ratio), max(0, google_surplus))
 
     # Get domains with health metrics
+    # Note: pool_status column may not exist yet (migration 076 pending)
     domains = await fetch_all("""
         WITH domain_metrics AS (
             SELECT
                 d.id as domain_id,
                 d.domain_name,
-                d.pool_status as current_pool_status,
+                NULL as current_pool_status,
                 CASE
                     WHEN sa.esp = 'microsoft' THEN 'entra'
                     WHEN sa.esp = 'gmail' THEN 'google'
@@ -2734,15 +2735,15 @@ async def allocate_domain_sets(
                 AVG(sa.health_score) as avg_health_score,
                 AVG(COALESCE(sa.bounce_rate_7d, 0)) as avg_bounce_rate,
                 COUNT(sa.id) FILTER (WHERE COALESCE(sa.bounce_rate_7d, 0) > 0.02) as high_bounce_count,
-                COUNT(sa.id) FILTER (WHERE sa.kill_trigger = 'spam_complaint') > 0 as has_spam_complaints,
-                COUNT(sa.id) FILTER (WHERE sa.kill_trigger LIKE 'provider_block%%') > 0 as has_hard_blocks
+                COUNT(sa.id) FILTER (WHERE sa.kill_trigger::text = 'spam_complaint') > 0 as has_spam_complaints,
+                COUNT(sa.id) FILTER (WHERE sa.kill_trigger::text LIKE 'provider_block%%') > 0 as has_hard_blocks
             FROM domains d
             JOIN sender_accounts sa ON sa.domain_id = d.id
             WHERE d.workspace_id = $1
               AND d.is_active = TRUE
               AND sa.inbox_state = 'live'
               AND sa.is_active = TRUE
-            GROUP BY d.id, d.domain_name, d.pool_status, sa.esp
+            GROUP BY d.id, d.domain_name, sa.esp
         )
         SELECT * FROM domain_metrics WHERE inbox_count > 0
     """, workspace_id)
@@ -2786,28 +2787,38 @@ async def allocate_domain_sets(
         # Update reserve domains
         for d in reserve_domains:
             try:
-                await execute("""
-                    UPDATE domains SET pool_status = 'reserve', updated_at = NOW()
-                    WHERE id = $1
-                """, d['domain_id'])
+                # Update sender_accounts pool status (this column exists)
                 await execute("""
                     UPDATE sender_accounts SET inventory_pool_status = 'reserve', updated_at = NOW()
                     WHERE domain_id = $1 AND inbox_state = 'live' AND is_active = TRUE
                 """, d['domain_id'])
+                # Try to update domain pool_status (may not exist yet - migration 076)
+                try:
+                    await execute("""
+                        UPDATE domains SET pool_status = 'reserve', updated_at = NOW()
+                        WHERE id = $1
+                    """, d['domain_id'])
+                except Exception:
+                    pass  # Column doesn't exist yet
             except Exception as e:
                 errors.append(f"Reserve {d['domain_name']}: {str(e)}")
 
         # Update live domains
         for d in live_domains:
             try:
-                await execute("""
-                    UPDATE domains SET pool_status = 'live', updated_at = NOW()
-                    WHERE id = $1
-                """, d['domain_id'])
+                # Update sender_accounts pool status (this column exists)
                 await execute("""
                     UPDATE sender_accounts SET inventory_pool_status = 'deployed', updated_at = NOW()
                     WHERE domain_id = $1 AND inbox_state = 'live' AND is_active = TRUE
                 """, d['domain_id'])
+                # Try to update domain pool_status (may not exist yet - migration 076)
+                try:
+                    await execute("""
+                        UPDATE domains SET pool_status = 'live', updated_at = NOW()
+                        WHERE id = $1
+                    """, d['domain_id'])
+                except Exception:
+                    pass  # Column doesn't exist yet
             except Exception as e:
                 errors.append(f"Live {d['domain_name']}: {str(e)}")
 
