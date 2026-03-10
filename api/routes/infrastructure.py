@@ -1939,3 +1939,901 @@ async def simple_generate_domains(request: SimpleGenerateRequest):
     except Exception as e:
         logger.error(f"Simple domain generation failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================
+# DOMAIN A/B SET ALLOCATION
+# ============================================
+
+class DomainSetSummary(BaseModel):
+    workspace_id: str
+    workspace_name: str
+    a_set_domains: int
+    b_set_domains: int
+    burned_domains: int
+    unassigned_domains: int
+    a_set_connected_inboxes: int
+    b_set_connected_inboxes: int
+    reserve_status: str
+
+
+class DomainSetDetail(BaseModel):
+    domain_id: str
+    domain_name: str
+    pool_status: str
+    live_inboxes: int
+    connected_inboxes: int
+    dead_inboxes: int
+    domain_health: str
+    provider: Optional[str]
+
+
+@router.get("/domain-sets", response_model=List[DomainSetSummary])
+async def get_domain_sets():
+    """
+    Get domain A/B set summary for all workspaces.
+    Shows allocation status and reserve health.
+    """
+    rows = await fetch_all("""
+        SELECT * FROM v_workspace_domain_sets
+        ORDER BY workspace_name
+    """)
+
+    return [DomainSetSummary(
+        workspace_id=str(row['workspace_id']),
+        workspace_name=row['workspace_name'],
+        a_set_domains=row['a_set_domains'] or 0,
+        b_set_domains=row['b_set_domains'] or 0,
+        burned_domains=row['burned_domains'] or 0,
+        unassigned_domains=row['unassigned_domains'] or 0,
+        a_set_connected_inboxes=row['a_set_connected_inboxes'] or 0,
+        b_set_connected_inboxes=row['b_set_connected_inboxes'] or 0,
+        reserve_status=row['reserve_status'] or 'unknown'
+    ) for row in rows]
+
+
+@router.get("/domain-sets/{workspace_id}", response_model=List[DomainSetDetail])
+async def get_workspace_domain_sets(workspace_id: str):
+    """
+    Get detailed domain set allocation for a specific workspace.
+    """
+    rows = await fetch_all("""
+        SELECT * FROM v_domain_sets
+        WHERE workspace_id = $1
+        ORDER BY pool_status, domain_name
+    """, uuid.UUID(workspace_id))
+
+    return [DomainSetDetail(
+        domain_id=str(row['domain_id']),
+        domain_name=row['domain_name'],
+        pool_status=row['pool_status'] or 'unassigned',
+        live_inboxes=row['live_inboxes'] or 0,
+        connected_inboxes=row['connected_inboxes'] or 0,
+        dead_inboxes=row['dead_inboxes'] or 0,
+        domain_health=row['domain_health'] or 'unknown',
+        provider=row['provider']
+    ) for row in rows]
+
+
+@router.post("/domain-sets/{workspace_id}/allocate")
+async def allocate_domain_sets(
+    workspace_id: str,
+    current_user: CurrentUser = Depends(get_current_user)
+):
+    """
+    Allocate unassigned domains to A-Set and B-Set.
+    Half go to A-Set (deployed), half to B-Set (reserve).
+    """
+    try:
+        # Call the allocation function
+        results = await fetch_all("""
+            SELECT * FROM allocate_domain_sets($1)
+        """, uuid.UUID(workspace_id))
+
+        allocated = [
+            {
+                "domain_id": str(r['domain_id']),
+                "domain_name": r['domain_name'],
+                "new_status": r['new_status'],
+                "action": r['action']
+            }
+            for r in results
+        ]
+
+        # Log activity
+        await log_activity(
+            user_id=current_user.id if current_user else None,
+            action="allocate_domain_sets",
+            resource_type="workspace",
+            resource_id=workspace_id,
+            details={"allocated_count": len(allocated)}
+        )
+
+        return {
+            "success": True,
+            "allocated": allocated,
+            "message": f"Allocated {len(allocated)} domains to A/B sets"
+        }
+
+    except Exception as e:
+        logger.error(f"Domain set allocation failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================
+# DOMAIN ENGINE V2 - PIPELINE & RUNWAY
+# ============================================
+
+class PipelineDomain(BaseModel):
+    """Domain in the lifecycle pipeline"""
+    domain_id: str
+    domain_name: str
+    provider: Optional[str]  # microsoft (entra) or google
+    pipeline_status: str  # incubating | reserve | live | burned
+    pool_status: str  # unassigned | reserve | live | burned
+    inbox_count: int
+    connected_count: int
+    max_inbox_count: int  # 50 for Entra, 3 for Google
+    warmup_age_days: Optional[int]
+    warmup_days_required: int  # 14 for Entra, 7 for Google
+    warmup_percent: int  # 0-100
+    ready_in_days: int  # Days until ready for reserve
+    warmup_complete: bool
+    daily_capacity: int
+    purchased_at: Optional[str]
+    promoted_at: Optional[str]
+    burned_at: Optional[str]
+    burn_trigger: Optional[str]
+
+
+class PipelineSummary(BaseModel):
+    """Summary counts by pipeline stage"""
+    incubating_count: int
+    reserve_count: int
+    live_count: int
+    burned_count: int
+    incubating_entra: int
+    incubating_google: int
+    reserve_entra: int
+    reserve_google: int
+    live_entra: int
+    live_google: int
+
+
+class PipelineResponse(BaseModel):
+    """Full pipeline response for a client"""
+    client_id: str
+    summary: PipelineSummary
+    incubating: List[PipelineDomain]
+    reserve: List[PipelineDomain]
+    live: List[PipelineDomain]
+
+
+class RunwayMetrics(BaseModel):
+    """Reserve runway metrics for a provider"""
+    provider: str
+    live_count: int
+    reserve_count: int
+    burned_count: int
+    unassigned_count: int
+    monthly_burn_rate: float
+    runway_months: float
+    runway_healthy: bool
+    domain_kill_cascade_pct: int  # 30% for Entra, 7% for Google
+    total_allocated: int
+    live_percent: int
+    reserve_percent: int
+    live_gap_to_target: int  # How many more live domains needed for 80/20
+
+
+class AllocationMetrics(BaseModel):
+    """80/20 allocation compliance"""
+    total_live: int
+    total_reserve: int
+    target_live: int  # 80% of total
+    target_reserve: int  # 20% of total
+    live_percent: int
+    reserve_percent: int
+    in_balance: bool  # True if within tolerance of 80/20
+
+
+class RunwayResponse(BaseModel):
+    """Full runway response for a client"""
+    client_id: str
+    entra: Optional[RunwayMetrics]
+    google: Optional[RunwayMetrics]
+    allocation: AllocationMetrics
+
+
+# ============================================
+# CAPACITY HARMONY MODELS
+# ============================================
+
+class ProviderCapacityHarmony(BaseModel):
+    """Capacity harmony metrics for a single provider"""
+    provider: str
+    # Capacity gap
+    capacity_required: int  # From client subscription (target inboxes)
+    capacity_actual: int  # Connected inboxes from live domains
+    gap: int  # How many inboxes below target
+    domain_gap: int  # How many domains needed
+    # Domain pipeline counts
+    live: int
+    reserve: int
+    incubating: int
+    burned: int
+    # Runway metrics
+    monthly_burn_rate: float
+    runway_months: float
+    exhaustion_date: Optional[str]  # When reserve runs out
+    runway_healthy: bool
+    # HyperTide in-flight
+    pending_orders: int
+    provisioning: int
+
+
+class CapacityHarmonyResponse(BaseModel):
+    """
+    Capacity Harmony - Gap analysis and purchase recommendations.
+
+    Answers the question: How many domains should we buy to maintain capacity?
+
+    GAP = CAPACITY_REQUIRED - CAPACITY_ACTUAL
+    RUNWAY = reserve_domains / monthly_domain_burn_rate
+    """
+    client_id: str
+    client_name: str
+    entra: ProviderCapacityHarmony
+    google: ProviderCapacityHarmony
+    # Totals
+    total_gap: int  # Total inbox gap across providers
+    total_domain_gap: int  # Total domains needed
+    purchase_recommendation: int  # Domains to buy (considering pipeline)
+    estimated_cost: float  # Based on avg $10/domain
+    # Overall runway
+    runway_exhaustion_date: Optional[str]  # Earliest exhaustion across providers
+    runway_healthy: bool  # Both providers healthy
+
+
+@router.get("/pipeline/{client_id}", response_model=PipelineResponse)
+async def get_client_pipeline(client_id: str):
+    """
+    Get domain lifecycle pipeline for a client.
+    Shows incubating, reserve, and live domains with warmup progress.
+
+    Pipeline stages:
+    - INCUBATING: Purchased + has inboxes + warming < 14 days
+    - RESERVE: pool_status = 'reserve' (warmed B-Set, ready to deploy)
+    - LIVE: pool_status = 'live' (A-Set, actively sending)
+    """
+    try:
+        # Get pipeline summary using the function
+        summary_row = await fetch_one("""
+            SELECT * FROM get_pipeline_summary($1)
+        """, uuid.UUID(client_id))
+
+        summary = PipelineSummary(
+            incubating_count=summary_row['incubating_count'] if summary_row else 0,
+            reserve_count=summary_row['reserve_count'] if summary_row else 0,
+            live_count=summary_row['live_count'] if summary_row else 0,
+            burned_count=summary_row['burned_count'] if summary_row else 0,
+            incubating_entra=summary_row['incubating_entra'] if summary_row else 0,
+            incubating_google=summary_row['incubating_google'] if summary_row else 0,
+            reserve_entra=summary_row['reserve_entra'] if summary_row else 0,
+            reserve_google=summary_row['reserve_google'] if summary_row else 0,
+            live_entra=summary_row['live_entra'] if summary_row else 0,
+            live_google=summary_row['live_google'] if summary_row else 0,
+        )
+
+        # Get domain details from the view
+        rows = await fetch_all("""
+            SELECT
+                domain_id, domain_name, provider, pipeline_status, pool_status,
+                inbox_count, connected_count, max_inbox_count,
+                warmup_age_days, warmup_days_required, warmup_percent,
+                ready_in_days, warmup_complete, daily_capacity,
+                purchased_at, promoted_at, burned_at, burn_trigger
+            FROM v_domain_pipeline
+            WHERE client_id = $1
+            ORDER BY
+                CASE pipeline_status
+                    WHEN 'incubating' THEN 1
+                    WHEN 'reserve' THEN 2
+                    WHEN 'live' THEN 3
+                    ELSE 4
+                END,
+                warmup_percent DESC
+        """, uuid.UUID(client_id))
+
+        def row_to_domain(row) -> PipelineDomain:
+            return PipelineDomain(
+                domain_id=str(row['domain_id']),
+                domain_name=row['domain_name'],
+                provider=row['provider'],
+                pipeline_status=row['pipeline_status'] or 'unknown',
+                pool_status=row['pool_status'] or 'unassigned',
+                inbox_count=row['inbox_count'] or 0,
+                connected_count=row['connected_count'] or 0,
+                max_inbox_count=row['max_inbox_count'] or 50,
+                warmup_age_days=row['warmup_age_days'],
+                warmup_days_required=row['warmup_days_required'] or 14,
+                warmup_percent=row['warmup_percent'] or 0,
+                ready_in_days=row['ready_in_days'] or 14,
+                warmup_complete=row['warmup_complete'] or False,
+                daily_capacity=row['daily_capacity'] or 0,
+                purchased_at=row['purchased_at'].isoformat() if row['purchased_at'] else None,
+                promoted_at=row['promoted_at'].isoformat() if row['promoted_at'] else None,
+                burned_at=row['burned_at'].isoformat() if row['burned_at'] else None,
+                burn_trigger=row['burn_trigger'],
+            )
+
+        incubating = [row_to_domain(r) for r in rows if r['pipeline_status'] == 'incubating']
+        reserve = [row_to_domain(r) for r in rows if r['pipeline_status'] == 'reserve']
+        live = [row_to_domain(r) for r in rows if r['pipeline_status'] == 'live']
+
+        return PipelineResponse(
+            client_id=client_id,
+            summary=summary,
+            incubating=incubating,
+            reserve=reserve,
+            live=live,
+        )
+
+    except Exception as e:
+        logger.error(f"Failed to get pipeline for client {client_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/runway/{client_id}", response_model=RunwayResponse)
+async def get_client_runway(client_id: str):
+    """
+    Get reserve runway metrics for a client.
+    Shows how long reserve pools will last based on historical burn rates.
+
+    Key metrics:
+    - runway_months: How long until reserve is depleted
+    - monthly_burn_rate: Average domains burned per month (90-day window)
+    - 80/20 allocation: Live vs Reserve distribution
+    """
+    try:
+        # Get runway metrics per provider
+        rows = await fetch_all("""
+            SELECT * FROM v_domain_runway
+            WHERE client_id = $1
+        """, uuid.UUID(client_id))
+
+        entra_metrics = None
+        google_metrics = None
+        total_live = 0
+        total_reserve = 0
+
+        for row in rows:
+            provider = row['provider']
+            # Skip rows with no provider (shouldn't happen but handle gracefully)
+            if not provider:
+                continue
+            metrics = RunwayMetrics(
+                provider=provider,
+                live_count=row['live_count'] or 0,
+                reserve_count=row['reserve_count'] or 0,
+                burned_count=row['burned_count'] or 0,
+                unassigned_count=row['unassigned_count'] or 0,
+                monthly_burn_rate=float(row['monthly_burn_rate'] or 0),
+                runway_months=float(row['runway_months'] or 0),
+                runway_healthy=row['runway_healthy'] or False,
+                domain_kill_cascade_pct=row['domain_kill_cascade_pct'] or 30,
+                total_allocated=row['total_allocated'] or 0,
+                live_percent=row['live_percent'] or 0,
+                reserve_percent=row['reserve_percent'] or 0,
+                live_gap_to_target=row['live_gap_to_target'] or 0,
+            )
+
+            if provider == 'microsoft':
+                entra_metrics = metrics
+            elif provider == 'google':
+                google_metrics = metrics
+
+            total_live += metrics.live_count
+            total_reserve += metrics.reserve_count
+
+        # Calculate overall allocation metrics
+        total = total_live + total_reserve
+        target_live = int(total * 0.8) if total > 0 else 0
+        target_reserve = total - target_live if total > 0 else 0
+        live_pct = int(total_live / total * 100) if total > 0 else 0
+        reserve_pct = 100 - live_pct if total > 0 else 0
+
+        # Within balance if live is between 75-85%
+        in_balance = 75 <= live_pct <= 85 if total > 0 else True
+
+        allocation = AllocationMetrics(
+            total_live=total_live,
+            total_reserve=total_reserve,
+            target_live=target_live,
+            target_reserve=target_reserve,
+            live_percent=live_pct,
+            reserve_percent=reserve_pct,
+            in_balance=in_balance,
+        )
+
+        return RunwayResponse(
+            client_id=client_id,
+            entra=entra_metrics,
+            google=google_metrics,
+            allocation=allocation,
+        )
+
+    except Exception as e:
+        logger.error(f"Failed to get runway for client {client_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/domain-sets/{domain_id}/promote")
+async def promote_domain(
+    domain_id: str,
+    current_user: CurrentUser = Depends(get_current_user)
+):
+    """
+    Manually promote a B-Set domain to A-Set.
+    Use when you need to expand A-Set capacity.
+    """
+    try:
+        # Check domain is B-Set
+        domain = await fetch_one("""
+            SELECT id, domain_name, pool_status, workspace_id
+            FROM domains WHERE id = $1
+        """, uuid.UUID(domain_id))
+
+        if not domain:
+            raise HTTPException(status_code=404, detail="Domain not found")
+
+        if domain['pool_status'] != 'reserve':
+            raise HTTPException(
+                status_code=400,
+                detail=f"Domain is {domain['pool_status']}, not reserve. Cannot promote."
+            )
+
+        # Promote reserve to live (B-Set to A-Set)
+        await execute("""
+            UPDATE domains
+            SET pool_status = 'live', promoted_at = NOW()
+            WHERE id = $1
+        """, uuid.UUID(domain_id))
+
+        # Log history
+        await execute("""
+            INSERT INTO domain_pool_history (domain_id, old_status, new_status, reason)
+            VALUES ($1, 'reserve', 'live', 'manual_promotion')
+        """, uuid.UUID(domain_id))
+
+        # Log activity
+        await log_activity(
+            user_id=current_user.id if current_user else None,
+            action="promote_domain",
+            resource_type="domain",
+            resource_id=domain_id,
+            details={"domain_name": domain['domain_name']}
+        )
+
+        return {
+            "success": True,
+            "domain_name": domain['domain_name'],
+            "new_status": "live",
+            "message": f"Domain {domain['domain_name']} promoted to live (A-Set)"
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Domain promotion failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================
+# CAPACITY HARMONY ENDPOINT
+# ============================================
+
+@router.get("/capacity-harmony/{client_id}", response_model=CapacityHarmonyResponse)
+async def get_capacity_harmony(client_id: str):
+    """
+    Get capacity harmony metrics for a client.
+
+    Combines:
+    - Gap analysis (how many inboxes/domains below target)
+    - Runway prediction (when will reserve run out)
+    - Purchase recommendation (how many domains to buy)
+
+    Key formulas:
+    - GAP = capacity_required - capacity_actual
+    - RUNWAY = reserve_count / monthly_burn_rate
+    - RECOMMENDATION = max(domain_gap, low_runway_buffer)
+    """
+    try:
+        # Get client info
+        client = await fetch_one("""
+            SELECT c.id, c.name, c.workspace_id
+            FROM clients c WHERE c.id = $1
+        """, uuid.UUID(client_id))
+
+        if not client:
+            raise HTTPException(status_code=404, detail="Client not found")
+
+        # Get capacity data from v_client_capacity
+        capacity = await fetch_one("""
+            SELECT * FROM v_client_capacity WHERE client_id = $1
+        """, uuid.UUID(client_id))
+
+        # Get runway data from v_domain_runway
+        runway_rows = await fetch_all("""
+            SELECT * FROM v_domain_runway WHERE client_id = $1
+        """, uuid.UUID(client_id))
+
+        # Get pipeline summary
+        pipeline = await fetch_one("""
+            SELECT * FROM get_pipeline_summary($1)
+        """, uuid.UUID(client_id))
+
+        # Get HyperTide in-flight orders (handle missing table gracefully)
+        try:
+            hypertide_orders = await fetch_one("""
+                SELECT
+                    COUNT(*) FILTER (WHERE status = 'pending') as pending_count,
+                    COUNT(*) FILTER (WHERE status IN ('executing', 'processing')) as provisioning_count
+                FROM hypertide_order_jobs
+                WHERE workspace_id = $1
+                AND status NOT IN ('completed', 'failed', 'cancelled')
+            """, client['workspace_id'])
+        except Exception:
+            # Table may not exist in all environments
+            hypertide_orders = {'pending_count': 0, 'provisioning_count': 0}
+
+        # Process runway data
+        runway_by_provider = {}
+        for row in runway_rows:
+            provider = row['provider']
+            if provider == 'microsoft':
+                provider = 'entra'
+            runway_by_provider[provider] = row
+
+        # Calculate exhaustion dates
+        def calc_exhaustion_date(runway_months: float) -> Optional[str]:
+            if runway_months <= 0:
+                return None
+            if runway_months > 24:  # More than 2 years, don't calculate
+                return None
+            from datetime import timedelta
+            exhaust_date = datetime.now(timezone.utc) + timedelta(days=int(runway_months * 30))
+            return exhaust_date.isoformat()
+
+        # Build provider metrics
+        def build_provider_harmony(
+            provider: str,
+            capacity_row: dict,
+            runway_row: dict,
+            pipeline_row: dict,
+            hypertide_row: dict,
+        ) -> ProviderCapacityHarmony:
+            prefix = 'entra' if provider == 'entra' else 'google'
+
+            # Capacity from subscription
+            capacity_required = capacity_row.get(f'{prefix}_inboxes_target') or 0
+            # Use connected inboxes as actual capacity
+            capacity_actual = capacity_row.get(f'{prefix}_inboxes_live') or 0
+            gap = max(0, capacity_required - capacity_actual)
+            domain_gap = capacity_row.get(f'{prefix}_domain_gap') or 0
+
+            # Runway
+            monthly_burn = float(runway_row.get('monthly_burn_rate') or 0) if runway_row else 0
+            runway_months = float(runway_row.get('runway_months') or 0) if runway_row else 0
+            runway_healthy = runway_row.get('runway_healthy', True) if runway_row else True
+
+            # Pipeline counts
+            live = runway_row.get('live_count') or 0 if runway_row else 0
+            reserve = runway_row.get('reserve_count') or 0 if runway_row else 0
+
+            # From pipeline summary
+            if provider == 'entra':
+                incubating = pipeline_row.get('incubating_entra') or 0 if pipeline_row else 0
+            else:
+                incubating = pipeline_row.get('incubating_google') or 0 if pipeline_row else 0
+
+            burned = runway_row.get('burned_count') or 0 if runway_row else 0
+
+            return ProviderCapacityHarmony(
+                provider=provider,
+                capacity_required=capacity_required,
+                capacity_actual=capacity_actual,
+                gap=gap,
+                domain_gap=domain_gap,
+                live=live,
+                reserve=reserve,
+                incubating=incubating,
+                burned=burned,
+                monthly_burn_rate=monthly_burn,
+                runway_months=runway_months,
+                exhaustion_date=calc_exhaustion_date(runway_months),
+                runway_healthy=runway_healthy,
+                pending_orders=hypertide_row.get('pending_count') or 0 if hypertide_row else 0,
+                provisioning=hypertide_row.get('provisioning_count') or 0 if hypertide_row else 0,
+            )
+
+        entra = build_provider_harmony(
+            'entra',
+            capacity or {},
+            runway_by_provider.get('entra') or runway_by_provider.get('microsoft', {}),
+            pipeline,
+            hypertide_orders,
+        )
+        google = build_provider_harmony(
+            'google',
+            capacity or {},
+            runway_by_provider.get('google', {}),
+            pipeline,
+            hypertide_orders,
+        )
+
+        # Calculate totals and recommendation
+        total_gap = entra.gap + google.gap
+        total_domain_gap = entra.domain_gap + google.domain_gap
+
+        # Purchase recommendation:
+        # - Cover domain gap
+        # - Add buffer if runway is low (< 2 months)
+        # - Subtract domains already in pipeline (incubating)
+        domains_in_pipeline = entra.incubating + google.incubating
+        raw_recommendation = total_domain_gap
+        if not entra.runway_healthy or not google.runway_healthy:
+            # Add 2 months of buffer if runway is unhealthy
+            avg_burn = (entra.monthly_burn_rate + google.monthly_burn_rate)
+            raw_recommendation += int(avg_burn * 2)
+
+        purchase_recommendation = max(0, raw_recommendation - domains_in_pipeline)
+
+        # Estimated cost at ~$10/domain average
+        estimated_cost = purchase_recommendation * 10.0
+
+        # Overall runway exhaustion (earliest)
+        dates = [d for d in [entra.exhaustion_date, google.exhaustion_date] if d]
+        runway_exhaustion_date = min(dates) if dates else None
+
+        return CapacityHarmonyResponse(
+            client_id=client_id,
+            client_name=client['name'],
+            entra=entra,
+            google=google,
+            total_gap=total_gap,
+            total_domain_gap=total_domain_gap,
+            purchase_recommendation=purchase_recommendation,
+            estimated_cost=estimated_cost,
+            runway_exhaustion_date=runway_exhaustion_date,
+            runway_healthy=entra.runway_healthy and google.runway_healthy,
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get capacity harmony for client {client_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================
+# DOMAIN SET ALLOCATION (Live/Reserve)
+# ============================================
+
+class DomainAllocationRequest(BaseModel):
+    dry_run: bool = True
+
+
+class DomainAllocationResult(BaseModel):
+    workspace_name: str
+    dry_run: bool
+    entra_surplus: int
+    google_surplus: int
+    entra_reserve_capacity: int
+    google_reserve_capacity: int
+    domains_to_reserve: int
+    domains_to_live: int
+    reserve_domains: List[Dict[str, Any]]
+    live_domains: List[Dict[str, Any]]
+    changes_applied: bool
+    errors: List[str]
+
+
+def score_domain_health(domain: Dict) -> float:
+    """Calculate domain health score. Higher = healthier = reserve candidate."""
+    score = 100.0
+
+    if domain.get('has_spam_complaints'):
+        score -= 200
+    if domain.get('has_hard_blocks'):
+        score -= 100
+
+    bounce_rate = domain.get('avg_bounce_rate', 0) or 0
+    score -= bounce_rate * 500
+
+    health = domain.get('avg_health_score', 80) or 80
+    score += (health - 80) * 2
+
+    inbox_count = domain.get('inbox_count', 0) or 0
+    high_bounce = domain.get('high_bounce_count', 0) or 0
+    high_bounce_pct = high_bounce / max(inbox_count, 1)
+    score -= high_bounce_pct * 50
+
+    if inbox_count >= 50:
+        score += 10
+    elif inbox_count >= 3:
+        score += 5
+
+    return round(score, 2)
+
+
+@router.post("/domain-sets/allocate/{workspace_name}", response_model=DomainAllocationResult)
+async def allocate_domain_sets(
+    workspace_name: str,
+    request: DomainAllocationRequest,
+):
+    """
+    Allocate domains to live/reserve sets based on capacity and health.
+
+    Logic:
+    - Reserve only created when surplus capacity exists (live > target)
+    - Healthiest domains go to reserve (protected)
+    - Degraded domains stay live (expendable)
+    - Provider-aware: Entra and Google allocated separately
+    """
+    errors = []
+
+    # Get workspace
+    workspace = await fetch_one("""
+        SELECT id, workspace_name FROM workspaces WHERE workspace_name = $1
+    """, workspace_name)
+
+    if not workspace:
+        raise HTTPException(status_code=404, detail=f"Workspace '{workspace_name}' not found")
+
+    workspace_id = workspace['id']
+
+    # Get capacity data
+    capacity = await fetch_one("""
+        SELECT
+            COALESCE(entra_inboxes_target, 0) as entra_target,
+            COALESCE(entra_inboxes_live, 0) as entra_live,
+            COALESCE(google_inboxes_target, 0) as google_target,
+            COALESCE(google_inboxes_live, 0) as google_live,
+            COALESCE(target_buffer_ratio, 0.15) as spare_ratio
+        FROM v_client_capacity cc
+        JOIN workspaces w ON cc.workspace_id = w.id
+        WHERE w.id = $1
+    """, workspace_id)
+
+    if not capacity:
+        raise HTTPException(status_code=400, detail="No capacity data (missing subscription?)")
+
+    # Calculate surplus and reserve capacity
+    entra_surplus = capacity['entra_live'] - capacity['entra_target']
+    google_surplus = capacity['google_live'] - capacity['google_target']
+    spare_ratio = float(capacity['spare_ratio'])
+
+    entra_reserve_cap = min(int(capacity['entra_target'] * spare_ratio), max(0, entra_surplus))
+    google_reserve_cap = min(int(capacity['google_target'] * spare_ratio), max(0, google_surplus))
+
+    # Get domains with health metrics
+    domains = await fetch_all("""
+        WITH domain_metrics AS (
+            SELECT
+                d.id as domain_id,
+                d.domain_name,
+                d.pool_status as current_pool_status,
+                CASE
+                    WHEN sa.esp = 'microsoft' THEN 'entra'
+                    WHEN sa.esp = 'gmail' THEN 'google'
+                    ELSE 'unknown'
+                END as provider,
+                COUNT(sa.id) as inbox_count,
+                COUNT(sa.id) FILTER (WHERE sa.status = 'Connected') as connected_count,
+                AVG(sa.health_score) as avg_health_score,
+                AVG(COALESCE(sa.bounce_rate_7d, 0)) as avg_bounce_rate,
+                COUNT(sa.id) FILTER (WHERE COALESCE(sa.bounce_rate_7d, 0) > 0.02) as high_bounce_count,
+                COUNT(sa.id) FILTER (WHERE sa.kill_trigger = 'spam_complaint') > 0 as has_spam_complaints,
+                COUNT(sa.id) FILTER (WHERE sa.kill_trigger LIKE 'provider_block%%') > 0 as has_hard_blocks
+            FROM domains d
+            JOIN sender_accounts sa ON sa.domain_id = d.id
+            WHERE d.workspace_id = $1
+              AND d.is_active = TRUE
+              AND sa.inbox_state = 'live'
+              AND sa.is_active = TRUE
+            GROUP BY d.id, d.domain_name, d.pool_status, sa.esp
+        )
+        SELECT * FROM domain_metrics WHERE inbox_count > 0
+    """, workspace_id)
+
+    # Separate by provider and score
+    entra_domains = [dict(d) for d in domains if d['provider'] == 'entra']
+    google_domains = [dict(d) for d in domains if d['provider'] == 'google']
+
+    for d in entra_domains:
+        d['health_score'] = score_domain_health(d)
+    for d in google_domains:
+        d['health_score'] = score_domain_health(d)
+
+    # Sort by health (highest = healthiest = reserve candidates)
+    entra_domains.sort(key=lambda d: d['health_score'], reverse=True)
+    google_domains.sort(key=lambda d: d['health_score'], reverse=True)
+
+    # Select reserve domains
+    def select_reserve(domains, target_inboxes):
+        reserve, live = [], []
+        reserve_inbox_count = 0
+        for d in domains:
+            if reserve_inbox_count < target_inboxes:
+                reserve.append(d)
+                reserve_inbox_count += d['inbox_count']
+            else:
+                live.append(d)
+        return reserve, live
+
+    entra_reserve, entra_live = select_reserve(entra_domains, entra_reserve_cap)
+    google_reserve, google_live = select_reserve(google_domains, google_reserve_cap)
+
+    reserve_domains = entra_reserve + google_reserve
+    live_domains = entra_live + google_live
+
+    # Apply changes if not dry run
+    changes_applied = False
+    if not request.dry_run:
+        changes_applied = True
+
+        # Update reserve domains
+        for d in reserve_domains:
+            try:
+                await execute("""
+                    UPDATE domains SET pool_status = 'reserve', updated_at = NOW()
+                    WHERE id = $1
+                """, d['domain_id'])
+                await execute("""
+                    UPDATE sender_accounts SET inventory_pool_status = 'reserve', updated_at = NOW()
+                    WHERE domain_id = $1 AND inbox_state = 'live' AND is_active = TRUE
+                """, d['domain_id'])
+            except Exception as e:
+                errors.append(f"Reserve {d['domain_name']}: {str(e)}")
+
+        # Update live domains
+        for d in live_domains:
+            try:
+                await execute("""
+                    UPDATE domains SET pool_status = 'live', updated_at = NOW()
+                    WHERE id = $1
+                """, d['domain_id'])
+                await execute("""
+                    UPDATE sender_accounts SET inventory_pool_status = 'deployed', updated_at = NOW()
+                    WHERE domain_id = $1 AND inbox_state = 'live' AND is_active = TRUE
+                """, d['domain_id'])
+            except Exception as e:
+                errors.append(f"Live {d['domain_name']}: {str(e)}")
+
+        logger.info(f"Domain allocation for {workspace_name}: {len(reserve_domains)} reserve, {len(live_domains)} live")
+
+    # Format output
+    def format_domain(d):
+        return {
+            'domain_name': d['domain_name'],
+            'provider': d['provider'],
+            'inbox_count': d['inbox_count'],
+            'health_score': round(d['health_score'], 1),
+            'avg_bounce_rate': round((d['avg_bounce_rate'] or 0) * 100, 2),
+        }
+
+    return DomainAllocationResult(
+        workspace_name=workspace_name,
+        dry_run=request.dry_run,
+        entra_surplus=entra_surplus,
+        google_surplus=google_surplus,
+        entra_reserve_capacity=entra_reserve_cap,
+        google_reserve_capacity=google_reserve_cap,
+        domains_to_reserve=len(reserve_domains),
+        domains_to_live=len(live_domains),
+        reserve_domains=[format_domain(d) for d in reserve_domains],
+        live_domains=[format_domain(d) for d in live_domains[:10]],  # Limit output
+        changes_applied=changes_applied,
+        errors=errors,
+    )
