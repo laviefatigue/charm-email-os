@@ -578,11 +578,15 @@ class SyncOrchestrator:
                     try:
                         # Create local workspace record
                         # Set is_active=TRUE so sync immediately picks up this workspace
+                        # instance_id is required NOT NULL - use the shared instance
+                        instance_id = await self.db.fetchval(
+                            "SELECT instance_id FROM workspaces WHERE instance_id IS NOT NULL LIMIT 1"
+                        )
                         workspace_row = await self.db.fetchrow("""
-                            INSERT INTO workspaces (workspace_name, emailbison_workspace_id, automation_enabled, is_active)
-                            VALUES ($1, $2, TRUE, TRUE)
+                            INSERT INTO workspaces (workspace_name, emailbison_workspace_id, instance_id, automation_enabled, is_active, a_set_tag_name, b_set_tag_name)
+                            VALUES ($1, $2, $3, TRUE, TRUE, 'live', 'reserve')
                             RETURNING id
-                        """, eb_name, str(eb_id))
+                        """, eb_name, str(eb_id), instance_id)
 
                         if not workspace_row:
                             continue
