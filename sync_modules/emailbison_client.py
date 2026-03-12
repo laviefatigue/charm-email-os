@@ -297,12 +297,12 @@ class EmailBisonClient:
     async def untag_inbox(self, account_id: int, tag_id: int) -> Dict:
         """Remove tag from inbox.
 
-        Uses the bulk tagging endpoint: DELETE /tags/attach-to-sender-emails
+        Uses POST /tags/remove-from-sender-emails (NOT DELETE on attach endpoint).
         Docs: https://docs.emailbison.com/tags/removing-tags
         """
         return await self._request(
-            'DELETE',
-            '/tags/attach-to-sender-emails',
+            'POST',
+            '/tags/remove-from-sender-emails',
             json_data={
                 'tag_ids': [tag_id],
                 'sender_email_ids': [account_id]
