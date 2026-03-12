@@ -1924,11 +1924,13 @@ async def _sync_workspace_data(
                 logger.warning(f"Failed to upsert account {email}: {e}")
 
         # Create missing domains (derived from email addresses)
+        # domain_source='legacy' marks these as discovered/imported (not purchased via system)
         domain_result = await execute("""
-            INSERT INTO domains (workspace_id, domain_name, approval_status, created_at, updated_at)
+            INSERT INTO domains (workspace_id, domain_name, approval_status, domain_source, created_at, updated_at)
             SELECT DISTINCT
                 sa.workspace_id,
                 SPLIT_PART(sa.email_address, '@', 2),
+                'legacy',
                 'legacy',
                 NOW(),
                 NOW()

@@ -39,11 +39,18 @@ def calculate_health_score(account: Dict) -> int:
     score = 0
 
     # Connection status (40 points)
+    # Microsoft IMAP disconnects are transient (~10 min auto-reconnect per EmailBison support)
+    # Don't penalize Microsoft as heavily - likely reconnecting already
+    # Gmail/other disconnects are almost always expired OAuth requiring manual reconnection
     status = account.get("status", "")
     if status == "Connected":
         score += 40
     elif status == "Not connected":
-        score += 0
+        provider = (account.get("type") or "").lower()
+        if "microsoft" in provider:
+            score += 25  # Transient IMAP blip, partial credit
+        else:
+            score += 0   # Gmail/other: likely real OAuth expiry
     else:
         score += 20  # Unknown/other status
 
@@ -365,13 +372,15 @@ class AccountSyncModule:
                     WHEN sender_accounts.warmup_started_at > NOW() - INTERVAL '14 days' THEN 'incubating'
                     ELSE 'active'
                 END,
-                -- Update inventory pool status (NULL for dead, else calculate)
-                -- Reserve requires 14+ days of warmup completed
+                -- Update inventory pool status
+                -- Preserve deployed/reserve set by set_tag_sync; only override for death or bounces
                 inventory_pool_status = CASE
                     WHEN sender_accounts.killed_at IS NOT NULL THEN NULL
                     WHEN EXCLUDED.inbox_state = 'dead' THEN NULL
                     WHEN COALESCE(sender_accounts.hard_bounces_24h, 0) >= 1
                          OR COALESCE(sender_accounts.hard_bounces_7d, 0) >= 3 THEN 'warning'
+                    WHEN sender_accounts.inventory_pool_status IN ('deployed', 'reserve')
+                         THEN sender_accounts.inventory_pool_status
                     WHEN sender_accounts.warmup_started_at IS NOT NULL
                          AND sender_accounts.warmup_started_at <= NOW() - INTERVAL '14 days'
                          AND COALESCE(EXCLUDED.warmup_enabled, TRUE) = TRUE THEN 'reserve'

@@ -43,6 +43,7 @@ async def get_kill_trigger_stats() -> dict:
         AND sa.kill_trigger IS NOT NULL
         AND sa.emailbison_account_id IS NOT NULL
         AND w.is_active = TRUE
+        AND (d.pool_status IS NULL OR d.pool_status != 'cancelled')
         GROUP BY sa.kill_trigger
         ORDER BY count DESC
     """)
@@ -134,6 +135,7 @@ async def get_domains_needing_rotation() -> list:
         JOIN sender_accounts sa ON sa.domain_id = d.id
         JOIN workspaces w ON d.workspace_id = w.id
         WHERE w.is_active = TRUE
+        AND d.pool_status != 'cancelled'
         GROUP BY d.id, d.domain_name, w.workspace_name
         HAVING
             COUNT(*) FILTER (WHERE sa.kill_trigger = 'spam_complaint') > 0
@@ -154,13 +156,22 @@ async def get_domains_needing_rotation() -> list:
 async def get_client_capacity_status() -> list:
     """Get client capacity status (informational - rotation is client-driven)."""
 
+    # ESP-aware: Microsoft IMAP disconnects are transient (~10 min).
+    # Only count as "disconnected" if past threshold (48h Microsoft, 24h Gmail/other).
     return await fetch_all("""
         SELECT
             w.workspace_name as client_name,
             COUNT(*) as total_inboxes,
             COUNT(*) FILTER (WHERE sa.inbox_state = 'live' AND sa.status = 'Connected') as live_connected,
             COUNT(*) FILTER (WHERE sa.inbox_state = 'dead') as dead,
-            COUNT(*) FILTER (WHERE sa.inbox_state = 'live' AND sa.status != 'Connected') as disconnected,
+            COUNT(*) FILTER (
+                WHERE sa.inbox_state = 'live' AND sa.status != 'Connected'
+                AND sa.disconnected_at IS NOT NULL
+                AND (
+                    (sa.esp = 'microsoft' AND sa.disconnected_at < NOW() - INTERVAL '48 hours')
+                    OR (sa.esp != 'microsoft' AND sa.disconnected_at < NOW() - INTERVAL '24 hours')
+                )
+            ) as disconnected,
             ROUND(100.0 * COUNT(*) FILTER (WHERE sa.inbox_state = 'live' AND sa.status = 'Connected') / NULLIF(COUNT(*), 0), 0) as health_pct,
             COUNT(DISTINCT d.id) FILTER (WHERE sa.kill_trigger = 'spam_complaint') as compromised_domains
         FROM sender_accounts sa
@@ -168,6 +179,7 @@ async def get_client_capacity_status() -> list:
         LEFT JOIN domains d ON sa.domain_id = d.id
         WHERE w.is_active = TRUE
         AND sa.emailbison_account_id IS NOT NULL
+        AND (d.pool_status IS NULL OR d.pool_status != 'cancelled')
         GROUP BY w.id, w.workspace_name
         HAVING COUNT(*) > 0
         ORDER BY
@@ -191,18 +203,26 @@ async def get_daily_audit_stats() -> dict:
     # Client capacity status
     capacity_status = await get_client_capacity_status()
 
-    # Disconnected inboxes (live but not connected - could reconnect)
-    # Filter to active workspaces and inboxes with EmailBison IDs (actionable)
+    # Disconnected inboxes needing attention (ESP-aware thresholds)
+    # Microsoft: only if disconnected > 48h (IMAP blips are transient)
+    # Gmail/other: if disconnected > 24h (likely expired OAuth)
     disconnected = await fetch_one("""
         SELECT
             COUNT(*) FILTER (WHERE sa.updated_at >= NOW() - INTERVAL '24 hours') as new_24h,
             COUNT(*) as total
         FROM sender_accounts sa
         JOIN workspaces w ON sa.workspace_id = w.id
+        LEFT JOIN domains d ON sa.domain_id = d.id
         WHERE sa.status != 'Connected'
         AND sa.inbox_state = 'live'
         AND sa.emailbison_account_id IS NOT NULL
         AND w.is_active = TRUE
+        AND sa.disconnected_at IS NOT NULL
+        AND (d.pool_status IS NULL OR d.pool_status != 'cancelled')
+        AND (
+            (sa.esp = 'microsoft' AND sa.disconnected_at < NOW() - INTERVAL '48 hours')
+            OR (sa.esp != 'microsoft' AND sa.disconnected_at < NOW() - INTERVAL '24 hours')
+        )
     """)
 
     return {

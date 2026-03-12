@@ -2,12 +2,13 @@
 Kill Queue Processor
 
 Processes inboxes flagged for removal from active use:
-1. Tag inbox in EmailBison with trigger-specific tag (e.g., "flagged_fresh_inbox_bounce")
+1. Tag inbox in EmailBison with trigger-specific tag (e.g., "flagged_fresh_inbox_blocked")
 2. Mark inbox as 'dead' locally so it won't be used in new campaigns
 
 Tag Format: flagged_{trigger_type}
 Examples:
-  - flagged_fresh_inbox_bounce
+  - flagged_fresh_inbox_blocked
+  - flagged_fresh_inbox_unknown
   - flagged_spam_complaint
   - flagged_hard_bounces_24h
   - flagged_hard_blocked_24h
@@ -26,12 +27,50 @@ from .audit_logger import AuditLogger, SyncResult
 from .slack_alerter import SlackAlerter
 
 
+# =============================================================================
+# TRIGGER SEVERITY CLASSIFICATION
+# =============================================================================
+# Domain-killing triggers indicate the DOMAIN is compromised, not just the inbox.
+# When these fire, we should NOT promote B-Set inboxes from the same domain.
+# Instead, flag the entire domain for rotation.
+
+DOMAIN_KILLING_TRIGGERS = {
+    'spam_complaint',           # User reported spam = domain reputation burned
+    'provider_block_google',    # Google blocked the domain
+    'provider_block_microsoft', # Microsoft blocked the domain
+    'provider_block_yahoo',     # Yahoo blocked the domain
+}
+
+# Inbox-killing triggers indicate inbox-level or list-level issues.
+# Safe to promote B-Set inboxes from the same domain.
+INBOX_KILLING_TRIGGERS = {
+    'fresh_inbox_blocked',   # Reputation block on fresh inbox
+    'fresh_inbox_unknown',   # Bad addresses on fresh inbox (list quality)
+    'hard_bounces_24h',      # Transient or list quality issue
+    'hard_blocked_24h',      # Could escalate, but start as inbox-level
+    'hard_unknown_24h',      # Bad addresses in list
+    'hard_bounce_rate_7d',   # Sustained issue, likely list quality
+    'bounce_rate_all_7d',    # General bounce rate
+    'disconnected_timeout',  # OAuth issue, not reputation
+}
+
+
+def is_domain_killing_trigger(trigger_type: str) -> bool:
+    """Check if a trigger type indicates domain-level compromise."""
+    if not trigger_type:
+        return False
+    # Handle dynamic provider blocks (provider_block_*)
+    if trigger_type.startswith('provider_block_'):
+        return True
+    return trigger_type in DOMAIN_KILLING_TRIGGERS
+
+
 class KillProcessor:
     """
     Processes the kill queue by tagging and flagging bad inboxes.
 
     Inboxes are tagged in EmailBison with trigger-specific tags
-    (e.g., flagged_fresh_inbox_bounce) and marked as 'dead' locally.
+    (e.g., flagged_fresh_inbox_blocked) and marked as 'dead' locally.
     This provides visibility into WHY each inbox was flagged while
     preventing them from being used in new campaigns.
 
@@ -79,7 +118,8 @@ class KillProcessor:
         Tag pending kill queue items in EmailBison with trigger-specific tags.
 
         Each inbox is tagged with its specific trigger reason:
-          - flagged_fresh_inbox_bounce
+          - flagged_fresh_inbox_blocked
+          - flagged_fresh_inbox_unknown
           - flagged_spam_complaint
           - flagged_hard_bounces_24h
           - flagged_hard_blocked_24h
@@ -243,7 +283,12 @@ class KillProcessor:
                             await self._recalculate_domain_metrics(item['domain_id'])
 
                         # V3: Promote backup inbox to fill the gap
-                        await self._promote_backup_inbox(item['inbox_id'], item['workspace_id'])
+                        # Pass trigger_type for severity-aware rotation
+                        await self._promote_backup_inbox(
+                            item['inbox_id'],
+                            item['workspace_id'],
+                            trigger_type=trigger_type
+                        )
 
                         tagged_count += 1
                         audit.increment_updated()
@@ -410,24 +455,28 @@ class KillProcessor:
         """
         stats = await self.db.fetchrow("""
             SELECT
-                COUNT(*) FILTER (WHERE inbox_state = 'live') as live_count,
-                COUNT(*) FILTER (WHERE inbox_state = 'dead') as dead_count,
+                COUNT(*) FILTER (WHERE sa.inbox_state = 'live') as live_count,
+                COUNT(*) FILTER (WHERE sa.inbox_state = 'dead') as dead_count,
                 COUNT(*) as total_count
-            FROM sender_accounts
-            WHERE workspace_id = $1
-            AND is_active = TRUE
+            FROM sender_accounts sa
+            LEFT JOIN domains d ON sa.domain_id = d.id
+            WHERE sa.workspace_id = $1
+            AND sa.is_active = TRUE
+            AND (d.pool_status IS NULL OR d.pool_status != 'cancelled')
         """, workspace_id)
 
         # Get breakdown of dead inboxes by kill trigger
         trigger_breakdown = await self.db.fetch("""
             SELECT
-                kill_trigger,
+                sa.kill_trigger,
                 COUNT(*) as count
-            FROM sender_accounts
-            WHERE workspace_id = $1
-            AND inbox_state = 'dead'
-            AND kill_trigger IS NOT NULL
-            GROUP BY kill_trigger
+            FROM sender_accounts sa
+            LEFT JOIN domains d ON sa.domain_id = d.id
+            WHERE sa.workspace_id = $1
+            AND sa.inbox_state = 'dead'
+            AND sa.kill_trigger IS NOT NULL
+            AND (d.pool_status IS NULL OR d.pool_status != 'cancelled')
+            GROUP BY sa.kill_trigger
             ORDER BY count DESC
         """, workspace_id)
 
@@ -664,7 +713,12 @@ class KillProcessor:
 
                 print(f"    [CAMPAIGN QUARANTINE] {campaign['campaign_name']}: {quarantine_reason}")
 
-    async def _promote_backup_inbox(self, killed_inbox_id: UUID, workspace_id: UUID):
+    async def _promote_backup_inbox(
+        self,
+        killed_inbox_id: UUID,
+        workspace_id: UUID,
+        trigger_type: str = None
+    ):
         """
         V3 Section 6: Promote B-Set inbox when A-Set inbox is killed.
 
@@ -672,10 +726,17 @@ class KillProcessor:
         - A-Set (deployed): Actively assigned to campaigns
         - B-Set (reserve): Warmed and ready to promote when A-Set dies
 
+        TRIGGER SEVERITY AWARENESS (2026-03-05):
+        - Domain-killing triggers (spam_complaint, provider_block_*):
+          Do NOT promote from same domain. Flag domain for rotation.
+        - Inbox-killing triggers (bounces, disconnects):
+          Safe to promote B-Set from same domain.
+
         When an A-Set inbox is killed:
-        1. Find best connected B-Set inbox from same domain
-        2. Promote to A-Set (update tag in EmailBison + local DB)
-        3. Log rotation history
+        1. Check trigger severity
+        2. If domain-killing: quarantine domain, skip promotion
+        3. If inbox-killing: promote B-Set from same domain
+        4. Log rotation history
 
         NOTE: Also handles legacy pool_tier for backwards compatibility.
         """
@@ -684,6 +745,7 @@ class KillProcessor:
             SELECT
                 sa.id, sa.email_address, sa.domain_id,
                 sa.inventory_pool_status, sa.pool_tier,
+                sa.kill_trigger,
                 d.domain_name,
                 w.emailbison_workspace_id,
                 w.a_set_tag_name, w.b_set_tag_name
@@ -697,8 +759,26 @@ class KillProcessor:
             return
 
         domain_id = killed_inbox['domain_id']
+        domain_name = killed_inbox['domain_name']
         killed_pool = killed_inbox['inventory_pool_status']
         eb_workspace_id = killed_inbox['emailbison_workspace_id']
+
+        # Get trigger type from parameter or from the inbox record
+        effective_trigger = trigger_type or killed_inbox.get('kill_trigger')
+
+        # ==========================================
+        # TRIGGER SEVERITY CHECK
+        # ==========================================
+        # Domain-killing triggers = don't promote from same domain
+        if is_domain_killing_trigger(effective_trigger):
+            await self._handle_domain_killing_trigger(
+                domain_id=domain_id,
+                domain_name=domain_name,
+                workspace_id=workspace_id,
+                trigger_type=effective_trigger,
+                killed_inbox_email=killed_inbox['email_address']
+            )
+            return  # Skip normal promotion - domain is compromised
 
         # Only promote if the killed inbox was in A-Set (deployed)
         if killed_pool != 'deployed':
@@ -709,7 +789,7 @@ class KillProcessor:
             # Legacy path - continue below
 
         # ==========================================
-        # NEW A-SET / B-SET PROMOTION LOGIC
+        # INBOX-LEVEL TRIGGER: SAFE TO PROMOTE FROM SAME DOMAIN
         # ==========================================
 
         # Find best B-Set inbox to promote (connected, oldest warmup, highest health)
@@ -734,8 +814,9 @@ class KillProcessor:
                 await self.client.switch_workspace(int(eb_workspace_id))
 
                 # Get tag names (use workspace config or defaults)
+                # Standard: 'live' for A-Set, 'reserve' for B-Set
                 a_tag_name = killed_inbox.get('a_set_tag_name') or 'live'
-                b_tag_name = killed_inbox.get('b_set_tag_name') or 'bset'
+                b_tag_name = killed_inbox.get('b_set_tag_name') or 'reserve'
 
                 # Get tag IDs
                 a_tag = await self.client.get_or_create_tag(a_tag_name)
@@ -878,6 +959,194 @@ class KillProcessor:
         else:
             # No warming inbox available - log warning
             print(f"    [WARNING] No warming inbox available to promote to hot_backup for domain {domain_id}")
+
+    async def _handle_domain_killing_trigger(
+        self,
+        domain_id: UUID,
+        domain_name: str,
+        workspace_id: UUID,
+        trigger_type: str,
+        killed_inbox_email: str
+    ):
+        """
+        Handle domain-killing triggers (spam_complaint, provider_block_*).
+
+        DOMAIN-LEVEL A/B SET MODEL (2026-03-05):
+        When a domain-killing trigger fires:
+        1. Mark the ENTIRE A-Set domain as 'burned'
+        2. Promote a B-Set DOMAIN to A-Set (not individual inboxes)
+        3. Quarantine remaining inboxes on the burned domain
+        4. Alert via Slack
+
+        The domain is compromised - promoting B-Set inboxes from the same
+        domain would just put them at risk of the same fate.
+        """
+        print(f"    [DOMAIN KILL] {domain_name}: {trigger_type} on {killed_inbox_email}")
+        print(f"    [DOMAIN KILL] Burning domain and promoting B-Set domain")
+
+        # 1. Check if domain is currently live (A-Set)
+        current_pool = await self.db.fetchval("""
+            SELECT pool_status FROM domains WHERE id = $1
+        """, domain_id)
+
+        # 2. Burn the domain and promote reserve domain (using SQL function)
+        promoted_domain = None
+        if current_pool == 'live':
+            try:
+                result = await self.db.fetchrow("""
+                    SELECT * FROM burn_domain_and_promote($1, $2)
+                """, domain_id, trigger_type)
+
+                if result and result['promoted_domain_name']:
+                    promoted_domain = result['promoted_domain_name']
+                    print(f"    [DOMAIN KILL] Promoted reserve domain: {promoted_domain}")
+                elif result and result['action'] == 'no_reserve':
+                    print(f"    [DOMAIN KILL] WARNING: No reserve domain available to promote!")
+            except Exception as e:
+                # Function may not exist yet - fall back to manual update
+                print(f"    [DOMAIN KILL] burn_domain_and_promote not available: {e}")
+                await self.db.execute("""
+                    UPDATE domains
+                    SET
+                        pool_status = 'burned',
+                        burned_at = NOW(),
+                        burn_trigger = $2,
+                        updated_at = NOW()
+                    WHERE id = $1
+                """, domain_id, trigger_type)
+
+        # 3. Update domain state (legacy compatibility)
+        await self.db.execute("""
+            UPDATE domains
+            SET
+                domain_state = CASE
+                    WHEN domain_state = 'live' THEN 'flagged'::domain_state
+                    ELSE domain_state
+                END,
+                updated_at = NOW()
+            WHERE id = $1
+        """, domain_id)
+
+        # 2. Count remaining live inboxes that will be affected
+        remaining = await self.db.fetchrow("""
+            SELECT
+                COUNT(*) FILTER (WHERE inventory_pool_status = 'deployed') as a_set_count,
+                COUNT(*) FILTER (WHERE inventory_pool_status = 'reserve') as b_set_count,
+                COUNT(*) as total_live
+            FROM sender_accounts
+            WHERE domain_id = $1
+            AND inbox_state = 'live'
+        """, domain_id)
+
+        a_set_remaining = remaining['a_set_count'] or 0
+        b_set_remaining = remaining['b_set_count'] or 0
+        total_remaining = remaining['total_live'] or 0
+
+        # 3. Log the domain burn event
+        await self.db.execute("""
+            INSERT INTO inbox_rotation_history (
+                workspace_id, rotation_type,
+                reason, triggered_by,
+                metadata
+            ) VALUES (
+                $1,
+                'domain_burn',
+                $2,
+                'kill_trigger',
+                $3::jsonb
+            )
+        """,
+            workspace_id,
+            f"Domain {domain_name} burned due to {trigger_type} on {killed_inbox_email}",
+            f'{{"domain_id": "{domain_id}", "domain_name": "{domain_name}", '
+            f'"trigger_type": "{trigger_type}", "killed_inbox": "{killed_inbox_email}", '
+            f'"a_set_remaining": {a_set_remaining}, "b_set_on_domain": {b_set_remaining}}}'
+        )
+
+        # 4. Insert domain rotation event for tracking
+        try:
+            await self.db.execute("""
+                INSERT INTO domain_rotation_events (
+                    domain_id,
+                    workspace_id,
+                    event_type,
+                    trigger_type,
+                    trigger_inbox_email,
+                    old_status,
+                    new_status,
+                    a_set_remaining,
+                    b_set_quarantined,
+                    notes
+                ) VALUES ($1, $2, 'domain_burn', $3, $4, 'live', 'burned', $5, $6, $7)
+            """,
+                domain_id,
+                workspace_id,
+                trigger_type,
+                killed_inbox_email,
+                a_set_remaining,
+                b_set_remaining,
+                f"Domain-killing trigger {trigger_type} fired. Domain burned, reserve auto-promotes."
+            )
+        except Exception as e:
+            # Table may not exist yet - log but don't fail
+            print(f"    [WARNING] Could not log domain_rotation_event: {e}")
+
+        print(f"    [DOMAIN KILL] A-Set: {a_set_remaining}, B-Set: {b_set_remaining} on burned domain")
+        print(f"    [DOMAIN KILL] Domain {domain_name} burned")
+
+        # 5. Check for promoted reserve domain (now live)
+        promoted_info = await self.db.fetchrow("""
+            SELECT domain_name
+            FROM domains
+            WHERE workspace_id = $1
+            AND pool_status = 'live'
+            AND promoted_at IS NOT NULL
+            AND promoted_at >= NOW() - INTERVAL '1 minute'
+            ORDER BY promoted_at DESC
+            LIMIT 1
+        """, workspace_id)
+        promoted_domain = promoted_info['domain_name'] if promoted_info else None
+
+        # 6. Get reserve runway for workspace
+        reserve_runway = await self.db.fetchrow("""
+            SELECT COUNT(*) as reserve_count
+            FROM domains
+            WHERE workspace_id = $1
+            AND pool_status = 'reserve'
+            AND is_active = TRUE
+        """, workspace_id)
+        reserves_remaining = reserve_runway['reserve_count'] if reserve_runway else 0
+
+        # 7. Send Slack alert with investigation context
+        if self.alerter:
+            try:
+                if promoted_domain:
+                    action_text = f"Reserve domain `{promoted_domain}` promoted to live."
+                    next_steps = "Monitor promoted domain. Review campaign lists for this workspace."
+                else:
+                    action_text = "Domain burned. *No reserve domain available to promote!*"
+                    next_steps = "URGENT: Order replacement domains via HyperTide."
+
+                await self.alerter.send_alert(
+                    level="critical",
+                    title=f"Domain Burned: {domain_name}",
+                    message=(
+                        f"*Trigger:* `{trigger_type}` on `{killed_inbox_email}`\n"
+                        f"*Action:* {action_text}\n"
+                        f"*Burned domain:* {domain_name} ({total_remaining} inboxes)\n"
+                        f"*Reserve runway:* {reserves_remaining} reserve domains remaining\n"
+                        f"*Next Steps:* {next_steps}"
+                    ),
+                    context={
+                        "domain": domain_name,
+                        "trigger": trigger_type,
+                        "killed_inbox": killed_inbox_email,
+                        "promoted_domain": promoted_domain,
+                        "reserves_remaining": reserves_remaining
+                    }
+                )
+            except Exception as e:
+                print(f"    [WARNING] Failed to send Slack alert: {e}")
 
     async def decay_burn_counters(self):
         """

@@ -23,8 +23,10 @@ KILL_THRESHOLD_HARD_UNKNOWN_24H = int(os.getenv('KILL_THRESHOLD_HARD_UNKNOWN_24H
 KILL_THRESHOLD_HARD_BOUNCES_24H = int(os.getenv('KILL_THRESHOLD_HARD_BOUNCES_24H', 2))
 KILL_THRESHOLD_HARD_BOUNCE_RATE = float(os.getenv('KILL_THRESHOLD_HARD_BOUNCE_RATE', 0.005))
 KILL_THRESHOLD_TOTAL_BOUNCE_RATE = float(os.getenv('KILL_THRESHOLD_TOTAL_BOUNCE_RATE', 0.05))
-KILL_THRESHOLD_MIN_SENDS = int(os.getenv('KILL_THRESHOLD_MIN_SENDS', 20))  # Lowered from 50 to catch more accounts
+KILL_THRESHOLD_MIN_SENDS = int(os.getenv('KILL_THRESHOLD_MIN_SENDS', 50))  # V3 spec: min 50 sends before rate triggers
 KILL_THRESHOLD_FRESH_INBOX_DAYS = int(os.getenv('KILL_THRESHOLD_FRESH_INBOX_DAYS', 14))
+KILL_THRESHOLD_FRESH_BLOCKED = int(os.getenv('KILL_THRESHOLD_FRESH_BLOCKED', 1))
+KILL_THRESHOLD_FRESH_UNKNOWN = int(os.getenv('KILL_THRESHOLD_FRESH_UNKNOWN', 3))
 KILL_THRESHOLD_DISCONNECTED_DAYS = int(os.getenv('KILL_THRESHOLD_DISCONNECTED_DAYS', 21))
 
 # Kill trigger thresholds (configurable via env vars)
@@ -68,11 +70,17 @@ KILL_THRESHOLDS = {
         'severity': 'instant',
         'description': f'Total bounce rate >{KILL_THRESHOLD_TOTAL_BOUNCE_RATE*100}%'
     },
-    'fresh_inbox_bounce': {
-        'value': 1,
+    'fresh_inbox_blocked': {
+        'value': KILL_THRESHOLD_FRESH_BLOCKED,
         'max_age_days': KILL_THRESHOLD_FRESH_INBOX_DAYS,
         'severity': 'instant',
-        'description': f'Any hard bounce on inbox <{KILL_THRESHOLD_FRESH_INBOX_DAYS} days old'
+        'description': f'{KILL_THRESHOLD_FRESH_BLOCKED}+ reputation block on inbox <{KILL_THRESHOLD_FRESH_INBOX_DAYS} days sending'
+    },
+    'fresh_inbox_unknown': {
+        'value': KILL_THRESHOLD_FRESH_UNKNOWN,
+        'max_age_days': KILL_THRESHOLD_FRESH_INBOX_DAYS,
+        'severity': 'instant',
+        'description': f'{KILL_THRESHOLD_FRESH_UNKNOWN}+ bad-address bounces on inbox <{KILL_THRESHOLD_FRESH_INBOX_DAYS} days sending'
     },
     'disconnected_timeout': {
         'value': KILL_THRESHOLD_DISCONNECTED_DAYS,
@@ -167,8 +175,14 @@ class HealthCheckModule:
                 WITH bounce_counts AS (
                     SELECT
                         sender_account_id,
-                        COUNT(*) FILTER (WHERE received_at > NOW() - INTERVAL '24 hours') as bounces_24h,
-                        COUNT(*) FILTER (WHERE received_at > NOW() - INTERVAL '7 days') as bounces_7d,
+                        COUNT(*) FILTER (
+                            WHERE bounce_type IN ('hard_unknown', 'hard_blocked')
+                            AND received_at > NOW() - INTERVAL '24 hours'
+                        ) as hard_bounces_24h,
+                        COUNT(*) FILTER (
+                            WHERE bounce_type IN ('hard_unknown', 'hard_blocked')
+                            AND received_at > NOW() - INTERVAL '7 days'
+                        ) as hard_bounces_7d,
                         COUNT(*) FILTER (
                             WHERE bounce_type = 'hard_blocked'
                             AND received_at > NOW() - INTERVAL '24 hours'
@@ -176,7 +190,11 @@ class HealthCheckModule:
                         COUNT(*) FILTER (
                             WHERE bounce_type = 'hard_unknown'
                             AND received_at > NOW() - INTERVAL '24 hours'
-                        ) as unknown_24h
+                        ) as unknown_24h,
+                        COUNT(*) FILTER (
+                            WHERE bounce_type IN ('soft_full', 'soft_temp')
+                            AND received_at > NOW() - INTERVAL '7 days'
+                        ) as soft_7d
                     FROM response_messages
                     WHERE folder = 'bounced'
                       AND sender_account_id IS NOT NULL
@@ -185,18 +203,20 @@ class HealthCheckModule:
                 )
                 UPDATE sender_accounts sa
                 SET
-                    hard_bounces_24h = GREATEST(COALESCE(sa.hard_bounces_24h, 0), COALESCE(bc.bounces_24h, 0)),
-                    hard_bounces_7d = GREATEST(COALESCE(sa.hard_bounces_7d, 0), COALESCE(bc.bounces_7d, 0)),
+                    hard_bounces_24h = GREATEST(COALESCE(sa.hard_bounces_24h, 0), COALESCE(bc.hard_bounces_24h, 0)),
+                    hard_bounces_7d = GREATEST(COALESCE(sa.hard_bounces_7d, 0), COALESCE(bc.hard_bounces_7d, 0)),
                     hard_blocked_24h = GREATEST(COALESCE(sa.hard_blocked_24h, 0), COALESCE(bc.blocked_24h, 0)),
                     hard_unknown_24h = GREATEST(COALESCE(sa.hard_unknown_24h, 0), COALESCE(bc.unknown_24h, 0)),
+                    soft_bounces_7d = GREATEST(COALESCE(sa.soft_bounces_7d, 0), COALESCE(bc.soft_7d, 0)),
                     updated_at = NOW()
                 FROM bounce_counts bc
                 WHERE sa.id = bc.sender_account_id
                 AND (
-                    COALESCE(sa.hard_bounces_24h, 0) < COALESCE(bc.bounces_24h, 0)
-                    OR COALESCE(sa.hard_bounces_7d, 0) < COALESCE(bc.bounces_7d, 0)
+                    COALESCE(sa.hard_bounces_24h, 0) < COALESCE(bc.hard_bounces_24h, 0)
+                    OR COALESCE(sa.hard_bounces_7d, 0) < COALESCE(bc.hard_bounces_7d, 0)
                     OR COALESCE(sa.hard_blocked_24h, 0) < COALESCE(bc.blocked_24h, 0)
                     OR COALESCE(sa.hard_unknown_24h, 0) < COALESCE(bc.unknown_24h, 0)
+                    OR COALESCE(sa.soft_bounces_7d, 0) < COALESCE(bc.soft_7d, 0)
                 )
             """)
             print(f"[HealthCheck] Aggregated bounce counts from response_messages: {result}")
@@ -220,26 +240,29 @@ class HealthCheckModule:
         # NOTE: disconnected_at tracks when inbox lost connection (for 21-day auto-kill)
         inboxes = await self.db.fetch("""
             SELECT
-                id,
-                email_address,
-                inbox_state,
-                status,
-                esp,
-                hard_bounces_24h,
-                hard_blocked_24h,
-                hard_unknown_24h,
-                hard_bounces_7d,
-                soft_bounces_7d,
-                total_sends_7d,
-                bounce_rate_7d,
-                health_score,
-                warmup_started_at,
-                disconnected_at,
-                complaints_lifetime
-            FROM sender_accounts
-            WHERE workspace_id = $1
-            AND inbox_state = 'live'
-            AND is_active = TRUE
+                sa.id,
+                sa.email_address,
+                sa.inbox_state,
+                sa.status,
+                sa.esp,
+                sa.hard_bounces_24h,
+                sa.hard_blocked_24h,
+                sa.hard_unknown_24h,
+                sa.hard_bounces_7d,
+                sa.soft_bounces_7d,
+                sa.total_sends_7d,
+                sa.bounce_rate_7d,
+                sa.health_score,
+                sa.warmup_started_at,
+                sa.sending_started_at,
+                sa.disconnected_at,
+                sa.complaints_lifetime
+            FROM sender_accounts sa
+            LEFT JOIN domains d ON sa.domain_id = d.id
+            WHERE sa.workspace_id = $1
+            AND sa.inbox_state = 'live'
+            AND sa.is_active = TRUE
+            AND (d.pool_status IS NULL OR d.pool_status != 'cancelled')
         """, workspace_id)
 
         triggers_detected = 0
@@ -297,11 +320,11 @@ class HealthCheckModule:
         total_sends_7d = inbox.get('total_sends_7d') or 0
         warmup_started_at = inbox.get('warmup_started_at')
 
-        # Calculate "sending age" for fresh_inbox_bounce trigger
+        # Calculate "sending age" for fresh_inbox_blocked/fresh_inbox_unknown triggers
         #
         # Two separate concepts:
         # 1. Incubation (warmup_started_at) - determines Live/Reserve classification
-        # 2. Sending age (sending_started_at) - determines fresh_inbox_bounce eligibility
+        # 2. Sending age (sending_started_at) - determines fresh inbox trigger eligibility
         #
         # An inbox is "fresh" when < 14 days from first campaign assignment.
         # We use sending_started_at because:
@@ -397,13 +420,24 @@ class HealthCheckModule:
                     'threshold': threshold['value']
                 })
 
-        # 4. Fresh inbox bounce (any bounce on inbox < 14 days into sending)
-        threshold = KILL_THRESHOLDS['fresh_inbox_bounce']
+        # 4. Fresh inbox triggers (split: reputation blocks vs bad addresses)
+        # fresh_inbox_blocked: reputation block on fresh inbox = genuine risk, kill immediately
+        threshold = KILL_THRESHOLDS['fresh_inbox_blocked']
         if inbox_sending_age_days is not None and inbox_sending_age_days < threshold.get('max_age_days', 14):
-            if hard_bounces_24h >= threshold['value'] or hard_bounces_7d >= threshold['value']:
+            if hard_blocked_24h >= threshold['value']:
                 triggers.append({
-                    'trigger_type': 'fresh_inbox_bounce',
-                    'value': max(hard_bounces_24h, hard_bounces_7d),
+                    'trigger_type': 'fresh_inbox_blocked',
+                    'value': hard_blocked_24h,
+                    'threshold': threshold['value']
+                })
+
+        # fresh_inbox_unknown: bad-address bounces on fresh inbox = list quality issue, higher threshold
+        threshold = KILL_THRESHOLDS['fresh_inbox_unknown']
+        if inbox_sending_age_days is not None and inbox_sending_age_days < threshold.get('max_age_days', 14):
+            if hard_unknown_24h >= threshold['value']:
+                triggers.append({
+                    'trigger_type': 'fresh_inbox_unknown',
+                    'value': hard_unknown_24h,
                     'threshold': threshold['value']
                 })
 
@@ -561,6 +595,7 @@ class HealthCheckModule:
                 END::domain_state,
                 updated_at = NOW()
             WHERE d.workspace_id = $1
+            AND d.pool_status != 'cancelled'
             -- Only update if state would change
             AND (
                 (COALESCE(d.dead_inbox_count, 0) >= $2 AND d.domain_state != 'dead')
@@ -628,6 +663,7 @@ class HealthCheckModule:
             FROM domains
             WHERE workspace_id = $1
             AND domain_state = 'live'
+            AND pool_status != 'cancelled'
             AND (
                 domain_bounce_rate_7d > 0.05
                 OR inboxes_with_complaints >= 2
@@ -665,18 +701,19 @@ class HealthCheckModule:
 
     async def _flag_all_disconnected_domains(self, workspace_id: UUID):
         """
-        Flag domains where ALL live inboxes are disconnected.
+        Flag domains where ALL live inboxes are disconnected AND need attention.
 
         These domains have 0 operational capacity despite having live inboxes.
         This is separate from kill-based logic - it's about connection status.
 
-        A domain with all disconnected inboxes:
-        - Has live inboxes (not killed)
-        - BUT none of them are connected (OAuth expired, needs HyperTide reconnection)
-        - Therefore has 0 operational capacity (can't send emails)
-        - Should be flagged for attention
+        ESP-aware thresholds (per EmailBison support re: IMAP behavior):
+        - Microsoft: IMAP disconnects are transient (~10 min auto-reconnect).
+          Only flag if disconnected > 48 hours continuously.
+        - Gmail/other: Disconnects almost always mean expired OAuth.
+          Flag if disconnected > 24 hours.
         """
         # Find domains where all live inboxes are disconnected
+        # AND at least one inbox has been disconnected past the ESP-aware threshold
         disconnected_domains = await self.db.fetch("""
             SELECT
                 d.id,
@@ -684,17 +721,39 @@ class HealthCheckModule:
                 d.domain_state,
                 COUNT(*) FILTER (WHERE sa.inbox_state = 'live') as live_count,
                 COUNT(*) FILTER (WHERE sa.inbox_state = 'live' AND sa.status = 'Connected') as connected_count,
-                COUNT(*) FILTER (WHERE sa.inbox_state = 'live' AND sa.status IN ('Not connected', 'Disconnected')) as disconnected_count
+                COUNT(*) FILTER (WHERE sa.inbox_state = 'live' AND sa.status IN ('Not connected', 'Disconnected')) as disconnected_count,
+                -- How many actually need attention (past ESP-aware threshold)?
+                COUNT(*) FILTER (
+                    WHERE sa.inbox_state = 'live'
+                    AND sa.status IN ('Not connected', 'Disconnected')
+                    AND sa.disconnected_at IS NOT NULL
+                    AND (
+                        (sa.esp = 'microsoft' AND sa.disconnected_at < NOW() - INTERVAL '48 hours')
+                        OR (sa.esp != 'microsoft' AND sa.disconnected_at < NOW() - INTERVAL '24 hours')
+                    )
+                ) as needs_attention_count
             FROM domains d
             JOIN sender_accounts sa ON sa.domain_id = d.id
             WHERE d.workspace_id = $1
             AND d.domain_state = 'live'  -- Only check live domains
+            AND d.pool_status != 'cancelled'
             GROUP BY d.id
             HAVING
                 -- Has live inboxes
                 COUNT(*) FILTER (WHERE sa.inbox_state = 'live') > 0
                 -- BUT none are connected (all disconnected)
                 AND COUNT(*) FILTER (WHERE sa.inbox_state = 'live' AND sa.status = 'Connected') = 0
+                -- AND at least one inbox is past ESP-aware attention threshold
+                -- (filters out transient Microsoft IMAP blips)
+                AND COUNT(*) FILTER (
+                    WHERE sa.inbox_state = 'live'
+                    AND sa.status IN ('Not connected', 'Disconnected')
+                    AND sa.disconnected_at IS NOT NULL
+                    AND (
+                        (sa.esp = 'microsoft' AND sa.disconnected_at < NOW() - INTERVAL '48 hours')
+                        OR (sa.esp != 'microsoft' AND sa.disconnected_at < NOW() - INTERVAL '24 hours')
+                    )
+                ) > 0
         """, workspace_id)
 
         for domain in disconnected_domains:

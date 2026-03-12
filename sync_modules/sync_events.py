@@ -255,16 +255,12 @@ class EventSyncModule:
         # Determine event type for campaign_events
         event_type = self.get_event_type(folder, is_interested, is_automated)
 
-        # Storage optimization:
-        # - BOUNCES: Extract SMTP code + classification, discard body (noise)
+        # Storage strategy:
+        # - BOUNCES: Keep truncated body for diagnostic analysis of misclassified bounces
         # - REAL REPLIES: Keep full body for copy analysis and lead quality
-        #
-        # This reduces database bloat from bounce message bodies while
-        # preserving valuable reply content for analysis.
         if folder == 'bounced':
-            # Bounce: Store classification only, no body
-            # The bounce_reason already contains extracted SMTP code + keywords
-            store_body_preview = None
+            # Bounce: Store preview for diagnostic analysis, skip full body
+            store_body_preview = body[:500] if body else None
             store_body_full = None
         else:
             # Real reply: Keep full body for analysis
@@ -329,7 +325,7 @@ class EventSyncModule:
         )
 
         # If bounce on sender inbox, update sender_accounts metrics
-        if folder == 'bounced' and sender_account_id and bounce_type and bounce_type.startswith('hard'):
+        if folder == 'bounced' and sender_account_id and bounce_type and bounce_type != 'unknown':
             await self.increment_inbox_bounces(sender_account_id, bounce_type)
 
         # Detect spam complaints - Per v3 spec: 1 spam complaint = death, no exceptions
@@ -431,29 +427,38 @@ class EventSyncModule:
         """
         Classify bounce type from extracted bounce reason.
 
-        Uses SMTP codes (more reliable) with keyword fallback.
+        Uses SMTP codes (more reliable) with keyword fallback for ambiguous codes.
 
         Returns:
             'hard_unknown' - Bad email address (550 5.1.1, user unknown)
             'hard_blocked' - Reputation/spam block (550 5.7.x, blocked)
             'soft_full' - Mailbox full (452 4.2.2)
             'soft_temp' - Temporary failure (421, timeout)
+            'unknown' - No bounce reason available (not counted as hard)
         """
+        import re
+
         if not reason:
-            return 'hard_unknown'
+            return 'unknown'
 
         reason_lower = reason.lower()
 
         # Check SMTP codes first (more reliable)
         # 5xx = permanent failure, 4xx = temporary
         if '550' in reason or '551' in reason or '553' in reason or '554' in reason:
-            # 550 5.1.1 = user unknown
+            # 550 5.1.1 / 5.1.0 = user unknown (bad address)
             if '5.1.1' in reason or '5.1.0' in reason:
                 return 'hard_unknown'
-            # 550 5.7.x = policy/spam block
+            # 550 5.7.x = policy/spam block (reputation damage)
             if '5.7' in reason:
                 return 'hard_blocked'
-            # Default 5xx to hard unknown
+            # Ambiguous 5xx without 5.1.x or 5.7.x extended code:
+            # Use keywords to disambiguate before defaulting
+            if any(kw in reason_lower for kw in ['blocked', 'spam', 'blacklist', 'denied', 'rejected']):
+                return 'hard_blocked'
+            if any(kw in reason_lower for kw in ['not found', 'user unknown', 'mailbox not found', 'no such']):
+                return 'hard_unknown'
+            # True fallback for unrecognized 5xx
             return 'hard_unknown'
 
         if '552' in reason or '5.2.2' in reason:
@@ -465,7 +470,11 @@ class EventSyncModule:
         if '421' in reason or '4.7' in reason:
             return 'soft_temp'
 
-        # Keyword fallback
+        # 4xx safety net - any remaining 4xx code is temporary
+        if re.search(r'\b4\d{2}\b', reason):
+            return 'soft_temp'
+
+        # Keyword fallback (no SMTP code matched)
         if any(kw in reason_lower for kw in ['user', 'unknown', 'not exist', 'invalid', 'no such', 'not found']):
             return 'hard_unknown'
 
@@ -646,15 +655,14 @@ class EventSyncModule:
 
         Args:
             sender_account_id: The sender account UUID
-            bounce_type: 'hard_unknown', 'hard_blocked', 'soft_full', or 'soft_temp'
-                         Used for differentiated threshold tracking.
+            bounce_type: 'hard_unknown', 'hard_blocked', 'soft_full', 'soft_temp', or 'unknown'
 
-        Threshold strategy (per user request):
+        Threshold strategy:
         - hard_blocked_24h >= 1 = instant kill (spam/policy rejection = reputation damage)
         - hard_unknown_24h >= 3 = kill (bad addresses = list quality issue)
         - hard_bounces_24h >= 2 = combined fallback
+        - soft bounces tracked for rate calculations but don't trigger kills directly
         """
-        # Build query based on bounce type
         if bounce_type == 'hard_blocked':
             await self.db.execute("""
                 UPDATE sender_accounts
@@ -675,8 +683,16 @@ class EventSyncModule:
                     updated_at = NOW()
                 WHERE id = $1
             """, sender_account_id)
-        else:
-            # Fallback for any other hard bounce type (or when type not specified)
+        elif bounce_type in ('soft_full', 'soft_temp'):
+            await self.db.execute("""
+                UPDATE sender_accounts
+                SET
+                    soft_bounces_7d = COALESCE(soft_bounces_7d, 0) + 1,
+                    updated_at = NOW()
+                WHERE id = $1
+            """, sender_account_id)
+        elif bounce_type and bounce_type.startswith('hard'):
+            # Fallback for any other hard bounce type
             await self.db.execute("""
                 UPDATE sender_accounts
                 SET

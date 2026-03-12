@@ -1,22 +1,26 @@
 """
 Set Tag Sync Module (A-Set / B-Set Management)
 
-Manages A-Set and B-Set inbox tags in EmailBison:
-- A-Set (live/deployed): Actively assigned to campaigns
-- B-Set (reserve): Warmed and ready to promote when A-Set inboxes die
+Manages A-Set and B-Set inbox tags in EmailBison.
 
-Key Functions:
-1. Tag graduated inboxes to appropriate set based on domain capacity
-2. Promote B-Set → A-Set when A-Set capacity drops below threshold
-3. Respect existing tag naming conventions per workspace
+DOMAIN-LEVEL ALLOCATION (Migration 076):
+Entire DOMAINS are allocated to A-Set or B-Set, not individual inboxes.
+- domain.pool_status = 'live'    → ALL inboxes tagged 'live' (A-Set)
+- domain.pool_status = 'reserve' → ALL inboxes tagged 'reserve' (B-Set)
+- domain.pool_status = 'burned'  → Skip (compromised)
+- domain.pool_status = 'unassigned' → Skip (needs allocation first)
 
-Tag Naming Conventions (workspace-configurable):
-- Standard: 'live' / 'bset'
-- Legacy: 'A Set' / 'B Set' (Searchatlas, older workspaces)
+WHY DOMAIN-LEVEL?
+When a domain-killing trigger (spam_complaint) fires, ALL inboxes on that
+domain are compromised. Mixed A/B per domain means B-Set is useless.
+With domain-level: B-Set domains are completely isolated, safe to promote.
 
-Set Percentages:
-- Entra: 80% A-Set, 20% B-Set (40/10 split on 50-inbox domain)
-- Google: 100% A-Set, 0% B-Set (reserve at domain level instead)
+STANDARD TAG NAMING:
+- 'live'       = A-Set (deployed to campaigns, actively sending)
+- 'reserve'    = B-Set (warmed reserve, ready to promote when A-Set burns)
+- 'incubating' = Warming up (< 14 days), not yet graduated
+
+Legacy tags ('A Set'/'B Set', 'bset') are detected but new workspaces use standard names.
 
 This module runs AFTER lifecycle_tag_sync.py - it only acts on graduated inboxes.
 """
@@ -30,17 +34,17 @@ from .audit_logger import AuditLogger, SyncResult
 from .slack_alerter import SlackAlerter
 
 
-# Default tag names (can be overridden per workspace)
-DEFAULT_A_SET_TAG = 'live'
-DEFAULT_B_SET_TAG = 'bset'
+# Standard tag names (use these for new workspaces)
+DEFAULT_A_SET_TAG = 'live'      # A-Set: deployed to campaigns
+DEFAULT_B_SET_TAG = 'reserve'   # B-Set: warmed reserve, ready to promote
 
-# Legacy tag names (some workspaces use these)
-LEGACY_A_SET_TAG = 'A Set'
-LEGACY_B_SET_TAG = 'B Set'
+# Legacy tag names (some older workspaces use these - will migrate over time)
+LEGACY_A_SET_TAGS = ['A Set', 'a set', 'a-set', 'aset']
+LEGACY_B_SET_TAGS = ['B Set', 'b set', 'b-set', 'bset']  # 'bset' is legacy, use 'reserve'
 
-# Set percentages by provider (both 80/20 - replace infrastructure for infrastructure)
-ENTRA_A_SET_PCT = 0.80  # 80% A-Set, 20% B-Set reserve
-GOOGLE_A_SET_PCT = 0.80  # 80% A-Set, 20% B-Set reserve (domain-level swap when bad)
+# Legacy: inbox-level percentages (no longer used with domain-level allocation)
+# Domain-level allocation: ALL inboxes follow domain.pool_status
+# Kept for reference only - allocation now happens at domain level (50/50 domains)
 
 INCUBATION_DAYS = 14
 
@@ -49,13 +53,17 @@ class SetTagSyncModule:
     """
     Manages A-Set and B-Set inbox tags in EmailBison.
 
-    This module runs after lifecycle_tag_sync graduates inboxes from 'incubating'.
-    It assigns graduated inboxes to either A-Set or B-Set based on:
-    - Provider type (Entra 80/20, Google 100/0)
-    - Current A-Set capacity
-    - Priority ranking (oldest warmup, highest health)
+    DOMAIN-LEVEL ALLOCATION:
+    This module tags inboxes based on their DOMAIN's pool_status:
+    - Domain is 'live' → ALL inboxes tagged 'live' (A-Set, deployed)
+    - Domain is 'reserve' → ALL inboxes tagged 'reserve' (B-Set, backup)
 
-    When A-Set capacity drops (inboxes die/disconnect), it promotes B-Set inboxes.
+    This ensures blast radius isolation: when a domain burns (spam complaint),
+    all inboxes on that domain are compromised. B-Set domains remain safe.
+
+    Domain allocation (50/50 split) happens via:
+    - Migration 076: allocate_domain_sets(workspace_id) function
+    - API endpoint: /infrastructure/domain-sets/{workspace_id}/allocate
     """
 
     def __init__(
@@ -212,8 +220,14 @@ class SetTagSyncModule:
 
         Detection priority:
         1. Use explicitly configured names
-        2. Check if legacy tags ('A Set'/'B Set') exist
-        3. Fall back to defaults ('live'/'bset')
+        2. Check for standard tags ('live'/'reserve')
+        3. Check for legacy tags ('A Set'/'B Set', 'bset')
+        4. Fall back to defaults ('live'/'reserve')
+
+        Standard naming:
+        - live = A-Set (deployed to campaigns)
+        - reserve = B-Set (warmed reserve)
+        - incubating = Still warming up
         """
         if configured_a and configured_b:
             return configured_a, configured_b
@@ -221,15 +235,26 @@ class SetTagSyncModule:
         # Try to detect existing tags
         try:
             existing_tags = await self.client.list_tags()
-            tag_names = {t.get('name', '').lower(): t.get('name') for t in existing_tags}
+            tag_names_lower = {t.get('name', '').lower(): t.get('name') for t in existing_tags}
 
-            # Check for legacy tags
-            if 'a set' in tag_names:
-                return tag_names['a set'], tag_names.get('b set', LEGACY_B_SET_TAG)
+            # Prefer standard tags first
+            if 'live' in tag_names_lower and 'reserve' in tag_names_lower:
+                return 'live', 'reserve'
 
-            # Check for standard tags
-            if 'live' in tag_names and 'bset' in tag_names:
-                return 'live', 'bset'
+            # Check for 'live' with legacy 'bset' (migrate to 'reserve')
+            if 'live' in tag_names_lower and 'bset' in tag_names_lower:
+                print("    [MIGRATE] Found 'bset' tag, will create 'reserve' instead")
+                return 'live', 'reserve'
+
+            # Check for legacy 'A Set'/'B Set' tags
+            for legacy_a in LEGACY_A_SET_TAGS:
+                if legacy_a.lower() in tag_names_lower:
+                    # Find matching B-Set tag
+                    for legacy_b in LEGACY_B_SET_TAGS:
+                        if legacy_b.lower() in tag_names_lower:
+                            return tag_names_lower[legacy_a.lower()], tag_names_lower[legacy_b.lower()]
+                    # A-Set found but no B-Set, use reserve
+                    return tag_names_lower[legacy_a.lower()], 'reserve'
 
         except Exception:
             pass  # Fall back to defaults
@@ -282,11 +307,12 @@ class SetTagSyncModule:
         return (result['quarantined_count'] > 0) or result['has_recent_quarantine_event']
 
     async def _get_workspace_domains(self, workspace_id: UUID) -> List[Dict]:
-        """Get all domains with ACTUAL graduated inbox counts for a workspace."""
+        """Get all domains with pool status and graduated inbox counts for a workspace."""
         return await self.db.fetch("""
             SELECT
                 d.id as domain_id,
                 d.domain_name,
+                d.pool_status,  -- Domain-level pool: 'live', 'reserve', 'burned', 'unassigned'
                 COALESCE(d.infrastructure_type,
                     CASE
                         WHEN EXISTS (SELECT 1 FROM sender_accounts sa WHERE sa.domain_id = d.id AND sa.esp = 'microsoft') THEN 'entra'
@@ -302,7 +328,6 @@ class SetTagSyncModule:
                     AND sa.is_active = TRUE
                     AND sa.inbox_state = 'live'
                     AND sa.status = 'Connected'
-                    AND COALESCE(sa.inventory_pool_status, 'reserve') != 'quarantined'
                     AND (
                         sa.inventory_lifecycle_status = 'active'
                         OR (sa.warmup_started_at IS NOT NULL AND sa.warmup_started_at <= NOW() - INTERVAL '14 days')
@@ -329,16 +354,18 @@ class SetTagSyncModule:
         """
         Sync A-Set/B-Set for a single domain.
 
-        Logic:
-        1. Get graduated inboxes (14+ days warmup, still live)
-        2. Get inboxes already in A-Set or B-Set
-        3. Calculate target counts based on provider
-        4. Tag untagged graduated inboxes to appropriate set
-        5. Promote B-Set → A-Set if A-Set below capacity
+        DOMAIN-LEVEL ALLOCATION (Migration 076):
+        - Entire domains are A-Set or B-Set, not individual inboxes
+        - If domain.pool_status = 'live': ALL inboxes tagged 'live' (A-Set)
+        - If domain.pool_status = 'reserve': ALL inboxes tagged 'reserve' (B-Set)
+        - If domain.pool_status = 'burned': Skip (compromised)
+        - If domain.pool_status = 'unassigned'/NULL: Skip (needs allocation first)
+
+        This prevents blast radius: when a domain burns, B-Set domains are isolated.
         """
         domain_id = domain['domain_id']
         domain_name = domain['domain_name']
-        provider = domain['provider']
+        domain_pool_status = domain.get('pool_status')
         graduated_count = domain['graduated_inbox_count']
 
         result = {'tagged_a': 0, 'tagged_b': 0, 'promoted': 0}
@@ -347,31 +374,62 @@ class SetTagSyncModule:
         if graduated_count == 0:
             return result
 
-        # Check if domain is quarantined (domain-killing trigger fired)
-        if await self._is_domain_quarantined(domain_id):
-            print(f"    [SKIP] {domain_name}: Domain quarantined, skipping set sync")
+        # Skip burned domains - they're compromised
+        if domain_pool_status == 'burned':
+            print(f"    [SKIP] {domain_name}: Domain burned, skipping")
             return result
 
-        # Calculate targets from ACTUAL graduated count (not expected)
-        a_set_pct = ENTRA_A_SET_PCT if provider == 'entra' else GOOGLE_A_SET_PCT
-        target_a = int(graduated_count * a_set_pct)
-        target_b = graduated_count - target_a
-
-        # Get priority-ranked graduated inboxes
-        inboxes = await self._get_graduated_inboxes(domain_id)
-
-        if not inboxes:
+        # Skip cancelled domains - HyperTide order cancelled, inboxes are orphaned
+        if domain_pool_status == 'cancelled':
             return result
 
-        # Count current A-Set and B-Set connected inboxes
-        current_a_connected = sum(
-            1 for i in inboxes
-            if i['inventory_pool_status'] == 'deployed' and i['status'] == 'Connected'
-        )
-        current_b = sum(1 for i in inboxes if i['inventory_pool_status'] == 'reserve')
+        # Skip unassigned domains - they need allocation first
+        if domain_pool_status in (None, 'unassigned'):
+            # Don't spam logs - this is expected for domains not yet allocated
+            return result
 
-        # Track which inboxes need tagging
-        for rank, inbox in enumerate(inboxes):
+        # DOMAIN-LEVEL ALLOCATION: All inboxes follow the domain's pool status
+        # If domain is 'live' -> all inboxes are A-Set (deployed)
+        # If domain is 'reserve' -> all inboxes are B-Set (reserve)
+        if domain_pool_status == 'live':
+            target_set = 'deployed'
+            target_tag_id = a_set_tag_id
+            other_tag_id = b_set_tag_id
+            set_label = 'A-Set'
+        elif domain_pool_status == 'reserve':
+            target_set = 'reserve'
+            target_tag_id = b_set_tag_id
+            other_tag_id = a_set_tag_id
+            set_label = 'B-Set'
+        else:
+            # Unknown status
+            return result
+
+        # 1. Bulk-update DB pool status for ALL graduated inboxes (connected or not)
+        #    The DB should reflect domain allocation regardless of connection state.
+        all_inboxes = await self._get_all_graduated_inboxes(domain_id)
+
+        if not all_inboxes:
+            return result
+
+        mismatched_ids = [
+            inbox['id'] for inbox in all_inboxes
+            if inbox['inventory_pool_status'] != target_set
+        ]
+        if mismatched_ids:
+            await self.db.execute("""
+                UPDATE sender_accounts
+                SET inventory_pool_status = $2, updated_at = NOW()
+                WHERE id = ANY($1::uuid[])
+            """, mismatched_ids, target_set)
+
+        # 2. Tag connected inboxes in EmailBison (API requires connection)
+        connected_inboxes = [
+            inbox for inbox in all_inboxes
+            if inbox['status'] == 'Connected'
+        ]
+
+        for inbox in connected_inboxes:
             audit.increment_processed()
             eb_account_id = inbox['emailbison_account_id']
 
@@ -381,21 +439,11 @@ class SetTagSyncModule:
             eb_account_id = int(eb_account_id)
             current_pool = inbox['inventory_pool_status']
 
-            # Determine target set based on priority rank
-            if rank < target_a:
-                target_set = 'deployed'  # A-Set
-                target_tag_id = a_set_tag_id
-                other_tag_id = b_set_tag_id
-            else:
-                target_set = 'reserve'  # B-Set
-                target_tag_id = b_set_tag_id
-                other_tag_id = a_set_tag_id
-
-            # Skip if already in correct set
+            # Skip if already in correct set (EB tag already correct)
             if current_pool == target_set:
                 continue
 
-            # Check if this is a promotion (B-Set → A-Set)
+            # Check if this is a promotion (reserve → deployed)
             is_promotion = current_pool == 'reserve' and target_set == 'deployed'
 
             try:
@@ -409,25 +457,16 @@ class SetTagSyncModule:
                 # Add new tag
                 await self.client.tag_inbox(eb_account_id, target_tag_id)
 
-                # Update local database
-                await self.db.execute("""
-                    UPDATE sender_accounts
-                    SET
-                        inventory_pool_status = $2,
-                        updated_at = NOW()
-                    WHERE id = $1
-                """, inbox['id'], target_set)
-
                 if target_set == 'deployed':
                     result['tagged_a'] += 1
                     if is_promotion:
                         result['promoted'] += 1
-                        print(f"    [PROMOTE] {inbox['email_address']} B-Set → A-Set")
+                        print(f"    [PROMOTE] {inbox['email_address']} → {set_label} (domain promotion)")
                     else:
-                        print(f"    [TAG] {inbox['email_address']} → A-Set")
+                        print(f"    [TAG] {inbox['email_address']} → {set_label}")
                 else:
                     result['tagged_b'] += 1
-                    print(f"    [TAG] {inbox['email_address']} → B-Set")
+                    print(f"    [TAG] {inbox['email_address']} → {set_label}")
 
                 audit.increment_updated()
 
@@ -439,22 +478,17 @@ class SetTagSyncModule:
 
         return result
 
-    async def _get_graduated_inboxes(self, domain_id: UUID) -> List[Dict]:
+    async def _get_all_graduated_inboxes(self, domain_id: UUID) -> List[Dict]:
         """
-        Get graduated CONNECTED inboxes for a domain, priority-ranked for A-Set assignment.
+        Get ALL graduated inboxes for a domain (connected or not).
 
-        Only connected inboxes can be tagged - they're ready to send.
+        Used for bulk DB pool status updates — the database should reflect
+        domain allocation regardless of connection state. EB API tagging
+        is filtered to Connected inboxes separately.
 
-        Priority ranking:
-        1. Already in A-Set (maintain stability)
-        2. Oldest warmup (most mature)
-        3. Highest health score
-
-        Only includes:
+        Includes:
         - Live inboxes (inbox_state = 'live')
-        - Connected (status = 'Connected') - required for tagging
         - Graduated (inventory_lifecycle_status = 'active' OR 14+ days warmup)
-        - NOT quarantined (quarantined inboxes must not be promoted)
         """
         return await self.db.fetch("""
             SELECT
@@ -471,8 +505,6 @@ class SetTagSyncModule:
             WHERE domain_id = $1
             AND is_active = TRUE
             AND inbox_state = 'live'
-            AND status = 'Connected'
-            AND COALESCE(inventory_pool_status, 'reserve') != 'quarantined'
             AND (
                 inventory_lifecycle_status = 'active'
                 OR (
@@ -481,11 +513,8 @@ class SetTagSyncModule:
                 )
             )
             ORDER BY
-                -- Already in A-Set first (maintain stability)
                 CASE WHEN inventory_pool_status = 'deployed' THEN 0 ELSE 1 END,
-                -- Oldest warmup (most mature)
                 warmup_started_at ASC NULLS LAST,
-                -- Highest health
                 health_score DESC NULLS LAST
         """, domain_id)
 

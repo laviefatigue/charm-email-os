@@ -209,25 +209,33 @@ class EmailBisonClient:
         """Get all sender accounts for current workspace (handles pagination)."""
         all_accounts = []
         page = 1
+        last_page = None
+        consecutive_empty = 0
 
         while True:
             response = await self.get_sender_accounts(page=page, per_page=100)
 
             # Handle both list and dict response formats
             if isinstance(response, list):
-                accounts = response
-                all_accounts.extend(accounts)
+                all_accounts.extend(response)
                 break
             else:
                 accounts = response.get('data', [])
-                if not accounts:
-                    break
-
-                all_accounts.extend(accounts)
 
                 meta = response.get('meta', {})
                 current_page = meta.get('current_page', page)
-                last_page = meta.get('last_page', current_page)
+                if last_page is None:
+                    last_page = meta.get('last_page', current_page)
+
+                if accounts:
+                    all_accounts.extend(accounts)
+                    consecutive_empty = 0
+                else:
+                    consecutive_empty += 1
+                    # Only break on empty if we've exhausted retries (3 consecutive empty pages)
+                    if consecutive_empty >= 3:
+                        print(f"[WARN] 3 consecutive empty pages at page {page}/{last_page}, stopping")
+                        break
 
                 if current_page >= last_page:
                     break
@@ -460,6 +468,8 @@ class EmailBisonClient:
         """Get all sender accounts with warmup stats (handles pagination)."""
         all_accounts = []
         page = 1
+        last_page = None
+        consecutive_empty = 0
 
         while True:
             response = await self.get_warmup_sender_accounts(
@@ -475,13 +485,21 @@ class EmailBisonClient:
                 break
             else:
                 accounts = response.get('data', [])
-                if not accounts:
-                    break
-
-                all_accounts.extend(accounts)
 
                 meta = response.get('meta', {})
-                if page >= meta.get('last_page', page):
+                if last_page is None:
+                    last_page = meta.get('last_page', page)
+
+                if accounts:
+                    all_accounts.extend(accounts)
+                    consecutive_empty = 0
+                else:
+                    consecutive_empty += 1
+                    if consecutive_empty >= 3:
+                        print(f"[WARN] 3 consecutive empty pages at page {page}/{last_page}, stopping")
+                        break
+
+                if page >= last_page:
                     break
 
             page += 1

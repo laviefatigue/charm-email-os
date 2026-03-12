@@ -73,25 +73,39 @@ class DailySnapshotModule:
             #
             # IMPORTANT: daily_capacity = CONNECTED live inboxes only
             # A live but disconnected inbox has 0 operational capacity
+            #
+            # ESP-aware disconnection: Microsoft IMAP disconnects are transient (~10 min).
+            # Only count as "disconnected" if past threshold (48h Microsoft, 24h Gmail/other).
             capacity = await conn.fetchrow("""
                 SELECT
-                    COUNT(*) FILTER (WHERE inbox_state = 'live') as live_inboxes,
-                    COUNT(*) FILTER (WHERE inbox_state = 'live' AND status = 'Connected') as connected_inboxes,
-                    COUNT(*) FILTER (WHERE inbox_state = 'live' AND status IN ('Not connected', 'Disconnected')) as disconnected_inboxes,
-                    COUNT(*) FILTER (WHERE inventory_lifecycle_status = 'incubating') as incubating_inboxes,
-                    COUNT(*) FILTER (WHERE inbox_state = 'dead') as dead_inboxes,
+                    COUNT(*) FILTER (WHERE sa.inbox_state = 'live') as live_inboxes,
+                    COUNT(*) FILTER (WHERE sa.inbox_state = 'live' AND sa.status = 'Connected') as connected_inboxes,
+                    COUNT(*) FILTER (
+                        WHERE sa.inbox_state = 'live' AND sa.status IN ('Not connected', 'Disconnected')
+                        AND sa.disconnected_at IS NOT NULL
+                        AND (
+                            (sa.esp = 'microsoft' AND sa.disconnected_at < NOW() - INTERVAL '48 hours')
+                            OR (sa.esp != 'microsoft' AND sa.disconnected_at < NOW() - INTERVAL '24 hours')
+                        )
+                    ) as disconnected_inboxes,
+                    COUNT(*) FILTER (WHERE sa.inventory_lifecycle_status = 'incubating') as incubating_inboxes,
+                    COUNT(*) FILTER (WHERE sa.inbox_state = 'dead') as dead_inboxes,
                     -- Only CONNECTED live inboxes contribute to operational capacity
-                    COALESCE(SUM(daily_limit) FILTER (WHERE inbox_state = 'live' AND status = 'Connected'), 0) as daily_capacity
-                FROM sender_accounts
-                WHERE workspace_id = $1
+                    COALESCE(SUM(sa.daily_limit) FILTER (WHERE sa.inbox_state = 'live' AND sa.status = 'Connected'), 0) as daily_capacity
+                FROM sender_accounts sa
+                LEFT JOIN domains d ON sa.domain_id = d.id
+                WHERE sa.workspace_id = $1
+                AND (d.pool_status IS NULL OR d.pool_status != 'cancelled')
             """, workspace_id)
 
             # Get kills on that date
             kills = await conn.fetchval("""
                 SELECT COUNT(*)
-                FROM sender_accounts
-                WHERE workspace_id = $1
-                  AND killed_at::DATE = $2
+                FROM sender_accounts sa
+                LEFT JOIN domains d ON sa.domain_id = d.id
+                WHERE sa.workspace_id = $1
+                  AND sa.killed_at::DATE = $2
+                  AND (d.pool_status IS NULL OR d.pool_status != 'cancelled')
             """, workspace_id, snapshot_date)
 
             # Try to get sending volume from campaign data

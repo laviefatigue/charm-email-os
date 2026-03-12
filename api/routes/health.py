@@ -51,18 +51,21 @@ async def get_health_overview(client_id: UUID):
         )
 
     # Get inbox stats - only use columns that exist in sender_accounts
+    # Excludes inboxes on cancelled domains (HyperTide order cancelled)
     inbox_stats = await fetch_one("""
         SELECT
             COUNT(*) as total,
-            COUNT(*) FILTER (WHERE inbox_state = 'live' AND COALESCE(hard_bounces_24h, 0) = 0) as healthy,
-            COUNT(*) FILTER (WHERE inbox_state = 'live' AND (COALESCE(hard_bounces_24h, 0) >= 1 OR COALESCE(hard_bounces_7d, 0) >= 5)) as warning,
-            COUNT(*) FILTER (WHERE COALESCE(hard_bounces_24h, 0) >= 3) as critical,
-            COUNT(*) FILTER (WHERE inbox_state = 'dead') as dead
-        FROM sender_accounts
-        WHERE workspace_id = $1
+            COUNT(*) FILTER (WHERE sa.inbox_state = 'live' AND COALESCE(sa.hard_bounces_24h, 0) = 0) as healthy,
+            COUNT(*) FILTER (WHERE sa.inbox_state = 'live' AND (COALESCE(sa.hard_bounces_24h, 0) >= 1 OR COALESCE(sa.hard_bounces_7d, 0) >= 5)) as warning,
+            COUNT(*) FILTER (WHERE COALESCE(sa.hard_bounces_24h, 0) >= 3) as critical,
+            COUNT(*) FILTER (WHERE sa.inbox_state = 'dead') as dead
+        FROM sender_accounts sa
+        LEFT JOIN domains d ON sa.domain_id = d.id
+        WHERE sa.workspace_id = $1
+        AND (d.pool_status IS NULL OR d.pool_status != 'cancelled')
     """, workspace_id)
 
-    # Get domain stats
+    # Get domain stats (excludes cancelled domains)
     domain_stats = await fetch_one("""
         SELECT
             COUNT(*) as total,
@@ -70,6 +73,7 @@ async def get_health_overview(client_id: UUID):
             COUNT(*) FILTER (WHERE is_clean = false OR latest_blacklist_count > 0) as flagged
         FROM domains
         WHERE workspace_id = $1
+        AND pool_status != 'cancelled'
     """, workspace_id)
 
     # Get campaign stats - only use columns that exist (id, workspace_id, campaign_name, campaign_status)
@@ -187,7 +191,7 @@ async def get_health_dashboard(client_id: UUID):
             at_risk=at_risk
         ))
 
-    # Get domain metrics
+    # Get domain metrics (excludes cancelled domains)
     domain_rows = await fetch_all("""
         SELECT
             id as domain_id,
@@ -199,6 +203,7 @@ async def get_health_dashboard(client_id: UUID):
             last_checked_at
         FROM domains
         WHERE workspace_id = $1
+        AND pool_status != 'cancelled'
         ORDER BY latest_health_score ASC NULLS LAST, domain_name
         LIMIT 50
     """, overview.workspace_id)
@@ -226,12 +231,14 @@ async def get_health_dashboard(client_id: UUID):
             last_checked_at=row["last_checked_at"]
         ))
 
-    # Get kill counts - count dead inboxes instead of using non-existent events table
+    # Get kill counts - count dead inboxes (excludes cancelled domains)
     kill_counts = await fetch_one("""
         SELECT
-            COUNT(*) FILTER (WHERE inbox_state = 'dead') as total_dead
-        FROM sender_accounts
-        WHERE workspace_id = $1
+            COUNT(*) FILTER (WHERE sa.inbox_state = 'dead') as total_dead
+        FROM sender_accounts sa
+        LEFT JOIN domains d ON sa.domain_id = d.id
+        WHERE sa.workspace_id = $1
+        AND (d.pool_status IS NULL OR d.pool_status != 'cancelled')
     """, overview.workspace_id)
 
     return HealthDashboard(
@@ -248,20 +255,24 @@ async def get_health_dashboard(client_id: UUID):
 @router.get("/kill-stats/{workspace_id}", response_model=KillTriggerStats)
 async def get_kill_trigger_stats(workspace_id: UUID):
     """Get kill trigger statistics for a workspace"""
-    # Get dead inbox count (no detailed trigger tracking available)
+    # Get dead inbox count (excludes cancelled domains)
     dead_count = await fetch_one("""
-        SELECT COUNT(*) FILTER (WHERE inbox_state = 'dead') as dead
-        FROM sender_accounts
-        WHERE workspace_id = $1
+        SELECT COUNT(*) FILTER (WHERE sa.inbox_state = 'dead') as dead
+        FROM sender_accounts sa
+        LEFT JOIN domains d ON sa.domain_id = d.id
+        WHERE sa.workspace_id = $1
+        AND (d.pool_status IS NULL OR d.pool_status != 'cancelled')
     """, workspace_id)
 
-    # Get at-risk counts
+    # Get at-risk counts (excludes cancelled domains)
     at_risk = await fetch_one("""
         SELECT
-            COUNT(*) FILTER (WHERE hard_bounces_24h >= 2) as bounce_24h_risk,
-            COUNT(*) FILTER (WHERE hard_bounces_7d >= 4) as bounce_7d_risk
-        FROM sender_accounts
-        WHERE workspace_id = $1 AND inbox_state = 'live'
+            COUNT(*) FILTER (WHERE sa.hard_bounces_24h >= 2) as bounce_24h_risk,
+            COUNT(*) FILTER (WHERE sa.hard_bounces_7d >= 4) as bounce_7d_risk
+        FROM sender_accounts sa
+        LEFT JOIN domains d ON sa.domain_id = d.id
+        WHERE sa.workspace_id = $1 AND sa.inbox_state = 'live'
+        AND (d.pool_status IS NULL OR d.pool_status != 'cancelled')
     """, workspace_id)
 
     total_dead = dead_count["dead"] if dead_count else 0
@@ -421,6 +432,8 @@ async def _build_kill_triggers(workspace_id: UUID) -> list[KillTriggerItem]:
             d.id as domain_id,
             d.domain_name,
             COALESCE(sa.hard_bounces_24h, 0) as hard_bounces_24h,
+            COALESCE(sa.hard_blocked_24h, 0) as hard_blocked_24h,
+            COALESCE(sa.hard_unknown_24h, 0) as hard_unknown_24h,
             COALESCE(sa.hard_bounces_7d, 0) as hard_bounces_7d,
             COALESCE(sa.total_sends_7d, 0) as total_sends_7d,
             COALESCE(sa.complaints_lifetime, 0) as complaints_lifetime,
@@ -441,7 +454,8 @@ async def _build_kill_triggers(workspace_id: UUID) -> list[KillTriggerItem]:
                     COALESCE(sa.hard_bounces_7d, 0)::float / NULLIF(sa.total_sends_7d, 0) > 0.005)
                 OR (COALESCE(sa.total_sends_7d, 0) > 0 AND
                     COALESCE(sa.hard_bounces_7d, 0)::float / NULLIF(sa.total_sends_7d, 0) > 0.05)
-                OR (COALESCE(sa.hard_bounces_24h, 0) >= 1 AND (sa.warmup_started_at IS NULL OR sa.warmup_started_at > NOW() - INTERVAL '14 days'))
+                OR (COALESCE(sa.hard_blocked_24h, 0) >= 1 AND (sa.sending_started_at IS NULL OR sa.sending_started_at > NOW() - INTERVAL '14 days'))
+                OR (COALESCE(sa.hard_unknown_24h, 0) >= 3 AND (sa.sending_started_at IS NULL OR sa.sending_started_at > NOW() - INTERVAL '14 days'))
             )
         ORDER BY COALESCE(sa.complaints_lifetime, 0) DESC, COALESCE(sa.hard_bounces_24h, 0) DESC
         LIMIT 200
@@ -519,17 +533,35 @@ async def _build_kill_triggers(workspace_id: UUID) -> list[KillTriggerItem]:
                 action_taken="pending",
             ))
 
-        if hard_bounces_24h >= 1 and age_days < 14:
+        hard_blocked_24h = row["hard_blocked_24h"]
+        hard_unknown_24h = row["hard_unknown_24h"]
+
+        if hard_blocked_24h >= 1 and age_days < 14:
             triggers.append(KillTriggerItem(
-                id=f"trigger-{inbox_id}-fresh_inbox_bounce",
+                id=f"trigger-{inbox_id}-fresh_inbox_blocked",
                 inbox_id=inbox_id,
                 inbox_email=row["email_address"],
                 domain_id=row["domain_id"],
                 domain_name=row["domain_name"],
-                type="fresh_inbox_bounce",
+                type="fresh_inbox_blocked",
                 severity="instant",
-                value=float(hard_bounces_24h),
+                value=float(hard_blocked_24h),
                 threshold=1.0,
+                detected_at=now,
+                action_taken="pending",
+            ))
+
+        if hard_unknown_24h >= 3 and age_days < 14:
+            triggers.append(KillTriggerItem(
+                id=f"trigger-{inbox_id}-fresh_inbox_unknown",
+                inbox_id=inbox_id,
+                inbox_email=row["email_address"],
+                domain_id=row["domain_id"],
+                domain_name=row["domain_name"],
+                type="fresh_inbox_unknown",
+                severity="instant",
+                value=float(hard_unknown_24h),
+                threshold=3.0,
                 detected_at=now,
                 action_taken="pending",
             ))
@@ -869,16 +901,18 @@ async def _build_overall_summary(
     """Build enhanced overall health summary"""
     now = datetime.now(timezone.utc)
 
-    # Inbox stats
+    # Inbox stats (excludes inboxes on cancelled domains)
     inbox_stats = await fetch_one("""
         SELECT
             COUNT(*) as total,
-            COUNT(*) FILTER (WHERE inbox_state = 'live' AND COALESCE(hard_bounces_24h, 0) = 0) as healthy,
-            COUNT(*) FILTER (WHERE inbox_state = 'live' AND (COALESCE(hard_bounces_24h, 0) >= 1 OR COALESCE(hard_bounces_7d, 0) >= 5)) as warning,
-            COUNT(*) FILTER (WHERE COALESCE(hard_bounces_24h, 0) >= 3) as critical,
-            COUNT(*) FILTER (WHERE inbox_state = 'dead') as dead
-        FROM sender_accounts
-        WHERE workspace_id = $1
+            COUNT(*) FILTER (WHERE sa.inbox_state = 'live' AND COALESCE(sa.hard_bounces_24h, 0) = 0) as healthy,
+            COUNT(*) FILTER (WHERE sa.inbox_state = 'live' AND (COALESCE(sa.hard_bounces_24h, 0) >= 1 OR COALESCE(sa.hard_bounces_7d, 0) >= 5)) as warning,
+            COUNT(*) FILTER (WHERE COALESCE(sa.hard_bounces_24h, 0) >= 3) as critical,
+            COUNT(*) FILTER (WHERE sa.inbox_state = 'dead') as dead
+        FROM sender_accounts sa
+        LEFT JOIN domains d ON sa.domain_id = d.id
+        WHERE sa.workspace_id = $1
+        AND (d.pool_status IS NULL OR d.pool_status != 'cancelled')
     """, workspace_id)
 
     total_inboxes = inbox_stats["total"] if inbox_stats else 0
@@ -896,10 +930,11 @@ async def _build_overall_summary(
         WHERE sa.workspace_id = $1
             AND sa.inbox_state = 'live'
             AND d.approval_status = 'warming'
+            AND d.pool_status != 'cancelled'
     """, workspace_id)
     warming_inboxes = warming_result["warming"] if warming_result else 0
 
-    # Domain stats
+    # Domain stats (excludes cancelled domains)
     domain_stats = await fetch_one("""
         SELECT
             COUNT(*) as total,
@@ -907,6 +942,7 @@ async def _build_overall_summary(
             COUNT(*) FILTER (WHERE is_clean = false OR COALESCE(latest_blacklist_count, 0) > 0) as flagged
         FROM domains
         WHERE workspace_id = $1
+        AND pool_status != 'cancelled'
     """, workspace_id)
 
     total_domains = domain_stats["total"] if domain_stats else 0
@@ -919,6 +955,7 @@ async def _build_overall_summary(
         FROM domains d
         WHERE d.workspace_id = $1
           AND d.is_active = TRUE
+          AND d.pool_status != 'cancelled'
           AND EXISTS (
             SELECT 1 FROM sender_accounts sa
             WHERE SPLIT_PART(sa.email_address, '@', 2) = d.domain_name
@@ -928,7 +965,7 @@ async def _build_overall_summary(
     """, workspace_id)
     live_domains = active_domain_result["active_domains"] if active_domain_result else 0
 
-    # Dead domains (>=2 dead inboxes OR no live inboxes)
+    # Dead domains (>=2 dead inboxes OR no live inboxes, excludes cancelled)
     dead_domain_result = await fetch_one("""
         SELECT COUNT(*) as dead_domains FROM (
             SELECT d.id
@@ -937,6 +974,7 @@ async def _build_overall_summary(
                 AND sa.workspace_id = d.workspace_id
                 AND sa.inbox_state = 'live'
             WHERE d.workspace_id = $1
+            AND d.pool_status != 'cancelled'
             GROUP BY d.id
             -- Dead = no live inboxes OR has 2+ dead inboxes
             HAVING COUNT(sa.id) = 0 OR (
@@ -1281,20 +1319,33 @@ async def get_infrastructure_health(client_id: UUID):
     # CRITICAL: Track connection status separately from inbox_state
     # - inbox_state = 'live' or 'dead' (kill-based lifecycle)
     # - status = 'Connected', 'Not connected', 'Disabled' (OAuth connection)
+    #
+    # ESP-aware disconnection: Microsoft IMAP disconnects are transient (~10 min).
+    # Only count as "disconnected" if past ESP-aware threshold (48h Microsoft, 24h Gmail/other).
     inbox_stats = await fetch_one("""
         SELECT
             COUNT(*) as total,
-            COUNT(*) FILTER (WHERE inbox_state = 'live') as live,
-            COUNT(*) FILTER (WHERE inbox_state = 'dead') as dead,
+            COUNT(*) FILTER (WHERE sa.inbox_state = 'live') as live,
+            COUNT(*) FILTER (WHERE sa.inbox_state = 'dead') as dead,
             -- Connection status breakdown (for live inboxes)
-            COUNT(*) FILTER (WHERE inbox_state = 'live' AND status = 'Connected') as connected,
-            COUNT(*) FILTER (WHERE inbox_state = 'live' AND status != 'Connected') as disconnected,
+            COUNT(*) FILTER (WHERE sa.inbox_state = 'live' AND sa.status = 'Connected') as connected,
+            -- ESP-aware: only count inboxes that actually need attention
+            COUNT(*) FILTER (
+                WHERE sa.inbox_state = 'live' AND sa.status != 'Connected'
+                AND sa.disconnected_at IS NOT NULL
+                AND (
+                    (sa.esp = 'microsoft' AND sa.disconnected_at < NOW() - INTERVAL '48 hours')
+                    OR (sa.esp != 'microsoft' AND sa.disconnected_at < NOW() - INTERVAL '24 hours')
+                )
+            ) as disconnected,
             -- Capacity metrics (OPERATIONAL = connected only)
-            COALESCE(SUM(daily_limit) FILTER (WHERE inbox_state = 'live' AND status = 'Connected'), 0) as operational_capacity,
-            COALESCE(SUM(daily_limit) FILTER (WHERE inbox_state = 'live'), 0) as potential_capacity,
-            COALESCE(AVG(health_score) FILTER (WHERE inbox_state = 'live'), 0) as avg_health
-        FROM sender_accounts
-        WHERE workspace_id = $1
+            COALESCE(SUM(sa.daily_limit) FILTER (WHERE sa.inbox_state = 'live' AND sa.status = 'Connected'), 0) as operational_capacity,
+            COALESCE(SUM(sa.daily_limit) FILTER (WHERE sa.inbox_state = 'live'), 0) as potential_capacity,
+            COALESCE(AVG(sa.health_score) FILTER (WHERE sa.inbox_state = 'live'), 0) as avg_health
+        FROM sender_accounts sa
+        LEFT JOIN domains d ON sa.domain_id = d.id
+        WHERE sa.workspace_id = $1
+        AND (d.pool_status IS NULL OR d.pool_status != 'cancelled')
     """, workspace_id)
 
     # Get health distribution for pie chart (0-40, 40-60, 60-80, 80-100)
@@ -1332,6 +1383,18 @@ async def get_infrastructure_health(client_id: UUID):
                 AND COALESCE(hard_bounces_24h, 0) = 0 AND COALESCE(hard_bounces_7d, 0) < 3
                 AND NOT EXISTS (SELECT 1 FROM campaign_inboxes ci WHERE ci.sender_account_id = sender_accounts.id AND ci.is_active = TRUE)
             ) as reserve,
+            -- Capacity by pool (connected inboxes only - can actually send)
+            COALESCE(SUM(daily_limit) FILTER (
+                WHERE inbox_state = 'live'
+                AND status = 'Connected'
+                AND EXISTS (SELECT 1 FROM campaign_inboxes ci WHERE ci.sender_account_id = sender_accounts.id AND ci.is_active = TRUE)
+            ), 0) as deployed_capacity,
+            COALESCE(SUM(daily_limit) FILTER (
+                WHERE inbox_state = 'live'
+                AND status = 'Connected'
+                AND COALESCE(hard_bounces_24h, 0) = 0 AND COALESCE(hard_bounces_7d, 0) < 3
+                AND NOT EXISTS (SELECT 1 FROM campaign_inboxes ci WHERE ci.sender_account_id = sender_accounts.id AND ci.is_active = TRUE)
+            ), 0) as reserve_capacity,
             -- Total live for pie chart
             COUNT(*) FILTER (WHERE inbox_state = 'live') as total_live
         FROM sender_accounts
@@ -1340,15 +1403,23 @@ async def get_infrastructure_health(client_id: UUID):
 
     # Get provider breakdown from sender_accounts.esp
     # Include connection status for accurate operational capacity per provider
+    # ESP-aware: Microsoft IMAP disconnects are transient, only flag if > 48h
     provider_stats = await fetch_all("""
         SELECT
             COALESCE(esp, 'other') as provider,
             COUNT(*) as total,
             COUNT(*) FILTER (WHERE inbox_state = 'live') as live,
             COUNT(*) FILTER (WHERE inbox_state = 'dead') as dead,
-            -- Connection breakdown (crucial for external dashboard)
+            -- Connection breakdown (ESP-aware thresholds)
             COUNT(*) FILTER (WHERE inbox_state = 'live' AND status = 'Connected') as connected,
-            COUNT(*) FILTER (WHERE inbox_state = 'live' AND status != 'Connected') as disconnected,
+            COUNT(*) FILTER (
+                WHERE inbox_state = 'live' AND status != 'Connected'
+                AND disconnected_at IS NOT NULL
+                AND (
+                    (esp = 'microsoft' AND disconnected_at < NOW() - INTERVAL '48 hours')
+                    OR (esp != 'microsoft' AND disconnected_at < NOW() - INTERVAL '24 hours')
+                )
+            ) as disconnected,
             COALESCE(AVG(health_score) FILTER (WHERE inbox_state = 'live'), 0) as avg_health
         FROM sender_accounts
         WHERE workspace_id = $1
@@ -1470,6 +1541,8 @@ async def get_infrastructure_health(client_id: UUID):
             deployed=lifecycle_dist["deployed"] if lifecycle_dist else 0,
             reserve=lifecycle_dist["reserve"] if lifecycle_dist else 0,
             warning=lifecycle_dist["warning"] if lifecycle_dist else 0,
+            deployed_capacity=lifecycle_dist["deployed_capacity"] if lifecycle_dist else 0,
+            reserve_capacity=lifecycle_dist["reserve_capacity"] if lifecycle_dist else 0,
             total_live=lifecycle_dist["total_live"] if lifecycle_dist else 0,
         ),
         warning_distribution=WarningLevelDistribution(
@@ -1936,7 +2009,7 @@ class KillBreakdownResponse(BaseModel):
     """Kill trigger breakdown showing WHY inboxes died"""
     reputation: KillCategory  # spam_complaint, hard_blocked_24h
     list_quality: KillCategory  # hard_unknown_24h
-    premature_deployment: KillCategory  # fresh_inbox_bounce
+    premature_deployment: KillCategory  # fresh_inbox_blocked, fresh_inbox_unknown
     other: KillCategory  # remaining triggers
     by_provider: dict  # {"gmail": 5, "microsoft": 12}
     total_killed: int
@@ -1949,7 +2022,7 @@ class KillBreakdownResponse(BaseModel):
 # Kill trigger categorization
 REPUTATION_TRIGGERS = ["spam_complaint", "hard_blocked_24h"]
 LIST_QUALITY_TRIGGERS = ["hard_unknown_24h"]
-PREMATURE_TRIGGERS = ["fresh_inbox_bounce"]
+PREMATURE_TRIGGERS = ["fresh_inbox_blocked", "fresh_inbox_unknown", "fresh_inbox_bounce"]  # includes legacy fresh_inbox_bounce
 
 
 @router.get("/kill-breakdown/{client_id}", response_model=KillBreakdownResponse)
@@ -2438,17 +2511,32 @@ async def export_kill_triggers():
 
 
 @router.get("/export/disconnected")
-async def export_disconnected():
-    """Export disconnected inboxes for manual team review.
+async def export_disconnected(attention_only: bool = Query(True, description="Filter to only inboxes needing attention (ESP-aware thresholds)")):
+    """Export disconnected inboxes for manual team review (e.g. sending to HyperTide).
 
-    CSV structure optimized for Google Sheets:
-    - Sorted by workspace → domain → inbox
-    - First columns: workspace_name, emailbison_workspace_id
-    - Shows inboxes with status != 'Connected'
+    ESP-aware filtering (per EmailBison support re: IMAP behavior):
+    - Microsoft: IMAP disconnects are transient (~10 min auto-reconnect).
+      Only flagged as 'needs_attention' if disconnected > 48 hours continuously.
+    - Gmail/other: Disconnects almost always mean expired OAuth.
+      Flagged as 'needs_attention' if disconnected > 24 hours.
 
-    Use this to identify and manage disconnected inboxes.
+    Query params:
+    - attention_only=true (default): Only inboxes past ESP-aware thresholds
+    - attention_only=false: All disconnected inboxes (raw, includes IMAP blips)
+
+    CSV columns include esp, hours_disconnected, and needs_attention for context.
     """
-    rows = await fetch_all("""
+    # ESP-aware attention filter
+    attention_filter = ""
+    if attention_only:
+        attention_filter = """
+        AND (
+            (sa.esp = 'microsoft' AND sa.disconnected_at IS NOT NULL AND sa.disconnected_at < NOW() - INTERVAL '48 hours')
+            OR (COALESCE(sa.esp, 'other') != 'microsoft' AND sa.disconnected_at IS NOT NULL AND sa.disconnected_at < NOW() - INTERVAL '24 hours')
+        )
+        """
+
+    rows = await fetch_all(f"""
         SELECT
             w.workspace_name,
             w.emailbison_workspace_id,
@@ -2456,9 +2544,21 @@ async def export_disconnected():
             sa.email_address,
             sa.status as connection_status,
             sa.inbox_state,
-            sa.warmup_enabled,
-            sa.warmup_started_at,
             sa.esp,
+            sa.disconnected_at,
+            ROUND(EXTRACT(EPOCH FROM (NOW() - sa.disconnected_at)) / 3600, 1) as hours_disconnected,
+            CASE
+                WHEN sa.esp = 'microsoft'
+                     AND sa.disconnected_at IS NOT NULL
+                     AND sa.disconnected_at < NOW() - INTERVAL '48 hours'
+                THEN TRUE
+                WHEN COALESCE(sa.esp, 'other') != 'microsoft'
+                     AND sa.disconnected_at IS NOT NULL
+                     AND sa.disconnected_at < NOW() - INTERVAL '24 hours'
+                THEN TRUE
+                ELSE FALSE
+            END as needs_attention,
+            sa.warmup_enabled,
             sa.daily_limit,
             COALESCE(sa.total_sends_7d, 0) as total_sends_7d,
             COALESCE(sa.hard_bounces_24h, 0) as hard_bounces_24h,
@@ -2469,16 +2569,19 @@ async def export_disconnected():
         LEFT JOIN domains d ON sa.domain_id = d.id
         WHERE sa.status != 'Connected'
         AND sa.inbox_state = 'live'
-        AND sa.emailbison_account_id IS NOT NULL  -- Only show inboxes still in EmailBison
+        AND sa.emailbison_account_id IS NOT NULL
         AND w.is_active = TRUE
-        ORDER BY sa.last_synced_at DESC NULLS LAST, w.workspace_name, d.domain_name
+        AND (d.pool_status IS NULL OR d.pool_status != 'cancelled')
+        {attention_filter}
+        ORDER BY needs_attention DESC, sa.disconnected_at ASC NULLS LAST, w.workspace_name, d.domain_name
     """)
 
     if not rows:
+        label = "needs-attention" if attention_only else "all"
         return Response(
             content="No disconnected inboxes found",
             media_type="text/csv",
-            headers={"Content-Disposition": "attachment; filename=disconnected.csv"}
+            headers={"Content-Disposition": f"attachment; filename=disconnected-{label}.csv"}
         )
 
     def escape_csv(val):
@@ -2496,10 +2599,12 @@ async def export_disconnected():
         "domain_name",
         "email_address",
         "connection_status",
+        "esp",
+        "hours_disconnected",
+        "needs_attention",
+        "disconnected_at",
         "inbox_state",
         "warmup_enabled",
-        "warmup_started_at",
-        "esp",
         "daily_limit",
         "total_sends_7d",
         "hard_bounces_24h",
@@ -2514,10 +2619,12 @@ async def export_disconnected():
             escape_csv(row["domain_name"]),
             escape_csv(row["email_address"]),
             escape_csv(row["connection_status"]),
+            escape_csv(row["esp"]),
+            escape_csv(row["hours_disconnected"]),
+            escape_csv(row["needs_attention"]),
+            escape_csv(row["disconnected_at"].isoformat() if row["disconnected_at"] else None),
             escape_csv(row["inbox_state"]),
             escape_csv(row["warmup_enabled"]),
-            escape_csv(row["warmup_started_at"].isoformat() if row["warmup_started_at"] else None),
-            escape_csv(row["esp"]),
             escape_csv(row["daily_limit"]),
             escape_csv(row["total_sends_7d"]),
             escape_csv(row["hard_bounces_24h"]),
@@ -2527,11 +2634,12 @@ async def export_disconnected():
 
     csv_content = "\n".join(csv_lines)
     today = datetime.now().strftime("%Y-%m-%d")
+    label = "needs-attention" if attention_only else "all"
 
     return Response(
         content=csv_content,
         media_type="text/csv",
-        headers={"Content-Disposition": f"attachment; filename=disconnected-{today}.csv"}
+        headers={"Content-Disposition": f"attachment; filename=disconnected-{label}-{today}.csv"}
     )
 
 
@@ -3531,7 +3639,8 @@ async def analyze_inbox_death_breakdown(workspace_id: Optional[str] = None):
     Breakdown of inbox deaths: killed by trigger vs just disconnected.
 
     "Killed by trigger" = inbox has killed_at AND kill_trigger set (truly dead)
-    "Disconnected only" = status='Not connected' but no kill trigger (could reconnect)
+    "Disconnected needs attention" = past ESP-aware threshold (48h Microsoft, 24h Gmail)
+    "Microsoft IMAP transient" = Microsoft inbox mid-blip, will auto-reconnect
 
     Args:
         workspace_id: Filter to a specific workspace (recommended)
@@ -3559,7 +3668,13 @@ async def analyze_inbox_death_breakdown(workspace_id: Optional[str] = None):
                     END as esp,
                     CASE
                         WHEN sa.killed_at IS NOT NULL AND sa.kill_trigger IS NOT NULL THEN 'killed_by_trigger'
-                        WHEN sa.status = 'Not connected' THEN 'disconnected_only'
+                        -- Microsoft IMAP blip: disconnected but under 48h threshold
+                        WHEN sa.status = 'Not connected'
+                             AND LOWER(COALESCE(sa.esp::text, 'unknown')) IN ('microsoft', 'outlook', 'entra')
+                             AND (sa.disconnected_at IS NULL OR sa.disconnected_at > NOW() - INTERVAL '48 hours')
+                        THEN 'microsoft_imap_transient'
+                        -- Disconnected and past ESP-aware threshold: needs HyperTide attention
+                        WHEN sa.status = 'Not connected' THEN 'disconnected_needs_attention'
                         WHEN sa.status = 'Connected' AND sa.inbox_state = 'live' THEN 'live_connected'
                         WHEN sa.status = 'Connected' AND sa.inbox_state != 'live' THEN 'connected_not_live'
                         ELSE 'other'
@@ -3602,9 +3717,9 @@ async def analyze_inbox_death_breakdown(workspace_id: Optional[str] = None):
 
         # Build summary
         summary = {
-            "microsoft": {"killed_by_trigger": 0, "disconnected_only": 0, "live_connected": 0, "total": 0},
-            "google": {"killed_by_trigger": 0, "disconnected_only": 0, "live_connected": 0, "total": 0},
-            "other": {"killed_by_trigger": 0, "disconnected_only": 0, "live_connected": 0, "total": 0}
+            "microsoft": {"killed_by_trigger": 0, "microsoft_imap_transient": 0, "disconnected_needs_attention": 0, "live_connected": 0, "total": 0},
+            "google": {"killed_by_trigger": 0, "microsoft_imap_transient": 0, "disconnected_needs_attention": 0, "live_connected": 0, "total": 0},
+            "other": {"killed_by_trigger": 0, "microsoft_imap_transient": 0, "disconnected_needs_attention": 0, "live_connected": 0, "total": 0}
         }
 
         for row in rows:
@@ -3628,9 +3743,10 @@ async def analyze_inbox_death_breakdown(workspace_id: Optional[str] = None):
             "kill_triggers": [dict(row) for row in trigger_rows] if trigger_rows else [],
             "definitions": {
                 "killed_by_trigger": "Inbox has killed_at AND kill_trigger set - truly dead, caught by health checks",
-                "disconnected_only": "Status is 'Not connected' but no kill trigger - could be temp disconnect, reconnect candidate",
+                "microsoft_imap_transient": "Microsoft inbox showing 'Not connected' but under 48h threshold - normal IMAP blip, auto-reconnects",
+                "disconnected_needs_attention": "Disconnected past ESP-aware threshold (48h Microsoft, 24h Gmail/other) - likely needs HyperTide reconnection",
                 "live_connected": "Active and sending",
-                "true_kill_rate": "Only counts inboxes with recorded kill triggers, not all disconnected"
+                "true_kill_rate": "Only counts inboxes with recorded kill triggers, not transient disconnects"
             }
         }
     except Exception as e:

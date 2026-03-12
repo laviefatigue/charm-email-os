@@ -333,6 +333,10 @@ class LifecycleDistribution(BaseModel):
     reserve: int  # Ready pool, not in campaigns
     warning: int  # Has recent bounces, needs cooldown
 
+    # Capacity by pool (daily email limits for connected inboxes)
+    deployed_capacity: int = 0  # SUM(daily_limit) for deployed + connected inboxes
+    reserve_capacity: int = 0  # SUM(daily_limit) for reserve + connected inboxes
+
     # Total for display (excludes dead by default in pie chart)
     total_live: int  # incubating + active (or deployed + reserve + warning for live only)
 

@@ -34,7 +34,8 @@ These fire immediately and queue the inbox for deletion:
 | `hard_bounces_24h` | **>=2** | 3 | Combined fallback for unclassified bounces |
 | `hard_bounce_rate_7d` | **>0.5%** | 4 | Sustained hard bounce rate (min 50 sends) |
 | `bounce_rate_all_7d` | **>5%** | 5 | Total bounce rate threshold |
-| `fresh_inbox_hard_bounce` | **>=1** | 6 | Any hard bounce on inbox <14 days old |
+| `fresh_inbox_blocked` | **>=1** | 6 | Reputation block on inbox <14 days sending |
+| `fresh_inbox_unknown` | **>=3** | 7 | Bad-address bounces on inbox <14 days sending |
 
 ### Differentiated Bounce Thresholds
 
@@ -42,8 +43,11 @@ Not all hard bounces are equal. The system distinguishes:
 
 | Bounce Type | SMTP Codes | Meaning | Urgency |
 |-------------|------------|---------|---------|
-| `hard_blocked` | 550 5.7.x | Spam/policy rejection | **Critical** - sender reputation damage |
-| `hard_unknown` | 550 5.1.x | Bad email address | Moderate - list quality issue |
+| `hard_blocked` | 550 5.7.x, or keyword (blocked/spam/blacklist/denied) | Spam/policy rejection | **Critical** - sender reputation damage |
+| `hard_unknown` | 550 5.1.x, or keyword (not found/unknown) | Bad email address | Moderate - list quality issue |
+| `soft_full` | 552, 452, 5.2.2, 4.2.2 | Mailbox full/over quota | Low - temporary |
+| `soft_temp` | 421, 4.7.x, any 4xx | Temporary failure | Low - retry |
+| `unknown` | Empty/missing bounce reason | Unclassifiable | None - excluded from kill triggers |
 
 See [[adr-005-differentiated-bounce-thresholds]] for the decision rationale.
 
@@ -81,7 +85,8 @@ Inboxes are tagged with trigger-specific tags for visibility:
 
 | Tag Name | Trigger | Meaning |
 |----------|---------|---------|
-| `flagged_fresh_inbox_bounce` | Fresh inbox bounce | Inbox <14 days with any bounce |
+| `flagged_fresh_inbox_blocked` | Fresh inbox reputation block | Inbox <14 days sending with reputation block |
+| `flagged_fresh_inbox_unknown` | Fresh inbox bad addresses | Inbox <14 days sending with 3+ bad-address bounces |
 | `flagged_spam_complaint` | Spam complaint | User reported spam |
 | `flagged_hard_blocked_24h` | Hard blocked | Spam/policy rejection |
 | `flagged_hard_unknown_24h` | Hard unknown | Bad email addresses |
@@ -135,6 +140,8 @@ Inboxes are tagged with trigger-specific tags for visibility:
 | `KILL_THRESHOLD_TOTAL_BOUNCE_RATE` | 0.05 | Total bounce rate (5%) |
 | `KILL_THRESHOLD_MIN_SENDS` | 50 | Min sends before rate triggers |
 | `KILL_THRESHOLD_FRESH_INBOX_DAYS` | 14 | Days before inbox "not fresh" |
+| `KILL_THRESHOLD_FRESH_BLOCKED` | 1 | Reputation blocks to kill fresh inbox |
+| `KILL_THRESHOLD_FRESH_UNKNOWN` | 3 | Bad-address bounces to kill fresh inbox |
 
 ## Evaluation Priority
 
@@ -148,7 +155,8 @@ Kill triggers are evaluated in priority order. Multiple triggers can fire simult
 4. hard_bounces_24h    # >= 2 = fallback (only if no specific trigger)
 5. hard_bounce_rate_7d # > 0.5% with 50+ sends
 6. bounce_rate_all_7d  # > 5%
-7. fresh_inbox_bounce  # Any bounce on <14 day old inbox
+7. fresh_inbox_blocked  # Reputation block on inbox <14 days sending
+8. fresh_inbox_unknown  # 3+ bad addresses on inbox <14 days sending
 ```
 
 The combined `hard_bounces_24h` fallback only fires if neither `hard_blocked_24h` nor `hard_unknown_24h` triggered. This catches edge cases where bounce classification failed.

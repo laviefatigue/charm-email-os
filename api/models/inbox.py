@@ -20,6 +20,8 @@ KillTriggerType = Literal[
     "bounce_rate_7d",
     "total_bounce_rate",
     "fresh_inbox_bounce",
+    "fresh_inbox_blocked",
+    "fresh_inbox_unknown",
     "spam_complaint",
     "rbl_critical",
     "warmup_failed",
