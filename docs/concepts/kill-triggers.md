@@ -1,7 +1,7 @@
 ---
 title: Kill Triggers
 created: 2026-02-12
-updated: 2026-03-18
+updated: 2026-03-19
 tags: [concept, health, kill-triggers, infrastructure]
 ---
 
@@ -17,25 +17,50 @@ Kill triggers are thresholds that, when breached, automatically queue an inbox f
 
 1. **Kill fast, swap fast, diagnose after** - Don't investigate while reputation degrades
 2. **100% backup capacity** - Always have warmed backups ready
-3. **1 spam complaint = death** - No exceptions, no second chances
+3. **1 spam complaint = inbox death** - The inbox is always killed immediately. The *domain* only burns when 2+ inboxes on the same domain have spam complaints (cross-inbox pattern).
 4. **Differentiated thresholds** - Spam blocks are worse than bad addresses
+5. **Proportional domain response** - 1 bad inbox out of 50 is an inbox problem, not a domain problem. Domain burns require evidence of domain-level compromise.
 
 ## Kill Trigger Types
 
-### Instant Kill Triggers
+### Inbox Kill Triggers
 
-These fire immediately and queue the inbox for deletion:
+All triggers kill the **inbox** immediately when breached:
 
 | Trigger | Threshold | Priority | Rationale |
 |---------|-----------|----------|-----------|
-| `spam_complaint` | **>=1** | 0 (Highest) | User reported spam = reputation death |
-| `hard_blocked_24h` | **>=1** | 1 | Spam/policy rejection = active reputation damage |
+| `spam_complaint` | **>=1** | 0 (Highest) | User reported spam — inbox killed instantly |
+| `hard_blocked_24h` | **>=2** | 1 | Spam/policy rejection = active reputation damage |
 | `hard_unknown_24h` | **>=3** | 2 | Bad addresses = list quality issue |
 | `hard_bounces_24h` | **>=2** | 3 | Combined fallback for unclassified bounces |
-| `hard_bounce_rate_7d` | **>0.5%** | 4 | Sustained hard bounce rate (min 50 sends) |
+| `hard_bounce_rate_7d` | **>2.0%** | 4 | Sustained hard bounce rate (min 100 sends) |
 | `bounce_rate_all_7d` | **>5%** | 5 | Total bounce rate threshold |
-| `fresh_inbox_blocked` | **>=1** | 6 | Reputation block on inbox <14 days sending |
-| `fresh_inbox_unknown` | **>=3** | 7 | Bad-address bounces on inbox <14 days sending |
+
+### Domain Burn Classification
+
+After an inbox is killed, the kill processor decides whether to also **burn the domain** (`pool_status = 'burned'`). This is a two-tier classification:
+
+| Classification | Triggers | Domain Burn Rule | Rationale |
+|----------------|----------|------------------|-----------|
+| **Conditional domain burn** | `spam_complaint` | Burns only when **2+ inboxes** on the same domain have the same trigger | 1 spam complaint on 1 of 50 inboxes is an inbox problem, not domain compromise. Cross-inbox pattern = domain reputation issue |
+| **Inbox-level only** | All other triggers | Never burns domain | Bounces, disconnects, and list-quality issues are inbox-level. Safe to promote B-Set inboxes from the same domain |
+
+```python
+# From kill_processor.py
+DOMAIN_KILLING_TRIGGERS = set()  # Empty — provider_block_* removed (misclassified recipient rejections)
+
+CONDITIONAL_DOMAIN_TRIGGERS = {
+    'spam_complaint',  # 1 inbox = inbox kill; 2+ inboxes = domain burn
+}
+
+INBOX_KILLING_TRIGGERS = {
+    'hard_bounces_24h', 'hard_blocked_24h', 'hard_unknown_24h',
+    'hard_bounce_rate_7d', 'bounce_rate_all_7d',
+    'disconnected_timeout',
+}
+```
+
+> **History**: Prior to 2026-03-18, `spam_complaint` was an instant domain burn. Production audit found 32 domains incorrectly burned from single spam complaints (e.g., `fixselery.com` — 51/52 inboxes live, health 91, burned from 1 complaint). Changed to require cross-inbox pattern confirmation.
 
 ### Differentiated Bounce Thresholds
 
@@ -85,8 +110,6 @@ Inboxes are tagged with trigger-specific tags for visibility:
 
 | Tag Name | Trigger | Meaning |
 |----------|---------|---------|
-| `flagged_fresh_inbox_blocked` | Fresh inbox reputation block | Inbox <14 days sending with reputation block |
-| `flagged_fresh_inbox_unknown` | Fresh inbox bad addresses | Inbox <14 days sending with 3+ bad-address bounces |
 | `flagged_spam_complaint` | Spam complaint | User reported spam |
 | `flagged_hard_blocked_24h` | Hard blocked | Spam/policy rejection |
 | `flagged_hard_unknown_24h` | Hard unknown | Bad email addresses |
@@ -133,15 +156,13 @@ Inboxes are tagged with trigger-specific tags for visibility:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `KILL_THRESHOLD_SPAM` | 1 | Spam complaints to trigger kill |
-| `KILL_THRESHOLD_HARD_BLOCKED_24H` | 1 | Spam/policy rejections to trigger |
+| `KILL_THRESHOLD_HARD_BLOCKED_24H` | 2 | Spam/policy rejections to trigger |
 | `KILL_THRESHOLD_HARD_UNKNOWN_24H` | 3 | Bad addresses to trigger |
 | `KILL_THRESHOLD_HARD_BOUNCES_24H` | 2 | Combined fallback threshold |
-| `KILL_THRESHOLD_HARD_BOUNCE_RATE` | 0.005 | Hard bounce rate (0.5%) |
+| `KILL_THRESHOLD_HARD_BOUNCE_RATE` | 0.02 | Hard bounce rate (2.0%) |
 | `KILL_THRESHOLD_TOTAL_BOUNCE_RATE` | 0.05 | Total bounce rate (5%) |
-| `KILL_THRESHOLD_MIN_SENDS` | 50 | Min sends before rate triggers |
-| `KILL_THRESHOLD_FRESH_INBOX_DAYS` | 14 | Days before inbox "not fresh" |
-| `KILL_THRESHOLD_FRESH_BLOCKED` | 1 | Reputation blocks to kill fresh inbox |
-| `KILL_THRESHOLD_FRESH_UNKNOWN` | 3 | Bad-address bounces to kill fresh inbox |
+| `KILL_THRESHOLD_MIN_SENDS` | 100 | Min sends before rate triggers |
+| `KILL_THRESHOLD_FRESH_INBOX_DAYS` | 21 | Days before inbox "not fresh" |
 
 ## Evaluation Priority
 
@@ -149,17 +170,30 @@ Kill triggers are evaluated in priority order. Multiple triggers can fire simult
 
 ```python
 # Priority order (evaluated top to bottom)
-1. spam_complaint      # >= 1 = instant death
-2. hard_blocked_24h    # >= 1 = reputation damage
-3. hard_unknown_24h    # >= 3 = list quality
+1. spam_complaint      # >= 1 = inbox killed. Domain burned only if 2+ inboxes affected.
+2. hard_blocked_24h    # >= 2 = reputation damage (inbox-level only)
+3. hard_unknown_24h    # >= 3 = list quality (inbox-level only)
 4. hard_bounces_24h    # >= 2 = fallback (only if no specific trigger)
-5. hard_bounce_rate_7d # > 0.5% with 50+ sends
+5. hard_bounce_rate_7d # > 2.0% with 100+ sends
 6. bounce_rate_all_7d  # > 5%
-7. fresh_inbox_blocked  # Reputation block on inbox <14 days sending
-8. fresh_inbox_unknown  # 3+ bad addresses on inbox <14 days sending
 ```
 
 The combined `hard_bounces_24h` fallback only fires if neither `hard_blocked_24h` nor `hard_unknown_24h` triggered. This catches edge cases where bounce classification failed.
+
+### Domain Burn Decision (After Inbox Kill)
+
+After an inbox is killed, the kill processor evaluates whether the trigger warrants burning the entire domain:
+
+```
+Inbox killed with trigger_type
+    ↓
+Is it spam_complaint?
+    YES → Count dead inboxes on same domain with same trigger.
+           2+ inboxes? → Domain burn (cross-inbox pattern confirmed).
+           1 inbox?    → Inbox-level only. Domain safe. Promote B-Set inbox.
+    NO ↓
+Inbox-level kill. Domain continues operating. Promote B-Set inbox.
+```
 
 ## SMTP Code Classification
 
@@ -210,7 +244,7 @@ ORDER BY COUNT(*) DESC;
 SELECT email_address, hard_blocked_24h, hard_unknown_24h, complaints_lifetime
 FROM sender_accounts
 WHERE inbox_state = 'live'
-AND (hard_blocked_24h >= 1 OR hard_unknown_24h >= 3 OR complaints_lifetime >= 1);
+AND (hard_blocked_24h >= 2 OR hard_unknown_24h >= 3 OR complaints_lifetime >= 1);
 
 -- Recently flagged by trigger type (with tag names)
 SELECT trigger_type, tag_name, COUNT(*), MAX(tagged_at)
@@ -276,17 +310,22 @@ GROUP BY rm.campaign_id
 
 ## Domain State from Kill Triggers
 
-The sync worker (`health_checks.py`) maintains `domain_state` based on kill trigger outcomes:
+The sync worker (`health_checks.py`) maintains `domain_state` based on kill trigger outcomes. **`domain_state` is now trigger-aware** — only reputation kills affect domain state, not list-quality or operational kills:
 
 | Rule | Resulting State | Rationale |
 |------|----------------|-----------|
-| 2+ dead inboxes | `dead` | Multiple kills = domain compromised |
-| >30% unhealthy inboxes | `dead` | Widespread health degradation |
-| 1 dead inbox | `flagged` | Warning signal, may recover |
+| 2+ reputation kills (spam_complaint, hard_blocked_24h) | `dead` | Reputation-impacting kills = domain compromised |
+| >30% unhealthy inboxes | `dead` | Capacity safety net — widespread health degradation |
+| 1 reputation kill | `flagged` | Warning signal, may recover |
 | All inboxes disconnected | `flagged` | OAuth issues across entire domain |
 | Otherwise | `live` | Domain operating normally |
 
-**Burned domains** (`pool_status='burned'`) are set by the kill processor when domain-level kill triggers fire (e.g., `provider_block_google`, `spam_complaint` on multiple inboxes). This is separate from `domain_state` and indicates the domain needs replacement.
+List-quality kills (`hard_unknown_24h`, `hard_bounces_24h`, etc.) and operational kills (`disconnected_timeout`) do NOT change domain state — they are inbox-level issues that do not indicate domain reputation compromise.
+
+**Burned domains** (`pool_status='burned'`) are set by the kill processor when domain-level triggers are confirmed:
+- **Spam complaints**: Only after cross-inbox confirmation — 2+ inboxes on the same domain with `kill_trigger = 'spam_complaint'`
+
+This is separate from `domain_state` and indicates the domain needs replacement. A domain can be `domain_state = 'dead'` (many dead inboxes from reputation kills or capacity safety net) but NOT burned — because burning requires confirmed cross-inbox spam complaint pattern.
 
 ## Files
 

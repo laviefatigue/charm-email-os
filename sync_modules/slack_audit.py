@@ -22,7 +22,10 @@ API_BASE_URL = os.getenv("API_BASE_URL", "http://charm-api:8000")
 PUBLIC_API_URL = os.getenv("PUBLIC_API_URL", "https://api.wizardgrimoire.cloud")
 
 # Domain-killing triggers (entire domain reputation compromised)
-DOMAIN_KILLING_TRIGGERS = {'spam_complaint', 'provider_block_google', 'provider_block_microsoft', 'provider_block_yahoo'}
+# provider_block_* removed (2026-03-18) — was misclassifying recipient rejections as provider blocks.
+# spam_complaint is conditional (burns domain only with 2+ cross-inbox pattern).
+# Kept provider_block_* prefix matching below for historical data display.
+DOMAIN_KILLING_TRIGGERS = {'spam_complaint'}
 
 
 async def get_kill_trigger_stats() -> dict:

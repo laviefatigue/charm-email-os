@@ -295,6 +295,18 @@ class AccountSyncModule:
         warmup_bounces_received = account.get('warmup_bounces_received_count', 0) or 0
         warmup_bounces_caused = account.get('warmup_bounces_caused_count', 0) or 0
 
+        # Extract EB created_at — the true date the inbox was uploaded to EmailBison.
+        # This is more accurate than NOW() for warmup_started_at because workspace access
+        # via invites may occur after inboxes are already running/warmed.
+        eb_created_at = None
+        eb_created_str = account.get('created_at')
+        if eb_created_str:
+            try:
+                # EB format: "2026-01-25T02:15:44.000000Z"
+                eb_created_at = datetime.fromisoformat(eb_created_str.replace('Z', '+00:00'))
+            except (ValueError, AttributeError):
+                pass  # Fall back to NOW() in SQL if parsing fails
+
         # Calculate initial inventory status for new inboxes
         # inventory_pool_status = NULL means "dead or not yet assigned" (per migration 074)
         # Incubating inboxes haven't been assigned to a pool yet, so they stay NULL
@@ -328,8 +340,9 @@ class AccountSyncModule:
                 warmup_bounces_caused,
                 first_seen_at,
                 last_seen_at,
-                last_synced_at
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, NOW(), NOW(), NOW())
+                last_synced_at,
+                warmup_started_at
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, COALESCE($24, NOW()), NOW(), NOW(), CASE WHEN $11 = TRUE THEN $24 ELSE NULL END)
             ON CONFLICT (email_address) DO UPDATE SET
                 emailbison_account_id = EXCLUDED.emailbison_account_id,
                 display_name = COALESCE(EXCLUDED.display_name, sender_accounts.display_name),
@@ -347,9 +360,10 @@ class AccountSyncModule:
                 ),
                 warmup_enabled = EXCLUDED.warmup_enabled,
                 warmup_started_at = CASE
-                    -- Record when we FIRST OBSERVE warmup_enabled=TRUE (observation-based)
+                    -- Use EB created_at as warmup start (accurate even for pre-warmed workspaces)
+                    -- Falls back to NOW() only if EB created_at wasn't available
                     WHEN EXCLUDED.warmup_enabled = TRUE AND sender_accounts.warmup_started_at IS NULL
-                    THEN NOW()
+                    THEN COALESCE(EXCLUDED.warmup_started_at, NOW())
                     ELSE sender_accounts.warmup_started_at
                 END,
                 warmup_stopped_at = CASE
@@ -363,13 +377,13 @@ class AccountSyncModule:
                 bounces_all_time = EXCLUDED.bounces_all_time,
                 daily_limit = EXCLUDED.daily_limit,
                 is_active = EXCLUDED.is_active,
-                -- Update inventory lifecycle status based on warmup_started_at (not created_at)
-                -- Incubation = 14 days from when warmup was enabled, not from record creation
+                -- Update inventory lifecycle status based on warmup_started_at
+                -- Incubation = 21 days from EB created_at (when inbox was uploaded to EmailBison)
                 inventory_lifecycle_status = CASE
                     WHEN sender_accounts.killed_at IS NOT NULL THEN 'dead'
                     WHEN EXCLUDED.inbox_state = 'dead' THEN 'dead'
                     WHEN sender_accounts.warmup_started_at IS NULL THEN 'incubating'
-                    WHEN sender_accounts.warmup_started_at > NOW() - INTERVAL '14 days' THEN 'incubating'
+                    WHEN sender_accounts.warmup_started_at > NOW() - INTERVAL '21 days' THEN 'incubating'
                     ELSE 'active'
                 END,
                 -- Update inventory pool status
@@ -382,7 +396,7 @@ class AccountSyncModule:
                     WHEN sender_accounts.inventory_pool_status IN ('deployed', 'reserve')
                          THEN sender_accounts.inventory_pool_status
                     WHEN sender_accounts.warmup_started_at IS NOT NULL
-                         AND sender_accounts.warmup_started_at <= NOW() - INTERVAL '14 days'
+                         AND sender_accounts.warmup_started_at <= NOW() - INTERVAL '21 days'
                          AND COALESCE(EXCLUDED.warmup_enabled, TRUE) = TRUE THEN 'reserve'
                     ELSE NULL
                 END,
@@ -431,7 +445,8 @@ class AccountSyncModule:
             warmup_score,                              # $20 warmup_score (monitoring only)
             warmup_spam_count,                         # $21 warmup_spam_count (NOT complaints)
             warmup_bounces_received,                   # $22 warmup_bounces_received
-            warmup_bounces_caused                      # $23 warmup_bounces_caused
+            warmup_bounces_caused,                     # $23 warmup_bounces_caused
+            eb_created_at                              # $24 eb_created_at (EB's real upload date)
         )
 
         if not result:

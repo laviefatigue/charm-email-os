@@ -1,7 +1,7 @@
 ---
 title: Health Monitoring
 created: 2026-02-12
-updated: 2026-03-18
+updated: 2026-03-19
 tags: [health, monitoring, infrastructure, database, kill-triggers, warmup, capacity]
 ---
 
@@ -59,7 +59,7 @@ health_score -= min(25, int(burned_domains * 12.5))
 | Flagged domains | `domains.domain_state` from sync worker | -15 | Domains with unhealthy patterns |
 | Burned domains | `domains.pool_status='burned'` | -25 | Compromised infrastructure needing replacement |
 
-**Status thresholds**: <50 or any burned domain = critical, <80 or >3 dead inboxes = warning
+**Status thresholds**: <50 = critical, <80 or >3 dead inboxes = warning
 
 ## Inbox Health Score Calculation
 
@@ -113,13 +113,13 @@ Shows 4-segment inbox distribution with **dead shown separately**:
 | Segment | Color | Definition |
 |---------|-------|------------|
 | **Deployed** | Green | Assigned to active campaign, actively sending |
-| **Reserve** | Blue | 14+ days old + warmup enabled (deployment-ready) |
-| **Incubating** | Amber | Under 14 days OR warmup not enabled (still warming) |
+| **Reserve** | Blue | 21+ days old + warmup enabled (deployment-ready) |
+| **Incubating** | Amber | Under 21 days OR warmup not enabled (still warming) |
 | **Dead** | Gray | Killed inboxes (shown separately, not in percentage bar) |
 
 **Key Design Decisions:**
 - Dead inboxes are NOT included in the percentage bar (would skew perception)
-- Reserve requires BOTH: 14+ days age AND `warmup_enabled = true`
+- Reserve requires BOTH: 21+ days age AND `warmup_enabled = true`
 - Death rate shown as "X% of total created" for context
 
 ```
@@ -300,7 +300,7 @@ These columns match the EmailBison UI metrics and are synced from the API:
 | `replies_all_time` | INTEGER | Total replies received (all time) |
 | `bounces_all_time` | INTEGER | Total bounces (all time) |
 | `daily_limit` | INTEGER | Daily sending limit |
-| `complaints_lifetime` | INTEGER | Total spam complaints (1 = kill trigger) |
+| `complaints_lifetime` | INTEGER | Total spam complaints (1 = inbox kill trigger; domain burns only at 2+ cross-inbox pattern) |
 
 **Note**: Rate-based kill triggers are NOT implemented because absolute count thresholds (24h/7d bounces) catch the same problems without requiring `total_sends_7d` tracking.
 
@@ -367,19 +367,18 @@ The health system includes automated kill detection. When thresholds are breache
 
 ### Kill Triggers Summary
 
-| Trigger | Threshold | Description |
-|---------|-----------|-------------|
-| `spam_complaint` | >=1 | Any spam complaint = instant death |
-| `hard_blocked_24h` | >=1 | Spam/policy rejection |
-| `hard_unknown_24h` | >=3 | Bad email addresses |
-| `hard_bounces_24h` | >=2 | Combined fallback |
-| `fresh_inbox_hard_bounce` | >=1 | Any bounce on inbox <14 days old |
+| Trigger | Threshold | Domain Burn? | Description |
+|---------|-----------|--------------|-------------|
+| `spam_complaint` | >=1 | Conditional (2+ inboxes) | Inbox killed instantly. Domain burns only when 2+ inboxes on same domain have spam complaints |
+| `hard_blocked_24h` | >=2 | No | Spam/policy rejection |
+| `hard_unknown_24h` | >=3 | No | Bad email addresses |
+| `hard_bounces_24h` | >=2 | No | Combined fallback |
 
 ### Kill Queue Process
 
 1. **Detect** - Health check finds threshold breach (every 15 min)
 2. **Queue** - Add to `kill_queue` table with status 'pending'
-3. **Tag** - Apply trigger-specific tag in EmailBison (e.g., `flagged_fresh_inbox_bounce`)
+3. **Tag** - Apply trigger-specific tag in EmailBison (e.g., `flagged_spam_complaint`)
 4. **Flag** - Update status to 'flagged', mark `inbox_state = 'dead'`
 
 **Note**: Inboxes are NOT deleted from EmailBison. They remain tagged for visibility into WHY they were flagged. This allows manual review in EmailBison by filtering by tag.
@@ -494,7 +493,7 @@ All health metrics flow from: **EmailBison responses → bounce classification �
 
 | Area | Coverage | Status |
 |------|----------|--------|
-| Instant Kill Triggers | **95%** | All instant triggers + provider blocking |
+| Instant Kill Triggers | **95%** | All instant triggers (provider_block_* removed — misclassified recipient rejections) |
 | Confirming Kill Triggers | 0% | Requires placement testing |
 | Domain Health Thresholds | **95%** | Sync worker: 1 dead=flagged, 2+=dead, >30% unhealthy=dead, all disconnected=flagged |
 | Portfolio Structure | **85%** | Roles + backup promotion automation |

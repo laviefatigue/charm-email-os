@@ -46,8 +46,8 @@ inbox_state = "live"  +  status = "Not connected"
 
 | Status | Age | Meaning |
 |--------|-----|---------|
-| **incubating** | < 14 days | In warmup period, fresh inbox |
-| **active** | ≥ 14 days | Mature, ready for full deployment |
+| **incubating** | < 21 days | In warmup period, fresh inbox |
+| **active** | ≥ 21 days | Mature, ready for full deployment |
 | **dead** | Any | Killed by kill trigger |
 
 ### 1.4 Inventory Pool: `inventory_pool_status`
@@ -114,12 +114,11 @@ inbox_state = "live"  +  status = "Not connected"
 | Priority | Trigger | Threshold | Severity |
 |----------|---------|-----------|----------|
 | 1 | `spam_complaint` | ≥ 1 | Instant |
-| 2 | `hard_blocked_24h` | ≥ 1 | Instant |
+| 2 | `hard_blocked_24h` | ≥ 2 | Instant |
 | 3 | `hard_unknown_24h` | ≥ 3 | Instant |
 | 4 | `hard_bounces_24h` | ≥ 2 | Instant |
-| 5 | `hard_bounce_rate_7d` | > 0.5% (min 20 sends) | Instant |
-| 6 | `bounce_rate_all_7d` | > 5% (min 20 sends) | Instant |
-| 7 | `fresh_inbox_bounce` | ≥ 1 (inbox < 14 days) | Instant |
+| 5 | `hard_bounce_rate_7d` | > 2.0% (min 100 sends) | Instant |
+| 6 | `bounce_rate_all_7d` | > 5% (min 100 sends) | Instant |
 
 ### 3.2 Kill Trigger Flow
 
@@ -189,14 +188,14 @@ WHERE inbox_state = 'live'
 
 ### 5.1 Definition
 
-The **2-week incubation period** starts when warmup is enabled (`warmup_started_at`).
+The **3-week incubation period** starts when warmup is enabled (`warmup_started_at`).
 
 ```
 Timeline:
 Day 0: Inbox added to EmailBison (first_seen_at)
 Day 0-N: Warmup enabled (warmup_started_at) ← INCUBATION STARTS
-Day 0-14 from warmup: Fresh inbox protection
-Day 14+: Mature inbox, normal thresholds
+Day 0-21 from warmup: Fresh inbox protection
+Day 21+: Mature inbox, normal thresholds
 ```
 
 ### 5.2 Fresh Inbox Protection

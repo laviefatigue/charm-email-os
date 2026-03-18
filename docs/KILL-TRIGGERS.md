@@ -4,31 +4,36 @@ Kill triggers determine when an inbox is marked as "dead" and removed from activ
 
 ## Trigger Types & Thresholds
 
-| Trigger | Threshold | Severity | Description |
-|---------|-----------|----------|-------------|
-| `spam_complaint` | >= 1 | Domain-killing | Any spam complaint = instant death |
-| `provider_block_*` | >= 1 | Domain-killing | ESP-specific block (gmail/microsoft/yahoo) |
-| `hard_blocked_24h` | >= 1 | Inbox-killing | Spam/policy rejection in 24h |
-| `hard_unknown_24h` | >= 3 | Inbox-killing | Invalid recipient errors in 24h |
-| `hard_bounces_24h` | >= 2 | Inbox-killing | Combined hard bounces in 24h |
-| `fresh_inbox_bounce` | >= 1 | Inbox-killing | Any bounce on inbox < 14 days into sending |
-| `disconnected_timeout` | 21 days | Inbox-killing | Disconnected for 21+ days |
-| `hard_bounce_rate_7d` | > 5% | Inbox-killing | 7-day hard bounce rate (min 20 sends) |
-| `bounce_rate_all_7d` | > 10% | Inbox-killing | 7-day total bounce rate (min 20 sends) |
+| Trigger | Threshold | Inbox Severity | Domain Burn? | Description |
+|---------|-----------|----------------|--------------|-------------|
+| `spam_complaint` | >= 1 | Instant kill | Conditional (2+ inboxes) | Spam complaint kills inbox. Domain burns only when 2+ inboxes on same domain have spam complaints |
+| `hard_blocked_24h` | >= 2 | Instant kill | No | Spam/policy rejection in 24h |
+| `hard_unknown_24h` | >= 3 | Instant kill | No | Invalid recipient errors in 24h |
+| `hard_bounces_24h` | >= 2 | Instant kill | No | Combined hard bounces in 24h |
+| `disconnected_timeout` | 21 days | Instant kill | No | Disconnected for 21+ days |
+| `hard_bounce_rate_7d` | > 2.0% | Instant kill | No | 7-day hard bounce rate (min 100 sends) |
+| `bounce_rate_all_7d` | > 5% | Instant kill | No | 7-day total bounce rate (min 100 sends) |
 
-## Domain-Killing vs Inbox-Killing
+## Domain Burn Classification
 
-**Domain-killing triggers** (`spam_complaint`, `provider_block_*`):
-- Indicate the entire domain's reputation is compromised
-- B-Set inboxes from the same domain should NOT be promoted
-- Domain should be flagged for rotation
+The kill processor uses a two-tier classification to decide domain-level action after an inbox kill:
 
-**Inbox-killing triggers** (all others):
-- Indicate individual inbox issues
+**Conditional domain burns** (`spam_complaint`):
+- 1 spam complaint on 1 of 50 inboxes = inbox-level problem, domain is safe
+- 2+ inboxes on the same domain with spam complaints = cross-inbox pattern, domain burns
+- Kill processor queries: `SELECT COUNT(*) FROM sender_accounts WHERE domain_id = $1 AND inbox_state = 'dead' AND kill_trigger = 'spam_complaint'`
+- If count >= 2, domain burns. Otherwise, normal inbox-level kill + B-Set promotion.
+
+**Inbox-level only** (all other triggers):
+- Indicate individual inbox or list quality issues
 - B-Set inboxes from the same domain CAN be promoted
-- Domain may survive if other inboxes are healthy
+- Domain continues operating with reduced capacity
 
-## Fresh Inbox Bounce Calculation
+> **History**: Prior to 2026-03-18, `spam_complaint` was an instant domain burn. A production audit found 32 domains incorrectly burned from single spam complaints. Changed to require 2+ cross-inbox pattern.
+
+## Fresh Inbox Age Calculation
+
+> **Note:** The `fresh_inbox_blocked` and `fresh_inbox_unknown` triggers have been removed (redundant with `hard_blocked_24h` and `hard_unknown_24h`). The incubation period is now 21 days. The age calculation below is still used for determining the incubation period.
 
 **Key insight**: "Fresh" means fresh to **sending**, not fresh to warmup.
 
@@ -53,12 +58,12 @@ inbox_sending_age = now - sending_started_at
 |--------|-----------|--------|
 | Total inboxes | 3,936 | 537 |
 | Kill rate | 23.2% | 40.2% |
-| Top kill trigger | fresh_inbox_bounce (72%) | hard_bounces_24h (59%) |
+| Top kill trigger (historical) | fresh_inbox_bounce (72%, now removed) | hard_bounces_24h (59%) |
 | Spam complaint rate | 4.7% | 3.7% |
 
 **Observations:**
 - Google has higher kill rate due to stricter bounce detection
-- Microsoft kills mostly from fresh_inbox_bounce (new inboxes fail fast)
+- Microsoft historically killed mostly from fresh_inbox_bounce (now removed; covered by hard_blocked_24h/hard_unknown_24h)
 - Google kills mostly from hard_bounces_24h (ongoing bounce accumulation)
 
 ## Kill Processing Flow

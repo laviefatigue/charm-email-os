@@ -2,13 +2,13 @@
 Lifecycle Tag Sync Module
 
 Manages inbox lifecycle tags in EmailBison to control campaign assignment:
-- 'incubating' - Inbox in warmup period (< 14 days from warmup_started_at)
-- 'live' - Inbox graduated and available for campaigns (14+ days warmup)
+- 'incubating' - Inbox in warmup period (< 21 days from warmup_started_at)
+- 'live' - Inbox graduated and available for campaigns (21+ days warmup)
 - 'flagged_{trigger}' - Applied by kill_processor.py when inbox is killed
 
 Tag Transitions:
 1. When warmup_started_at is set -> add 'incubating' tag
-2. When 14 days warmup complete -> remove 'incubating', add 'live'
+2. When 21 days warmup complete -> remove 'incubating', add 'live'
 3. When kill trigger fires -> remove 'live', add 'flagged_{trigger}' (handled by kill_processor)
 
 The team uses these tags in EmailBison to filter which inboxes can be assigned to campaigns.
@@ -27,7 +27,7 @@ from .slack_alerter import SlackAlerter
 # Tag names used for lifecycle management
 INCUBATING_TAG = 'incubating'
 LIVE_TAG = 'live'
-INCUBATION_DAYS = 14
+INCUBATION_DAYS = 21
 
 
 class LifecycleTagSyncModule:
@@ -35,8 +35,8 @@ class LifecycleTagSyncModule:
     Manages inbox lifecycle tags in EmailBison.
 
     This module ensures EmailBison tags reflect the local database state:
-    - Inboxes in incubation (< 14 days warmup) have 'incubating' tag
-    - Graduated inboxes (14+ days warmup) have 'live' tag
+    - Inboxes in incubation (< 21 days warmup) have 'incubating' tag
+    - Graduated inboxes (21+ days warmup) have 'live' tag
     - Dead inboxes have neither (kill_processor handles flagged_* tags)
 
     The team uses these tags to control which inboxes can be assigned to campaigns.
@@ -99,7 +99,7 @@ class LifecycleTagSyncModule:
         Sync lifecycle tags for a single workspace.
 
         Handles:
-        1. Graduate inboxes from 'incubating' to 'live' (14+ days warmup)
+        1. Graduate inboxes from 'incubating' to 'live' (21+ days warmup)
         2. Tag new warmup inboxes with 'incubating'
         3. Remove 'live' tag from dead inboxes (consistency check)
 
@@ -132,7 +132,7 @@ class LifecycleTagSyncModule:
             if not incubating_tag_id or not live_tag_id:
                 return await audit.fail(Exception("Failed to get/create lifecycle tags"))
 
-            # 1. Graduate inboxes: incubating -> live (14+ days warmup)
+            # 1. Graduate inboxes: incubating -> live (21+ days warmup)
             graduated = await self._graduate_mature_inboxes(
                 workspace_id=workspace_id,
                 incubating_tag_id=incubating_tag_id,
@@ -174,10 +174,10 @@ class LifecycleTagSyncModule:
         audit
     ) -> int:
         """
-        Graduate inboxes from incubating to live after 14 days of warmup.
+        Graduate inboxes from incubating to live after 21 days of warmup.
 
         Finds inboxes that:
-        - Have warmup_started_at >= 14 days ago
+        - Have warmup_started_at >= 21 days ago
         - Are live (inbox_state = 'live')
         - Are still marked as incubating locally
 
@@ -212,8 +212,8 @@ class LifecycleTagSyncModule:
                 # Remove 'incubating' tag
                 try:
                     await self.client.untag_inbox(eb_account_id, incubating_tag_id)
-                except EmailBisonAPIError:
-                    pass  # May not have the tag
+                except EmailBisonAPIError as e:
+                    print(f"    [WARN] Failed to remove 'incubating' tag from inbox {eb_account_id} ({inbox['email_address']}): {e}")
 
                 # Add 'live' tag
                 await self.client.tag_inbox(eb_account_id, live_tag_id)
@@ -252,7 +252,7 @@ class LifecycleTagSyncModule:
         Finds inboxes that:
         - Have warmup_started_at set (recently started warming)
         - Are live
-        - Have warmup_started_at < 14 days ago
+        - Have warmup_started_at < 21 days ago
         - Don't have lifecycle_status set to 'incubating' yet
 
         Returns:
@@ -376,8 +376,8 @@ class LifecycleTagSyncModule:
         """
         stats = await self.db.fetchrow("""
             SELECT
-                COUNT(*) FILTER (WHERE inbox_state = 'live' AND (warmup_started_at IS NULL OR warmup_started_at > NOW() - INTERVAL '14 days')) as incubating,
-                COUNT(*) FILTER (WHERE inbox_state = 'live' AND warmup_started_at IS NOT NULL AND warmup_started_at <= NOW() - INTERVAL '14 days') as live,
+                COUNT(*) FILTER (WHERE inbox_state = 'live' AND (warmup_started_at IS NULL OR warmup_started_at > NOW() - INTERVAL '21 days')) as incubating,
+                COUNT(*) FILTER (WHERE inbox_state = 'live' AND warmup_started_at IS NOT NULL AND warmup_started_at <= NOW() - INTERVAL '21 days') as live,
                 COUNT(*) FILTER (WHERE inbox_state = 'dead') as dead,
                 COUNT(*) as total
             FROM sender_accounts

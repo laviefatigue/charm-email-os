@@ -5,7 +5,7 @@ export * from './infrastructure';
 // Inbox lifecycle: Live -> Dead (one-way, permanent)
 export type InboxHealthState = 'live' | 'dead';
 
-// Domain lifecycle: Live -> Flagged (1 dead inbox) -> Dead (>=2 dead inboxes)
+// Domain lifecycle: Live -> Flagged (1 reputation kill) -> Dead (>=2 reputation kills or >30% unhealthy)
 export type DomainHealthState = 'live' | 'flagged' | 'dead';
 
 // Campaign lifecycle: Live -> Quarantined -> Live/Dead
@@ -13,8 +13,8 @@ export type CampaignHealthState = 'live' | 'quarantined' | 'dead';
 
 // ===== DOMAIN LIFECYCLE PHASES =====
 export type DomainLifecyclePhase =
-  | 'warming'      // 0-14 days (yellow)
-  | 'ramping'      // 14-30 days (blue)
+  | 'warming'      // 0-21 days (yellow)
+  | 'ramping'      // 21-30 days (blue)
   | 'establishing' // 30-90 days (green)
   | 'peak'         // 90-180 days (green)
   | 'monitoring'   // 180-240 days (yellow, "Prepare replacement")
@@ -28,12 +28,11 @@ export type KillTriggerType =
   | 'spam_complaint'           // >=1
   | 'hard_bounces_24h'         // >=2
   | 'consecutive_hard_bounces' // >=2
-  | 'hard_bounce_rate_7d'      // >0.5% (min 50 sends)
+  | 'hard_bounce_rate_7d'      // >2% (min 100 sends)
   | 'bounce_rate_all_7d'       // >5%
-  | 'provider_block'           // any
-  | 'fresh_inbox_bounce'  // legacy
-  | 'fresh_inbox_blocked' // >=1 reputation block (inbox <14 days sending)
-  | 'fresh_inbox_unknown' // >=3 bad addresses (inbox <14 days sending)
+  | 'hard_blocked_24h'         // >=2 (recipient rejections)
+  | 'hard_unknown_24h'         // >=3 (bad addresses)
+  | 'fresh_inbox_bounce'       // legacy
   // Confirming Kill (Yellow)
   | 'low_inbox_placement'      // <85%
   | 'high_spam_placement'      // >5%
@@ -61,12 +60,11 @@ export const KILL_TRIGGER_THRESHOLDS: Record<KillTriggerType, { threshold: numbe
   spam_complaint: { threshold: 1, severity: 'instant', label: 'Spam Complaint' },
   hard_bounces_24h: { threshold: 2, severity: 'instant', label: 'Hard Bounces (24h)' },
   consecutive_hard_bounces: { threshold: 2, severity: 'instant', label: 'Consecutive Hard Bounces' },
-  hard_bounce_rate_7d: { threshold: 0.5, severity: 'instant', label: 'Hard Bounce Rate (7d)', minSends: 50 },
+  hard_bounce_rate_7d: { threshold: 2.0, severity: 'instant', label: 'Hard Bounce Rate (7d)', minSends: 100 },
   bounce_rate_all_7d: { threshold: 5, severity: 'instant', label: 'Bounce Rate All (7d)' },
-  provider_block: { threshold: 1, severity: 'instant', label: 'Provider Block' },
+  hard_blocked_24h: { threshold: 2, severity: 'instant', label: 'Hard Blocked (24h)' },
+  hard_unknown_24h: { threshold: 3, severity: 'instant', label: 'Hard Unknown (24h)' },
   fresh_inbox_bounce: { threshold: 1, severity: 'instant', label: 'Fresh Inbox Hard Bounce (legacy)' },
-  fresh_inbox_blocked: { threshold: 1, severity: 'instant', label: 'Fresh Inbox Reputation Block' },
-  fresh_inbox_unknown: { threshold: 3, severity: 'instant', label: 'Fresh Inbox Bad Addresses' },
   low_inbox_placement: { threshold: 85, severity: 'confirming', label: 'Low Inbox Placement' },
   high_spam_placement: { threshold: 5, severity: 'confirming', label: 'High Spam Placement' },
   degrading_trend: { threshold: 3, severity: 'confirming', label: 'Degrading Trend' },

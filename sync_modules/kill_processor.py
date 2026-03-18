@@ -35,11 +35,11 @@ from .slack_alerter import SlackAlerter
 # Instead, flag the entire domain for rotation.
 
 # INSTANT domain burns — provider blocks are unambiguously domain-level
-DOMAIN_KILLING_TRIGGERS = {
-    'provider_block_google',    # Google blocked the domain
-    'provider_block_microsoft', # Microsoft blocked the domain
-    'provider_block_yahoo',     # Yahoo blocked the domain
-}
+# CURRENTLY EMPTY — provider_block_* auto-detection removed (2026-03-18).
+# health_checks.py misclassified hard_blocked recipient rejections (550 5.7.x) as
+# provider domain blocks, causing instant domain burns from single strict-recipient rejections.
+# When proper detection is built (account suspension/disconnection signals), re-add here.
+DOMAIN_KILLING_TRIGGERS = set()
 
 # CONDITIONAL domain burns — only domain-level when cross-inbox pattern detected
 # A single spam complaint on 1 of 50 inboxes is inbox-level, not domain-level.
@@ -51,8 +51,8 @@ CONDITIONAL_DOMAIN_TRIGGERS = {
 # Inbox-killing triggers indicate inbox-level or list-level issues.
 # Safe to promote B-Set inboxes from the same domain.
 INBOX_KILLING_TRIGGERS = {
-    'fresh_inbox_blocked',   # Reputation block on fresh inbox
-    'fresh_inbox_unknown',   # Bad addresses on fresh inbox (list quality)
+    # fresh_inbox_blocked and fresh_inbox_unknown removed (2026-03-18) —
+    # redundant with hard_blocked_24h and hard_unknown_24h (identical thresholds).
     'hard_bounces_24h',      # Transient or list quality issue
     'hard_blocked_24h',      # Could escalate, but start as inbox-level
     'hard_unknown_24h',      # Bad addresses in list
@@ -537,13 +537,18 @@ class KillProcessor:
 
         domain_id = domain['domain_id']
 
-        # Calculate domain health metrics
+        # Calculate domain health metrics with trigger-aware categorization
+        # Only REPUTATION kills affect domain_state — list-quality and operational kills don't
         metrics = await self.db.fetchrow("""
             SELECT
                 COUNT(*) as total_inboxes,
                 COUNT(*) FILTER (WHERE inbox_state = 'live') as live_count,
                 COUNT(*) FILTER (WHERE inbox_state = 'dead') as dead_count,
-                COUNT(*) FILTER (WHERE health_score < 60) as unhealthy_count
+                COUNT(*) FILTER (WHERE health_score < 60) as unhealthy_count,
+                COUNT(*) FILTER (WHERE inbox_state = 'dead' AND (
+                    kill_trigger IN ('spam_complaint', 'hard_blocked_24h')
+                    OR kill_trigger LIKE 'provider_block_%'
+                )) as reputation_dead
             FROM sender_accounts
             WHERE domain_id = $1 AND is_active = TRUE
         """, domain_id)
@@ -551,18 +556,27 @@ class KillProcessor:
         total = metrics['total_inboxes'] or 0
         dead_count = metrics['dead_count'] or 0
         unhealthy_count = metrics['unhealthy_count'] or 0
+        reputation_dead = metrics['reputation_dead'] or 0
 
         # Calculate unhealthy percentage
         unhealthy_pct = (unhealthy_count / total * 100) if total > 0 else 0
 
-        # Determine new domain state per V3 spec
+        # Trigger-aware domain state:
+        # - Reputation kills (spam_complaint, hard_blocked_24h, provider_block_*) → affect domain_state
+        # - List-quality kills (hard_unknown_24h, hard_bounces_24h, etc.) → do NOT affect domain_state
+        # - Operational kills (disconnected_timeout) → do NOT affect domain_state
+        # Capacity safety net: >30% unhealthy still triggers dead regardless of trigger type
         current_state = domain['domain_state']
         new_state = current_state
 
-        if dead_count >= 2 or unhealthy_pct > 30:
-            new_state = 'dead'
-        elif dead_count >= 1:
-            new_state = 'flagged'
+        if reputation_dead >= 2:
+            new_state = 'dead'       # Cross-inbox reputation pattern
+        elif unhealthy_pct > 30:
+            new_state = 'dead'       # Capacity safety net
+        elif reputation_dead >= 1:
+            new_state = 'flagged'    # One reputation signal
+        else:
+            new_state = 'live'       # List/operational kills don't affect domain state
 
         # Update domain metrics and state
         await self.db.execute("""

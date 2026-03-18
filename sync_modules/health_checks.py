@@ -17,31 +17,33 @@ from .slack_alerter import SlackAlerter
 
 # Configurable kill trigger thresholds (env vars with v3 spec defaults)
 KILL_THRESHOLD_SPAM = int(os.getenv('KILL_THRESHOLD_SPAM', 1))
-# Differentiated bounce thresholds (user approved: blocked>=1, unknown>=3, combined>=2)
-KILL_THRESHOLD_HARD_BLOCKED_24H = int(os.getenv('KILL_THRESHOLD_HARD_BLOCKED_24H', 1))
+# Differentiated bounce thresholds (blocked>=2, unknown>=3, combined>=2)
+KILL_THRESHOLD_HARD_BLOCKED_24H = int(os.getenv('KILL_THRESHOLD_HARD_BLOCKED_24H', 2))
 KILL_THRESHOLD_HARD_UNKNOWN_24H = int(os.getenv('KILL_THRESHOLD_HARD_UNKNOWN_24H', 3))
 KILL_THRESHOLD_HARD_BOUNCES_24H = int(os.getenv('KILL_THRESHOLD_HARD_BOUNCES_24H', 2))
-KILL_THRESHOLD_HARD_BOUNCE_RATE = float(os.getenv('KILL_THRESHOLD_HARD_BOUNCE_RATE', 0.005))
+KILL_THRESHOLD_HARD_BOUNCE_RATE = float(os.getenv('KILL_THRESHOLD_HARD_BOUNCE_RATE', 0.02))
 KILL_THRESHOLD_TOTAL_BOUNCE_RATE = float(os.getenv('KILL_THRESHOLD_TOTAL_BOUNCE_RATE', 0.05))
-KILL_THRESHOLD_MIN_SENDS = int(os.getenv('KILL_THRESHOLD_MIN_SENDS', 50))  # V3 spec: min 50 sends before rate triggers
-KILL_THRESHOLD_FRESH_INBOX_DAYS = int(os.getenv('KILL_THRESHOLD_FRESH_INBOX_DAYS', 14))
+KILL_THRESHOLD_MIN_SENDS = int(os.getenv('KILL_THRESHOLD_MIN_SENDS', 100))  # Industry standard: min 100 sends before rate triggers
+KILL_THRESHOLD_FRESH_INBOX_DAYS = int(os.getenv('KILL_THRESHOLD_FRESH_INBOX_DAYS', 21))
 KILL_THRESHOLD_FRESH_BLOCKED = int(os.getenv('KILL_THRESHOLD_FRESH_BLOCKED', 1))
 KILL_THRESHOLD_FRESH_UNKNOWN = int(os.getenv('KILL_THRESHOLD_FRESH_UNKNOWN', 3))
 KILL_THRESHOLD_DISCONNECTED_DAYS = int(os.getenv('KILL_THRESHOLD_DISCONNECTED_DAYS', 21))
 
 # Kill trigger thresholds (configurable via env vars)
-# Priority order: spam > provider_block > hard_blocked > hard_unknown > combined > rate-based > fresh_inbox
+# Priority order: spam > hard_blocked > hard_unknown > combined > rate-based > disconnected
+# NOTE: provider_block_* auto-detection removed (2026-03-18). Hard_blocked bounces indicate
+# RECIPIENT server rejection (550 5.7.x), not sending-provider domain blocks. A single strict
+# corporate recipient rejecting email was being misclassified as a domain-level provider block,
+# causing instant domain burns. Provider blocks should be detected via account disconnection/
+# suspension signals. See _flag_all_disconnected_domains() for connection-based detection.
+#
+# NOTE: fresh_inbox_blocked and fresh_inbox_unknown removed (2026-03-18). These had identical
+# thresholds to hard_blocked_24h (>=2) and hard_unknown_24h (>=3), making them redundant.
 KILL_THRESHOLDS = {
     'spam_complaint': {
         'value': KILL_THRESHOLD_SPAM,
         'severity': 'instant',
         'description': f'{KILL_THRESHOLD_SPAM}+ spam complaints = immediate death (v3 spec)'
-    },
-    # V3 Section 3: Provider-specific blocking (Gmail, Microsoft, Yahoo)
-    'provider_block': {
-        'value': 1,
-        'severity': 'instant',
-        'description': 'Provider block detected (Gmail, Microsoft, Yahoo) = immediate death'
     },
     'hard_blocked_24h': {
         'value': KILL_THRESHOLD_HARD_BLOCKED_24H,
@@ -69,18 +71,6 @@ KILL_THRESHOLDS = {
         'min_sends': KILL_THRESHOLD_MIN_SENDS,
         'severity': 'instant',
         'description': f'Total bounce rate >{KILL_THRESHOLD_TOTAL_BOUNCE_RATE*100}%'
-    },
-    'fresh_inbox_blocked': {
-        'value': KILL_THRESHOLD_FRESH_BLOCKED,
-        'max_age_days': KILL_THRESHOLD_FRESH_INBOX_DAYS,
-        'severity': 'instant',
-        'description': f'{KILL_THRESHOLD_FRESH_BLOCKED}+ reputation block on inbox <{KILL_THRESHOLD_FRESH_INBOX_DAYS} days sending'
-    },
-    'fresh_inbox_unknown': {
-        'value': KILL_THRESHOLD_FRESH_UNKNOWN,
-        'max_age_days': KILL_THRESHOLD_FRESH_INBOX_DAYS,
-        'severity': 'instant',
-        'description': f'{KILL_THRESHOLD_FRESH_UNKNOWN}+ bad-address bounces on inbox <{KILL_THRESHOLD_FRESH_INBOX_DAYS} days sending'
     },
     'disconnected_timeout': {
         'value': KILL_THRESHOLD_DISCONNECTED_DAYS,
@@ -326,7 +316,7 @@ class HealthCheckModule:
         # 1. Incubation (warmup_started_at) - determines Live/Reserve classification
         # 2. Sending age (sending_started_at) - determines fresh inbox trigger eligibility
         #
-        # An inbox is "fresh" when < 14 days from first campaign assignment.
+        # An inbox is "fresh" when < 21 days from first campaign assignment.
         # We use sending_started_at because:
         # - It's set when inbox first assigned to active campaign
         # - Warmup dates may be inaccurate due to backfilling/sync
@@ -354,19 +344,14 @@ class HealthCheckModule:
                 'threshold': threshold['value']
             })
 
-        # 0.5 V3: Provider-specific blocking (Gmail, Microsoft, Yahoo)
-        # Detect via hard_blocked bounces + ESP type
-        esp_type = inbox.get('esp') or 'other'
-        if esp_type in ('gmail', 'microsoft', 'yahoo') and hard_blocked_24h >= 1:
-            # Provider block detected - this is ESP-specific reputation damage
-            triggers.append({
-                'trigger_type': f'provider_block_{esp_type}',
-                'value': hard_blocked_24h,
-                'threshold': 1
-            })
+        # NOTE: provider_block_* auto-detection was here but removed (2026-03-18).
+        # hard_blocked bounces = RECIPIENT server rejections (550 5.7.x), not provider domain blocks.
+        # A strict corporate recipient spam filter was being misclassified as provider_block_{esp},
+        # which is a DOMAIN_KILLING_TRIGGER, causing instant domain burns on single recipient rejections.
+        # Provider blocks should be detected via account disconnection/suspension signals instead.
 
         # 1. Hard blocked (spam/policy rejection) - HIGHEST PRIORITY after spam
-        # These indicate sender reputation damage - threshold: >=1
+        # These indicate sender reputation damage - threshold: >=2
         threshold = KILL_THRESHOLDS['hard_blocked_24h']
         if hard_blocked_24h >= threshold['value']:
             triggers.append({
@@ -420,28 +405,11 @@ class HealthCheckModule:
                     'threshold': threshold['value']
                 })
 
-        # 4. Fresh inbox triggers (split: reputation blocks vs bad addresses)
-        # fresh_inbox_blocked: reputation block on fresh inbox = genuine risk, kill immediately
-        threshold = KILL_THRESHOLDS['fresh_inbox_blocked']
-        if inbox_sending_age_days is not None and inbox_sending_age_days < threshold.get('max_age_days', 14):
-            if hard_blocked_24h >= threshold['value']:
-                triggers.append({
-                    'trigger_type': 'fresh_inbox_blocked',
-                    'value': hard_blocked_24h,
-                    'threshold': threshold['value']
-                })
+        # NOTE: fresh_inbox_blocked and fresh_inbox_unknown triggers removed (2026-03-18).
+        # They had identical thresholds to hard_blocked_24h (>=2) and hard_unknown_24h (>=3),
+        # making them redundant. The regular triggers already catch these cases regardless of inbox age.
 
-        # fresh_inbox_unknown: bad-address bounces on fresh inbox = list quality issue, higher threshold
-        threshold = KILL_THRESHOLDS['fresh_inbox_unknown']
-        if inbox_sending_age_days is not None and inbox_sending_age_days < threshold.get('max_age_days', 14):
-            if hard_unknown_24h >= threshold['value']:
-                triggers.append({
-                    'trigger_type': 'fresh_inbox_unknown',
-                    'value': hard_unknown_24h,
-                    'threshold': threshold['value']
-                })
-
-        # 5. Disconnected timeout (inbox disconnected for 21+ days = presumed dead)
+        # 4. Disconnected timeout (inbox disconnected for 21+ days = presumed dead)
         # This catches inboxes that lost OAuth connection and were never reconnected
         # After 21 days disconnected, we can safely assume the inbox is abandoned
         threshold = KILL_THRESHOLDS['disconnected_timeout']
@@ -574,40 +542,41 @@ class HealthCheckModule:
             AND d.workspace_id = $1
         """, workspace_id)
 
-        # V3: Update domain state based on thresholds
-        # Priority: dead > flagged > live
-        # 1. 2+ dead inboxes = dead
-        # 2. >30% unhealthy = dead
-        # 3. 1 dead inbox = flagged
-        # 4. Otherwise live
+        # Trigger-aware domain state update:
+        # Only REPUTATION kills (spam_complaint, hard_blocked_24h, provider_block_*)
+        # affect domain_state. List-quality kills (hard_unknown, bounces) and
+        # operational kills (disconnected_timeout) do NOT change domain state.
+        # Capacity safety net: >30% unhealthy still triggers dead regardless.
         await self.db.execute("""
             UPDATE domains d
             SET
                 domain_state = CASE
-                    -- 2+ dead inboxes = domain dead
-                    WHEN COALESCE(d.dead_inbox_count, 0) >= $2 THEN 'dead'
-                    -- >30% unhealthy = domain dead
-                    WHEN COALESCE(d.health_percentage, 100) < (100 - $3 * 100) THEN 'dead'
-                    -- 1 dead inbox = flagged
-                    WHEN COALESCE(d.dead_inbox_count, 0) >= $4 THEN 'flagged'
-                    -- Otherwise live
+                    -- 2+ reputation kills = domain dead (cross-inbox pattern)
+                    WHEN COALESCE(rep.reputation_dead, 0) >= 2 THEN 'dead'
+                    -- >30% unhealthy = domain dead (capacity safety net)
+                    WHEN COALESCE(d.health_percentage, 100) < (100 - $2 * 100) THEN 'dead'
+                    -- 1 reputation kill = flagged
+                    WHEN COALESCE(rep.reputation_dead, 0) >= 1 THEN 'flagged'
+                    -- Otherwise live (list-quality/operational kills don't affect domain state)
                     ELSE 'live'
                 END::domain_state,
                 updated_at = NOW()
-            WHERE d.workspace_id = $1
+            FROM (
+                SELECT domain_id,
+                    COUNT(*) FILTER (WHERE inbox_state = 'dead' AND (
+                        kill_trigger IN ('spam_complaint', 'hard_blocked_24h')
+                        OR kill_trigger LIKE 'provider_block_%'
+                    )) as reputation_dead
+                FROM sender_accounts
+                WHERE workspace_id = $1 AND domain_id IS NOT NULL AND is_active = TRUE
+                GROUP BY domain_id
+            ) rep
+            WHERE d.id = rep.domain_id
+            AND d.workspace_id = $1
             AND d.pool_status != 'cancelled'
-            -- Only update if state would change
-            AND (
-                (COALESCE(d.dead_inbox_count, 0) >= $2 AND d.domain_state != 'dead')
-                OR (COALESCE(d.health_percentage, 100) < (100 - $3 * 100) AND d.domain_state != 'dead')
-                OR (COALESCE(d.dead_inbox_count, 0) >= $4 AND COALESCE(d.dead_inbox_count, 0) < $2 AND d.domain_state != 'flagged')
-                OR (COALESCE(d.dead_inbox_count, 0) < $4 AND d.domain_state != 'live')
-            )
         """,
             workspace_id,
-            DOMAIN_THRESHOLDS['dead_inbox_dead'],      # $2: 2
-            DOMAIN_THRESHOLDS['unhealthy_pause'],      # $3: 0.30
-            DOMAIN_THRESHOLDS['dead_inbox_flagged']    # $4: 1
+            DOMAIN_THRESHOLDS['unhealthy_pause']       # $2: 0.30
         )
 
         # NEW: Flag domains where ALL live inboxes are disconnected

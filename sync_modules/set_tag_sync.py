@@ -18,7 +18,7 @@ With domain-level: B-Set domains are completely isolated, safe to promote.
 STANDARD TAG NAMING:
 - 'live'       = A-Set (deployed to campaigns, actively sending)
 - 'reserve'    = B-Set (warmed reserve, ready to promote when A-Set burns)
-- 'incubating' = Warming up (< 14 days), not yet graduated
+- 'incubating' = Warming up (< 21 days), not yet graduated
 
 Legacy tags ('A Set'/'B Set', 'bset') are detected but new workspaces use standard names.
 
@@ -46,7 +46,7 @@ LEGACY_B_SET_TAGS = ['B Set', 'b set', 'b-set', 'bset']  # 'bset' is legacy, use
 # Domain-level allocation: ALL inboxes follow domain.pool_status
 # Kept for reference only - allocation now happens at domain level (50/50 domains)
 
-INCUBATION_DAYS = 14
+INCUBATION_DAYS = 21
 
 
 class SetTagSyncModule:
@@ -330,7 +330,7 @@ class SetTagSyncModule:
                     AND sa.status = 'Connected'
                     AND (
                         sa.inventory_lifecycle_status = 'active'
-                        OR (sa.warmup_started_at IS NOT NULL AND sa.warmup_started_at <= NOW() - INTERVAL '14 days')
+                        OR (sa.warmup_started_at IS NOT NULL AND sa.warmup_started_at <= NOW() - INTERVAL '21 days')
                     )
                 ) as graduated_inbox_count
             FROM domains d
@@ -405,38 +405,41 @@ class SetTagSyncModule:
             # Unknown status
             return result
 
-        # 1. Bulk-update DB pool status for ALL graduated inboxes (connected or not)
-        #    The DB should reflect domain allocation regardless of connection state.
+        # Get ALL graduated inboxes and split by connection state.
+        # Disconnected inboxes: DB-only update (no EB operations possible).
+        # Connected inboxes: EB tagging FIRST, then DB update per-inbox on success.
+        # This prevents the race condition where DB updates before EB, causing
+        # next sync to skip retrying failed EB operations.
         all_inboxes = await self._get_all_graduated_inboxes(domain_id)
 
         if not all_inboxes:
             return result
 
-        mismatched_ids = [
-            inbox['id'] for inbox in all_inboxes
+        connected_inboxes = [
+            inbox for inbox in all_inboxes
+            if inbox['status'] == 'Connected' and inbox['emailbison_account_id']
+        ]
+        disconnected_inboxes = [
+            inbox for inbox in all_inboxes
+            if inbox['status'] != 'Connected' or not inbox['emailbison_account_id']
+        ]
+
+        # 1. Bulk-update DB for DISCONNECTED inboxes (no EB work needed)
+        disconnected_mismatched = [
+            inbox['id'] for inbox in disconnected_inboxes
             if inbox['inventory_pool_status'] != target_set
         ]
-        if mismatched_ids:
+        if disconnected_mismatched:
             await self.db.execute("""
                 UPDATE sender_accounts
                 SET inventory_pool_status = $2, updated_at = NOW()
                 WHERE id = ANY($1::uuid[])
-            """, mismatched_ids, target_set)
+            """, disconnected_mismatched, target_set)
 
-        # 2. Tag connected inboxes in EmailBison (API requires connection)
-        connected_inboxes = [
-            inbox for inbox in all_inboxes
-            if inbox['status'] == 'Connected'
-        ]
-
+        # 2. Tag CONNECTED inboxes in EB, then update DB per-inbox on success
         for inbox in connected_inboxes:
             audit.increment_processed()
-            eb_account_id = inbox['emailbison_account_id']
-
-            if not eb_account_id:
-                continue
-
-            eb_account_id = int(eb_account_id)
+            eb_account_id = int(inbox['emailbison_account_id'])
             current_pool = inbox['inventory_pool_status']
 
             # Skip if already in correct set (EB tag already correct)
@@ -451,11 +454,18 @@ class SetTagSyncModule:
                 if current_pool in ('deployed', 'reserve'):
                     try:
                         await self.client.untag_inbox(eb_account_id, other_tag_id)
-                    except EmailBisonAPIError:
-                        pass
+                    except EmailBisonAPIError as e:
+                        print(f"    [WARN] Failed to remove tag {other_tag_id} from inbox {eb_account_id} ({inbox['email_address']}): {e}")
 
                 # Add new tag
                 await self.client.tag_inbox(eb_account_id, target_tag_id)
+
+                # EB tagging succeeded — now update DB
+                await self.db.execute("""
+                    UPDATE sender_accounts
+                    SET inventory_pool_status = $2, updated_at = NOW()
+                    WHERE id = $1
+                """, inbox['id'], target_set)
 
                 if target_set == 'deployed':
                     result['tagged_a'] += 1
@@ -471,6 +481,7 @@ class SetTagSyncModule:
                 audit.increment_updated()
 
             except EmailBisonAPIError as e:
+                # EB tagging failed — DB NOT updated so next sync will retry
                 audit.add_error(
                     record_id=inbox['email_address'],
                     error=f"Failed to tag: {e}"
@@ -509,7 +520,7 @@ class SetTagSyncModule:
                 inventory_lifecycle_status = 'active'
                 OR (
                     warmup_started_at IS NOT NULL
-                    AND warmup_started_at <= NOW() - INTERVAL '14 days'
+                    AND warmup_started_at <= NOW() - INTERVAL '21 days'
                 )
             )
             ORDER BY
@@ -543,6 +554,7 @@ class SetTagSyncModule:
             WHERE d.workspace_id = $1
             AND sa.is_active = TRUE
             AND sa.inbox_state = 'live'
+            AND d.pool_status != 'cancelled'
             GROUP BY
                 COALESCE(d.infrastructure_type,
                     CASE WHEN sa.esp = 'microsoft' THEN 'entra' ELSE 'google' END
