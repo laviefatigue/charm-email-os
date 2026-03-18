@@ -232,6 +232,10 @@ class CampaignSyncModule:
         )
 
         # Create snapshot for historical tracking
+        # Calculate additional rates
+        interested_rate = float(interested / contacted * 100) if contacted > 0 else 0.0
+        unsubscribe_rate = float(unsubscribed / contacted * 100) if contacted > 0 else 0.0
+
         await self.db.execute("""
             INSERT INTO campaign_snapshots (
                 campaign_id,
@@ -245,11 +249,14 @@ class CampaignSyncModule:
                 unique_replies,
                 interested_replies,
                 bounced,
+                unsubscribed,
                 open_rate,
                 reply_rate,
                 bounce_rate,
+                interested_rate,
+                unsubscribe_rate,
                 active_senders
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, 0)
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, 0)
         """,
             campaign_id,
             now,
@@ -262,9 +269,12 @@ class CampaignSyncModule:
             replies,
             interested,
             bounced,
+            unsubscribed,
             round(open_rate, 2),
             round(reply_rate, 2),
-            round(bounce_rate * 100, 2)  # Snapshot stores as percentage
+            round(bounce_rate * 100, 2),  # Snapshot stores as percentage
+            round(interested_rate, 2),
+            round(unsubscribe_rate, 2)
         )
 
     async def sync_all_campaign_inbox_assignments(self) -> int:

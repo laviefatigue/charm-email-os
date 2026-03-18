@@ -523,7 +523,7 @@ class EventSyncModule:
         if folder == 'bounced':
             return 'bounce'
         if folder == 'spam':
-            return 'spam_complaint'
+            return 'spam'
         if is_interested:
             return 'interested_reply'
         if is_automated:
