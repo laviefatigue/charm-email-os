@@ -202,6 +202,7 @@ class CampaignSyncModule:
         open_rate = float(opens / contacted * 100) if contacted > 0 else 0.0
         reply_rate = float(replies / contacted * 100) if contacted > 0 else 0.0
         bounce_rate = float(bounced / emails_sent) if emails_sent > 0 else 0.0
+        completion_pct = float(contacted / total_leads * 100) if total_leads > 0 else 0.0
 
         # Period must have end > start (database constraint)
         period_start = now - timedelta(days=1)
@@ -216,10 +217,7 @@ class CampaignSyncModule:
                 emails_sent = $4,
                 bounces = $5,
                 bounce_rate = $6,
-                completion_percentage = CASE
-                    WHEN $2 > 0 THEN ($3::DECIMAL / $2 * 100)
-                    ELSE 0
-                END,
+                completion_percentage = $7,
                 last_snapshot_at = NOW(),
                 updated_at = NOW()
             WHERE id = $1
@@ -229,7 +227,8 @@ class CampaignSyncModule:
             contacted,
             emails_sent,
             bounced,
-            round(bounce_rate, 4)
+            round(bounce_rate, 4),
+            round(completion_pct, 2)
         )
 
         # Create snapshot for historical tracking
