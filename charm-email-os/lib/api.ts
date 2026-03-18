@@ -2750,36 +2750,22 @@ export const healthApi = {
         complaintRate: number;
         riskLevel: string;
       }>;
-      contaminationSources: Array<{
-        id: string;
-        listName: string;
-        campaignId: string;
-        campaignName: string;
-        totalLeads: number;
-        bouncedLeads: number;
-        bounceRate: number;
-        sourceType: string;
-        sourceProvider: string | null;
-        importedAt: string;
-        status: string;
-        inboxesAffected: number;
-        domainsAffected: number;
-      }>;
+      contaminationSources: Array<Record<string, unknown>>;
       espSummaries: Array<{
         provider: string;
         reputation: string;
         reputationTrend: string;
-        inboxPlacementRate: number;
-        spamPlacementRate: number;
-        promotionsPlacementRate: number | null;
-        spfPassing: boolean;
-        dkimPassing: boolean;
-        dmarcPassing: boolean;
-        userReportedSpamRate: number | null;
-        ipReputation: string | null;
-        complaintRate: number | null;
-        trapHits: number | null;
-        filterResult: string | null;
+        totalInboxes: number;
+        liveInboxes: number;
+        deadInboxes: number;
+        killRate: number;
+        avgHealthScore: number;
+        spamKills: number;
+        blockKills: number;
+        unknownKills: number;
+        bounceKills: number;
+        disconnectKills: number;
+        topTrigger: string | null;
         lastUpdated: string;
       }>;
     }>(response);
@@ -4100,6 +4086,215 @@ export const infrastructureApi = {
       `/api/infrastructure/sender-names/client/${clientId}`
     );
     return toCamelCase<SenderNamesResponse>(response);
+  },
+
+  // ===== DOMAIN ENGINE V2 - PIPELINE & RUNWAY =====
+
+  /**
+   * Get domain lifecycle pipeline for a client.
+   * Shows incubating, reserve, and live domains with warmup progress.
+   */
+  async getPipeline(clientId: string): Promise<{
+    clientId: string;
+    summary: {
+      incubatingCount: number;
+      reserveCount: number;
+      liveCount: number;
+      burnedCount: number;
+      incubatingEntra: number;
+      incubatingGoogle: number;
+      reserveEntra: number;
+      reserveGoogle: number;
+      liveEntra: number;
+      liveGoogle: number;
+    };
+    incubating: Array<{
+      domainId: string;
+      domainName: string;
+      provider: string | null;
+      pipelineStatus: string;
+      poolStatus: string;
+      inboxCount: number;
+      connectedCount: number;
+      maxInboxCount: number;
+      warmupAgeDays: number | null;
+      warmupDaysRequired: number;
+      warmupPercent: number;
+      readyInDays: number;
+      warmupComplete: boolean;
+      dailyCapacity: number;
+      purchasedAt: string | null;
+      promotedAt: string | null;
+      burnedAt: string | null;
+      burnTrigger: string | null;
+    }>;
+    reserve: Array<{
+      domainId: string;
+      domainName: string;
+      provider: string | null;
+      pipelineStatus: string;
+      poolStatus: string;
+      inboxCount: number;
+      connectedCount: number;
+      maxInboxCount: number;
+      warmupAgeDays: number | null;
+      warmupDaysRequired: number;
+      warmupPercent: number;
+      readyInDays: number;
+      warmupComplete: boolean;
+      dailyCapacity: number;
+      purchasedAt: string | null;
+      promotedAt: string | null;
+      burnedAt: string | null;
+      burnTrigger: string | null;
+    }>;
+    live: Array<{
+      domainId: string;
+      domainName: string;
+      provider: string | null;
+      pipelineStatus: string;
+      poolStatus: string;
+      inboxCount: number;
+      connectedCount: number;
+      maxInboxCount: number;
+      warmupAgeDays: number | null;
+      warmupDaysRequired: number;
+      warmupPercent: number;
+      readyInDays: number;
+      warmupComplete: boolean;
+      dailyCapacity: number;
+      purchasedAt: string | null;
+      promotedAt: string | null;
+      burnedAt: string | null;
+      burnTrigger: string | null;
+    }>;
+  }> {
+    const response = await fetchApi<Record<string, unknown>>(
+      `/api/infrastructure/pipeline/${clientId}`
+    );
+    return toCamelCase(response);
+  },
+
+  /**
+   * Get reserve runway metrics for a client.
+   * Shows how long reserve pools will last based on historical burn rates.
+   */
+  async getRunway(clientId: string): Promise<{
+    clientId: string;
+    entra: {
+      provider: string;
+      liveCount: number;
+      reserveCount: number;
+      burnedCount: number;
+      unassignedCount: number;
+      monthlyBurnRate: number;
+      runwayMonths: number;
+      runwayHealthy: boolean;
+      domainKillCascadePct: number;
+      totalAllocated: number;
+      livePercent: number;
+      reservePercent: number;
+      liveGapToTarget: number;
+    } | null;
+    google: {
+      provider: string;
+      liveCount: number;
+      reserveCount: number;
+      burnedCount: number;
+      unassignedCount: number;
+      monthlyBurnRate: number;
+      runwayMonths: number;
+      runwayHealthy: boolean;
+      domainKillCascadePct: number;
+      totalAllocated: number;
+      livePercent: number;
+      reservePercent: number;
+      liveGapToTarget: number;
+    } | null;
+    allocation: {
+      totalLive: number;
+      totalReserve: number;
+      targetLive: number;
+      targetReserve: number;
+      livePercent: number;
+      reservePercent: number;
+      inBalance: boolean;
+    };
+  }> {
+    const response = await fetchApi<Record<string, unknown>>(
+      `/api/infrastructure/runway/${clientId}`
+    );
+    return toCamelCase(response);
+  },
+
+  /**
+   * Promote a reserve domain to live (B-Set to A-Set)
+   */
+  async promoteDomain(domainId: string): Promise<{
+    success: boolean;
+    domainName: string;
+    newStatus: string;
+    message: string;
+  }> {
+    const response = await fetchApi<Record<string, unknown>>(
+      `/api/infrastructure/domain-sets/${domainId}/promote`,
+      { method: 'POST' }
+    );
+    return toCamelCase(response);
+  },
+
+  /**
+   * Get capacity harmony metrics for a client.
+   * Shows gap analysis, runway prediction, and purchase recommendations.
+   */
+  async getCapacityHarmony(clientId: string): Promise<{
+    clientId: string;
+    clientName: string;
+    entra: {
+      provider: string;
+      capacityRequired: number;
+      capacityActual: number;
+      gap: number;
+      domainGap: number;
+      live: number;
+      reserve: number;
+      incubating: number;
+      burned: number;
+      monthlyBurnRate: number;
+      runwayMonths: number;
+      exhaustionDate: string | null;
+      runwayHealthy: boolean;
+      pendingOrders: number;
+      provisioning: number;
+    };
+    google: {
+      provider: string;
+      capacityRequired: number;
+      capacityActual: number;
+      gap: number;
+      domainGap: number;
+      live: number;
+      reserve: number;
+      incubating: number;
+      burned: number;
+      monthlyBurnRate: number;
+      runwayMonths: number;
+      exhaustionDate: string | null;
+      runwayHealthy: boolean;
+      pendingOrders: number;
+      provisioning: number;
+    };
+    totalGap: number;
+    totalDomainGap: number;
+    purchaseRecommendation: number;
+    estimatedCost: number;
+    runwayExhaustionDate: string | null;
+    runwayHealthy: boolean;
+  }> {
+    const response = await fetchApi<Record<string, unknown>>(
+      `/api/infrastructure/capacity-harmony/${clientId}`
+    );
+    return toCamelCase(response);
   },
 };
 

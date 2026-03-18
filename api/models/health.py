@@ -240,6 +240,7 @@ class OverallSummaryResponse(BaseModel):
     live_domains: int
     flagged_domains: int
     dead_domains: int
+    burned_domains: int = 0
     total_inboxes: int
     live_inboxes: int
     dead_inboxes: int
@@ -267,23 +268,21 @@ class ContaminationSourceItem(BaseModel):
 
 
 class ESPSummaryItem(BaseModel):
-    """ESP health summary data"""
-    provider: str  # gmail, microsoft
+    """ESP health summary — derived from real kill trigger data per provider"""
+    provider: str  # gmail, microsoft, other
     reputation: str  # high, medium, low, bad
     reputation_trend: str  # improving, stable, declining
-    inbox_placement_rate: float
-    spam_placement_rate: float
-    promotions_placement_rate: Optional[float] = None  # Gmail only
-    spf_passing: bool = True
-    dkim_passing: bool = True
-    dmarc_passing: bool = True
-    # Gmail-specific
-    user_reported_spam_rate: Optional[float] = None
-    ip_reputation: Optional[str] = None
-    # Microsoft-specific
-    complaint_rate: Optional[float] = None
-    trap_hits: Optional[int] = None
-    filter_result: Optional[str] = None  # green, yellow, red
+    total_inboxes: int = 0
+    live_inboxes: int = 0
+    dead_inboxes: int = 0
+    kill_rate: float = 0.0  # dead / total as percentage
+    avg_health_score: float = 0.0
+    spam_kills: int = 0
+    block_kills: int = 0
+    unknown_kills: int = 0
+    bounce_kills: int = 0
+    disconnect_kills: int = 0
+    top_trigger: Optional[str] = None
     last_updated: datetime
 
 

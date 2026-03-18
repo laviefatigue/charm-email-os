@@ -6,7 +6,6 @@ import type {
   KillTrigger,
   HealthAlert,
   OverallBackupCapacity,
-  ListContaminationSource,
   ESPHealthSummary,
   OverallHealthSummary,
   KillTriggerType,
@@ -22,7 +21,6 @@ interface HealthStore {
   killTriggers: KillTrigger[];
   alerts: HealthAlert[];
   backupCapacity: OverallBackupCapacity | null;
-  contaminationSources: ListContaminationSource[];
   espSummaries: ESPHealthSummary[];
   overallSummary: OverallHealthSummary | null;
 
@@ -38,7 +36,6 @@ interface HealthStore {
   setKillTriggers: (triggers: KillTrigger[]) => void;
   setAlerts: (alerts: HealthAlert[]) => void;
   setBackupCapacity: (capacity: OverallBackupCapacity) => void;
-  setContaminationSources: (sources: ListContaminationSource[]) => void;
   setESPSummaries: (summaries: ESPHealthSummary[]) => void;
   setOverallSummary: (summary: OverallHealthSummary) => void;
   setLoading: (loading: boolean) => void;
@@ -94,7 +91,6 @@ export const useHealthStore = create<HealthStore>((set, get) => ({
   killTriggers: [],
   alerts: [],
   backupCapacity: null,
-  contaminationSources: [],
   espSummaries: [],
   overallSummary: null,
   isLoading: false,
@@ -108,7 +104,6 @@ export const useHealthStore = create<HealthStore>((set, get) => ({
   setKillTriggers: (triggers) => set({ killTriggers: triggers }),
   setAlerts: (alerts) => set({ alerts }),
   setBackupCapacity: (capacity) => set({ backupCapacity: capacity }),
-  setContaminationSources: (sources) => set({ contaminationSources: sources }),
   setESPSummaries: (summaries) => set({ espSummaries: summaries }),
   setOverallSummary: (summary) => set({ overallSummary: summary }),
   setLoading: (loading) => set({ isLoading: loading }),
@@ -381,6 +376,7 @@ export const useHealthStore = create<HealthStore>((set, get) => ({
         liveDomains: summary.liveDomains,
         flaggedDomains: summary.flaggedDomains,
         deadDomains: summary.deadDomains,
+        burnedDomains: summary.burnedDomains || 0,
         totalInboxes: summary.totalInboxes,
         liveInboxes: summary.liveInboxes,
         deadInboxes: summary.deadInboxes,
@@ -476,39 +472,22 @@ export const useHealthStore = create<HealthStore>((set, get) => ({
         riskLevel: c.riskLevel as CampaignHealthMetrics['riskLevel'],
       }));
 
-      // Map contamination sources
-      const contaminationSources: ListContaminationSource[] = (data.contaminationSources || []).map((s) => ({
-        id: s.id,
-        listName: s.listName,
-        campaignId: s.campaignId,
-        campaignName: s.campaignName,
-        totalLeads: s.totalLeads,
-        bouncedLeads: s.bouncedLeads,
-        bounceRate: s.bounceRate,
-        sourceType: s.sourceType as ListContaminationSource['sourceType'],
-        sourceProvider: s.sourceProvider ?? undefined,
-        importedAt: new Date(s.importedAt),
-        status: s.status as ListContaminationSource['status'],
-        inboxesAffected: s.inboxesAffected,
-        domainsAffected: s.domainsAffected,
-      }));
-
-      // Map ESP summaries
+      // Map ESP summaries (kill-trigger-based)
       const espSummaries: ESPHealthSummary[] = (data.espSummaries || []).map((e) => ({
         provider: e.provider as ESPHealthSummary['provider'],
         reputation: e.reputation as ESPHealthSummary['reputation'],
         reputationTrend: e.reputationTrend as ESPHealthSummary['reputationTrend'],
-        inboxPlacementRate: e.inboxPlacementRate,
-        spamPlacementRate: e.spamPlacementRate,
-        promotionsPlacementRate: e.promotionsPlacementRate ?? undefined,
-        spfPassing: e.spfPassing,
-        dkimPassing: e.dkimPassing,
-        dmarcPassing: e.dmarcPassing,
-        userReportedSpamRate: e.userReportedSpamRate ?? undefined,
-        ipReputation: (e.ipReputation ?? undefined) as ESPHealthSummary['ipReputation'],
-        complaintRate: e.complaintRate ?? undefined,
-        trapHits: e.trapHits ?? undefined,
-        filterResult: (e.filterResult ?? undefined) as ESPHealthSummary['filterResult'],
+        totalInboxes: e.totalInboxes || 0,
+        liveInboxes: e.liveInboxes || 0,
+        deadInboxes: e.deadInboxes || 0,
+        killRate: e.killRate || 0,
+        avgHealthScore: e.avgHealthScore || 0,
+        spamKills: e.spamKills || 0,
+        blockKills: e.blockKills || 0,
+        unknownKills: e.unknownKills || 0,
+        bounceKills: e.bounceKills || 0,
+        disconnectKills: e.disconnectKills || 0,
+        topTrigger: e.topTrigger ?? undefined,
         lastUpdated: new Date(e.lastUpdated),
       }));
 
@@ -518,7 +497,6 @@ export const useHealthStore = create<HealthStore>((set, get) => ({
         backupCapacity,
         domainMetrics,
         campaignMetrics,
-        contaminationSources,
         espSummaries,
         isLoading: false,
         lastRefresh: new Date(),

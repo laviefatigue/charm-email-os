@@ -8,7 +8,6 @@ export { DomainPhaseBadge } from './DomainPhaseBadge';
 export { HealthScoreRing } from './HealthScoreRing';
 export { BackupCapacityGauge } from './BackupCapacityGauge';
 export { CampaignAttributionPanel } from './CampaignAttributionPanel';
-export { ListContaminationTracker } from './ListContaminationTracker';
 export { ESPHealthSummary } from './ESPHealthSummary';
 export { RotationOverview } from './RotationOverview';
 export { DomainPhaseDistribution } from './DomainPhaseDistribution';

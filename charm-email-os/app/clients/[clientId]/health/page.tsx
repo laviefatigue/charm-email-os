@@ -12,7 +12,6 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import {
   KillConfirmDialog,
   CampaignAttributionPanel,
-  ListContaminationTracker,
   InventorySegmentationChart,
   KPICard,
   ESPComparisonCard,
@@ -87,7 +86,6 @@ export default function HealthPage() {
     overallSummary,
     killTriggers,
     campaignMetrics,
-    contaminationSources,
     espSummaries,
     isLoading,
     error,
@@ -515,14 +513,12 @@ export default function HealthPage() {
               <ESPComparisonCard
                 gmail={gmailSummary ? {
                   provider: 'Gmail',
-                  activeInboxes: infrastructureHealth?.providers?.find(p => p.name.toLowerCase() === 'gmail')?.liveCount || 0,
-                  totalInboxes: infrastructureHealth?.providers?.find(p => p.name.toLowerCase() === 'gmail')?.count || 0,
-                  deadInboxes: infrastructureHealth?.providers?.find(p => p.name.toLowerCase() === 'gmail')?.deadCount || 0,
+                  activeInboxes: gmailSummary.liveInboxes,
+                  totalInboxes: gmailSummary.totalInboxes,
+                  deadInboxes: gmailSummary.deadInboxes,
                   killedByTrigger: killBreakdown?.byProvider?.gmail || 0,
-                  avgHealthScore: infrastructureHealth?.providers?.find(p => p.name.toLowerCase() === 'gmail')?.avgHealthScore,
-                  inboxPlacement: gmailSummary.inboxPlacementRate,
-                  spamPlacement: gmailSummary.spamPlacementRate,
-                  reputation: gmailSummary.reputation as 'HIGH' | 'MEDIUM' | 'LOW' | 'UNKNOWN',
+                  avgHealthScore: gmailSummary.avgHealthScore,
+                  reputation: gmailSummary.reputation.toUpperCase() as 'HIGH' | 'MEDIUM' | 'LOW' | 'UNKNOWN',
                 } : infrastructureHealth?.providers?.find(p => p.name.toLowerCase() === 'gmail') ? {
                   provider: 'Gmail',
                   activeInboxes: infrastructureHealth.providers.find(p => p.name.toLowerCase() === 'gmail')?.liveCount || 0,
@@ -533,14 +529,12 @@ export default function HealthPage() {
                 } : undefined}
                 microsoft={microsoftSummary ? {
                   provider: 'Microsoft',
-                  activeInboxes: infrastructureHealth?.providers?.find(p => p.name.toLowerCase().includes('microsoft') || p.name.toLowerCase().includes('outlook'))?.liveCount || 0,
-                  totalInboxes: infrastructureHealth?.providers?.find(p => p.name.toLowerCase().includes('microsoft') || p.name.toLowerCase().includes('outlook'))?.count || 0,
-                  deadInboxes: infrastructureHealth?.providers?.find(p => p.name.toLowerCase().includes('microsoft') || p.name.toLowerCase().includes('outlook'))?.deadCount || 0,
+                  activeInboxes: microsoftSummary.liveInboxes,
+                  totalInboxes: microsoftSummary.totalInboxes,
+                  deadInboxes: microsoftSummary.deadInboxes,
                   killedByTrigger: killBreakdown?.byProvider?.microsoft || 0,
-                  avgHealthScore: infrastructureHealth?.providers?.find(p => p.name.toLowerCase().includes('microsoft') || p.name.toLowerCase().includes('outlook'))?.avgHealthScore,
-                  inboxPlacement: microsoftSummary.inboxPlacementRate,
-                  spamPlacement: microsoftSummary.spamPlacementRate,
-                  reputation: microsoftSummary.reputation as 'HIGH' | 'MEDIUM' | 'LOW' | 'UNKNOWN',
+                  avgHealthScore: microsoftSummary.avgHealthScore,
+                  reputation: microsoftSummary.reputation.toUpperCase() as 'HIGH' | 'MEDIUM' | 'LOW' | 'UNKNOWN',
                 } : infrastructureHealth?.providers?.find(p => p.name.toLowerCase().includes('microsoft') || p.name.toLowerCase().includes('outlook')) ? {
                   provider: 'Microsoft',
                   activeInboxes: infrastructureHealth.providers.find(p => p.name.toLowerCase().includes('microsoft') || p.name.toLowerCase().includes('outlook'))?.liveCount || 0,
@@ -610,10 +604,6 @@ export default function HealthPage() {
                 <CampaignAttributionPanel campaigns={campaignMetrics} />
               </div>
 
-              {/* List Contamination Tracker - Full Width */}
-              <div className="col-span-12">
-                <ListContaminationTracker sources={contaminationSources} />
-              </div>
             </div>
           </TabsContent>
         </Tabs>

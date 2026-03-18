@@ -1,7 +1,7 @@
 ---
 title: Health Monitoring
 created: 2026-02-12
-updated: 2026-02-23
+updated: 2026-03-18
 tags: [health, monitoring, infrastructure, database, kill-triggers, warmup, capacity]
 ---
 
@@ -24,7 +24,44 @@ The Health page provides real-time visibility into inbox health without making l
 
 Data freshness is shown via "Last sync: X minutes ago" indicator.
 
-## Health Score Calculation
+## Domain Status Taxonomy
+
+| Status | Column | Meaning | Health Impact |
+|--------|--------|---------|---------------|
+| **Burned** | `pool_status='burned'` | Kill triggers fired, domain reputation compromised | **IS a health problem** — penalizes health score |
+| **Dead** | `domain_state='dead'` | No inboxes in EmailBison, domain retired or client leaving | **Not a health problem** — lifecycle event |
+| **Flagged** | `domain_state='flagged'` | 1 dead inbox or all disconnected | Warning signal |
+| **Cancelled** | `pool_status='cancelled'` | HyperTide order cancelled, never real infrastructure | **Excluded from all queries** |
+| **Unassigned** | `pool_status='unassigned'` | Generated domain, not yet provisioned | Not relevant to health scoring |
+
+**Key insight**: Dead domains are lifecycle events (stop paying for them), not health problems. Burned domains are actual infrastructure damage that needs replacement. Only `cancelled` is excluded from queries — burned domains stay visible because they represent real operational damage.
+
+## Overall Health Score Formula
+
+The overall client health score is a weighted composite:
+
+```python
+health_score = 100
+# Dead inbox penalty (max -40): dead inboxes / total * 200
+health_score -= min(40, int((dead_inboxes / total_inboxes) * 200))
+# Critical inbox penalty (max -20): inboxes at kill threshold
+health_score -= min(20, critical_inboxes * 5)
+# Flagged domain penalty (max -15): from domain_state (sync worker)
+health_score -= min(15, flagged_domains * 3)
+# Burned domain penalty (max -25): pool_status='burned' (actual damage)
+health_score -= min(25, int(burned_domains * 12.5))
+```
+
+| Component | Source | Max Penalty | What It Catches |
+|-----------|--------|-------------|-----------------|
+| Dead inboxes | `sender_accounts.inbox_state='dead'` | -40 | Real kills from bounce/trigger analysis |
+| Critical inboxes | Hard bounces >= 3 in 24h | -20 | Inboxes at kill threshold |
+| Flagged domains | `domains.domain_state` from sync worker | -15 | Domains with unhealthy patterns |
+| Burned domains | `domains.pool_status='burned'` | -25 | Compromised infrastructure needing replacement |
+
+**Status thresholds**: <50 or any burned domain = critical, <80 or >3 dead inboxes = warning
+
+## Inbox Health Score Calculation
 
 Health scores are calculated locally by the sync worker (not returned by EmailBison API):
 
@@ -104,19 +141,20 @@ Shows weekly death trends with warning overlay:
 - **Trend indicator**: Increasing / Decreasing / Stable
 - **Insights**: Context-aware messages based on death rate and trends
 
-### ESP Performance Card
+### ESP Kill Rate Analysis
 
-Side-by-side Gmail vs Microsoft comparison:
+Per-provider health derived from **real kill trigger data** (not Postmaster/SNDS):
 
 | Metric | Source |
 |--------|--------|
-| Inbox Placement | External API (Google Postmaster / SNDS) when available |
-| Avg Health Score | Local calculation (fallback when no external data) |
-| Live/Dead Inboxes | Database counts |
-| Death Rate | Calculated: dead / (live + dead) |
-| Reputation | Derived from health score or external API |
+| Live/Dead Inboxes | `sender_accounts.inbox_state` per `esp` |
+| Kill Rate | `dead / total * 100` per provider |
+| Reputation | Derived from kill rate: <5%=high, <15%=medium, <30%=low, >=30%=bad |
+| Trigger Breakdown | Counts per kill_trigger type (spam, blocked, unknown, bounce, disconnect) |
+| Top Trigger | Most common kill trigger for each provider |
+| Avg Health Score | Average of live inbox health_scores per provider |
 
-Shows "Postmaster Data Pending" badge when external APIs not integrated.
+**Note**: Gmail Postmaster Tools and Microsoft SNDS are not integrated. ESP reputation is derived entirely from EmailBison bounce response analysis and kill trigger outcomes.
 
 ### Warning Level Distribution
 
@@ -422,42 +460,55 @@ Time-series warmup data is stored in `sender_warmup_snapshots`:
 | `warmup_bounces_received_count` | Bounces received during warmup |
 | `warmup_emails_saved_from_spam` | Emails rescued from spam |
 
-## V3 Specification Compliance
+## Campaign Kill Attribution
 
-The Health V3 specification (`Inbox & Domain Health System v3.md`) defines 22 sections of requirements. Current implementation coverage:
+Campaign kill attribution uses **real data** from `response_messages` joined to dead `sender_accounts`:
+
+```sql
+-- Actual kills attributed to campaigns
+SELECT rm.campaign_id,
+       COUNT(DISTINCT rm.sender_account_id) FILTER (WHERE sa.inbox_state = 'dead') as inboxes_killed,
+       COUNT(DISTINCT d.id) FILTER (WHERE sa.inbox_state = 'dead') as domains_affected
+FROM response_messages rm
+JOIN sender_accounts sa ON rm.sender_account_id = sa.id
+LEFT JOIN domains d ON sa.domain_id = d.id
+WHERE rm.folder = 'bounced'
+GROUP BY rm.campaign_id
+```
+
+Risk levels are derived from bounce rate (real data from campaign_snapshots): >4%=critical, >3%=high, >2%=medium, else low.
+
+## What Is NOT Tracked
+
+The following are **not** part of the health scoring system:
+
+- **Inbox Placement Testing** — No seed list testing or inbox placement rate measurement
+- **Google Postmaster Tools** — Not integrated; ESP reputation derived from kill data
+- **Microsoft SNDS** — Not integrated
+- **RBL/DNSBL Checking** — Intentionally dropped (see `docs/decisions/RBL-CHECKING-DROPPED.md`)
+- **List Contamination Sources** — Removed; campaign attribution provides this signal directly
+
+All health metrics flow from: **EmailBison responses → bounce classification → kill trigger evaluation → inbox/domain state**.
+
+## V3 Specification Compliance
 
 | Area | Coverage | Status |
 |------|----------|--------|
 | Instant Kill Triggers | **95%** | All instant triggers + provider blocking |
-| Confirming Kill Triggers | 0% | TODO: Requires placement testing |
-| Domain Health Thresholds | **90%** | 1 dead=flagged, 2+=dead, >30% unhealthy=dead |
+| Confirming Kill Triggers | 0% | Requires placement testing |
+| Domain Health Thresholds | **95%** | Sync worker: 1 dead=flagged, 2+=dead, >30% unhealthy=dead, all disconnected=flagged |
 | Portfolio Structure | **85%** | Roles + backup promotion automation |
-| ESP Configuration | 40% | Schema ready; Postmaster/SNDS API integration pending |
-| Campaign Quarantine | **90%** | Burn tracking + quarantine triggers |
-| List Management | **85%** | Segment quarantine + provider flagging |
+| ESP Reputation | **90%** | Kill-trigger-based per-provider analysis (not Postmaster/SNDS) |
+| Campaign Quarantine | **95%** | Real kill attribution from response_messages + burn tracking |
 | Placement Testing | 5% | Schema only |
 | Alerting | 25% | Slack only |
 | Data Model | **95%** | All core tables complete |
 
-**Overall V3 Compliance: ~78%** (updated 2026-02-23)
-
-For detailed gap analysis, see [[v3-compliance-gap-analysis]].
-
-### Implemented Features
-
-1. **Provider-specific blocking** - Gmail/Microsoft/Yahoo blocks trigger `flagged_provider_block_{esp}`
-2. **Domain health thresholds** - Auto-transition to flagged/dead based on dead inbox count
-3. **Campaign quarantine** - Burns 2+ inboxes in 7 days = quarantine
-4. **Backup promotion** - Hot Backup → Primary when Primary dies
-5. **List segment tracking** - Quarantine segments with 2+ bounces, purge at 3+
-6. **Enrichment provider flagging** - Flag providers with 3+ bounces
-
 ### Remaining Gaps
 
-1. **Confirming kill triggers** - Requires placement testing integration
-2. **Postmaster/SNDS integration** - Schema ready, API not connected
-3. **Placement testing** - No test execution or seed list management
-4. **Email/SMS alerting** - Only Slack implemented
+1. **Confirming kill triggers** — Requires placement testing integration
+2. **Placement testing** — No test execution or seed list management
+3. **Email/SMS alerting** — Only Slack implemented
 
 ## HyperTide Capacity Tracking (2026-02-23)
 

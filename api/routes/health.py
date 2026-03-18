@@ -15,7 +15,7 @@ from models.health import (
     DomainHealthMetrics, Alert, KillTriggerStats,
     FullDashboardResponse, OverallSummaryResponse, KillTriggerItem,
     BackupCapacityResponse, BackupTierStatus, DomainGridItem,
-    CampaignAttributionItem, ContaminationSourceItem, ESPSummaryItem,
+    CampaignAttributionItem, ESPSummaryItem,
     InfrastructureHealthResponse, ProviderMetrics, HealthDistribution, LifecycleDistribution,
     WarningLevelDistribution,
     DailyVolumeSnapshot, KillEventAnnotation, DailyVolumeHistoryResponse,
@@ -65,12 +65,12 @@ async def get_health_overview(client_id: UUID):
         AND (d.pool_status IS NULL OR d.pool_status != 'cancelled')
     """, workspace_id)
 
-    # Get domain stats (excludes cancelled domains)
+    # Get domain stats (excludes cancelled domains, uses domain_state from sync worker)
     domain_stats = await fetch_one("""
         SELECT
             COUNT(*) as total,
-            COUNT(*) FILTER (WHERE is_clean = true OR latest_blacklist_count = 0) as clean,
-            COUNT(*) FILTER (WHERE is_clean = false OR latest_blacklist_count > 0) as flagged
+            COUNT(*) FILTER (WHERE domain_state = 'live' OR domain_state IS NULL) as clean,
+            COUNT(*) FILTER (WHERE domain_state = 'flagged') as flagged
         FROM domains
         WHERE workspace_id = $1
         AND pool_status != 'cancelled'
@@ -191,15 +191,13 @@ async def get_health_dashboard(client_id: UUID):
             at_risk=at_risk
         ))
 
-    # Get domain metrics (excludes cancelled domains)
+    # Get domain metrics (excludes cancelled domains, uses domain_state from sync worker)
     domain_rows = await fetch_all("""
         SELECT
             id as domain_id,
             domain_name,
             COALESCE(latest_health_score, 100) as health_score,
-            COALESCE(latest_blacklist_count, 0) as blacklist_count,
-            COALESCE(latest_whitelist_count, 0) as whitelist_count,
-            COALESCE(is_clean, true) as is_clean,
+            COALESCE(domain_state, 'live') as domain_state,
             last_checked_at
         FROM domains
         WHERE workspace_id = $1
@@ -210,13 +208,12 @@ async def get_health_dashboard(client_id: UUID):
 
     domain_metrics = []
     for row in domain_rows:
-        # Determine health state
-        if row["blacklist_count"] > 5 or row["health_score"] < 50:
+        # Use domain_state from sync worker as authoritative health state
+        ds = row["domain_state"]
+        if ds == "dead":
             health_state = "critical"
-        elif row["blacklist_count"] > 0 or row["health_score"] < 80:
+        elif ds == "flagged":
             health_state = "warning"
-        elif row["health_score"] is None:
-            health_state = "unknown"
         else:
             health_state = "healthy"
 
@@ -225,9 +222,9 @@ async def get_health_dashboard(client_id: UUID):
             domain_name=row["domain_name"],
             health_state=health_state,
             health_score=row["health_score"],
-            blacklist_count=row["blacklist_count"],
-            whitelist_count=row["whitelist_count"],
-            is_clean=row["is_clean"],
+            blacklist_count=0,
+            whitelist_count=0,
+            is_clean=(ds == "live"),
             last_checked_at=row["last_checked_at"]
         ))
 
@@ -354,22 +351,23 @@ async def get_active_alerts(
                 "created_at": datetime.now(timezone.utc)
             })
 
-        # Domain alerts
+        # Domain alerts — flagged by sync worker domain_state analysis
         flagged_domains = await fetch_all("""
-            SELECT id, domain_name, latest_blacklist_count, latest_health_score
+            SELECT id, domain_name, domain_state, latest_health_score
             FROM domains
             WHERE workspace_id = $1
-            AND (is_clean = false OR latest_blacklist_count > 0)
+            AND domain_state = 'flagged'
+            AND pool_status != 'cancelled'
             LIMIT 10
         """, workspace_id)
 
         for domain in flagged_domains:
             alerts.append({
-                "id": f"domain-blacklist-{domain['id']}",
-                "type": "domain_blacklisted",
-                "severity": "critical" if (domain["latest_blacklist_count"] or 0) > 3 else "warning",
-                "title": "Domain blacklisted",
-                "message": f"{domain['domain_name']} is on {domain['latest_blacklist_count']} blacklists",
+                "id": f"domain-flagged-{domain['id']}",
+                "type": "domain_health_low",
+                "severity": "warning",
+                "title": "Domain flagged",
+                "message": f"{domain['domain_name']} has been flagged by health checks (state: {domain['domain_state']})",
                 "domain_id": domain["id"],
                 "entity_name": domain["domain_name"],
                 "created_at": datetime.now(timezone.utc)
@@ -723,12 +721,23 @@ async def _build_backup_capacity(client_id: UUID, workspace_id: UUID) -> BackupC
 
 
 def _health_score_to_reputation(score: float) -> str:
-    """Map health score to ESP reputation level"""
+    """Map domain health score to reputation level (for domain grid display)"""
     if score >= 90:
         return "high"
     elif score >= 70:
         return "medium"
     elif score >= 50:
+        return "low"
+    return "bad"
+
+
+def _kill_rate_to_reputation(kill_rate: float) -> str:
+    """Map kill rate to ESP reputation level"""
+    if kill_rate < 5:
+        return "high"
+    elif kill_rate < 15:
+        return "medium"
+    elif kill_rate < 30:
         return "low"
     return "bad"
 
@@ -741,10 +750,10 @@ async def _build_domain_grid(workspace_id: UUID) -> list[DomainGridItem]:
             d.domain_name,
             COALESCE(d.latest_health_score, 100) as health_score,
             d.infrastructure_type,
+            d.domain_state,
             COALESCE(d.purchased_at, d.created_at) as domain_start_date,
             EXTRACT(EPOCH FROM (NOW() - COALESCE(d.purchased_at, d.created_at))) / 86400 as age_days,
             d.last_checked_at,
-            COALESCE(d.latest_blacklist_count, 0) as blacklist_count,
             COUNT(sa.id) as total_inboxes,
             COUNT(sa.id) FILTER (WHERE sa.inbox_state = 'live') as live_inboxes,
             COUNT(sa.id) FILTER (WHERE sa.inbox_state = 'dead') as dead_inboxes
@@ -753,8 +762,9 @@ async def _build_domain_grid(workspace_id: UUID) -> list[DomainGridItem]:
             ON SPLIT_PART(sa.email_address, '@', 2) = d.domain_name
             AND sa.workspace_id = d.workspace_id
         WHERE d.workspace_id = $1
+        AND (d.pool_status IS NULL OR d.pool_status != 'cancelled')
         GROUP BY d.id, d.domain_name, d.latest_health_score, d.infrastructure_type,
-                 d.purchased_at, d.created_at, d.last_checked_at, d.latest_blacklist_count
+                 d.domain_state, d.purchased_at, d.created_at, d.last_checked_at
         HAVING COUNT(sa.id) > 0
         ORDER BY
             COUNT(sa.id) FILTER (WHERE sa.inbox_state = 'dead') DESC,
@@ -773,12 +783,8 @@ async def _build_domain_grid(workspace_id: UUID) -> list[DomainGridItem]:
             domain_name = row["domain_name"] or ""
             infra_type = "entra" if (sum(ord(c) for c in domain_name) % 3 != 0) else "google"
 
-        if dead >= 2:
-            state = "dead"
-        elif dead == 1:
-            state = "flagged"
-        else:
-            state = "live"
+        # Use sync worker's maintained domain_state as primary, fallback to dead inbox count
+        state = row.get("domain_state") or ("dead" if dead >= 2 else "flagged" if dead >= 1 else "live")
 
         phase = _calculate_domain_phase(age_days)
 
@@ -813,8 +819,21 @@ async def _build_domain_grid(workspace_id: UUID) -> list[DomainGridItem]:
 
 
 async def _build_campaign_attribution(workspace_id: UUID) -> list[CampaignAttributionItem]:
-    """Build campaign health attribution from campaign metrics"""
+    """Build campaign health attribution from real kill data via response_messages"""
     rows = await fetch_all("""
+        WITH campaign_kills AS (
+            SELECT
+                rm.campaign_id,
+                COUNT(DISTINCT rm.sender_account_id) FILTER (WHERE sa.inbox_state = 'dead') as inboxes_killed,
+                COUNT(DISTINCT d.id) FILTER (WHERE sa.inbox_state = 'dead') as domains_affected
+            FROM response_messages rm
+            JOIN sender_accounts sa ON rm.sender_account_id = sa.id
+            LEFT JOIN domains d ON sa.domain_id = d.id
+            WHERE rm.campaign_id IS NOT NULL
+              AND rm.folder = 'bounced'
+              AND sa.workspace_id = $1
+            GROUP BY rm.campaign_id
+        )
         SELECT
             c.id as campaign_id,
             c.campaign_name,
@@ -824,6 +843,8 @@ async def _build_campaign_attribution(workspace_id: UUID) -> list[CampaignAttrib
             COALESCE(cs.bounce_rate, 0) as bounce_rate,
             0 as complaint_count,
             0 as complaint_rate,
+            COALESCE(ck.inboxes_killed, 0) as inboxes_killed,
+            COALESCE(ck.domains_affected, 0) as domains_affected,
             c.created_at
         FROM emailbison_campaigns c
         LEFT JOIN LATERAL (
@@ -833,8 +854,9 @@ async def _build_campaign_attribution(workspace_id: UUID) -> list[CampaignAttrib
             ORDER BY s.snapshot_timestamp DESC
             LIMIT 1
         ) cs ON true
+        LEFT JOIN campaign_kills ck ON ck.campaign_id = c.id
         WHERE c.workspace_id = $1
-        ORDER BY COALESCE(cs.bounced, 0) DESC, c.created_at DESC
+        ORDER BY COALESCE(ck.inboxes_killed, 0) DESC, COALESCE(cs.bounced, 0) DESC, c.created_at DESC
     """, workspace_id)
 
     items = []
@@ -842,7 +864,7 @@ async def _build_campaign_attribution(workspace_id: UUID) -> list[CampaignAttrib
         bounce_rate = float(row["bounce_rate"] or 0)
         complaint_rate = float(row["complaint_rate"] or 0)
 
-        # Risk level
+        # Risk level from bounce rate (this uses real data)
         if bounce_rate > 4 or complaint_rate > 0.3:
             risk_level = "critical"
         elif bounce_rate > 3:
@@ -860,29 +882,14 @@ async def _build_campaign_attribution(workspace_id: UUID) -> list[CampaignAttrib
         else:
             state = "live"
 
-        # Synthetic kill attribution based on bounce severity
-        bounce_count = row["bounce_count"]
-        if bounce_rate > 4:
-            inboxes_killed = max(1, int(bounce_count * 0.03))
-            domains_affected = max(1, inboxes_killed // 3)
-        elif bounce_rate > 3:
-            inboxes_killed = max(1, int(bounce_count * 0.01))
-            domains_affected = max(0, inboxes_killed // 4)
-        elif bounce_rate > 2:
-            inboxes_killed = 1 if bounce_count > 20 else 0
-            domains_affected = 0
-        else:
-            inboxes_killed = 0
-            domains_affected = 0
-
         items.append(CampaignAttributionItem(
             campaign_id=row["campaign_id"],
             campaign_name=row["campaign_name"] or "Unnamed Campaign",
             state=state,
-            inboxes_killed_7d=inboxes_killed,
-            domains_affected=domains_affected,
+            inboxes_killed_7d=row["inboxes_killed"],
+            domains_affected=row["domains_affected"],
             total_sent=row["total_sent"],
-            bounce_count=bounce_count,
+            bounce_count=row["bounce_count"],
             bounce_rate=round(bounce_rate, 2),
             complaint_count=row["complaint_count"],
             complaint_rate=round(complaint_rate, 2),
@@ -934,12 +941,13 @@ async def _build_overall_summary(
     """, workspace_id)
     warming_inboxes = warming_result["warming"] if warming_result else 0
 
-    # Domain stats (excludes cancelled domains)
+    # Domain stats (excludes cancelled, uses domain_state from sync worker)
+    # Only count domain_state='flagged' — 'dead' is lifecycle (not health), burned has its own penalty
     domain_stats = await fetch_one("""
         SELECT
             COUNT(*) as total,
-            COUNT(*) FILTER (WHERE is_clean = true OR COALESCE(latest_blacklist_count, 0) = 0) as clean,
-            COUNT(*) FILTER (WHERE is_clean = false OR COALESCE(latest_blacklist_count, 0) > 0) as flagged
+            COUNT(*) FILTER (WHERE domain_state = 'live' OR domain_state IS NULL) as clean,
+            COUNT(*) FILTER (WHERE domain_state = 'flagged') as flagged
         FROM domains
         WHERE workspace_id = $1
         AND pool_status != 'cancelled'
@@ -965,25 +973,22 @@ async def _build_overall_summary(
     """, workspace_id)
     live_domains = active_domain_result["active_domains"] if active_domain_result else 0
 
-    # Dead domains (>=2 dead inboxes OR no live inboxes, excludes cancelled)
+    # Burned domains = kill triggers fired, domain reputation compromised (IS a health problem)
+    burned_domain_result = await fetch_one("""
+        SELECT COUNT(*) as burned_domains
+        FROM domains d
+        WHERE d.workspace_id = $1
+          AND d.pool_status = 'burned'
+    """, workspace_id)
+    burned_domains = burned_domain_result["burned_domains"] if burned_domain_result else 0
+
+    # Dead domains = domains with domain_state='dead' that had inboxes (lifecycle, not health problem)
     dead_domain_result = await fetch_one("""
-        SELECT COUNT(*) as dead_domains FROM (
-            SELECT d.id
-            FROM domains d
-            LEFT JOIN sender_accounts sa ON SPLIT_PART(sa.email_address, '@', 2) = d.domain_name
-                AND sa.workspace_id = d.workspace_id
-                AND sa.inbox_state = 'live'
-            WHERE d.workspace_id = $1
-            AND d.pool_status != 'cancelled'
-            GROUP BY d.id
-            -- Dead = no live inboxes OR has 2+ dead inboxes
-            HAVING COUNT(sa.id) = 0 OR (
-                SELECT COUNT(*) FROM sender_accounts sa2
-                WHERE SPLIT_PART(sa2.email_address, '@', 2) = d.domain_name
-                  AND sa2.workspace_id = d.workspace_id
-                  AND sa2.inbox_state = 'dead'
-            ) >= 2
-        ) sub
+        SELECT COUNT(*) as dead_domains
+        FROM domains d
+        WHERE d.workspace_id = $1
+          AND d.pool_status != 'cancelled'
+          AND d.domain_state = 'dead'
     """, workspace_id)
     dead_domains = dead_domain_result["dead_domains"] if dead_domain_result else 0
 
@@ -992,17 +997,21 @@ async def _build_overall_summary(
     warning_alerts = warning_inboxes
 
     # Weighted health score
+    # - Dead inboxes: real kills from bounce/trigger analysis (max -40)
+    # - Critical inboxes: at kill threshold (max -20)
+    # - Flagged domains: domain_state='flagged' from sync worker (max -15)
+    # - Burned domains: kill triggers fired, reputation compromised (max -25)
     health_score = 100
     if total_inboxes > 0:
         health_score -= min(40, int((dead_inboxes / total_inboxes) * 200))
         health_score -= min(20, critical_inboxes * 5)
     if total_domains > 0:
         health_score -= min(15, flagged_domains * 3)
-    health_score -= min(25, int(dead_domains * 12.5))
+    health_score -= min(25, int(burned_domains * 12.5))
     health_score = max(0, min(100, health_score))
 
-    # Status
-    if health_score < 50 or dead_domains > 0:
+    # Status derived from score — burned penalty is already factored into health_score
+    if health_score < 50:
         status = "critical"
     elif health_score < 80 or dead_inboxes > 3:
         status = "warning"
@@ -1011,10 +1020,10 @@ async def _build_overall_summary(
 
     # Status message
     issues = []
+    if burned_domains > 0:
+        issues.append(f"{burned_domains} burned domain(s)")
     if dead_inboxes > 0:
         issues.append(f"{dead_inboxes} dead inbox(es)")
-    if dead_domains > 0:
-        issues.append(f"{dead_domains} dead domain(s)")
     if flagged_domains > 0:
         issues.append(f"{flagged_domains} flagged domain(s)")
     if kill_trigger_count > 0:
@@ -1030,6 +1039,7 @@ async def _build_overall_summary(
         live_domains=max(0, live_domains),
         flagged_domains=flagged_domains,
         dead_domains=dead_domains,
+        burned_domains=burned_domains,
         total_inboxes=total_inboxes,
         live_inboxes=healthy_inboxes + warning_inboxes,
         dead_inboxes=dead_inboxes,
@@ -1040,134 +1050,71 @@ async def _build_overall_summary(
     )
 
 
-async def _build_contamination_sources(workspace_id: UUID) -> list[ContaminationSourceItem]:
-    """Generate contamination source data from campaigns with bounces"""
-    rows = await fetch_all("""
-        SELECT
-            c.id as campaign_id,
-            c.campaign_name,
-            c.created_at,
-            COALESCE(cs.emails_sent, c.emails_sent, 0) as total_sent,
-            COALESCE(cs.bounced, 0) as bounce_count,
-            COALESCE(cs.bounce_rate, 0) as bounce_rate
-        FROM emailbison_campaigns c
-        LEFT JOIN LATERAL (
-            SELECT s.emails_sent, s.bounced, s.bounce_rate
-            FROM campaign_snapshots s
-            WHERE s.campaign_id = c.id
-            ORDER BY s.snapshot_timestamp DESC
-            LIMIT 1
-        ) cs ON true
-        WHERE c.workspace_id = $1
-            AND COALESCE(cs.bounced, 0) > 0
-        ORDER BY COALESCE(cs.bounce_rate, 0) DESC
-    """, workspace_id)
 
-    # Vary source types and providers across campaigns
-    source_configs = [
-        ("enrichment", "Apollo"),
-        ("scraped", "ZoomInfo"),
-        ("enrichment", "Clearbit"),
-        ("manual", None),
-        ("purchased", "LeadIQ"),
-        ("enrichment", "Apollo"),
-        ("scraped", None),
-        ("manual", None),
-    ]
 
-    items = []
-    for i, row in enumerate(rows):
-        bounce_rate = float(row["bounce_rate"] or 0)
-        bounce_count = row["bounce_count"]
-
-        if bounce_rate > 4:
-            status = "quarantined"
-            inboxes_affected = max(1, int(bounce_count * 0.03))
-            domains_affected = max(1, inboxes_affected // 3)
-        elif bounce_rate > 2:
-            status = "flagged"
-            inboxes_affected = max(0, int(bounce_count * 0.01))
-            domains_affected = 0
-        else:
-            status = "live"
-            inboxes_affected = 0
-            domains_affected = 0
-
-        src_type, src_provider = source_configs[i % len(source_configs)]
-
-        items.append(ContaminationSourceItem(
-            id=f"list-{row['campaign_id']}",
-            list_name=f"{row['campaign_name']} - Lead List",
-            campaign_id=row["campaign_id"],
-            campaign_name=row["campaign_name"] or "Unnamed Campaign",
-            total_leads=row["total_sent"],
-            bounced_leads=bounce_count,
-            bounce_rate=round(bounce_rate, 2),
-            source_type=src_type,
-            source_provider=src_provider,
-            imported_at=row["created_at"] or datetime.now(timezone.utc),
-            status=status,
-            inboxes_affected=inboxes_affected,
-            domains_affected=domains_affected,
-        ))
-
-    return items
 
 
 async def _build_esp_summaries(workspace_id: UUID) -> list[ESPSummaryItem]:
-    """Generate ESP health summaries based on aggregate workspace health"""
+    """Build ESP health summaries from real kill trigger data per provider"""
     now = datetime.now(timezone.utc)
 
-    # Get average health score and total domain count
-    stats = await fetch_one("""
+    rows = await fetch_all("""
         SELECT
-            AVG(COALESCE(d.latest_health_score, 100)) as avg_health,
-            COUNT(*) as total_domains
-        FROM domains d
-        WHERE d.workspace_id = $1
+            COALESCE(sa.esp, 'other') as provider,
+            COUNT(*) as total_inboxes,
+            COUNT(*) FILTER (WHERE sa.inbox_state = 'live') as live,
+            COUNT(*) FILTER (WHERE sa.inbox_state = 'dead') as dead,
+            COUNT(*) FILTER (WHERE sa.kill_trigger LIKE '%spam%') as spam_kills,
+            COUNT(*) FILTER (WHERE sa.kill_trigger LIKE '%blocked%' OR sa.kill_trigger LIKE '%block%') as block_kills,
+            COUNT(*) FILTER (WHERE sa.kill_trigger LIKE '%unknown%') as unknown_kills,
+            COUNT(*) FILTER (WHERE sa.kill_trigger LIKE '%bounce%') as bounce_kills,
+            COUNT(*) FILTER (WHERE sa.kill_trigger LIKE '%disconnect%') as disconnect_kills,
+            COALESCE(AVG(sa.health_score) FILTER (WHERE sa.inbox_state = 'live'), 0) as avg_health
+        FROM sender_accounts sa
+        LEFT JOIN domains d ON sa.domain_id = d.id
+        WHERE sa.workspace_id = $1
+        AND (d.pool_status IS NULL OR d.pool_status != 'cancelled')
+        GROUP BY COALESCE(sa.esp, 'other')
     """, workspace_id)
 
-    avg_health = float(stats["avg_health"] or 90) if stats else 90.0
-    total_domains = stats["total_domains"] if stats else 0
-
-    if total_domains == 0:
+    if not rows:
         return []
 
-    # Derive reputation from average health
-    rep = _health_score_to_reputation(avg_health)
-
     summaries = []
+    for row in rows:
+        total = row["total_inboxes"]
+        dead = row["dead"]
+        live = row["live"]
+        kill_rate = round((dead / total * 100) if total > 0 else 0, 1)
+        reputation = _kill_rate_to_reputation(kill_rate)
 
-    # Always generate both providers when workspace has domains
-    summaries.append(ESPSummaryItem(
-        provider="gmail",
-        reputation=rep,
-        reputation_trend="stable" if avg_health >= 80 else "declining",
-        inbox_placement_rate=round(min(99.0, avg_health + 5), 1),
-        spam_placement_rate=round(max(0.5, 100 - avg_health - 3), 1),
-        promotions_placement_rate=5.4,
-        spf_passing=True,
-        dkim_passing=True,
-        dmarc_passing=True,
-        user_reported_spam_rate=round(max(0.01, (100 - avg_health) * 0.005), 2),
-        ip_reputation=rep,
-        last_updated=now,
-    ))
+        # Determine top trigger
+        trigger_counts = {
+            "spam_complaint": row["spam_kills"],
+            "blocked": row["block_kills"],
+            "unknown": row["unknown_kills"],
+            "bounce": row["bounce_kills"],
+            "disconnected": row["disconnect_kills"],
+        }
+        top_trigger = max(trigger_counts, key=trigger_counts.get) if any(trigger_counts.values()) else None
 
-    summaries.append(ESPSummaryItem(
-        provider="microsoft",
-        reputation=rep,
-        reputation_trend="improving" if avg_health >= 85 else "stable",
-        inbox_placement_rate=round(min(99.0, avg_health + 7), 1),
-        spam_placement_rate=round(max(0.3, 100 - avg_health - 5), 1),
-        spf_passing=True,
-        dkim_passing=True,
-        dmarc_passing=True,
-        complaint_rate=round(max(0.01, (100 - avg_health) * 0.003), 2),
-        trap_hits=0 if avg_health >= 80 else 2,
-        filter_result="green" if avg_health >= 80 else "yellow" if avg_health >= 60 else "red",
-        last_updated=now,
-    ))
+        summaries.append(ESPSummaryItem(
+            provider=row["provider"],
+            reputation=reputation,
+            reputation_trend="stable",
+            total_inboxes=total,
+            live_inboxes=live,
+            dead_inboxes=dead,
+            kill_rate=kill_rate,
+            avg_health_score=round(float(row["avg_health"] or 0), 1),
+            spam_kills=row["spam_kills"],
+            block_kills=row["block_kills"],
+            unknown_kills=row["unknown_kills"],
+            bounce_kills=row["bounce_kills"],
+            disconnect_kills=row["disconnect_kills"],
+            top_trigger=top_trigger,
+            last_updated=now,
+        ))
 
     return summaries
 
@@ -1214,7 +1161,6 @@ async def get_full_dashboard(client_id: UUID):
     backup_capacity = await _build_backup_capacity(client_id, workspace_id)
     domain_grid = await _build_domain_grid(workspace_id)
     campaign_attribution = await _build_campaign_attribution(workspace_id)
-    contamination_sources = await _build_contamination_sources(workspace_id)
     esp_summaries = await _build_esp_summaries(workspace_id)
 
     # Count only pending triggers for summary
@@ -1229,7 +1175,7 @@ async def get_full_dashboard(client_id: UUID):
         backup_capacity=backup_capacity,
         domain_grid=domain_grid,
         campaign_attribution=campaign_attribution,
-        contamination_sources=contamination_sources,
+        contamination_sources=[],
         esp_summaries=esp_summaries,
     )
 
@@ -1427,14 +1373,16 @@ async def get_infrastructure_health(client_id: UUID):
         ORDER BY total DESC
     """, workspace_id)
 
-    # Get domain stats
+    # Get domain stats (excludes cancelled domains)
+    # Only domain_state='flagged' counts — 'dead' is lifecycle, burned has its own penalty
     domain_stats = await fetch_one("""
         SELECT
             COUNT(*) as total,
-            COUNT(*) FILTER (WHERE is_clean = true OR COALESCE(latest_blacklist_count, 0) = 0) as clean,
-            COUNT(*) FILTER (WHERE is_clean = false OR COALESCE(latest_blacklist_count, 0) > 0) as flagged
+            COUNT(*) FILTER (WHERE domain_state = 'live' OR domain_state IS NULL) as clean,
+            COUNT(*) FILTER (WHERE domain_state = 'flagged') as flagged
         FROM domains
         WHERE workspace_id = $1
+        AND pool_status != 'cancelled'
     """, workspace_id)
 
     # Get last sync time (use updated_at as proxy for last sync)
@@ -1495,6 +1443,7 @@ async def get_infrastructure_health(client_id: UUID):
         SELECT COUNT(DISTINCT d.id) as live_domains
         FROM domains d
         WHERE d.workspace_id = $1
+          AND (d.pool_status IS NULL OR d.pool_status != 'cancelled')
           AND EXISTS (
               SELECT 1 FROM sender_accounts sa
               WHERE SPLIT_PART(sa.email_address, '@', 2) = d.domain_name
@@ -1503,9 +1452,17 @@ async def get_infrastructure_health(client_id: UUID):
     """, workspace_id)
     live_domains = live_domain_stats["live_domains"] if live_domain_stats else 0
     total_domains = domain_stats["total"] if domain_stats else 0
-    dead_domains = max(0, total_domains - live_domains)
+    # Dead domains = domain_state='dead' from sync worker (lifecycle, not health problem)
+    dead_domain_infra = await fetch_one("""
+        SELECT COUNT(*) as dead_domains
+        FROM domains d
+        WHERE d.workspace_id = $1
+          AND d.pool_status != 'cancelled'
+          AND d.domain_state = 'dead'
+    """, workspace_id)
+    dead_domains = dead_domain_infra["dead_domains"] if dead_domain_infra else 0
 
-    # Domain source breakdown (legacy vs purchased vs generated)
+    # Domain source breakdown (legacy vs purchased vs generated, excludes cancelled)
     domain_source_stats = await fetch_one("""
         SELECT
             COUNT(*) FILTER (WHERE domain_source = 'legacy' OR domain_source IS NULL) as legacy,
@@ -1513,6 +1470,7 @@ async def get_infrastructure_health(client_id: UUID):
             COUNT(*) FILTER (WHERE domain_source = 'generated') as generated
         FROM domains
         WHERE workspace_id = $1
+        AND pool_status != 'cancelled'
     """, workspace_id)
 
     return InfrastructureHealthResponse(
@@ -1614,11 +1572,12 @@ async def get_inventory_health(client_id: UUID):
         domain_stats = await fetch_one("""
             SELECT
                 COUNT(*) as total,
-                COUNT(*) FILTER (WHERE is_clean = true OR COALESCE(latest_blacklist_count, 0) = 0) as clean,
-                COUNT(*) FILTER (WHERE is_clean = false OR COALESCE(latest_blacklist_count, 0) > 0) as flagged,
+                COUNT(*) FILTER (WHERE domain_state = 'live' OR domain_state IS NULL) as clean,
+                COUNT(*) FILTER (WHERE domain_state = 'flagged') as flagged,
                 MAX(last_checked_at) as last_check
             FROM domains
             WHERE workspace_id = $1
+            AND pool_status != 'cancelled'
         """, workspace_id)
 
         if domain_stats:
@@ -1627,33 +1586,23 @@ async def get_inventory_health(client_id: UUID):
             response.flagged_domains = domain_stats["flagged"] or 0
             response.rbl_last_check = domain_stats["last_check"]
 
-        # Get flagged domain details for attention items
+        # Get flagged domain details for attention items (uses domain_state from sync worker)
+        # Only domain_state='flagged' — dead is lifecycle, burned domains shown separately
         flagged_domains = await fetch_all("""
-            SELECT domain_name, latest_blacklist_count,
-                   ARRAY_AGG(DISTINCT rbl_name) FILTER (WHERE rbl_name IS NOT NULL) as blacklist_names
-            FROM domains d
-            LEFT JOIN LATERAL (
-                SELECT rd.rbl_name
-                FROM rbl_check_logs rcl
-                JOIN rbl_definitions rd ON rcl.rbl_definition_id = rd.id
-                WHERE rcl.domain_id = d.id
-                AND rcl.is_listed = true
-                AND rcl.check_timestamp >= NOW() - INTERVAL '24 hours'
-            ) bl ON true
-            WHERE d.workspace_id = $1
-            AND (d.is_clean = false OR COALESCE(d.latest_blacklist_count, 0) > 0)
-            GROUP BY d.id, d.domain_name, d.latest_blacklist_count
+            SELECT domain_name, domain_state
+            FROM domains
+            WHERE workspace_id = $1
+            AND domain_state = 'flagged'
+            AND pool_status != 'cancelled'
             LIMIT 10
         """, workspace_id)
 
         for domain in flagged_domains:
-            bl_names = domain["blacklist_names"] or []
             response.attention_items.append({
-                "type": "blacklist",
+                "type": "domain_health",
                 "domain": domain["domain_name"],
-                "count": domain["latest_blacklist_count"] or 0,
-                "lists": bl_names[:5],  # Limit to first 5
-                "severity": "critical" if (domain["latest_blacklist_count"] or 0) > 3 else "warning"
+                "state": domain["domain_state"],
+                "severity": "warning"
             })
 
     # Fetch real-time EmailBison data

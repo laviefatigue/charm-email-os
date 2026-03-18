@@ -1,6 +1,6 @@
 'use client';
 
-import { Mail, CheckCircle, AlertTriangle, XCircle, TrendingUp, TrendingDown, Minus } from 'lucide-react';
+import { Mail, TrendingUp, TrendingDown, Minus } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import type { ESPHealthSummary as ESPHealthSummaryType } from '@/lib/types/health';
@@ -18,19 +18,21 @@ function ESPCard({ esp }: { esp: ESPHealthSummaryType }) {
   };
   const TrendIcon = trendIcon[esp.reputationTrend];
 
-  const reputationColors = {
-    high: 'text-green-600',
-    medium: 'text-yellow-600',
-    low: 'text-orange-600',
-    bad: 'text-red-600',
-  };
-
   const formatDate = (date: Date) => {
     return new Date(date).toLocaleTimeString('en-US', {
       hour: 'numeric',
       minute: '2-digit',
     });
   };
+
+  // Build trigger breakdown for display
+  const triggerBreakdown = [
+    { label: 'Spam', count: esp.spamKills, color: 'text-red-600' },
+    { label: 'Blocked', count: esp.blockKills, color: 'text-orange-600' },
+    { label: 'Unknown', count: esp.unknownKills, color: 'text-yellow-600' },
+    { label: 'Bounce', count: esp.bounceKills, color: 'text-amber-600' },
+    { label: 'Disconnect', count: esp.disconnectKills, color: 'text-blue-600' },
+  ].filter(t => t.count > 0);
 
   return (
     <div className="p-4 rounded-lg border bg-white">
@@ -40,13 +42,15 @@ function ESPCard({ esp }: { esp: ESPHealthSummaryType }) {
           <div
             className={cn(
               'w-8 h-8 rounded-lg flex items-center justify-center',
-              esp.provider === 'gmail' ? 'bg-red-100' : 'bg-blue-100'
+              esp.provider === 'gmail' ? 'bg-red-100' :
+              esp.provider === 'microsoft' ? 'bg-blue-100' : 'bg-gray-100'
             )}
           >
             <Mail
               className={cn(
                 'h-4 w-4',
-                esp.provider === 'gmail' ? 'text-red-600' : 'text-blue-600'
+                esp.provider === 'gmail' ? 'text-red-600' :
+                esp.provider === 'microsoft' ? 'text-blue-600' : 'text-gray-600'
               )}
             />
           </div>
@@ -75,150 +79,85 @@ function ESPCard({ esp }: { esp: ESPHealthSummaryType }) {
       </div>
 
       {/* Metrics Grid */}
-      <div className="grid grid-cols-2 gap-4 mb-4">
+      <div className="grid grid-cols-3 gap-4 mb-4">
         <div>
-          <div className="text-sm text-muted-foreground">Inbox Placement</div>
-          <div className="text-lg font-bold text-green-600">{esp.inboxPlacementRate}%</div>
+          <div className="text-sm text-muted-foreground">Live</div>
+          <div className="text-lg font-bold text-green-600">{esp.liveInboxes}</div>
         </div>
         <div>
-          <div className="text-sm text-muted-foreground">Spam Placement</div>
-          <div
+          <div className="text-sm text-muted-foreground">Dead</div>
+          <div className={cn(
+            'text-lg font-bold',
+            esp.deadInboxes > 0 ? 'text-red-600' : 'text-muted-foreground'
+          )}>
+            {esp.deadInboxes}
+          </div>
+        </div>
+        <div>
+          <div className="text-sm text-muted-foreground">Kill Rate</div>
+          <div className={cn(
+            'text-lg font-bold',
+            esp.killRate >= 30 ? 'text-red-600' :
+            esp.killRate >= 15 ? 'text-orange-600' :
+            esp.killRate >= 5 ? 'text-yellow-600' : 'text-green-600'
+          )}>
+            {esp.killRate}%
+          </div>
+        </div>
+      </div>
+
+      {/* Health Score + Trend */}
+      <div className="flex items-center justify-between mb-4">
+        <div>
+          <div className="text-sm text-muted-foreground">Avg Health Score</div>
+          <div className="text-lg font-bold">{esp.avgHealthScore}</div>
+        </div>
+        <div className="flex items-center gap-1">
+          <TrendIcon
             className={cn(
-              'text-lg font-bold',
-              esp.spamPlacementRate > 5 ? 'text-red-600' : 'text-muted-foreground'
+              'h-4 w-4',
+              esp.reputationTrend === 'improving' && 'text-green-600',
+              esp.reputationTrend === 'stable' && 'text-muted-foreground',
+              esp.reputationTrend === 'declining' && 'text-red-600'
+            )}
+          />
+          <span
+            className={cn(
+              'text-sm font-medium capitalize',
+              esp.reputationTrend === 'improving' && 'text-green-600',
+              esp.reputationTrend === 'stable' && 'text-muted-foreground',
+              esp.reputationTrend === 'declining' && 'text-red-600'
             )}
           >
-            {esp.spamPlacementRate}%
-          </div>
-        </div>
-        {esp.promotionsPlacementRate !== undefined && (
-          <div>
-            <div className="text-sm text-muted-foreground">Promotions</div>
-            <div className="text-lg font-bold text-muted-foreground">
-              {esp.promotionsPlacementRate}%
-            </div>
-          </div>
-        )}
-        <div>
-          <div className="text-sm text-muted-foreground">Trend</div>
-          <div className="flex items-center gap-1">
-            <TrendIcon
-              className={cn(
-                'h-4 w-4',
-                esp.reputationTrend === 'improving' && 'text-green-600',
-                esp.reputationTrend === 'stable' && 'text-muted-foreground',
-                esp.reputationTrend === 'declining' && 'text-red-600'
-              )}
-            />
-            <span
-              className={cn(
-                'font-medium capitalize',
-                esp.reputationTrend === 'improving' && 'text-green-600',
-                esp.reputationTrend === 'stable' && 'text-muted-foreground',
-                esp.reputationTrend === 'declining' && 'text-red-600'
-              )}
-            >
-              {esp.reputationTrend}
-            </span>
-          </div>
+            {esp.reputationTrend}
+          </span>
         </div>
       </div>
 
-      {/* Authentication Status */}
-      <div className="pt-3 border-t">
-        <div className="text-sm font-medium mb-2">Authentication</div>
-        <div className="flex items-center gap-4 text-sm">
-          <div className="flex items-center gap-1">
-            {esp.spfPassing ? (
-              <CheckCircle className="h-3.5 w-3.5 text-green-600" />
-            ) : (
-              <XCircle className="h-3.5 w-3.5 text-red-600" />
-            )}
-            <span>SPF</span>
+      {/* Kill Trigger Breakdown */}
+      {triggerBreakdown.length > 0 && (
+        <div className="pt-3 border-t">
+          <div className="text-sm font-medium mb-2">Kill Triggers</div>
+          <div className="space-y-1">
+            {triggerBreakdown.map((trigger) => (
+              <div key={trigger.label} className="flex items-center justify-between text-sm">
+                <span className="text-muted-foreground">{trigger.label}</span>
+                <span className={cn('font-medium', trigger.color)}>{trigger.count}</span>
+              </div>
+            ))}
           </div>
-          <div className="flex items-center gap-1">
-            {esp.dkimPassing ? (
-              <CheckCircle className="h-3.5 w-3.5 text-green-600" />
-            ) : (
-              <XCircle className="h-3.5 w-3.5 text-red-600" />
-            )}
-            <span>DKIM</span>
-          </div>
-          <div className="flex items-center gap-1">
-            {esp.dmarcPassing ? (
-              <CheckCircle className="h-3.5 w-3.5 text-green-600" />
-            ) : (
-              <XCircle className="h-3.5 w-3.5 text-red-600" />
-            )}
-            <span>DMARC</span>
-          </div>
-        </div>
-      </div>
-
-      {/* Provider-specific metrics */}
-      {esp.provider === 'gmail' && esp.userReportedSpamRate !== undefined && (
-        <div className="mt-3 pt-3 border-t">
-          <div className="flex items-center justify-between text-sm">
-            <span className="text-muted-foreground">User-reported Spam</span>
-            <span
-              className={cn(
-                'font-medium',
-                esp.userReportedSpamRate > 0.1 ? 'text-red-600' : 'text-green-600'
-              )}
-            >
-              {esp.userReportedSpamRate}%
-            </span>
-          </div>
-          {esp.ipReputation && (
-            <div className="flex items-center justify-between text-sm mt-1">
-              <span className="text-muted-foreground">IP Reputation</span>
-              <span className={reputationColors[esp.ipReputation]}>{esp.ipReputation}</span>
+          {esp.topTrigger && (
+            <div className="mt-2 text-xs text-muted-foreground">
+              Top trigger: <span className="font-medium">{esp.topTrigger}</span>
             </div>
           )}
         </div>
       )}
 
-      {esp.provider === 'microsoft' && (
-        <div className="mt-3 pt-3 border-t">
-          {esp.complaintRate !== undefined && (
-            <div className="flex items-center justify-between text-sm">
-              <span className="text-muted-foreground">Complaint Rate</span>
-              <span
-                className={cn(
-                  'font-medium',
-                  esp.complaintRate > 0.3 ? 'text-red-600' : 'text-green-600'
-                )}
-              >
-                {esp.complaintRate}%
-              </span>
-            </div>
-          )}
-          {esp.trapHits !== undefined && (
-            <div className="flex items-center justify-between text-sm mt-1">
-              <span className="text-muted-foreground">Trap Hits</span>
-              <span
-                className={cn('font-medium', esp.trapHits > 0 ? 'text-red-600' : 'text-green-600')}
-              >
-                {esp.trapHits}
-              </span>
-            </div>
-          )}
-          {esp.filterResult && (
-            <div className="flex items-center justify-between text-sm mt-1">
-              <span className="text-muted-foreground">Filter Result</span>
-              <Badge
-                variant="outline"
-                className={cn(
-                  esp.filterResult === 'green' && 'bg-green-100 text-green-800',
-                  esp.filterResult === 'yellow' && 'bg-yellow-100 text-yellow-800',
-                  esp.filterResult === 'red' && 'bg-red-100 text-red-800',
-                  'uppercase text-xs'
-                )}
-              >
-                {esp.filterResult}
-              </Badge>
-            </div>
-          )}
+      {/* No kills state */}
+      {triggerBreakdown.length === 0 && esp.totalInboxes > 0 && (
+        <div className="pt-3 border-t">
+          <div className="text-sm text-green-600 font-medium">No kill triggers detected</div>
         </div>
       )}
     </div>
@@ -231,18 +170,18 @@ export function ESPHealthSummary({ summaries }: ESPHealthSummaryProps) {
       <CardHeader className="pb-3">
         <CardTitle className="flex items-center gap-2">
           <Mail className="h-5 w-5" />
-          ESP Health Summary
+          ESP Kill Rate Analysis
         </CardTitle>
       </CardHeader>
       <CardContent>
         {summaries.length === 0 ? (
           <div className="text-center py-8 text-muted-foreground">
             <Mail className="h-10 w-10 mx-auto mb-3 opacity-50" />
-            <p className="font-medium">ESP Reputation Monitoring</p>
-            <p className="text-sm mt-1">Requires Gmail Postmaster Tools and Microsoft SNDS integration</p>
+            <p className="font-medium">No ESP Data Available</p>
+            <p className="text-sm mt-1">ESP data will appear once inboxes are synced</p>
           </div>
         ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
             {summaries.map((esp) => (
               <ESPCard key={esp.provider} esp={esp} />
             ))}

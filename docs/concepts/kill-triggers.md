@@ -1,7 +1,7 @@
 ---
 title: Kill Triggers
 created: 2026-02-12
-updated: 2026-02-12
+updated: 2026-03-18
 tags: [concept, health, kill-triggers, infrastructure]
 ---
 
@@ -228,14 +228,74 @@ GROUP BY w.workspace_name, kq.trigger_type, kq.tag_name
 ORDER BY w.workspace_name, COUNT(*) DESC;
 ```
 
+## ESP-Specific Kill Profiles
+
+Different ESPs exhibit different kill patterns based on their enforcement behavior:
+
+| Provider | Typical Kill Rate | Top Triggers | Pattern |
+|----------|------------------|--------------|---------|
+| **Microsoft** | ~25% | `hard_unknown`, `hard_blocked` | High volume of unknown-user bounces; aggressive blocking for policy violations |
+| **Gmail** | ~45% | `hard_bounces`, `hard_blocked` | Higher kill rate due to stricter spam filtering; more bounce-based kills |
+| **Other** | Varies | Mixed | Depends on provider infrastructure |
+
+ESP reputation in the health dashboard is derived from kill rate per provider:
+- <5% kill rate → **High** reputation
+- <15% → **Medium**
+- <30% → **Low**
+- >=30% → **Bad**
+
+## Campaign → Kill Attribution
+
+Kill attribution traces from campaigns to dead inboxes via `response_messages`:
+
+```
+Campaign sends email → EmailBison records response → response_messages table
+                                                        ↓
+                                                   Bounce classified (sync_events.py)
+                                                        ↓
+                                                   Kill trigger evaluated (health_checks.py)
+                                                        ↓
+                                                   Inbox killed (kill_processor.py)
+                                                        ↓
+                                                   Attribution query joins:
+                                                   response_messages.campaign_id +
+                                                   sender_accounts.inbox_state = 'dead'
+```
+
+The attribution query:
+```sql
+SELECT rm.campaign_id,
+       COUNT(DISTINCT rm.sender_account_id) FILTER (WHERE sa.inbox_state = 'dead') as inboxes_killed,
+       COUNT(DISTINCT d.id) FILTER (WHERE sa.inbox_state = 'dead') as domains_affected
+FROM response_messages rm
+JOIN sender_accounts sa ON rm.sender_account_id = sa.id
+LEFT JOIN domains d ON sa.domain_id = d.id
+WHERE rm.folder = 'bounced'
+GROUP BY rm.campaign_id
+```
+
+## Domain State from Kill Triggers
+
+The sync worker (`health_checks.py`) maintains `domain_state` based on kill trigger outcomes:
+
+| Rule | Resulting State | Rationale |
+|------|----------------|-----------|
+| 2+ dead inboxes | `dead` | Multiple kills = domain compromised |
+| >30% unhealthy inboxes | `dead` | Widespread health degradation |
+| 1 dead inbox | `flagged` | Warning signal, may recover |
+| All inboxes disconnected | `flagged` | OAuth issues across entire domain |
+| Otherwise | `live` | Domain operating normally |
+
+**Burned domains** (`pool_status='burned'`) are set by the kill processor when domain-level kill triggers fire (e.g., `provider_block_google`, `spam_complaint` on multiple inboxes). This is separate from `domain_state` and indicates the domain needs replacement.
+
 ## Files
 
 | File | Purpose |
 |------|---------|
-| `sync_modules/health_checks.py` | Kill trigger evaluation |
-| `sync_modules/kill_processor.py` | Kill queue processing |
-| `sync_modules/sync_events.py` | Bounce classification |
-| `api/routes/health.py` | Kill trigger monitor API |
+| `sync_modules/health_checks.py` | Kill trigger evaluation + domain state |
+| `sync_modules/kill_processor.py` | Kill queue processing + domain burning |
+| `sync_modules/sync_events.py` | Bounce classification from EmailBison responses |
+| `api/routes/health.py` | Kill trigger monitor + ESP analysis + campaign attribution API |
 
 ## Related
 

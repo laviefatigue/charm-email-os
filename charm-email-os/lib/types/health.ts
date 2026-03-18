@@ -31,7 +31,9 @@ export type KillTriggerType =
   | 'hard_bounce_rate_7d'      // >0.5% (min 50 sends)
   | 'bounce_rate_all_7d'       // >5%
   | 'provider_block'           // any
-  | 'fresh_inbox_bounce'  // >=1 (inbox <14 days)
+  | 'fresh_inbox_bounce'  // legacy
+  | 'fresh_inbox_blocked' // >=1 reputation block (inbox <14 days sending)
+  | 'fresh_inbox_unknown' // >=3 bad addresses (inbox <14 days sending)
   // Confirming Kill (Yellow)
   | 'low_inbox_placement'      // <85%
   | 'high_spam_placement'      // >5%
@@ -62,7 +64,9 @@ export const KILL_TRIGGER_THRESHOLDS: Record<KillTriggerType, { threshold: numbe
   hard_bounce_rate_7d: { threshold: 0.5, severity: 'instant', label: 'Hard Bounce Rate (7d)', minSends: 50 },
   bounce_rate_all_7d: { threshold: 5, severity: 'instant', label: 'Bounce Rate All (7d)' },
   provider_block: { threshold: 1, severity: 'instant', label: 'Provider Block' },
-  fresh_inbox_bounce: { threshold: 1, severity: 'instant', label: 'Fresh Inbox Hard Bounce' },
+  fresh_inbox_bounce: { threshold: 1, severity: 'instant', label: 'Fresh Inbox Hard Bounce (legacy)' },
+  fresh_inbox_blocked: { threshold: 1, severity: 'instant', label: 'Fresh Inbox Reputation Block' },
+  fresh_inbox_unknown: { threshold: 3, severity: 'instant', label: 'Fresh Inbox Bad Addresses' },
   low_inbox_placement: { threshold: 85, severity: 'confirming', label: 'Low Inbox Placement' },
   high_spam_placement: { threshold: 5, severity: 'confirming', label: 'High Spam Placement' },
   degrading_trend: { threshold: 3, severity: 'confirming', label: 'Degrading Trend' },
@@ -196,31 +200,6 @@ export interface OverallBackupCapacity {
   overallStatus: 'healthy' | 'warning' | 'critical';
 }
 
-// ===== LIST CONTAMINATION =====
-export interface ListContaminationSource {
-  id: string;
-  listName: string;
-  campaignId: string;
-  campaignName: string;
-
-  // Contamination metrics
-  totalLeads: number;
-  bouncedLeads: number;
-  bounceRate: number;
-
-  // Source breakdown
-  sourceType: 'enrichment' | 'scraped' | 'manual' | 'purchased' | 'unknown';
-  sourceProvider?: string; // e.g., "Apollo", "ZoomInfo"
-  importedAt: Date;
-
-  // Status
-  status: 'live' | 'quarantined' | 'flagged';
-
-  // Attribution
-  inboxesAffected: number;
-  domainsAffected: number;
-}
-
 // ===== ALERT FEED =====
 export type HealthAlertType =
   | 'kill_trigger'
@@ -253,29 +232,26 @@ export type ESPReputation = 'high' | 'medium' | 'low' | 'bad';
 export interface ESPHealthSummary {
   provider: ESPProvider;
 
-  // Reputation
+  // Reputation (derived from kill rate)
   reputation: ESPReputation;
   reputationTrend: 'improving' | 'stable' | 'declining';
 
-  // Metrics
-  inboxPlacementRate: number;
-  spamPlacementRate: number;
-  promotionsPlacementRate?: number; // Gmail only
+  // Inbox counts
+  totalInboxes: number;
+  liveInboxes: number;
+  deadInboxes: number;
+  killRate: number; // dead / total as percentage
 
-  // Authentication
-  spfPassing: boolean;
-  dkimPassing: boolean;
-  dmarcPassing: boolean;
+  // Health
+  avgHealthScore: number;
 
-  // Provider-specific
-  // Gmail Postmaster
-  userReportedSpamRate?: number;
-  ipReputation?: ESPReputation;
-
-  // Microsoft SNDS
-  complaintRate?: number;
-  trapHits?: number;
-  filterResult?: 'green' | 'yellow' | 'red';
+  // Kill trigger breakdown
+  spamKills: number;
+  blockKills: number;
+  unknownKills: number;
+  bounceKills: number;
+  disconnectKills: number;
+  topTrigger?: string;
 
   lastUpdated: Date;
 }
@@ -292,6 +268,7 @@ export interface OverallHealthSummary {
   liveDomains: number;
   flaggedDomains: number;
   deadDomains: number;
+  burnedDomains: number;
 
   totalInboxes: number;
   liveInboxes: number;
@@ -534,7 +511,7 @@ export interface KillTriggerDetail {
 export interface KillBreakdownResponse {
   reputation: KillCategory;  // spam_complaint, hard_blocked_24h
   listQuality: KillCategory;  // hard_unknown_24h
-  prematureDeployment: KillCategory;  // fresh_inbox_bounce
+  prematureDeployment: KillCategory;  // fresh_inbox_blocked, fresh_inbox_unknown
   other: KillCategory;
   byProvider: {
     gmail: number;
