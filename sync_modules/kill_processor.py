@@ -34,11 +34,18 @@ from .slack_alerter import SlackAlerter
 # When these fire, we should NOT promote B-Set inboxes from the same domain.
 # Instead, flag the entire domain for rotation.
 
+# INSTANT domain burns — provider blocks are unambiguously domain-level
 DOMAIN_KILLING_TRIGGERS = {
-    'spam_complaint',           # User reported spam = domain reputation burned
     'provider_block_google',    # Google blocked the domain
     'provider_block_microsoft', # Microsoft blocked the domain
     'provider_block_yahoo',     # Yahoo blocked the domain
+}
+
+# CONDITIONAL domain burns — only domain-level when cross-inbox pattern detected
+# A single spam complaint on 1 of 50 inboxes is inbox-level, not domain-level.
+# Burns when 2+ inboxes on the same domain have the same trigger type.
+CONDITIONAL_DOMAIN_TRIGGERS = {
+    'spam_complaint',           # 1 inbox = inbox kill; 2+ inboxes = domain burn
 }
 
 # Inbox-killing triggers indicate inbox-level or list-level issues.
@@ -56,13 +63,18 @@ INBOX_KILLING_TRIGGERS = {
 
 
 def is_domain_killing_trigger(trigger_type: str) -> bool:
-    """Check if a trigger type indicates domain-level compromise."""
+    """Check if a trigger type is an INSTANT domain kill (provider blocks)."""
     if not trigger_type:
         return False
     # Handle dynamic provider blocks (provider_block_*)
     if trigger_type.startswith('provider_block_'):
         return True
     return trigger_type in DOMAIN_KILLING_TRIGGERS
+
+
+def is_conditional_domain_trigger(trigger_type: str) -> bool:
+    """Check if a trigger requires cross-inbox confirmation before domain burn."""
+    return trigger_type in CONDITIONAL_DOMAIN_TRIGGERS
 
 
 class KillProcessor:
@@ -149,6 +161,7 @@ class KillProcessor:
             WHERE kq.status = 'pending'
             AND sa.emailbison_account_id IS NOT NULL
             AND w.emailbison_workspace_id IS NOT NULL
+            AND (d.pool_status IS NULL OR d.pool_status != 'cancelled')
         """)
 
         if not pending:
@@ -223,8 +236,8 @@ class KillProcessor:
                                     account_id=int(item['emailbison_account_id']),
                                     tag_id=a_set_tag_id
                                 )
-                            except EmailBisonAPIError:
-                                pass  # May not have the tag - that's fine
+                            except EmailBisonAPIError as e:
+                                print(f"    [WARN] Failed to remove tag {a_set_tag_id} from inbox {item['emailbison_account_id']}: {e}")
 
                         # Also try to remove legacy 'live' if using different tag name
                         if a_set_tag_name != 'live':
@@ -235,8 +248,8 @@ class KillProcessor:
                                         account_id=int(item['emailbison_account_id']),
                                         tag_id=live_tag['id']
                                     )
-                            except EmailBisonAPIError:
-                                pass
+                            except EmailBisonAPIError as e:
+                                print(f"    [WARN] Failed to remove legacy 'live' tag from inbox {item['emailbison_account_id']}: {e}")
 
                         # Update queue status to 'flagged' (final state - no deletion)
                         await self.db.execute("""
@@ -278,9 +291,10 @@ class KillProcessor:
                             domain_name=item.get('domain_name')
                         )
 
-                        # V3: Recalculate domain aggregate metrics
+                        # V3: Recalculate domain aggregate metrics + velocity
                         if item.get('domain_id'):
                             await self._recalculate_domain_metrics(item['domain_id'])
+                            await self._recalculate_domain_velocity(item['domain_id'])
 
                         # V3: Promote backup inbox to fill the gap
                         # Pass trigger_type for severity-aware rotation
@@ -769,7 +783,7 @@ class KillProcessor:
         # ==========================================
         # TRIGGER SEVERITY CHECK
         # ==========================================
-        # Domain-killing triggers = don't promote from same domain
+        # Provider blocks = instant domain burn (unambiguously domain-level)
         if is_domain_killing_trigger(effective_trigger):
             await self._handle_domain_killing_trigger(
                 domain_id=domain_id,
@@ -779,6 +793,33 @@ class KillProcessor:
                 killed_inbox_email=killed_inbox['email_address']
             )
             return  # Skip normal promotion - domain is compromised
+
+        # Conditional domain triggers (spam_complaint) = check cross-inbox pattern
+        # Only burn when 2+ inboxes on the same domain share the trigger type.
+        # 1 spam complaint out of 50 inboxes is inbox-level, not domain-level.
+        if is_conditional_domain_trigger(effective_trigger):
+            dead_with_same_trigger = await self.db.fetchval("""
+                SELECT COUNT(*)
+                FROM sender_accounts
+                WHERE domain_id = $1
+                  AND inbox_state = 'dead'
+                  AND kill_trigger = $2
+            """, domain_id, effective_trigger)
+
+            if dead_with_same_trigger >= 2:
+                # Cross-inbox pattern confirmed — this IS domain-level damage
+                print(f"    [DOMAIN KILL] {domain_name}: {dead_with_same_trigger} inboxes with {effective_trigger} — cross-inbox pattern, burning domain")
+                await self._handle_domain_killing_trigger(
+                    domain_id=domain_id,
+                    domain_name=domain_name,
+                    workspace_id=workspace_id,
+                    trigger_type=effective_trigger,
+                    killed_inbox_email=killed_inbox['email_address']
+                )
+                return  # Domain compromised
+            else:
+                # Single inbox — treat as inbox-level kill, don't burn domain
+                print(f"    [INBOX KILL] {domain_name}: 1st {effective_trigger} — inbox-level only, domain safe")
 
         # Only promote if the killed inbox was in A-Set (deployed)
         if killed_pool != 'deployed':
@@ -969,17 +1010,16 @@ class KillProcessor:
         killed_inbox_email: str
     ):
         """
-        Handle domain-killing triggers (spam_complaint, provider_block_*).
+        Handle confirmed domain-level triggers.
 
-        DOMAIN-LEVEL A/B SET MODEL (2026-03-05):
-        When a domain-killing trigger fires:
+        Called for:
+        - Provider blocks (provider_block_*): instant — unambiguously domain-level
+        - Spam complaints: only after cross-inbox check confirms 2+ inboxes affected
+
+        Actions:
         1. Mark the ENTIRE A-Set domain as 'burned'
         2. Promote a B-Set DOMAIN to A-Set (not individual inboxes)
-        3. Quarantine remaining inboxes on the burned domain
-        4. Alert via Slack
-
-        The domain is compromised - promoting B-Set inboxes from the same
-        domain would just put them at risk of the same fate.
+        3. Log rotation event and alert
         """
         print(f"    [DOMAIN KILL] {domain_name}: {trigger_type} on {killed_inbox_email}")
         print(f"    [DOMAIN KILL] Burning domain and promoting B-Set domain")
@@ -1183,6 +1223,25 @@ class KillProcessor:
         except Exception as e:
             # Don't fail the kill process if metrics calc fails
             print(f"    [WARNING] Failed to recalculate domain metrics: {e}")
+
+    async def _recalculate_domain_velocity(self, domain_id: UUID):
+        """
+        Recalculate burn velocity and projected days-to-critical for a domain.
+
+        Called after each inbox kill to update:
+        - burn_velocity_30d (kills in last 30 days)
+        - projected_days_to_critical (days until 50% capacity)
+
+        Uses database function created in migration 084.
+        """
+        try:
+            await self.db.execute(
+                "SELECT recalculate_domain_velocity($1)",
+                domain_id
+            )
+        except Exception as e:
+            # Don't fail the kill process if velocity calc fails
+            print(f"    [WARNING] Failed to recalculate domain velocity: {e}")
 
     async def get_burn_breakdown_by_campaign(self, campaign_id: UUID) -> Dict:
         """
