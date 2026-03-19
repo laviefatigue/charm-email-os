@@ -374,9 +374,31 @@ class SetTagSyncModule:
         if graduated_count == 0:
             return result
 
-        # Skip burned domains - they're compromised
+        # Burned domains: remove live/reserve tags from all inboxes (prevent campaign assignment)
         if domain_pool_status == 'burned':
-            print(f"    [SKIP] {domain_name}: Domain burned, skipping")
+            print(f"    [BURNED] {domain_name}: Removing live/reserve tags from burned domain inboxes")
+            burned_inboxes = await self._get_all_graduated_inboxes(domain_id)
+            for inbox in burned_inboxes:
+                account_id = inbox.get('emailbison_account_id')
+                if not account_id or inbox.get('status') != 'Connected':
+                    continue
+                try:
+                    # Remove both A-Set and B-Set tags
+                    if a_set_tag_id:
+                        await self.client.untag_inbox(account_id, a_set_tag_id)
+                    if b_set_tag_id:
+                        await self.client.untag_inbox(account_id, b_set_tag_id)
+                    result['tagged_a'] += 1  # Track cleanup count
+                except Exception as e:
+                    print(f"      [WARN] Failed to untag {inbox.get('email_address')}: {e}")
+            # Update DB: clear pool status for burned domain inboxes
+            await self.db.execute("""
+                UPDATE sender_accounts
+                SET inventory_pool_status = NULL, updated_at = NOW()
+                WHERE domain_id = $1 AND is_active = TRUE
+                  AND inbox_state = 'live'
+                  AND inventory_pool_status IS NOT NULL
+            """, domain_id)
             return result
 
         # Skip cancelled domains - HyperTide order cancelled, inboxes are orphaned
