@@ -186,9 +186,12 @@ class CampaignSyncModule:
 
     async def create_snapshot(self, campaign_id: UUID, details: Dict):
         """Create a metrics snapshot for a campaign and update main record."""
+        from decimal import Decimal
         now = datetime.now(timezone.utc)
 
         # Extract metrics from campaign details
+        # EB API returns some fields as strings (e.g. unique_opens = "0")
+        # Force int() on all count fields to ensure consistent types for asyncpg
         emails_sent = int(details.get('emails_sent', 0) or 0)
         total_leads = int(details.get('total_leads', 0) or 0)
         contacted = int(details.get('total_leads_contacted', 0) or 0)
@@ -198,11 +201,13 @@ class CampaignSyncModule:
         interested = int(details.get('interested', 0) or 0)
         unsubscribed = int(details.get('unsubscribed', 0) or 0)
 
-        # Calculate rates (always use float for consistent DB type inference)
-        open_rate = float(opens / contacted * 100) if contacted > 0 else 0.0
-        reply_rate = float(replies / contacted * 100) if contacted > 0 else 0.0
-        bounce_rate = float(bounced / emails_sent) if emails_sent > 0 else 0.0
-        completion_pct = float(contacted / total_leads * 100) if total_leads > 0 else 0.0
+        # Calculate rates using Decimal for consistent asyncpg numeric type inference.
+        # Python's round() returns int when input is 0, causing asyncpg "inconsistent types"
+        # error between float and int for numeric columns.
+        open_rate = Decimal(str(opens / contacted * 100)) if contacted > 0 else Decimal('0')
+        reply_rate = Decimal(str(replies / contacted * 100)) if contacted > 0 else Decimal('0')
+        bounce_rate = Decimal(str(bounced / emails_sent)) if emails_sent > 0 else Decimal('0')
+        completion_pct = Decimal(str(contacted / total_leads * 100)) if total_leads > 0 else Decimal('0')
 
         # Period must have end > start (database constraint)
         period_start = now - timedelta(days=1)
@@ -227,14 +232,13 @@ class CampaignSyncModule:
             contacted,
             emails_sent,
             bounced,
-            round(bounce_rate, 4),
-            round(completion_pct, 2)
+            Decimal(str(round(float(bounce_rate), 4))),
+            Decimal(str(round(float(completion_pct), 2)))
         )
 
         # Create snapshot for historical tracking
-        # Calculate additional rates
-        interested_rate = float(interested / contacted * 100) if contacted > 0 else 0.0
-        unsubscribe_rate = float(unsubscribed / contacted * 100) if contacted > 0 else 0.0
+        interested_rate = Decimal(str(interested / contacted * 100)) if contacted > 0 else Decimal('0')
+        unsubscribe_rate = Decimal(str(unsubscribed / contacted * 100)) if contacted > 0 else Decimal('0')
 
         await self.db.execute("""
             INSERT INTO campaign_snapshots (
@@ -270,11 +274,11 @@ class CampaignSyncModule:
             interested,
             bounced,
             unsubscribed,
-            round(open_rate, 2),
-            round(reply_rate, 2),
-            round(bounce_rate * 100, 2),  # Snapshot stores as percentage
-            round(interested_rate, 2),
-            round(unsubscribe_rate, 2)
+            Decimal(str(round(float(open_rate), 2))),
+            Decimal(str(round(float(reply_rate), 2))),
+            Decimal(str(round(float(bounce_rate * 100), 2))),
+            Decimal(str(round(float(interested_rate), 2))),
+            Decimal(str(round(float(unsubscribe_rate), 2)))
         )
 
     async def sync_all_campaign_inbox_assignments(self) -> int:
