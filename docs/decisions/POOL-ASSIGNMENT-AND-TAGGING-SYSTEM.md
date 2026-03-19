@@ -64,7 +64,7 @@ Deployment is inferred from inbox presence, not a separate status value.
 |---------------|---------|--------|-------------------|
 | `live` | A-Set — team assigns these to campaigns | ~80% | `live` (a_set_tag_name) |
 | `reserve` | B-Set — warming only, promoted when live burns | ~20% | `reserve` (b_set_tag_name) |
-| `burned` | Compromised by confirmed domain-level trigger (2+ spam complaints cross-inbox pattern), permanently retired | N/A | Kill trigger tags remain |
+| `burned` | Compromised by confirmed domain-level trigger (complaint rate >1.0%), permanently retired | N/A | Kill trigger tags remain |
 | `unassigned` | Not yet allocated (pre-deployment) | N/A | None |
 
 ### When Pool Gets Assigned
@@ -150,14 +150,15 @@ All workspaces are now standardized to `live`/`reserve`.
 
 ### 7.1 Two Levels of Kill Triggers
 
-**Conditional domain burns** (spam complaints — require cross-inbox confirmation):
-- `spam_complaint` — inbox killed instantly; domain burns only when 2+ inboxes on the same domain have spam complaints
+**Rate-based domain burns** (spam complaints — evaluated by complaint rate, not count):
+- `spam_complaint` — inbox killed instantly; domain state determined by complaint rate thresholds
 
-When fired:
-1. Inbox killed with `spam_complaint` trigger
-2. Kill processor counts dead inboxes on same domain with `kill_trigger = 'spam_complaint'`
-3. If 2+ → cross-inbox pattern confirmed → domain burned + oldest reserve promoted
-4. If 1 → inbox-level only. Domain safe. Normal B-Set inbox promotion.
+Rate thresholds:
+- <0.1% complaint rate → `live` (domain healthy)
+- 0.3%+ complaint rate → `monitoring` (elevated risk, under observation)
+- >1.0% complaint rate → domain burned + oldest reserve promoted
+
+**Workspace circuit breaker:** If 3+ domains hit monitoring/burn thresholds within 24 hours, this indicates a fleet-wide campaign event (bad list, provider crackdown), not domain-specific problems. The system flags all affected domains as `monitoring` instead of burning, and raises a Slack alert for investigation.
 
 **Inbox-killing triggers** (individual inbox only — never burn domain):
 - `hard_bounces_24h`, `hard_blocked_24h`, `hard_unknown_24h`
@@ -173,9 +174,9 @@ When fired:
 
 When multiple inbox-level kills accumulate on a domain:
 - Domain goes from 50 → 40 → 30 live inboxes
-- `domain_state` transitions: `live` → `flagged` → `dead`
-- This signals the domain is worth swapping out
-- But the system doesn't auto-burn on degradation — only on confirmed domain-level triggers (2+ spam complaints across different inboxes)
+- `domain_state` transitions: `live` → `flagged` → `monitoring` → `dead`
+- The `monitoring` state is an intermediate observation period for domains with elevated complaint rates (0.3%+) that haven't yet crossed the burn threshold (>1.0%)
+- The system doesn't auto-burn on degradation — only when complaint rate exceeds 1.0% (and the workspace circuit breaker hasn't triggered)
 
 The team and our reporting surface this: "This domain has lost 40% of its inboxes, consider extracting."
 
@@ -310,7 +311,7 @@ The fix for GAP 1 ensures step 1 doesn't undo step 3's work.
 |--------|-----------|--------|---------|
 | `approval_status` | Purchase lifecycle | available, purchased, active, legacy | Where in purchase flow |
 | `pool_status` | Pool allocation | unassigned, live, reserve, burned | A-Set vs B-Set |
-| `domain_state` | Health/capacity | live, flagged, dead | Inbox capacity assessment |
+| `domain_state` | Health/capacity | live, flagged, monitoring, dead | Inbox capacity assessment |
 
 ### Inbox-Level (Two Independent Dimensions)
 

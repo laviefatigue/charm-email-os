@@ -17,9 +17,9 @@ Kill triggers are thresholds that, when breached, automatically queue an inbox f
 
 1. **Kill fast, swap fast, diagnose after** - Don't investigate while reputation degrades
 2. **100% backup capacity** - Always have warmed backups ready
-3. **1 spam complaint = inbox death** - The inbox is always killed immediately. The *domain* only burns when 2+ inboxes on the same domain have spam complaints (cross-inbox pattern).
+3. **1 spam complaint = inbox death** - The inbox is always killed immediately. The *domain* burn decision is rate-based: complaint rate evaluated against thresholds (<0.3% safe, 0.3-1.0% monitoring, >1.0% burn).
 4. **Differentiated thresholds** - Spam blocks are worse than bad addresses
-5. **Proportional domain response** - 1 bad inbox out of 50 is an inbox problem, not a domain problem. Domain burns require evidence of domain-level compromise.
+5. **Proportional domain response** - Domain complaint rate determines action, not raw inbox count. A 3-inbox Gmail domain and a 50-inbox Microsoft domain are evaluated by the same rate thresholds.
 
 ## Kill Trigger Types
 
@@ -40,17 +40,19 @@ All triggers kill the **inbox** immediately when breached:
 
 After an inbox is killed, the kill processor decides whether to also **burn the domain** (`pool_status = 'burned'`). This is a two-tier classification:
 
-| Classification | Triggers | Domain Burn Rule | Rationale |
-|----------------|----------|------------------|-----------|
-| **Conditional domain burn** | `spam_complaint` | Burns only when **2+ inboxes** on the same domain have the same trigger | 1 spam complaint on 1 of 50 inboxes is an inbox problem, not domain compromise. Cross-inbox pattern = domain reputation issue |
+| Classification | Triggers | Domain Action | Rationale |
+|----------------|----------|---------------|-----------|
+| **Rate-based domain evaluation** | `spam_complaint` | Complaint rate < 0.3% = safe. 0.3-1.0% = `monitoring` (7-day window). > 1.0% = immediate burn. | Rate-based thresholds scale proportionally across different domain sizes (3-inbox Gmail vs 50-inbox Microsoft) |
 | **Inbox-level only** | All other triggers | Never burns domain | Bounces, disconnects, and list-quality issues are inbox-level. Safe to promote B-Set inboxes from the same domain |
+
+**Workspace circuit breaker:** 3+ domains in the same workspace with spam kills within 24h triggers fleet-wide list quality response. Affected domains enter `monitoring` instead of burning, even if rate exceeds 1.0%. Prevents cascade burns from a single bad list.
 
 ```python
 # From kill_processor.py
 DOMAIN_KILLING_TRIGGERS = set()  # Empty — provider_block_* removed (misclassified recipient rejections)
 
 CONDITIONAL_DOMAIN_TRIGGERS = {
-    'spam_complaint',  # 1 inbox = inbox kill; 2+ inboxes = domain burn
+    'spam_complaint',  # Rate-based: <0.3% safe, 0.3-1.0% monitoring, >1.0% burn
 }
 
 INBOX_KILLING_TRIGGERS = {
@@ -60,7 +62,25 @@ INBOX_KILLING_TRIGGERS = {
 }
 ```
 
-> **History**: Prior to 2026-03-18, `spam_complaint` was an instant domain burn. Production audit found 32 domains incorrectly burned from single spam complaints (e.g., `fixselery.com` — 51/52 inboxes live, health 91, burned from 1 complaint). Changed to require cross-inbox pattern confirmation.
+> **History**: Prior to 2026-03-18, `spam_complaint` was an instant domain burn. Production audit found 32 domains incorrectly burned from single spam complaints (e.g., `fixselery.com` — 51/52 inboxes live, health 91, burned from 1 complaint). Changed to count-based (2+) on 2026-03-18, then to rate-based thresholds on 2026-03-19 for proportional response across domain sizes.
+
+### Domain Burn = Total Loss (Domain-Level Reserve Pool)
+
+**A domain burn condemns ALL inboxes on that domain**, not just the ones that triggered the kill. The reserve pool operates at the **domain level** — you cannot split inboxes from the same domain and selectively reserve some.
+
+When a domain burns:
+1. `burn_domain_and_promote()` SQL function sets `pool_status = 'burned'`
+2. A **reserve domain** (with all its inboxes) is promoted to `pool_status = 'live'`
+3. If no reserve domain exists → Slack alert: "URGENT: Order replacement domains via HyperTide"
+
+**Blast radius depends on ESP** (set by vendor HyperTide, not configurable by us):
+
+| ESP | Inboxes/Domain | Inboxes Lost per Burn | Daily Capacity Lost |
+|-----|---------------|----------------------|---------------------|
+| Gmail | ~3 | ~3 | ~60 sends/day |
+| Microsoft | ~50 | ~50 | ~100 sends/day |
+
+This means a Microsoft domain burn destroys ~50 inboxes even if only 2-3 triggered the kill. The other 47-48 healthy inboxes are collateral damage. This is a structural concentration risk inherent to the vendor-provided Microsoft infrastructure shape.
 
 ### Differentiated Bounce Thresholds
 
@@ -170,7 +190,7 @@ Kill triggers are evaluated in priority order. Multiple triggers can fire simult
 
 ```python
 # Priority order (evaluated top to bottom)
-1. spam_complaint      # >= 1 = inbox killed. Domain burned only if 2+ inboxes affected.
+1. spam_complaint      # >= 1 = inbox killed. Domain evaluated by complaint rate thresholds.
 2. hard_blocked_24h    # >= 2 = reputation damage (inbox-level only)
 3. hard_unknown_24h    # >= 3 = list quality (inbox-level only)
 4. hard_bounces_24h    # >= 2 = fallback (only if no specific trigger)
@@ -188,9 +208,15 @@ After an inbox is killed, the kill processor evaluates whether the trigger warra
 Inbox killed with trigger_type
     ↓
 Is it spam_complaint?
-    YES → Count dead inboxes on same domain with same trigger.
-           2+ inboxes? → Domain burn (cross-inbox pattern confirmed).
-           1 inbox?    → Inbox-level only. Domain safe. Promote B-Set inbox.
+    YES → Calculate domain complaint rate (spam-killed / total inboxes)
+           ↓
+           Workspace circuit breaker? (3+ domains with spam kills in 24h)
+               YES → Domain enters monitoring (fleet-wide list event)
+               NO  ↓
+           Rate > 1.0%?   → Immediate domain burn. Reserve domain promoted.
+           Rate 0.3-1.0%? → Domain enters monitoring (7-day window).
+                             Re-evaluate after 7 days: burn if rate >= 1.0%, else flagged.
+           Rate < 0.3%?   → Inbox-level only. Domain safe. Promote B-Set inbox.
     NO ↓
 Inbox-level kill. Domain continues operating. Promote B-Set inbox.
 ```
@@ -264,13 +290,21 @@ ORDER BY w.workspace_name, COUNT(*) DESC;
 
 ## ESP-Specific Kill Profiles
 
-Different ESPs exhibit different kill patterns based on their enforcement behavior:
+Gmail and Microsoft have fundamentally different infrastructure shapes (set by vendor HyperTide), which creates different risk profiles under the same kill trigger definitions:
 
-| Provider | Typical Kill Rate | Top Triggers | Pattern |
-|----------|------------------|--------------|---------|
-| **Microsoft** | ~25% | `hard_unknown`, `hard_blocked` | High volume of unknown-user bounces; aggressive blocking for policy violations |
-| **Gmail** | ~45% | `hard_bounces`, `hard_blocked` | Higher kill rate due to stricter spam filtering; more bounce-based kills |
-| **Other** | Varies | Mixed | Depends on provider infrastructure |
+| Metric | Gmail | Microsoft |
+|--------|-------|-----------|
+| **Inboxes per domain** | ~3 | ~50 |
+| **Daily limit per inbox** | 20 | 2 |
+| **Domain daily capacity** | ~60 sends | ~100 sends |
+| **Inbox kill rate** | Higher (fewer inboxes, more volume each) | Lower (many inboxes, less volume each) |
+| **Domain burn rate** | Lower (kills spread across many domains) | Higher (kills concentrate on few domains) |
+| **Blast radius per burn** | Low (~3 inboxes) | Catastrophic (~50 inboxes) |
+| **Rate trigger activation** | ~5 days (100 sends at 20/day) | ~50 days (100 sends at 2/day) |
+
+**Key insight**: Gmail has higher inbox-level attrition but lower domain-level risk. Microsoft has lower inbox-level attrition but dramatically higher domain-level risk due to concentration. Rate-based thresholds handle this proportionally: 1 spam kill on a 50-inbox Microsoft domain = 2% rate (monitoring), while 1 spam kill on a 3-inbox Gmail domain = 33% rate (immediate burn).
+
+**Detection gap for Microsoft**: Absolute-count triggers (`hard_unknown_24h >= 3`) are difficult to hit at 2 sends/day. Rate-based triggers require 100 minimum sends (~50 days at Microsoft volume). This means problematic Microsoft inboxes take longer to detect than Gmail inboxes.
 
 ESP reputation in the health dashboard is derived from kill rate per provider:
 - <5% kill rate → **High** reputation
@@ -314,18 +348,21 @@ The sync worker (`health_checks.py`) maintains `domain_state` based on kill trig
 
 | Rule | Resulting State | Rationale |
 |------|----------------|-----------|
-| 2+ reputation kills (spam_complaint, hard_blocked_24h) | `dead` | Reputation-impacting kills = domain compromised |
-| >30% unhealthy inboxes | `dead` | Capacity safety net — widespread health degradation |
-| 1 reputation kill | `flagged` | Warning signal, may recover |
+| Complaint rate > 1.0% | `dead` | Severe domain compromise, immediate burn |
+| Complaint rate 0.3% - 1.0% | `monitoring` | 7-day observation window, may recover or burn |
+| Complaint rate 0.1% - 0.3% | `flagged` | Warning signal, inbox-level issue |
+| Complaint rate < 0.1% | `live` | Domain operating normally |
+| >30% unhealthy AND (10+ inboxes OR 2+ unhealthy) | `dead` | Capacity safety net |
 | All inboxes disconnected | `flagged` | OAuth issues across entire domain |
-| Otherwise | `live` | Domain operating normally |
+| Workspace circuit breaker (3+ domains with spam kills in 24h) | `monitoring` | Overrides burn, fleet-wide list event |
+
+Domain state values: `live`, `flagged`, `monitoring`, `dead`
 
 List-quality kills (`hard_unknown_24h`, `hard_bounces_24h`, etc.) and operational kills (`disconnected_timeout`) do NOT change domain state — they are inbox-level issues that do not indicate domain reputation compromise.
 
-**Burned domains** (`pool_status='burned'`) are set by the kill processor when domain-level triggers are confirmed:
-- **Spam complaints**: Only after cross-inbox confirmation — 2+ inboxes on the same domain with `kill_trigger = 'spam_complaint'`
+**Burned domains** (`pool_status='burned'`) are set by the kill processor when complaint rate exceeds 1.0% (or when a `monitoring` domain exceeds 1.0% after the 7-day window). The workspace circuit breaker overrides this: if 3+ domains in the workspace have spam kills in 24h, domains enter `monitoring` instead of burning.
 
-This is separate from `domain_state` and indicates the domain needs replacement. A domain can be `domain_state = 'dead'` (many dead inboxes from reputation kills or capacity safety net) but NOT burned — because burning requires confirmed cross-inbox spam complaint pattern.
+This is separate from `domain_state` and indicates the domain needs replacement. A domain can be `domain_state = 'dead'` (from capacity safety net) but NOT burned. A domain in `monitoring` is under observation and will be re-evaluated after 7 days.
 
 ## Files
 

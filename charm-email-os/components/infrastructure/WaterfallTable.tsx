@@ -141,7 +141,7 @@ export function WaterfallTable({
       // Live with inboxes - show first (working infrastructure)
       if (domain.isPurchased && domain.liveInboxCount > 0) {
         // At risk domains slightly lower priority than fully healthy
-        if (domain.domainStatus === 'flagged') return 2;
+        if (domain.domainStatus === 'flagged' || domain.domainStatus === 'monitoring') return 2;
         return 1; // Healthy live
       }
 

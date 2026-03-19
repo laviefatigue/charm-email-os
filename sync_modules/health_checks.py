@@ -79,12 +79,14 @@ KILL_THRESHOLDS = {
     }
 }
 
-# V3 Section 5: Domain health thresholds
+# Domain health thresholds — rate-based + capacity safety net
 DOMAIN_THRESHOLDS = {
-    'unhealthy_warning': 0.15,    # 15% unhealthy = flag for investigation
-    'unhealthy_pause': 0.30,      # 30% unhealthy = pause domain (tag for review)
-    'dead_inbox_flagged': 1,      # 1 dead inbox = domain flagged
-    'dead_inbox_dead': 2,         # 2+ dead inboxes = domain dead
+    'complaint_rate_healthy': 0.001,     # < 0.1% = domain is fine
+    'complaint_rate_flagged': 0.003,     # 0.1-0.3% = flagged, monitor closely
+    'complaint_rate_burn': 0.01,         # > 1.0% sustained = dead/burn
+    'monitoring_window_days': 7,         # Observation window before burn decision
+    'unhealthy_pause': 0.30,            # 30% unhealthy = capacity safety net
+    'unhealthy_min_count': 2,           # Min unhealthy inboxes before % threshold applies
 }
 
 
@@ -542,27 +544,44 @@ class HealthCheckModule:
             AND d.workspace_id = $1
         """, workspace_id)
 
-        # Trigger-aware domain state update:
-        # Only REPUTATION kills (spam_complaint, hard_blocked_24h, provider_block_*)
-        # affect domain_state. List-quality kills (hard_unknown, bounces) and
-        # operational kills (disconnected_timeout) do NOT change domain state.
-        # Capacity safety net: >30% unhealthy still triggers dead regardless.
+        # Recalculate domain complaint rates for all domains in workspace
+        try:
+            await self.db.execute(
+                "SELECT recalculate_all_domain_complaint_rates($1)", workspace_id
+            )
+        except Exception as e:
+            print(f"    [WARNING] Could not recalculate complaint rates: {e}")
+
+        # Rate-based + trigger-aware domain state update:
+        # - Domains in 'monitoring' are NOT overridden (handled by evaluate_monitoring_domains)
+        # - Complaint rate > 1.0% = dead
+        # - >30% unhealthy (min 2 unhealthy) = dead (capacity safety net, size-aware)
+        # - Complaint rate > 0.3% = flagged
+        # - 1 reputation kill = flagged (for non-spam triggers like hard_blocked_24h)
+        # - Otherwise = live
         await self.db.execute("""
             UPDATE domains d
             SET
                 domain_state = CASE
-                    -- 2+ reputation kills = domain dead (cross-inbox pattern)
-                    WHEN COALESCE(rep.reputation_dead, 0) >= 2 THEN 'dead'
-                    -- >30% unhealthy = domain dead (capacity safety net)
-                    WHEN COALESCE(d.health_percentage, 100) < (100 - $2 * 100) THEN 'dead'
-                    -- 1 reputation kill = flagged
-                    WHEN COALESCE(rep.reputation_dead, 0) >= 1 THEN 'flagged'
-                    -- Otherwise live (list-quality/operational kills don't affect domain state)
+                    -- Don't override monitoring state (handled by evaluate_monitoring_domains)
+                    WHEN d.domain_state = 'monitoring' THEN 'monitoring'
+                    -- Complaint rate > 1.0% = dead
+                    WHEN COALESCE(d.domain_complaint_rate_7d, 0) >= $2 THEN 'dead'
+                    -- Capacity safety net: >30% unhealthy, size-aware (min 2 unhealthy)
+                    WHEN COALESCE(d.health_percentage, 100) < (100 - $3 * 100)
+                        AND (sub.total_count >= 10 OR sub.unhealthy_count >= $4) THEN 'dead'
+                    -- Complaint rate > 0.3% = flagged
+                    WHEN COALESCE(d.domain_complaint_rate_7d, 0) >= $5 THEN 'flagged'
+                    -- 1 reputation kill = flagged (non-spam triggers)
+                    WHEN COALESCE(sub.reputation_dead, 0) >= 1 THEN 'flagged'
+                    -- Otherwise live
                     ELSE 'live'
                 END::domain_state,
                 updated_at = NOW()
             FROM (
                 SELECT domain_id,
+                    COUNT(*) as total_count,
+                    COUNT(*) FILTER (WHERE health_score < 60) as unhealthy_count,
                     COUNT(*) FILTER (WHERE inbox_state = 'dead' AND (
                         kill_trigger IN ('spam_complaint', 'hard_blocked_24h')
                         OR kill_trigger LIKE 'provider_block_%'
@@ -570,24 +589,166 @@ class HealthCheckModule:
                 FROM sender_accounts
                 WHERE workspace_id = $1 AND domain_id IS NOT NULL AND is_active = TRUE
                 GROUP BY domain_id
-            ) rep
-            WHERE d.id = rep.domain_id
+            ) sub
+            WHERE d.id = sub.domain_id
             AND d.workspace_id = $1
             AND d.pool_status != 'cancelled'
         """,
             workspace_id,
-            DOMAIN_THRESHOLDS['unhealthy_pause']       # $2: 0.30
+            DOMAIN_THRESHOLDS['complaint_rate_burn'],       # $2: 0.01 (1.0%)
+            DOMAIN_THRESHOLDS['unhealthy_pause'],           # $3: 0.30 (30%)
+            DOMAIN_THRESHOLDS['unhealthy_min_count'],       # $4: 2
+            DOMAIN_THRESHOLDS['complaint_rate_flagged'],    # $5: 0.003 (0.3%)
         )
 
-        # NEW: Flag domains where ALL live inboxes are disconnected
-        # These domains have 0 operational capacity despite having live inboxes
+        # Evaluate domains in monitoring state (7-day observation window)
+        await self._evaluate_monitoring_domains(workspace_id)
+
+        # Flag domains where ALL live inboxes are disconnected
         await self._flag_all_disconnected_domains(workspace_id)
 
-        # V3: Recalculate domain aggregate metrics (bounce rate, cross-inbox patterns)
+        # Recalculate domain aggregate metrics (bounce rate, cross-inbox patterns)
         await self._recalculate_workspace_domain_metrics(workspace_id)
 
         # V3: Check domain-wide bounce rate threshold (>5% = flag domain)
         await self._check_domain_bounce_rate_thresholds(workspace_id)
+
+    async def _evaluate_monitoring_domains(self, workspace_id: UUID):
+        """
+        Evaluate domains in 'monitoring' state after their observation window.
+
+        After 7-day window:
+        - Rate >= 0.3%: burn domain (sustained damage confirmed)
+        - Rate 0.1-0.3%: extend monitoring 7 more days
+        - Rate < 0.1%: recover to 'live' (domain recovered after inbox kills)
+        """
+        monitoring_domains = await self.db.fetch("""
+            SELECT id, domain_name, domain_complaint_rate_7d,
+                   monitoring_started_at, monitoring_reason
+            FROM domains
+            WHERE workspace_id = $1
+              AND domain_state = 'monitoring'
+              AND monitoring_started_at IS NOT NULL
+        """, workspace_id)
+
+        window_days = DOMAIN_THRESHOLDS['monitoring_window_days']
+
+        for domain in monitoring_domains:
+            domain_id = domain['id']
+            domain_name = domain['domain_name']
+            rate = float(domain['domain_complaint_rate_7d'] or 0)
+            started_at = domain['monitoring_started_at']
+
+            # Check if observation window has expired
+            now = datetime.now(timezone.utc)
+            window_end = started_at + timedelta(days=window_days)
+
+            if now < window_end:
+                # Window still active — just log
+                days_remaining = (window_end - now).days
+                print(f"    [MONITORING] {domain_name}: {days_remaining}d remaining, "
+                      f"rate={rate*100:.3f}%")
+                continue
+
+            # Window expired — make decision
+            if rate >= DOMAIN_THRESHOLDS['complaint_rate_flagged']:
+                # Rate >= 0.3% sustained — burn the domain
+                print(f"    [MONITORING → BURN] {domain_name}: rate {rate*100:.3f}% "
+                      f"sustained after {window_days}d — burning domain")
+
+                await self.db.execute("""
+                    UPDATE domains
+                    SET domain_state = 'dead'::domain_state,
+                        monitoring_started_at = NULL,
+                        monitoring_reason = NULL,
+                        updated_at = NOW()
+                    WHERE id = $1
+                """, domain_id)
+
+                # Call burn_domain_and_promote if domain is still live pool_status
+                pool_status = await self.db.fetchval(
+                    "SELECT pool_status FROM domains WHERE id = $1", domain_id
+                )
+                if pool_status == 'live':
+                    try:
+                        result = await self.db.fetchrow(
+                            "SELECT * FROM burn_domain_and_promote($1, $2)",
+                            domain_id, 'spam_complaint'
+                        )
+                        if result:
+                            action = result.get('action', 'unknown')
+                            promoted = result.get('promoted_domain_name')
+                            print(f"    [BURN] {domain_name}: action={action}, "
+                                  f"promoted={promoted or 'none'}")
+                    except Exception as e:
+                        # Fallback: manually burn if function doesn't exist
+                        print(f"    [WARNING] burn_domain_and_promote failed: {e}")
+                        await self.db.execute("""
+                            UPDATE domains
+                            SET pool_status = 'burned',
+                                burned_at = NOW(),
+                                burn_trigger = 'spam_complaint'
+                            WHERE id = $1 AND pool_status = 'live'
+                        """, domain_id)
+
+                # Log event
+                try:
+                    await self.db.execute("""
+                        INSERT INTO domain_rotation_events (
+                            domain_id, workspace_id, event_type,
+                            trigger_type, old_status, new_status, notes
+                        ) VALUES ($1, $2, 'monitoring_burn', 'spam_complaint',
+                                  'monitoring', 'burned',
+                                  $3)
+                    """, domain_id, workspace_id,
+                        f"Monitoring window expired: complaint rate {rate*100:.3f}% "
+                        f"exceeded 0.3% threshold. Domain burned.")
+                except Exception as e:
+                    print(f"    [WARNING] Could not log monitoring burn event: {e}")
+
+            elif rate >= DOMAIN_THRESHOLDS['complaint_rate_healthy']:
+                # Rate 0.1-0.3% — borderline, extend monitoring
+                print(f"    [MONITORING → EXTEND] {domain_name}: rate {rate*100:.3f}% "
+                      f"in 0.1-0.3% range — extending {window_days}d")
+
+                await self.db.execute("""
+                    UPDATE domains
+                    SET monitoring_started_at = NOW(),
+                        monitoring_reason = $2,
+                        updated_at = NOW()
+                    WHERE id = $1
+                """, domain_id,
+                    f"Extended monitoring: rate {rate*100:.3f}% borderline "
+                    f"(0.1-0.3% range)")
+
+            else:
+                # Rate < 0.1% — domain recovered
+                print(f"    [MONITORING → LIVE] {domain_name}: rate {rate*100:.3f}% "
+                      f"below 0.1% — domain recovered")
+
+                await self.db.execute("""
+                    UPDATE domains
+                    SET domain_state = 'live'::domain_state,
+                        monitoring_started_at = NULL,
+                        monitoring_reason = NULL,
+                        updated_at = NOW()
+                    WHERE id = $1
+                """, domain_id)
+
+                # Log recovery event
+                try:
+                    await self.db.execute("""
+                        INSERT INTO domain_rotation_events (
+                            domain_id, workspace_id, event_type,
+                            trigger_type, old_status, new_status, notes
+                        ) VALUES ($1, $2, 'monitoring_recovered', 'spam_complaint',
+                                  'monitoring', 'live',
+                                  $3)
+                    """, domain_id, workspace_id,
+                        f"Monitoring window expired: complaint rate {rate*100:.3f}% "
+                        f"below 0.1%. Domain recovered to live.")
+                except Exception as e:
+                    print(f"    [WARNING] Could not log recovery event: {e}")
 
     async def _recalculate_workspace_domain_metrics(self, workspace_id: UUID):
         """

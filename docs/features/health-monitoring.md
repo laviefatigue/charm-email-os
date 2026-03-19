@@ -30,11 +30,14 @@ Data freshness is shown via "Last sync: X minutes ago" indicator.
 |--------|--------|---------|---------------|
 | **Burned** | `pool_status='burned'` | Kill triggers fired, domain reputation compromised | **IS a health problem** — penalizes health score |
 | **Dead** | `domain_state='dead'` | No inboxes in EmailBison, domain retired or client leaving | **Not a health problem** — lifecycle event |
-| **Flagged** | `domain_state='flagged'` | 1 dead inbox or all disconnected | Warning signal |
+| **Flagged** | `domain_state='flagged'` | Spam rate 0.1-0.3% or 1 dead inbox or all disconnected | Warning signal |
+| **Monitoring** | `domain_state='monitoring'` | Spam rate 0.3-1.0%, under 7-day observation window before burn decision | **Active observation** — no new campaign assignments |
 | **Cancelled** | `pool_status='cancelled'` | HyperTide order cancelled, never real infrastructure | **Excluded from all queries** |
 | **Unassigned** | `pool_status='unassigned'` | Generated domain, not yet provisioned | Not relevant to health scoring |
 
 **Key insight**: Dead domains are lifecycle events (stop paying for them), not health problems. Burned domains are actual infrastructure damage that needs replacement. Only `cancelled` is excluded from queries — burned domains stay visible because they represent real operational damage.
+
+**Rate-based domain evaluation**: Domain health is evaluated using spam complaint rates rather than raw inbox counts. Thresholds: <0.1% = live, 0.1-0.3% = flagged, 0.3-1.0% = enters 7-day monitoring window, >1.0% = immediate burn. A workspace circuit breaker triggers monitoring (not burn) when 3+ domains have spam kills within 24 hours. The capacity safety net requires both >30% unhealthy AND a minimum of 2 unhealthy inboxes (or 10+ total inboxes) before marking a domain dead.
 
 ## Overall Health Score Formula
 
@@ -369,7 +372,7 @@ The health system includes automated kill detection. When thresholds are breache
 
 | Trigger | Threshold | Domain Burn? | Description |
 |---------|-----------|--------------|-------------|
-| `spam_complaint` | >=1 | Conditional (2+ inboxes) | Inbox killed instantly. Domain burns only when 2+ inboxes on same domain have spam complaints |
+| `spam_complaint` | >=1 | Rate-based (0.3%+ sustained = burn) | Inbox killed instantly. Domain evaluated by spam rate: <0.1% live, 0.1-0.3% flagged, 0.3-1.0% monitoring (7-day window), >1.0% immediate burn. Circuit breaker: 3+ domains with spam kills in 24h = monitoring, not burn |
 | `hard_blocked_24h` | >=2 | No | Spam/policy rejection |
 | `hard_unknown_24h` | >=3 | No | Bad email addresses |
 | `hard_bounces_24h` | >=2 | No | Combined fallback |

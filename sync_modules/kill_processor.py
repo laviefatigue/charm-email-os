@@ -41,12 +41,24 @@ from .slack_alerter import SlackAlerter
 # When proper detection is built (account suspension/disconnection signals), re-add here.
 DOMAIN_KILLING_TRIGGERS = set()
 
-# CONDITIONAL domain burns — only domain-level when cross-inbox pattern detected
-# A single spam complaint on 1 of 50 inboxes is inbox-level, not domain-level.
-# Burns when 2+ inboxes on the same domain have the same trigger type.
+# CONDITIONAL domain burns — rate-based evaluation with observation window
+# Domain complaint rate evaluated (NOT inbox count):
+#   < 0.3% = inbox kill only, domain safe
+#   0.3-1.0% = domain enters 7-day monitoring window
+#   > 1.0% = immediate domain burn (sustained damage, no observation needed)
+# Workspace circuit breaker: 3+ domains with spam kills in 24h = fleet-wide list
+# quality event, domains enter monitoring instead of burning.
 CONDITIONAL_DOMAIN_TRIGGERS = {
-    'spam_complaint',           # 1 inbox = inbox kill; 2+ inboxes = domain burn
+    'spam_complaint',
 }
+
+# Rate thresholds for domain burn decisions (aligned with Google Postmaster)
+DOMAIN_COMPLAINT_RATE_HEALTHY = 0.001    # < 0.1% = domain is fine
+DOMAIN_COMPLAINT_RATE_FLAGGED = 0.003    # 0.1-0.3% = flagged, monitor
+DOMAIN_COMPLAINT_RATE_BURN = 0.01        # > 1.0% sustained = burn immediately
+MONITORING_WINDOW_DAYS = 7               # Observation window duration
+CIRCUIT_BREAKER_DOMAINS_24H = 3          # Domains hit in 24h to trip workspace breaker
+UNHEALTHY_MIN_COUNT = 2                  # Min unhealthy before 30% safety net applies
 
 # Inbox-killing triggers indicate inbox-level or list-level issues.
 # Safe to promote B-Set inboxes from the same domain.
@@ -101,6 +113,120 @@ class KillProcessor:
         self.client = client
         self.audit_logger = audit_logger
         self.alerter = alerter or SlackAlerter()
+
+    # =========================================================================
+    # RATE-BASED DOMAIN BURN HELPERS
+    # =========================================================================
+
+    async def _check_workspace_circuit_breaker(self, workspace_id, trigger_type: str) -> bool:
+        """
+        Check if multiple domains in this workspace are being hit by spam complaints
+        in a short window — indicates a fleet-wide list quality event, not individual
+        domain degradation.
+
+        All live inboxes are shared across all campaigns (no campaign-to-inbox isolation),
+        so we can't attribute complaints to individual campaigns. Instead we detect the
+        workspace-level pattern: 3+ domains with spam kills in 24h = bad list segment.
+
+        Returns True if circuit breaker tripped (do NOT burn domain).
+        """
+        domains_hit_24h = await self.db.fetchval("""
+            SELECT COUNT(DISTINCT domain_id)
+            FROM sender_accounts
+            WHERE workspace_id = $1
+              AND kill_trigger = 'spam_complaint'
+              AND killed_at >= NOW() - INTERVAL '24 hours'
+        """, workspace_id)
+
+        if domains_hit_24h >= CIRCUIT_BREAKER_DOMAINS_24H:
+            print(f"    [CIRCUIT BREAKER] {domains_hit_24h} domains with spam kills in 24h "
+                  f"— fleet-wide list quality event, blocking domain burns")
+
+            if self.alerter:
+                try:
+                    await self.alerter.send_alert(
+                        level="warning",
+                        title=f"Circuit Breaker: {domains_hit_24h} domains hit in 24h",
+                        message=(
+                            f"*{domains_hit_24h} domains* in this workspace have spam complaint "
+                            f"kills in the last 24 hours.\n"
+                            f"This indicates a fleet-wide list quality event, not individual "
+                            f"domain reputation damage.\n"
+                            f"*Action:* Domains entering monitoring (not burning). "
+                            f"Review recent campaign lists for toxic segments."
+                        ),
+                        context={"workspace_id": str(workspace_id), "domains_hit": domains_hit_24h}
+                    )
+                except Exception as e:
+                    print(f"    [WARNING] Failed to send circuit breaker alert: {e}")
+
+            return True
+
+        return False
+
+    async def _get_domain_complaint_rate(self, domain_id) -> float:
+        """Get the pre-calculated domain complaint rate (7-day window)."""
+        rate = await self.db.fetchval("""
+            SELECT COALESCE(domain_complaint_rate_7d, 0)
+            FROM domains WHERE id = $1
+        """, domain_id)
+        return float(rate or 0)
+
+    async def _enter_domain_monitoring(self, domain_id, domain_name: str,
+                                        trigger_type: str, reason: str):
+        """
+        Put a domain into monitoring state with a 7-day observation window.
+        After the window, health_checks.py evaluates whether to burn or recover.
+        """
+        # Capture old state BEFORE update for audit logging
+        old_state = await self.db.fetchval(
+            "SELECT domain_state::text FROM domains WHERE id = $1", domain_id
+        )
+
+        # Only enter monitoring if not already monitoring
+        if old_state == 'monitoring':
+            return
+
+        await self.db.execute("""
+            UPDATE domains
+            SET domain_state = 'monitoring'::domain_state,
+                monitoring_started_at = NOW(),
+                monitoring_reason = $2,
+                updated_at = NOW()
+            WHERE id = $1
+        """, domain_id, reason)
+
+        # Log to domain_rotation_events with correct old_status
+        try:
+            await self.db.execute("""
+                INSERT INTO domain_rotation_events (
+                    domain_id, workspace_id, event_type,
+                    trigger_type, old_status, new_status, notes
+                )
+                SELECT $1, workspace_id, 'monitoring_started', $2,
+                       $4, 'monitoring', $3
+                FROM domains WHERE id = $1
+            """, domain_id, trigger_type, reason, old_state or 'unknown')
+        except Exception as e:
+            print(f"    [WARNING] Could not log monitoring event: {e}")
+
+        print(f"    [MONITORING] {domain_name}: {reason}")
+
+        if self.alerter:
+            try:
+                await self.alerter.send_alert(
+                    level="info",
+                    title=f"Domain Monitoring: {domain_name}",
+                    message=(
+                        f"*Trigger:* `{trigger_type}`\n"
+                        f"*Reason:* {reason}\n"
+                        f"*Action:* 7-day observation window started. "
+                        f"Domain will be evaluated after window expires."
+                    ),
+                    context={"domain": domain_name, "trigger": trigger_type}
+                )
+            except Exception as e:
+                print(f"    [WARNING] Failed to send monitoring alert: {e}")
 
     async def process_queue(self) -> SyncResult:
         """
@@ -510,12 +636,15 @@ class KillProcessor:
 
     async def _update_domain_on_inbox_death(self, inbox_id: UUID):
         """
-        V3 Section 5: Update domain state when inbox dies.
+        Update domain state when inbox dies.
 
-        Domain State Transitions (tag-only, no deletion):
-        - 1 dead inbox = 'flagged' (accelerate backup warming)
-        - 2+ dead inboxes = 'dead' (tag entire domain for review)
-        - >30% inboxes unhealthy = 'dead' (tag for review)
+        Rate-based domain state transitions:
+        - Domain in 'monitoring' → don't override (handled by health_checks evaluate_monitoring_domains)
+        - Complaint rate >1.0% → 'dead'
+        - >30% unhealthy (min 2 inboxes) → 'dead' (capacity safety net, size-aware)
+        - Complaint rate >0.3% → 'flagged'
+        - 1 reputation kill → 'flagged'
+        - Otherwise → 'live'
 
         NOTE: We only update local state. Domain remains in EmailBison.
         Human operators decide actual action based on tags.
@@ -537,8 +666,12 @@ class KillProcessor:
 
         domain_id = domain['domain_id']
 
-        # Calculate domain health metrics with trigger-aware categorization
-        # Only REPUTATION kills affect domain_state — list-quality and operational kills don't
+        # Recalculate complaint rate for this domain
+        await self.db.execute(
+            "SELECT recalculate_domain_complaint_rate($1)", domain_id
+        )
+
+        # Calculate domain health metrics
         metrics = await self.db.fetchrow("""
             SELECT
                 COUNT(*) as total_inboxes,
@@ -561,20 +694,23 @@ class KillProcessor:
         # Calculate unhealthy percentage
         unhealthy_pct = (unhealthy_count / total * 100) if total > 0 else 0
 
-        # Trigger-aware domain state:
-        # - Reputation kills (spam_complaint, hard_blocked_24h, provider_block_*) → affect domain_state
-        # - List-quality kills (hard_unknown_24h, hard_bounces_24h, etc.) → do NOT affect domain_state
-        # - Operational kills (disconnected_timeout) → do NOT affect domain_state
-        # Capacity safety net: >30% unhealthy still triggers dead regardless of trigger type
+        # Get complaint rate
+        complaint_rate = await self._get_domain_complaint_rate(domain_id)
+
+        # Rate-based + trigger-aware domain state
         current_state = domain['domain_state']
         new_state = current_state
 
-        if reputation_dead >= 2:
-            new_state = 'dead'       # Cross-inbox reputation pattern
-        elif unhealthy_pct > 30:
-            new_state = 'dead'       # Capacity safety net
+        if current_state == 'monitoring':
+            new_state = 'monitoring'  # Don't override — handled by evaluate_monitoring_domains
+        elif complaint_rate >= DOMAIN_COMPLAINT_RATE_BURN:
+            new_state = 'dead'       # >1% complaint rate = dead
+        elif unhealthy_pct > 30 and (total >= 10 or unhealthy_count >= UNHEALTHY_MIN_COUNT):
+            new_state = 'dead'       # Capacity safety net (size-aware: min 2 unhealthy)
+        elif complaint_rate >= DOMAIN_COMPLAINT_RATE_FLAGGED:
+            new_state = 'flagged'    # 0.3-1.0% complaint rate
         elif reputation_dead >= 1:
-            new_state = 'flagged'    # One reputation signal
+            new_state = 'flagged'    # One reputation signal (non-spam, e.g. hard_blocked_24h)
         else:
             new_state = 'live'       # List/operational kills don't affect domain state
 
@@ -596,7 +732,8 @@ class KillProcessor:
         # Log state transition
         if new_state != current_state:
             print(f"    [DOMAIN STATE] {domain['domain_name']}: {current_state} -> {new_state} "
-                  f"(dead={dead_count}, unhealthy={unhealthy_pct:.1f}%)")
+                  f"(dead={dead_count}, unhealthy={unhealthy_pct:.1f}%, "
+                  f"complaint_rate={complaint_rate*100:.3f}%)")
 
     async def _update_campaign_burn_counters(
         self,
@@ -808,32 +945,57 @@ class KillProcessor:
             )
             return  # Skip normal promotion - domain is compromised
 
-        # Conditional domain triggers (spam_complaint) = check cross-inbox pattern
-        # Only burn when 2+ inboxes on the same domain share the trigger type.
-        # 1 spam complaint out of 50 inboxes is inbox-level, not domain-level.
+        # Conditional domain triggers (spam_complaint) = rate-based evaluation
+        # with workspace circuit breaker and observation window.
         if is_conditional_domain_trigger(effective_trigger):
-            dead_with_same_trigger = await self.db.fetchval("""
-                SELECT COUNT(*)
-                FROM sender_accounts
-                WHERE domain_id = $1
-                  AND inbox_state = 'dead'
-                  AND kill_trigger = $2
-            """, domain_id, effective_trigger)
-
-            if dead_with_same_trigger >= 2:
-                # Cross-inbox pattern confirmed — this IS domain-level damage
-                print(f"    [DOMAIN KILL] {domain_name}: {dead_with_same_trigger} inboxes with {effective_trigger} — cross-inbox pattern, burning domain")
-                await self._handle_domain_killing_trigger(
-                    domain_id=domain_id,
-                    domain_name=domain_name,
-                    workspace_id=workspace_id,
-                    trigger_type=effective_trigger,
-                    killed_inbox_email=killed_inbox['email_address']
+            # Step 1: Workspace circuit breaker — check BEFORE domain burn
+            # If 3+ domains in this workspace have spam kills in 24h, it's a
+            # fleet-wide list quality event, not individual domain degradation.
+            circuit_breaker_tripped = await self._check_workspace_circuit_breaker(
+                workspace_id, effective_trigger
+            )
+            if circuit_breaker_tripped:
+                await self._enter_domain_monitoring(
+                    domain_id, domain_name, effective_trigger,
+                    reason="Workspace circuit breaker — fleet-wide list quality event"
                 )
-                return  # Domain compromised
+                # Still promote B-Set inbox for the killed inbox (domain not burned)
+                # Fall through to normal promotion logic below
+
             else:
-                # Single inbox — treat as inbox-level kill, don't burn domain
-                print(f"    [INBOX KILL] {domain_name}: 1st {effective_trigger} — inbox-level only, domain safe")
+                # Step 2: Recalculate domain complaint rate
+                await self.db.execute(
+                    "SELECT recalculate_domain_complaint_rate($1)", domain_id
+                )
+                complaint_rate = await self._get_domain_complaint_rate(domain_id)
+
+                # Step 3: Rate-based decision
+                if complaint_rate >= DOMAIN_COMPLAINT_RATE_BURN:
+                    # >1.0% sustained = burn immediately (no observation needed)
+                    print(f"    [DOMAIN KILL] {domain_name}: complaint rate "
+                          f"{complaint_rate*100:.3f}% > 1.0% — burning domain")
+                    await self._handle_domain_killing_trigger(
+                        domain_id=domain_id,
+                        domain_name=domain_name,
+                        workspace_id=workspace_id,
+                        trigger_type=effective_trigger,
+                        killed_inbox_email=killed_inbox['email_address']
+                    )
+                    return  # Domain compromised
+
+                elif complaint_rate >= DOMAIN_COMPLAINT_RATE_FLAGGED:
+                    # 0.3-1.0% = enter 7-day monitoring window
+                    await self._enter_domain_monitoring(
+                        domain_id, domain_name, effective_trigger,
+                        reason=f"Complaint rate {complaint_rate*100:.3f}% exceeds "
+                               f"0.3% — monitoring {MONITORING_WINDOW_DAYS} days"
+                    )
+                    # Fall through to normal promotion logic below
+
+                else:
+                    # < 0.3%. Inbox kill was sufficient. Domain is fine.
+                    print(f"    [INBOX KILL] {domain_name}: complaint rate "
+                          f"{complaint_rate*100:.3f}% — inbox-level only, domain safe")
 
         # Only promote if the killed inbox was in A-Set (deployed)
         if killed_pool != 'deployed':

@@ -9,7 +9,7 @@
 
 export type TLD = 'com' | 'co' | 'info';
 
-export type DomainStatus = 'live' | 'flagged' | 'dead';
+export type DomainStatus = 'live' | 'flagged' | 'monitoring' | 'dead';
 
 export type DNSStatus = 'pending' | 'propagating' | 'ready' | 'mismatch' | 'failed';
 

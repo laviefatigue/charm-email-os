@@ -53,6 +53,13 @@ const STATUS_CONFIG: Record<
     pillClass: 'bg-amber-50 text-amber-700 border-amber-200',
     progressColor: 'bg-amber-500',
   },
+  monitoring: {
+    label: 'Monitoring',
+    icon: Eye,
+    dotColor: 'bg-blue-500',
+    pillClass: 'bg-blue-50 text-blue-700 border-blue-200',
+    progressColor: 'bg-blue-500',
+  },
   dead: {
     label: 'Dead',
     icon: XCircle,

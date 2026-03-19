@@ -11,7 +11,9 @@
 
 **Critical Finding:** Hypertide does NOT support individual inbox replacement. When inboxes go bad, we must replace the **entire domain**, not individual inboxes.
 
-**Impact:** Our rotation system must be **domain-based**, not inbox-based. This fundamentally changes our rotation strategy.
+**Critical Finding #2:** Domain swaps are **only available for Entra (Microsoft) orders**. Google orders do **not** support domain swaps at this time. A burned Google domain is a permanent capacity and financial loss within that order.
+
+**Impact:** Our rotation system must be **domain-based**, not inbox-based. Entra domain burns are recoverable via swap; Google domain burns are not.
 
 ---
 
@@ -69,10 +71,71 @@
 4. Applies to both Hypertide domains AND customer-supplied domains (BYO)
 
 ### ✅ What We CAN Do:
-1. **Replace entire domains** within an order
+1. **Replace entire domains** within an Entra order (swap)
 2. **Redistribute sending volume** across remaining active inboxes on a domain
 3. **Safely send 3-4 emails per inbox per day** (increased from typical 2/day)
-4. **Swap domains via Hypertide Bulk interface**
+4. **Swap domains via Hypertide Bulk interface** (Entra only)
+
+---
+
+## Domain Swap Availability by Provider
+
+### Entra (Microsoft) — Swaps Available
+
+When an Entra domain is burned:
+1. We supply a **replacement domain** (BYO — we must source and provide the domain)
+2. HyperTide disconnects all inboxes on the burned domain
+3. HyperTide provisions fresh inboxes on the replacement domain
+4. New inboxes enter 21-day incubation/warmup period
+5. Domain swap is done via the Hypertide Bulk interface
+
+**Entra swap is a recovery mechanism** — the order continues at $50/mo with restored capacity after warmup completes.
+
+### Google — No Swaps Available
+
+HyperTide does **not** support domain swaps for Google orders at this time.
+
+When a Google domain is burned:
+1. The domain and its 3 inboxes are **permanently lost** within that order
+2. We continue paying the same $50/mo for the order
+3. There is no mechanism to replace the burned domain
+4. If all 5 Google domains in an order burn, the entire $50/mo is wasted
+5. Only recourse: cancel the order and place a new one
+
+---
+
+## Economics of Domain Burns
+
+We pay $50/month per order regardless of how many domains are operational. This makes swap availability a critical financial concern.
+
+### Cost Per Domain by Provider
+
+| Metric | Entra Order | Google Order |
+|--------|-------------|--------------|
+| **Cost** | $50/mo | $50/mo |
+| **Domains/order** | 2 | 5 |
+| **Cost per domain** | $25/mo | $10/mo |
+| **Inboxes/domain** | ~52 | 3 |
+| **Cost per inbox** | ~$0.48/mo | ~$3.33/mo |
+| **Daily capacity/domain** | ~104 sends | ~60 sends |
+| **Swap available?** | Yes | No |
+
+### Financial Impact of a Domain Burn
+
+| Scenario | Entra | Google |
+|----------|-------|--------|
+| **1 domain burned** | $25/mo idle until swapped (recoverable) | $10/mo wasted permanently |
+| **Recovery path** | Supply new domain → swap → 21-day warmup | None within order |
+| **Time to recover** | ~21 days (warmup) | Never (must cancel/reorder) |
+| **Order at 100% burn** | 2 burns = $50/mo wasted (both swappable) | 5 burns = $50/mo wasted (not recoverable) |
+
+### Why Swap Capability Matters
+
+**Entra:** A domain burn is an **operational event**. Capacity loss is temporary — swap the domain, warmup the new inboxes, capacity restored. The $50/mo subscription continues to deliver value.
+
+**Google:** A domain burn is a **financial leak**. Each burned Google domain is dead weight on the subscription. At $10/mo per domain, burning 3 of 5 domains means 60% of the order cost produces zero value with no fix short of cancellation.
+
+**Implication for kill trigger tuning:** Google domain burns should be treated more conservatively than Entra burns because they are irrecoverable. The rate-based domain burn logic (complaint rate >1.0% to burn, with a monitoring state at 0.3%+) and workspace circuit breaker (3+ domains in 24h = fleet event) are especially important for Google domains where burns are permanent.
 
 ---
 
@@ -99,20 +162,33 @@
 
 ---
 
-### Strategy 2: Full Domain Replacement (Permanent)
-**When:** Domain shows deliverability issues or too many inbox deaths
+### Strategy 2: Full Domain Replacement via Swap (Entra Only)
+**When:** Entra domain shows deliverability issues or too many inbox deaths
+**Availability:** Entra orders only — Google orders do NOT support domain swaps
 
 **How:**
-1. Navigate to Hypertide Bulk page
-2. Select the bad domain
-3. Initiate domain swap/replacement
-4. New domain provisioned with fresh inboxes
-5. Update our database to reflect new domain
+1. Source a replacement domain (BYO — we supply it)
+2. Navigate to Hypertide Bulk page
+3. Select the burned Entra domain
+4. Initiate domain swap with the replacement domain
+5. HyperTide disconnects burned domain inboxes and provisions fresh inboxes on replacement
+6. Update our database to reflect new domain
 
 **Process:**
 - Entire domain replaced (all inboxes together)
-- New domain goes through warmup
+- New domain goes through 21-day warmup/incubation
 - Old domain retired completely
+
+### Strategy 3: Order Cancellation & Reorder (Google Only)
+**When:** Google domain(s) burn and capacity loss is unacceptable
+
+Since Google orders do not support domain swaps, the only recovery path is:
+1. Accept the permanent capacity loss within the current order, OR
+2. Cancel the degraded order and place a new Google order ($50/mo)
+3. New order provisions 5 fresh domains with 15 fresh inboxes
+4. All inboxes enter 21-day warmup
+
+**Trade-off:** Cancellation means losing any remaining healthy domains on the old order. Only worth it when the order is sufficiently degraded (e.g., 3+ of 5 domains burned).
 
 ---
 
@@ -234,7 +310,9 @@ INSERT INTO domains (
 - ❌ Domain appears on RBL
 - ❌ Cannot maintain required volume (too many dead inboxes)
 - ❌ Domain-level bounce rate > threshold (e.g., 10%)
-- ❌ Spam complaint rate elevated at domain level
+- ❌ Complaint rate >1.0% (rate-based domain burn)
+
+**Note on rate-based burns:** Domain burns are now triggered by complaint rate thresholds, not count-based rules (e.g., "2+ inbox kills"). Thresholds: <0.1% = live, 0.3%+ = monitoring, >1.0% = burn. A workspace circuit breaker (3+ domains hit in 24h) prevents cascade burns from fleet-wide campaign events, placing domains in `monitoring` instead.
 
 **Action:** Full domain replacement via Hypertide
 
@@ -626,16 +704,20 @@ def daily_rotation_check():
 ## Summary
 
 ### Critical Insights
-1. **Cannot rotate individual inboxes** - Must work at domain level
-2. **Two-tier rotation:** Volume redistribution (temporary) → Domain replacement (permanent)
-3. **Safe sending limits:** 3-4 emails per inbox per day
-4. **Capacity planning:** Need 20-30% buffer for inbox deaths
-5. **Manual process:** Domain replacement via Hypertide Bulk interface (currently)
+1. **Cannot rotate individual inboxes** — must work at domain level
+2. **Domain swaps are Entra-only** — Google domains cannot be swapped; burns are permanent within the order
+3. **We supply replacement domains** — Entra swaps require us to source and provide the new domain (BYO)
+4. **Three-tier rotation:** Volume redistribution (temporary) → Domain swap/Entra (recoverable) → Order cancellation/Google (last resort)
+5. **Safe sending limits:** 3-4 emails per inbox per day
+6. **Capacity planning:** Need 20-30% buffer for inbox deaths
+7. **Google burns are financial leaks** — $10/mo per burned Google domain with no recovery path
 
 ### Strategic Impact
 - Rotation is **domain-based**, not inbox-based
-- Need higher capacity reserves to handle inbox deaths
-- Domain replacement has warmup lag (1-2 weeks)
+- Entra burns are recoverable operational events; Google burns are permanent financial losses
+- Need higher capacity reserves to handle inbox deaths, especially on Google infrastructure
+- Domain replacement has warmup lag (~21 days)
+- Kill trigger tuning should be more conservative for Google domains given irrecoverable burns
 - Focus shifts to **domain health**, not individual inbox health
 
 ### Next Steps
@@ -647,8 +729,8 @@ def daily_rotation_check():
 
 ---
 
-**Document Version:** 1.0
-**Last Updated:** 2026-02-23
+**Document Version:** 2.0
+**Last Updated:** 2026-03-19
 **Status:** Active Policy
 **Related Documents:**
 - DASHBOARD-BETA-001 (Implementation Plan)

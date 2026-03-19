@@ -24,6 +24,7 @@ const STATUS_STYLES: Record<string, { bg: string; text: string; icon: typeof Che
   live: { bg: 'bg-green-100', text: 'text-green-700', icon: CheckCircle },
   active: { bg: 'bg-green-100', text: 'text-green-700', icon: CheckCircle },
   warning: { bg: 'bg-yellow-100', text: 'text-yellow-700', icon: AlertTriangle },
+  monitoring: { bg: 'bg-blue-100', text: 'text-blue-700', icon: AlertCircle },
   critical: { bg: 'bg-red-100', text: 'text-red-700', icon: AlertCircle },
   dead: { bg: 'bg-gray-100', text: 'text-gray-500', icon: XCircle },
   unknown: { bg: 'bg-gray-100', text: 'text-gray-500', icon: AlertCircle },

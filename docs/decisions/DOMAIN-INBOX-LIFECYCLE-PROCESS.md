@@ -66,7 +66,7 @@ These are **three independent dimensions**: purchase stage, pool allocation, and
 ### 3.1 Core Principle
 
 **All inboxes on a domain share the same pool assignment.** This is because:
-- Domain-killing triggers (spam_complaint with 2+ cross-inbox pattern) compromise ALL inboxes on the domain
+- Domain-killing triggers (spam_complaint at 0.3%+ sustained rate) compromise ALL inboxes on the domain
 - If we mixed live and reserve inboxes on the same domain, a domain kill would burn our reserves too
 - When we need to swap out a burned domain, we swap the ENTIRE domain (all ~50 inboxes for Entra)
 
@@ -76,7 +76,7 @@ These are **three independent dimensions**: purchase stage, pool allocation, and
 |-----------------------|---------|----------|
 | `live` | A-Set — deployed to active campaigns | ~80% |
 | `reserve` | B-Set — warmed backup, promoted when live burns | ~20% |
-| `burned` | Compromised by confirmed domain-level trigger (2+ spam complaints cross-inbox pattern), permanently retired | N/A |
+| `burned` | Compromised by confirmed domain-level trigger (spam rate >1.0% or sustained 0.3%+ through monitoring window), permanently retired | N/A |
 | `unassigned` | New domain, not yet allocated to a pool | N/A |
 
 ### 3.3 Pool Assignment Only Applies to Deployed Domains
@@ -160,15 +160,21 @@ Day 21+: set_tag_sync evaluates domain pool_status
 
 When a confirmed domain-level trigger fires, the domain is burned and a reserve promoted:
 
-**Conditional burns** — spam complaints (`spam_complaint`):
+**Rate-based burns** — spam complaints (`spam_complaint`):
 ```
 1. Inbox killed with spam_complaint trigger
-2. Kill processor counts dead inboxes on same domain with spam_complaint
-3. If 2+ inboxes → cross-inbox pattern confirmed → domain burn (same as above)
-4. If 1 inbox → inbox-level only, domain safe, normal B-Set inbox promotion
+2. Kill processor evaluates domain spam complaint rate:
+   - <0.1%  → domain stays live, normal B-Set inbox promotion
+   - 0.1-0.3% → domain flagged, continue monitoring
+   - 0.3-1.0% → domain enters 'monitoring' state (7-day observation window)
+   - >1.0%  → immediate domain burn
+3. Workspace circuit breaker: if 3+ domains have spam kills within 24h,
+   affected domains enter monitoring (not burn) to prevent cascade
+4. Capacity safety net: >30% unhealthy triggers dead only if 10+ total
+   inboxes OR 2+ unhealthy (prevents false positives on small domains)
 ```
 
-> **Why conditional?** 1 spam complaint on 1 of 50 inboxes is statistically an inbox-level event (bad list segment, user error). 2+ complaints across different inboxes indicates the domain itself is being recognized as spam by recipients — that's domain-level compromise.
+> **Why rate-based?** Count-based thresholds (e.g., "2+ inboxes") don't scale across domains of different sizes. A domain with 50 inboxes and 2 spam complaints is at 4% — very different from a domain with 3 inboxes and 2 complaints (67%). Rate-based evaluation with a monitoring window gives operators time to investigate borderline cases before committing to an irreversible domain burn.
 
 ### 5.3 Inbox-Level Kill (Non-Domain)
 
@@ -179,12 +185,12 @@ When an inbox-level trigger fires (hard_bounces_24h, hard_blocked_24h, disconnec
 2. Domain health recalculated (trigger-aware):
    - Only reputation kills (spam_complaint, hard_blocked_24h) affect domain_state
    - List-quality kills (hard_unknown_24h, hard_bounces_24h) and operational kills (disconnected_timeout) do NOT change domain state
-   - >30% unhealthy inboxes → domain_state = 'dead' (capacity safety net)
+   - >30% unhealthy inboxes AND (10+ total inboxes OR 2+ unhealthy) → domain_state = 'dead' (size-aware capacity safety net)
 3. Domain pool_status stays 'live' — other inboxes continue sending
 4. Capacity decreases but domain continues operating
 ```
 
-**Domain degradation warning:** When multiple inbox kills reduce a domain from 50 → 30 → 20 inboxes, the domain is losing capacity. This is tracked via `domain_state` and health metrics, but the domain only gets `pool_status = 'burned'` on a confirmed domain-level trigger (2+ spam complaints across different inboxes).
+**Domain degradation warning:** When multiple inbox kills reduce a domain from 50 → 30 → 20 inboxes, the domain is losing capacity. This is tracked via `domain_state` and health metrics, but the domain only gets `pool_status = 'burned'` when the spam complaint rate exceeds thresholds (>1.0% = immediate burn, 0.3-1.0% = burn after 7-day monitoring window if rate persists).
 
 ---
 

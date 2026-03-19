@@ -22,6 +22,7 @@ export function DomainHealthCard({ domain, onClick }: DomainHealthCardProps) {
         'p-4 rounded-lg border transition-all',
         domain.state === 'live' && 'border-green-200 bg-green-50/50 hover:border-green-300',
         domain.state === 'flagged' && 'border-yellow-200 bg-yellow-50/50 hover:border-yellow-300',
+        domain.state === 'monitoring' && 'border-blue-200 bg-blue-50/50 hover:border-blue-300',
         domain.state === 'dead' && 'border-red-200 bg-red-50/50 hover:border-red-300',
         onClick && 'cursor-pointer'
       )}

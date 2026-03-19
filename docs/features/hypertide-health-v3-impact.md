@@ -52,17 +52,19 @@
 - Transitions domains through lifecycle states
 - Flags domains when too many inboxes die
 
-**Thresholds:**
+**Thresholds (rate-based):**
 | Condition | Action | Status |
 |-----------|--------|--------|
-| 1 inbox dead | Domain → Flagged | ✅ DONE |
-| 2+ inboxes dead | Domain → Dead | ✅ DONE |
-| <15% unhealthy inboxes | Domain → Live | ✅ DONE |
-| 15-30% unhealthy | Domain → Flagged | ✅ DONE |
-| >30% unhealthy | Domain → Pause/Dead | ✅ DONE |
+| Spam rate <0.1% | Domain → Live | ✅ DONE |
+| Spam rate 0.1-0.3% | Domain → Flagged | ✅ DONE |
+| Spam rate 0.3-1.0% | Domain → Monitoring (7-day observation window) | ✅ DONE |
+| Spam rate >1.0% | Domain → Burn immediately | ✅ DONE |
+| >30% unhealthy AND (10+ total OR 2+ unhealthy) | Domain → Dead (capacity safety net) | ✅ DONE |
+| 3+ domains with spam kills in 24h (workspace) | Circuit breaker → Monitoring, not burn | ✅ DONE |
 | Domain bounce rate >5% | Domain → Flagged | ✅ DONE |
-| Complaints across 2+ inboxes | Domain → Flagged | ✅ DONE |
 | Blocks across 2+ inboxes | Domain → Flagged | ✅ DONE |
+
+**Note:** Domain burns are no longer instant from inbox death counts. The system uses spam complaint rates to determine severity, with a 7-day monitoring window for borderline cases (0.3-1.0%). This prevents premature burns from isolated inbox events and gives operators time to investigate.
 
 ---
 
@@ -179,14 +181,17 @@ def _update_domain_capacity_after_kill(self, inbox):
 - **ADD:** "Pending replacement" domain status
 - **ADD:** Domain replacement workflow integration
 
-**New Thresholds:**
+**New Thresholds (rate-based):**
 | Condition | Old Action | New Action |
 |-----------|------------|------------|
-| 1 inbox dead | Flagged | Flagged + Monitor capacity |
-| 2+ inboxes dead | Dead | Dead → **Consider replacement** |
-| >30% unhealthy | Pause | Pause → **Replacement required** |
-| Capacity <70% | N/A | **NEW: Flag for replacement** |
-| Capacity <40% | N/A | **NEW: Critical - Replace immediately** |
+| Spam rate <0.1% | Live | Live (no change) |
+| Spam rate 0.1-0.3% | N/A | Flagged + Monitor capacity |
+| Spam rate 0.3-1.0% | N/A | **Monitoring** (7-day observation window before burn decision) |
+| Spam rate >1.0% | N/A | **Burn immediately** |
+| >30% unhealthy (size-aware) | Pause | Dead only if 10+ total inboxes OR 2+ unhealthy (safety net) |
+| 3+ domains spam-killed in 24h | N/A | **Workspace circuit breaker** → Monitoring, not burn |
+| Capacity <70% | N/A | **Flag for replacement** |
+| Capacity <40% | N/A | **Critical - Replace immediately** |
 
 **Code Changes:**
 ```python

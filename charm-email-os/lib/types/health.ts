@@ -5,8 +5,8 @@ export * from './infrastructure';
 // Inbox lifecycle: Live -> Dead (one-way, permanent)
 export type InboxHealthState = 'live' | 'dead';
 
-// Domain lifecycle: Live -> Flagged (1 reputation kill) -> Dead (>=2 reputation kills or >30% unhealthy)
-export type DomainHealthState = 'live' | 'flagged' | 'dead';
+// Domain lifecycle: Live -> Flagged (rate 0.3%+ or 1 rep kill) -> Monitoring (observation window) -> Dead/Recovered
+export type DomainHealthState = 'live' | 'flagged' | 'monitoring' | 'dead';
 
 // Campaign lifecycle: Live -> Quarantined -> Live/Dead
 export type CampaignHealthState = 'live' | 'quarantined' | 'dead';
@@ -300,6 +300,7 @@ export const HEALTH_STATE_COLORS = {
   domain: {
     live: { bg: 'bg-green-100', text: 'text-green-800' },
     flagged: { bg: 'bg-yellow-100', text: 'text-yellow-800' },
+    monitoring: { bg: 'bg-blue-100', text: 'text-blue-800' },
     dead: { bg: 'bg-red-100', text: 'text-red-800' },
   },
   campaign: {

@@ -24,6 +24,7 @@ export function DomainCell({ domain }: DomainCellProps) {
   const getStatusDotColor = () => {
     if (domain.domainStatus === 'live') return 'bg-green-500';
     if (domain.domainStatus === 'flagged') return 'bg-amber-500';
+    if (domain.domainStatus === 'monitoring') return 'bg-blue-500';
     if (domain.domainStatus === 'dead') return 'bg-red-500';
     if (domain.isPurchased) return 'bg-blue-500';
     return 'bg-gray-300';

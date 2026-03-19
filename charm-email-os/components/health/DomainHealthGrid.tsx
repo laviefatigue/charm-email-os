@@ -13,12 +13,13 @@ interface DomainHealthGridProps {
 export function DomainHealthGrid({ domains, onDomainClick }: DomainHealthGridProps) {
   const liveDomains = domains.filter((d) => d.state === 'live');
   const flaggedDomains = domains.filter((d) => d.state === 'flagged');
+  const monitoringDomains = domains.filter((d) => d.state === 'monitoring');
   const deadDomains = domains.filter((d) => d.state === 'dead');
   const msDomains = domains.filter((d) => d.infrastructureType === 'entra');
   const gmailDomains = domains.filter((d) => d.infrastructureType === 'google');
 
-  // Sort: flagged first (need attention), then dead, then live
-  const sortedDomains = [...flaggedDomains, ...deadDomains, ...liveDomains];
+  // Sort: monitoring first (under observation), then flagged, then dead, then live
+  const sortedDomains = [...monitoringDomains, ...flaggedDomains, ...deadDomains, ...liveDomains];
 
   return (
     <Card>
