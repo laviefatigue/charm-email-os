@@ -80,13 +80,15 @@ KILL_THRESHOLDS = {
 }
 
 # Domain health thresholds — rate-based + capacity safety net
+# Use Decimal for all numeric values to prevent asyncpg type inference errors
+# (Python float vs int inconsistency on prepared statement reuse)
 DOMAIN_THRESHOLDS = {
-    'complaint_rate_healthy': 0.001,     # < 0.1% = domain is fine
-    'complaint_rate_flagged': 0.003,     # 0.1-0.3% = flagged, monitor closely
-    'complaint_rate_burn': 0.01,         # > 1.0% sustained = dead/burn
-    'monitoring_window_days': 7,         # Observation window before burn decision
-    'unhealthy_pause': 0.30,            # 30% unhealthy = capacity safety net
-    'unhealthy_min_count': 2,           # Min unhealthy inboxes before % threshold applies
+    'complaint_rate_healthy': Decimal('0.001'),    # < 0.1% = domain is fine
+    'complaint_rate_flagged': Decimal('0.003'),    # 0.1-0.3% = flagged, monitor closely
+    'complaint_rate_burn': Decimal('0.01'),        # > 1.0% sustained = dead/burn
+    'monitoring_window_days': 7,                   # Observation window before burn decision
+    'unhealthy_pause': Decimal('0.30'),            # 30% unhealthy = capacity safety net
+    'unhealthy_min_count': 2,                      # Min unhealthy inboxes before % threshold applies
 }
 
 
@@ -458,19 +460,13 @@ class HealthCheckModule:
         trigger_value: float,
         trigger_threshold: float
     ):
-        """Add inbox to kill queue if not already queued."""
-        # Check if already queued (pending or flagged)
-        existing = await self.db.fetchval("""
-            SELECT id FROM kill_queue
-            WHERE inbox_id = $1
-            AND status IN ('pending', 'flagged')
-        """, inbox_id)
+        """Add inbox to kill queue if not already queued.
 
-        if existing:
-            return  # Already in queue
-
-        # Add to queue
-        await self.db.execute("""
+        Uses ON CONFLICT with partial unique index (inbox_id WHERE status IN pending/flagged)
+        to prevent duplicate entries. This replaces the previous SELECT-then-INSERT pattern
+        which had race conditions.
+        """
+        result = await self.db.fetchval("""
             INSERT INTO kill_queue (
                 inbox_id,
                 workspace_id,
@@ -478,6 +474,9 @@ class HealthCheckModule:
                 trigger_value,
                 trigger_threshold
             ) VALUES ($1, $2, $3, $4, $5)
+            ON CONFLICT (inbox_id) WHERE status IN ('pending', 'flagged')
+            DO NOTHING
+            RETURNING id
         """,
             inbox_id,
             workspace_id,
@@ -485,6 +484,9 @@ class HealthCheckModule:
             Decimal(str(trigger_value)),
             Decimal(str(trigger_threshold))
         )
+
+        if result is None:
+            return  # Already in queue
 
         print(f"    [KILL QUEUE] {inbox_email} - {trigger_type}: {trigger_value:.4f} > {trigger_threshold:.4f}")
 

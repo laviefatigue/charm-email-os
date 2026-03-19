@@ -53,9 +53,11 @@ CONDITIONAL_DOMAIN_TRIGGERS = {
 }
 
 # Rate thresholds for domain burn decisions (aligned with Google Postmaster)
-DOMAIN_COMPLAINT_RATE_HEALTHY = 0.001    # < 0.1% = domain is fine
-DOMAIN_COMPLAINT_RATE_FLAGGED = 0.003    # 0.1-0.3% = flagged, monitor
-DOMAIN_COMPLAINT_RATE_BURN = 0.01        # > 1.0% sustained = burn immediately
+# Use Decimal to prevent asyncpg type inference errors on prepared statement reuse
+from decimal import Decimal as _Decimal
+DOMAIN_COMPLAINT_RATE_HEALTHY = _Decimal('0.001')    # < 0.1% = domain is fine
+DOMAIN_COMPLAINT_RATE_FLAGGED = _Decimal('0.003')    # 0.1-0.3% = flagged, monitor
+DOMAIN_COMPLAINT_RATE_BURN = _Decimal('0.01')        # > 1.0% sustained = burn immediately
 MONITORING_WINDOW_DAYS = 7               # Observation window duration
 CIRCUIT_BREAKER_DOMAINS_24H = 3          # Domains hit in 24h to trip workspace breaker
 UNHEALTHY_MIN_COUNT = 2                  # Min unhealthy before 30% safety net applies
@@ -715,19 +717,19 @@ class KillProcessor:
             new_state = 'live'       # List/operational kills don't affect domain state
 
         # Update domain metrics and state
+        live_count = int(metrics['live_count'] or 0)
+        health_pct = _Decimal(str(round(live_count / total * 100, 2))) if total > 0 else _Decimal('0')
+
         await self.db.execute("""
             UPDATE domains
             SET
                 dead_inbox_count = $2,
                 live_inbox_count = $3,
-                health_percentage = CASE
-                    WHEN $4 > 0 THEN (($3::DECIMAL / $4) * 100)
-                    ELSE 0
-                END,
+                health_percentage = $4,
                 domain_state = $5::domain_state,
                 updated_at = NOW()
             WHERE id = $1
-        """, domain_id, dead_count, metrics['live_count'] or 0, total, new_state)
+        """, domain_id, int(dead_count), live_count, health_pct, new_state)
 
         # Log state transition
         if new_state != current_state:
