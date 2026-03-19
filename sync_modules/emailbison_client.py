@@ -460,7 +460,7 @@ class EmailBisonClient:
         self,
         sender_email_id: int,
         status: str = None,
-        folder: str = 'all',
+        folder: str = 'inbox',
         page: int = 1,
     ) -> Dict:
         """
@@ -469,7 +469,7 @@ class EmailBisonClient:
         Args:
             sender_email_id: EB sender email ID
             status: Filter: 'interested', 'automated_reply', 'not_automated_reply'
-            folder: Filter: 'inbox', 'sent', 'spam', 'bounced', 'all'
+            folder: Filter: 'inbox', 'sent', 'spam', 'bounced' (note: 'all' is rejected by EB API)
             page: Page number
         """
         params = {'page': page, 'folder': folder}
@@ -485,7 +485,7 @@ class EmailBisonClient:
         self,
         sender_email_id: int,
         status: str = None,
-        folder: str = 'all',
+        folder: str = 'inbox',
     ) -> list:
         """Get all replies for a sender email (handles pagination)."""
         all_replies = []
