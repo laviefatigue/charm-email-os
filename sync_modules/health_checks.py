@@ -567,8 +567,9 @@ class HealthCheckModule:
                     WHEN d.domain_state = 'monitoring' THEN 'monitoring'
                     -- Complaint rate > 1.0% = dead
                     WHEN COALESCE(d.domain_complaint_rate_7d, 0) >= $2 THEN 'dead'
-                    -- Capacity safety net: >30% unhealthy, size-aware (min 2 unhealthy)
-                    WHEN COALESCE(d.health_percentage, 100) < (100 - $3 * 100)
+                    -- Quality safety net: >30% of inboxes have health_score < 60, size-aware
+                    WHEN sub.total_count > 0
+                        AND (sub.unhealthy_count::numeric / sub.total_count) > $3
                         AND (sub.total_count >= 10 OR sub.unhealthy_count >= $4) THEN 'dead'
                     -- Complaint rate > 0.3% = flagged
                     WHEN COALESCE(d.domain_complaint_rate_7d, 0) >= $5 THEN 'flagged'
