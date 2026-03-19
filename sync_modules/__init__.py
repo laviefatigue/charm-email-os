@@ -18,6 +18,7 @@ Modules:
 - daily_snapshot: Daily volume and capacity snapshots for dashboard charts
 - lifecycle_tag_sync: Lifecycle tag management (incubating/live) in EmailBison
 - set_tag_sync: A-Set/B-Set tag management and promotion in EmailBison
+- sync_engagement: Inbox engagement metrics (opens, replies, interested) with daily snapshots
 """
 
 from .emailbison_client import EmailBisonClient
@@ -34,6 +35,7 @@ from .sync_oauth import OAuthSyncModule
 from .daily_snapshot import DailySnapshotModule
 from .lifecycle_tag_sync import LifecycleTagSyncModule
 from .set_tag_sync import SetTagSyncModule
+from .sync_engagement import EngagementSyncModule
 
 __all__ = [
     'EmailBisonClient',
@@ -51,4 +53,5 @@ __all__ = [
     'DailySnapshotModule',
     'LifecycleTagSyncModule',
     'SetTagSyncModule',
+    'EngagementSyncModule',
 ]

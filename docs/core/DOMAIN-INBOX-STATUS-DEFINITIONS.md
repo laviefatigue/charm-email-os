@@ -368,9 +368,30 @@ do NOT advance domain state. Only reputation kills count.
 | sender_accounts | inventory_pool_status | VARCHAR | deployed, reserve, warning |
 | sender_accounts | kill_trigger | ENUM | trigger type that killed it |
 | sender_accounts | killed_at | TIMESTAMP | when inbox was killed |
+| sender_accounts | total_opened_count | INTEGER | all-time total opens |
+| sender_accounts | unique_opened_count | INTEGER | all-time unique opens |
+| sender_accounts | unique_replied_count | INTEGER | all-time unique replies |
+| sender_accounts | total_leads_contacted_count | INTEGER | all-time leads contacted |
+| sender_accounts | interested_leads_count | INTEGER | all-time interested leads |
+| sender_accounts | unsubscribed_count | INTEGER | all-time unsubscribes |
+| sender_accounts | opens_7d | INTEGER | opens in last 7 days |
+| sender_accounts | replies_7d | INTEGER | replies in last 7 days |
+| sender_accounts | interested_7d | INTEGER | interested leads in last 7 days |
+| sender_accounts | sent_7d | INTEGER | emails sent in last 7 days |
+| sender_accounts | engagement_synced_at | TIMESTAMPTZ | last engagement sync |
 | domains | domain_state | ENUM | live, flagged, monitoring, dead |
 | domains | pool_status | ENUM | live, reserve, burned, cancelled |
 | domains | health_percentage | NUMERIC | % of live inboxes on domain |
+| domains | domain_opens_all_time | INTEGER | all-time opens across inboxes |
+| domains | domain_unique_opens_all_time | INTEGER | all-time unique opens |
+| domains | domain_unique_replies_all_time | INTEGER | all-time unique replies |
+| domains | domain_leads_contacted_all_time | INTEGER | all-time leads contacted |
+| domains | domain_interested_leads_all_time | INTEGER | all-time interested leads |
+| domains | domain_unsubscribes_all_time | INTEGER | all-time unsubscribes |
+| domains | domain_sends_all_time | INTEGER | all-time sends |
+| domains | engagement_rolled_up_at | TIMESTAMPTZ | last engagement rollup |
+
+**Note:** Engagement columns are informational metrics synced by `sync_engagement.py`. They are NOT used for kill triggers or domain burn decisions.
 
 ### 7.2 Verification Queries
 

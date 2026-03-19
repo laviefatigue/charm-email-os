@@ -462,6 +462,61 @@ Time-series warmup data is stored in `sender_warmup_snapshots`:
 | `warmup_bounces_received_count` | Bounces received during warmup |
 | `warmup_emails_saved_from_spam` | Emails rescued from spam |
 
+## Engagement Metrics
+
+Engagement metrics track inbox-level and domain-level performance (opens, replies, interested leads). These are **informational metrics only** -- they are NOT used for kill triggers or domain burn decisions.
+
+### Purpose
+
+- Compare ESP performance (Gmail vs Microsoft) per workspace
+- Track engagement trends over time via daily snapshots
+- Provide domain-level rollup for infrastructure planning
+
+### Data Source
+
+Synced daily by `sync_modules/sync_engagement.py` from EmailBison campaign-events/stats endpoint.
+
+### sender_accounts Engagement Columns
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `total_opened_count` | INTEGER | All-time total opens |
+| `unique_opened_count` | INTEGER | All-time unique opens |
+| `unique_replied_count` | INTEGER | All-time unique replies |
+| `total_leads_contacted_count` | INTEGER | All-time leads contacted |
+| `interested_leads_count` | INTEGER | All-time interested leads |
+| `unsubscribed_count` | INTEGER | All-time unsubscribes |
+| `opens_7d` | INTEGER | Opens in last 7 days |
+| `unique_opens_7d` | INTEGER | Unique opens in last 7 days |
+| `replies_7d` | INTEGER | Replies in last 7 days |
+| `interested_7d` | INTEGER | Interested leads in last 7 days |
+| `sent_7d` | INTEGER | Emails sent in last 7 days |
+| `unsubscribed_7d` | INTEGER | Unsubscribes in last 7 days |
+| `engagement_synced_at` | TIMESTAMPTZ | Last engagement sync timestamp |
+
+### domains Engagement Rollup Columns
+
+Aggregated from inbox-level data via `rollup_domain_engagement()` SQL function.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `domain_opens_all_time` | INTEGER | All-time opens across all inboxes |
+| `domain_unique_opens_all_time` | INTEGER | All-time unique opens |
+| `domain_unique_replies_all_time` | INTEGER | All-time unique replies |
+| `domain_leads_contacted_all_time` | INTEGER | All-time leads contacted |
+| `domain_interested_leads_all_time` | INTEGER | All-time interested leads |
+| `domain_unsubscribes_all_time` | INTEGER | All-time unsubscribes |
+| `domain_sends_all_time` | INTEGER | All-time sends |
+| `engagement_rolled_up_at` | TIMESTAMPTZ | Last rollup timestamp |
+
+### v_esp_performance View
+
+Per-workspace, per-ESP engagement comparison. Enables side-by-side Gmail vs Microsoft engagement analysis without the dual-provider bias pitfall (see DATA-DICTIONARY.md Common Pitfalls #3).
+
+### inbox_engagement_snapshots Table
+
+Daily time-series engagement data per inbox. One row per inbox per day. Used for trend analysis and historical engagement reporting.
+
 ## Campaign Kill Attribution
 
 Campaign kill attribution uses **real data** from `response_messages` joined to dead `sender_accounts`:

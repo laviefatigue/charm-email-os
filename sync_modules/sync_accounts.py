@@ -288,6 +288,14 @@ class AccountSyncModule:
         bounces_all_time = account.get('bounced_count', 0) or 0
         daily_limit = account.get('daily_limit', 0) or 0
 
+        # Extract engagement metrics (positive signals — previously dropped)
+        total_opened_count = account.get('total_opened_count', 0) or 0
+        unique_opened_count = account.get('unique_opened_count', 0) or 0
+        unique_replied_count = account.get('unique_replied_count', 0) or 0
+        total_leads_contacted_count = account.get('total_leads_contacted_count', 0) or 0
+        interested_leads_count = account.get('interested_leads_count', 0) or 0
+        unsubscribed_count = account.get('unsubscribed_count', 0) or 0
+
         # Extract warmup data (for monitoring only, NOT kill triggers)
         warmup_enabled = account.get('warmup_enabled', False)
         warmup_score = account.get('warmup_score')  # 0-100 or None
@@ -341,8 +349,14 @@ class AccountSyncModule:
                 first_seen_at,
                 last_seen_at,
                 last_synced_at,
-                warmup_started_at
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, COALESCE($24, NOW()), NOW(), NOW(), CASE WHEN $11 = TRUE THEN $24 ELSE NULL END)
+                warmup_started_at,
+                total_opened_count,
+                unique_opened_count,
+                unique_replied_count,
+                total_leads_contacted_count,
+                interested_leads_count,
+                unsubscribed_count
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, COALESCE($24, NOW()), NOW(), NOW(), CASE WHEN $11 = TRUE THEN $24 ELSE NULL END, $25, $26, $27, $28, $29, $30)
             ON CONFLICT (email_address) DO UPDATE SET
                 emailbison_account_id = EXCLUDED.emailbison_account_id,
                 display_name = COALESCE(EXCLUDED.display_name, sender_accounts.display_name),
@@ -420,7 +434,32 @@ class AccountSyncModule:
                 warmup_score = EXCLUDED.warmup_score,
                 warmup_spam_count = EXCLUDED.warmup_spam_count,
                 warmup_bounces_received = EXCLUDED.warmup_bounces_received,
-                warmup_bounces_caused = EXCLUDED.warmup_bounces_caused
+                warmup_bounces_caused = EXCLUDED.warmup_bounces_caused,
+                -- Engagement metrics (positive signals, monotonically increasing)
+                total_opened_count = GREATEST(
+                    COALESCE(EXCLUDED.total_opened_count, 0),
+                    COALESCE(sender_accounts.total_opened_count, 0)
+                ),
+                unique_opened_count = GREATEST(
+                    COALESCE(EXCLUDED.unique_opened_count, 0),
+                    COALESCE(sender_accounts.unique_opened_count, 0)
+                ),
+                unique_replied_count = GREATEST(
+                    COALESCE(EXCLUDED.unique_replied_count, 0),
+                    COALESCE(sender_accounts.unique_replied_count, 0)
+                ),
+                total_leads_contacted_count = GREATEST(
+                    COALESCE(EXCLUDED.total_leads_contacted_count, 0),
+                    COALESCE(sender_accounts.total_leads_contacted_count, 0)
+                ),
+                interested_leads_count = GREATEST(
+                    COALESCE(EXCLUDED.interested_leads_count, 0),
+                    COALESCE(sender_accounts.interested_leads_count, 0)
+                ),
+                unsubscribed_count = GREATEST(
+                    COALESCE(EXCLUDED.unsubscribed_count, 0),
+                    COALESCE(sender_accounts.unsubscribed_count, 0)
+                )
             RETURNING (xmax = 0) as created, emails_sent_all_time as prev_sends
         """,
             workspace_id,                              # $1
@@ -446,7 +485,13 @@ class AccountSyncModule:
             warmup_spam_count,                         # $21 warmup_spam_count (NOT complaints)
             warmup_bounces_received,                   # $22 warmup_bounces_received
             warmup_bounces_caused,                     # $23 warmup_bounces_caused
-            eb_created_at                              # $24 eb_created_at (EB's real upload date)
+            eb_created_at,                             # $24 eb_created_at (EB's real upload date)
+            total_opened_count,                        # $25 engagement: opens
+            unique_opened_count,                       # $26 engagement: unique opens
+            unique_replied_count,                      # $27 engagement: unique replies
+            total_leads_contacted_count,               # $28 engagement: leads contacted
+            interested_leads_count,                    # $29 engagement: interested leads
+            unsubscribed_count                         # $30 engagement: unsubscribes
         )
 
         if not result:
@@ -617,6 +662,36 @@ class AccountSyncModule:
                 FROM sender_accounts
                 WHERE domain_id IS NOT NULL
                 AND is_active = TRUE
+                GROUP BY domain_id
+            ) sub
+            WHERE d.id = sub.domain_id
+        """)
+
+        # Rollup engagement metrics from inbox to domain level
+        await self.db.execute("""
+            UPDATE domains d
+            SET
+                domain_opens_all_time = sub.total_opens,
+                domain_unique_opens_all_time = sub.unique_opens,
+                domain_unique_replies_all_time = sub.unique_replies,
+                domain_leads_contacted_all_time = sub.leads_contacted,
+                domain_interested_leads_all_time = sub.interested_leads,
+                domain_unsubscribes_all_time = sub.unsubscribes,
+                domain_sends_all_time = sub.total_sends,
+                engagement_rolled_up_at = NOW(),
+                updated_at = NOW()
+            FROM (
+                SELECT
+                    domain_id,
+                    COALESCE(SUM(total_opened_count), 0) AS total_opens,
+                    COALESCE(SUM(unique_opened_count), 0) AS unique_opens,
+                    COALESCE(SUM(unique_replied_count), 0) AS unique_replies,
+                    COALESCE(SUM(total_leads_contacted_count), 0) AS leads_contacted,
+                    COALESCE(SUM(interested_leads_count), 0) AS interested_leads,
+                    COALESCE(SUM(unsubscribed_count), 0) AS unsubscribes,
+                    COALESCE(SUM(emails_sent_all_time), 0) AS total_sends
+                FROM sender_accounts
+                WHERE domain_id IS NOT NULL AND is_active = TRUE
                 GROUP BY domain_id
             ) sub
             WHERE d.id = sub.domain_id

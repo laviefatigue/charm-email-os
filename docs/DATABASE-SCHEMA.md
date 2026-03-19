@@ -86,6 +86,14 @@ Email domains managed in the system.
 | health_percentage | numeric | YES | Domain health 0-100 |
 | domain_bounce_rate_7d | numeric | YES | 7-day bounce rate |
 | domain_complaint_count | integer | YES | Spam complaints |
+| domain_opens_all_time | integer | YES | All-time opens across all inboxes |
+| domain_unique_opens_all_time | integer | YES | All-time unique opens |
+| domain_unique_replies_all_time | integer | YES | All-time unique replies |
+| domain_leads_contacted_all_time | integer | YES | All-time leads contacted |
+| domain_interested_leads_all_time | integer | YES | All-time interested leads |
+| domain_unsubscribes_all_time | integer | YES | All-time unsubscribes |
+| domain_sends_all_time | integer | YES | All-time sends |
+| engagement_rolled_up_at | timestamptz | YES | Last engagement rollup timestamp |
 | porkbun_price | numeric | YES | Porkbun price |
 | dynadot_price | numeric | YES | Dynadot price |
 | selected_provider | varchar | YES | Chosen registrar |
@@ -126,6 +134,46 @@ Email inboxes/sender accounts synced from EmailBison.
 | last_seen_at | timestamptz | NO | Last sync |
 | last_synced_at | timestamptz | YES | Last full sync |
 | is_active | boolean | NO | Active status |
+| total_opened_count | integer | YES | All-time total opens |
+| unique_opened_count | integer | YES | All-time unique opens |
+| unique_replied_count | integer | YES | All-time unique replies |
+| total_leads_contacted_count | integer | YES | All-time leads contacted |
+| interested_leads_count | integer | YES | All-time interested leads |
+| unsubscribed_count | integer | YES | All-time unsubscribes |
+| opens_7d | integer | YES | Opens in last 7 days |
+| unique_opens_7d | integer | YES | Unique opens in last 7 days |
+| replies_7d | integer | YES | Replies in last 7 days |
+| interested_7d | integer | YES | Interested leads in last 7 days |
+| sent_7d | integer | YES | Emails sent in last 7 days |
+| unsubscribed_7d | integer | YES | Unsubscribes in last 7 days |
+| engagement_synced_at | timestamptz | YES | Last engagement sync timestamp |
+
+---
+
+### inbox_engagement_snapshots
+
+Daily time-series engagement snapshots per inbox, captured by sync_engagement.py.
+
+| Column | Type | Nullable | Description |
+|--------|------|----------|-------------|
+| id | uuid | NO | Primary key |
+| sender_account_id | uuid | NO | FK to sender_accounts |
+| snapshot_date | date | NO | Date of snapshot |
+| total_opened_count | integer | YES | Total opens on this date |
+| unique_opened_count | integer | YES | Unique opens on this date |
+| unique_replied_count | integer | YES | Unique replies on this date |
+| total_leads_contacted_count | integer | YES | Leads contacted on this date |
+| interested_leads_count | integer | YES | Interested leads on this date |
+| unsubscribed_count | integer | YES | Unsubscribes on this date |
+| opens_7d | integer | YES | 7-day windowed opens |
+| unique_opens_7d | integer | YES | 7-day windowed unique opens |
+| replies_7d | integer | YES | 7-day windowed replies |
+| interested_7d | integer | YES | 7-day windowed interested |
+| sent_7d | integer | YES | 7-day windowed sends |
+| unsubscribed_7d | integer | YES | 7-day windowed unsubscribes |
+| created_at | timestamptz | YES | Created timestamp |
+
+**Unique constraint:** (sender_account_id, snapshot_date)
 
 ---
 
@@ -232,6 +280,32 @@ HyperTide order job queue.
 | order_count | integer | YES | Number of orders |
 | created_at | timestamptz | NO | Created timestamp |
 | completed_at | timestamptz | YES | Completion timestamp |
+
+---
+
+## Database Views
+
+### v_esp_performance
+
+Per-workspace, per-ESP engagement comparison view. Aggregates engagement metrics from sender_accounts grouped by workspace and ESP type.
+
+**Key Columns:**
+
+| Column | Type | Description |
+|--------|------|-------------|
+| workspace_id | uuid | Workspace identifier |
+| esp | enum | Email service provider (gmail, microsoft, other) |
+| inbox_count | integer | Number of inboxes |
+| total_opens | integer | Sum of total_opened_count |
+| unique_opens | integer | Sum of unique_opened_count |
+| unique_replies | integer | Sum of unique_replied_count |
+| leads_contacted | integer | Sum of total_leads_contacted_count |
+| interested_leads | integer | Sum of interested_leads_count |
+| unsubscribes | integer | Sum of unsubscribed_count |
+
+**SQL Functions:**
+- `rollup_domain_engagement(domain_uuid)` — Rolls up inbox engagement to a single domain
+- `rollup_all_domain_engagement()` — Rolls up engagement for all active domains
 
 ---
 

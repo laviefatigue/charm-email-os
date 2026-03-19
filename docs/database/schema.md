@@ -117,6 +117,25 @@ CREATE INDEX idx_domains_status ON domains(approval_status);
 | inboxes_with_complaints | INTEGER | Count of inboxes with spam complaints |
 | inboxes_with_blocks | INTEGER | Count of inboxes with hard blocks |
 
+#### Engagement Rollup Columns
+
+Aggregated from inbox-level engagement via `rollup_domain_engagement()` SQL function.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| domain_opens_all_time | INTEGER | All-time opens across all inboxes on domain |
+| domain_unique_opens_all_time | INTEGER | All-time unique opens |
+| domain_unique_replies_all_time | INTEGER | All-time unique replies |
+| domain_leads_contacted_all_time | INTEGER | All-time leads contacted |
+| domain_interested_leads_all_time | INTEGER | All-time interested leads |
+| domain_unsubscribes_all_time | INTEGER | All-time unsubscribes |
+| domain_sends_all_time | INTEGER | All-time sends |
+| engagement_rolled_up_at | TIMESTAMPTZ | When engagement was last rolled up |
+
+**SQL Functions:**
+- `rollup_domain_engagement(domain_uuid)` — Rolls up inbox engagement metrics to a single domain
+- `rollup_all_domain_engagement()` — Rolls up engagement for all active domains (called after daily sync)
+
 ### sender_accounts
 
 Email inbox/sending accounts with health monitoring and metrics.
@@ -233,6 +252,77 @@ CREATE INDEX idx_sender_accounts_metrics ON sender_accounts(emails_sent_all_time
 | inventory_pool_status | VARCHAR(20) | `deployed`, `warning`, `reserve` |
 | inventory_lifecycle_status | VARCHAR(20) | `active`, `incubating`, `dead` |
 | pool_tier | VARCHAR(20) | `primary`, `hot_backup`, `warming` |
+
+#### Engagement Metrics (All-Time)
+
+Synced daily from EmailBison campaign-events/stats endpoint by `sync_engagement.py`.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| total_opened_count | INTEGER | All-time total opens |
+| unique_opened_count | INTEGER | All-time unique opens |
+| unique_replied_count | INTEGER | All-time unique replies |
+| total_leads_contacted_count | INTEGER | All-time leads contacted |
+| interested_leads_count | INTEGER | All-time interested leads |
+| unsubscribed_count | INTEGER | All-time unsubscribes |
+
+#### Engagement Metrics (7-Day Window)
+
+| Column | Type | Description |
+|--------|------|-------------|
+| opens_7d | INTEGER | Opens in last 7 days |
+| unique_opens_7d | INTEGER | Unique opens in last 7 days |
+| replies_7d | INTEGER | Replies in last 7 days |
+| interested_7d | INTEGER | Interested leads in last 7 days |
+| sent_7d | INTEGER | Emails sent in last 7 days |
+| unsubscribed_7d | INTEGER | Unsubscribes in last 7 days |
+| engagement_synced_at | TIMESTAMPTZ | Last engagement sync timestamp |
+
+### inbox_engagement_snapshots
+
+Daily time-series engagement snapshots per inbox. One row per inbox per day, captured by `sync_engagement.py`.
+
+```sql
+CREATE TABLE inbox_engagement_snapshots (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    sender_account_id UUID NOT NULL REFERENCES sender_accounts(id),
+    snapshot_date DATE NOT NULL,
+    total_opened_count INTEGER DEFAULT 0,
+    unique_opened_count INTEGER DEFAULT 0,
+    unique_replied_count INTEGER DEFAULT 0,
+    total_leads_contacted_count INTEGER DEFAULT 0,
+    interested_leads_count INTEGER DEFAULT 0,
+    unsubscribed_count INTEGER DEFAULT 0,
+    opens_7d INTEGER DEFAULT 0,
+    unique_opens_7d INTEGER DEFAULT 0,
+    replies_7d INTEGER DEFAULT 0,
+    interested_7d INTEGER DEFAULT 0,
+    sent_7d INTEGER DEFAULT 0,
+    unsubscribed_7d INTEGER DEFAULT 0,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE(sender_account_id, snapshot_date)
+);
+
+CREATE INDEX idx_engagement_snapshots_account_date
+    ON inbox_engagement_snapshots(sender_account_id, snapshot_date DESC);
+```
+
+| Column | Type | Description |
+|--------|------|-------------|
+| sender_account_id | UUID | FK to sender_accounts |
+| snapshot_date | DATE | Date of this snapshot |
+| total_opened_count | INTEGER | Total opens on snapshot date |
+| unique_opened_count | INTEGER | Unique opens on snapshot date |
+| unique_replied_count | INTEGER | Unique replies on snapshot date |
+| total_leads_contacted_count | INTEGER | Leads contacted on snapshot date |
+| interested_leads_count | INTEGER | Interested leads on snapshot date |
+| unsubscribed_count | INTEGER | Unsubscribes on snapshot date |
+| opens_7d | INTEGER | 7-day windowed opens |
+| replies_7d | INTEGER | 7-day windowed replies |
+| interested_7d | INTEGER | 7-day windowed interested |
+| sent_7d | INTEGER | 7-day windowed sends |
+
+**Data Source**: Daily snapshots from EmailBison campaign-events/stats endpoint via `sync_modules/sync_engagement.py`.
 
 ## Onboarding Tables
 
@@ -879,6 +969,24 @@ Infrastructure waterfall view with error-aware rotation recommendations. Primary
 5. Single hard block → `monitor`
 6. Disconnected with clean history → `monitor` + `reconnect` action
 7. No issues → `healthy`
+
+### v_esp_performance
+
+Per-workspace, per-ESP engagement comparison view. Enables side-by-side Gmail vs Microsoft engagement analysis.
+
+**Key Columns:**
+
+| Column | Type | Description |
+|--------|------|-------------|
+| workspace_id | UUID | Workspace identifier |
+| esp | VARCHAR | Email service provider (gmail, microsoft, other) |
+| inbox_count | INTEGER | Number of inboxes for this ESP |
+| total_opens | INTEGER | Sum of total_opened_count |
+| unique_opens | INTEGER | Sum of unique_opened_count |
+| unique_replies | INTEGER | Sum of unique_replied_count |
+| leads_contacted | INTEGER | Sum of total_leads_contacted_count |
+| interested_leads | INTEGER | Sum of interested_leads_count |
+| unsubscribes | INTEGER | Sum of unsubscribed_count |
 
 ## Related
 

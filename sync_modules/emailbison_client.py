@@ -416,6 +416,111 @@ class EmailBisonClient:
 
         return all_replies
 
+    # =========================================================================
+    # CAMPAIGN EVENT STATS (Engagement Aggregates)
+    # =========================================================================
+
+    async def get_campaign_event_stats(
+        self,
+        start_date: str,
+        end_date: str,
+        sender_email_ids: list = None,
+        campaign_ids: list = None,
+    ) -> Dict:
+        """
+        Get aggregated campaign event stats by date.
+
+        Returns daily breakdowns for: Replied, Total Opens, Unique Opens,
+        Sent, Bounced, Unsubscribed, Interested.
+
+        Args:
+            start_date: YYYY-MM-DD
+            end_date: YYYY-MM-DD
+            sender_email_ids: Filter by sender inbox IDs
+            campaign_ids: Filter by campaign IDs
+        """
+        params = {
+            'start_date': start_date,
+            'end_date': end_date,
+        }
+        if sender_email_ids:
+            # EB API expects indexed array format: sender_email_ids[0]=20&sender_email_ids[1]=21
+            for i, sid in enumerate(sender_email_ids):
+                params[f'sender_email_ids[{i}]'] = sid
+        if campaign_ids:
+            for i, cid in enumerate(campaign_ids):
+                params[f'campaign_ids[{i}]'] = cid
+        return await self._request('GET', '/campaign-events/stats', params=params)
+
+    # =========================================================================
+    # SENDER EMAIL REPLIES (Per-Inbox)
+    # =========================================================================
+
+    async def get_sender_email_replies(
+        self,
+        sender_email_id: int,
+        status: str = None,
+        folder: str = 'all',
+        page: int = 1,
+    ) -> Dict:
+        """
+        Get replies for a specific sender email (paginated, 15/page default).
+
+        Args:
+            sender_email_id: EB sender email ID
+            status: Filter: 'interested', 'automated_reply', 'not_automated_reply'
+            folder: Filter: 'inbox', 'sent', 'spam', 'bounced', 'all'
+            page: Page number
+        """
+        params = {'page': page, 'folder': folder}
+        if status:
+            params['status'] = status
+        return await self._request(
+            'GET',
+            f'/sender-emails/{sender_email_id}/replies',
+            params=params
+        )
+
+    async def get_all_sender_email_replies(
+        self,
+        sender_email_id: int,
+        status: str = None,
+        folder: str = 'all',
+    ) -> list:
+        """Get all replies for a sender email (handles pagination)."""
+        all_replies = []
+        page = 1
+
+        while True:
+            response = await self.get_sender_email_replies(
+                sender_email_id=sender_email_id,
+                status=status,
+                folder=folder,
+                page=page,
+            )
+
+            if isinstance(response, list):
+                all_replies.extend(response)
+                break
+
+            replies = response.get('data', [])
+            if not replies:
+                break
+
+            all_replies.extend(replies)
+
+            meta = response.get('meta', {})
+            if page >= meta.get('last_page', page):
+                break
+
+            page += 1
+
+        return all_replies
+
+    # =========================================================================
+    # CAMPAIGN LEADS
+    # =========================================================================
+
     async def get_campaign_leads(
         self,
         campaign_id: int,

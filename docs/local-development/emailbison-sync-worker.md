@@ -17,6 +17,7 @@ The EmailBison Sync Worker keeps the local database synchronized with EmailBison
 - **Warmup Sync**: Track warmup lifecycle, create snapshots, auto-enable warmup
 - **Health Checks**: Detect kill triggers and critical health issues
 - **Kill Queue**: Process inbox deletion with 24hr tagging window
+- **Engagement Sync**: Daily inbox engagement snapshots (opens, replies, interested)
 - **Retention**: Clean up old data based on retention policies
 
 ## Architecture
@@ -36,10 +37,10 @@ The EmailBison Sync Worker keeps the local database synchronized with EmailBison
 │  │  Accounts   │ │  Campaigns  │ │   Events    │ │   Warmup    ││
 │  │    Sync     │ │    Sync     │ │    Sync     │ │    Sync     ││
 │  └─────────────┘ └─────────────┘ └─────────────┘ └─────────────┘│
-│  ┌─────────────┐ ┌─────────────┐ ┌─────────────┐                │
-│  │   Health    │ │    Kill     │ │  Retention  │                │
-│  │   Checks    │ │  Processor  │ │   Manager   │                │
-│  └─────────────┘ └─────────────┘ └─────────────┘                │
+│  ┌─────────────┐ ┌─────────────┐ ┌─────────────┐ ┌─────────────┐│
+│  │   Health    │ │    Kill     │ │ Engagement  │ │  Retention  ││
+│  │   Checks    │ │  Processor  │ │    Sync     │ │   Manager   ││
+│  └─────────────┘ └─────────────┘ └─────────────┘ └─────────────┘│
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -52,6 +53,7 @@ The EmailBison Sync Worker keeps the local database synchronized with EmailBison
 | Health Checks | 15 min | Kill trigger detection, workspace health |
 | Kill Queue | 30 min | Tag inboxes, process 24hr deletions |
 | Warmup Sync | 30 min | Warmup stats, lifecycle tracking, auto-enable |
+| Engagement Sync | 24 hours | Daily inbox engagement snapshots (opens, replies, interested) |
 | Retention | Daily | Clean up old audit logs, bounces |
 | Daily Counter Reset | Daily | Reset 24h bounce counters (prevents false positives) |
 
@@ -129,6 +131,7 @@ The sync worker uses these tables:
 | `sync_status` | Last sync timestamps per workspace |
 | `sender_warmup_snapshots` | Time-series warmup statistics |
 | `warmup_check_runs` | Audit log of warmup sync runs |
+| `inbox_engagement_snapshots` | Daily engagement time-series per inbox |
 
 ### Warmup Tracking Columns
 
@@ -522,6 +525,7 @@ The sync worker creates daily snapshots at 00:05 UTC via `run_daily_snapshot()`:
 | `sync_modules/sync_campaigns.py` | Campaign sync |
 | `sync_modules/sync_events.py` | Event sync |
 | `sync_modules/sync_warmup.py` | Warmup lifecycle tracking and auto-enable |
+| `sync_modules/sync_engagement.py` | Daily engagement snapshots and domain rollup |
 | `sync_modules/health_checks.py` | Health evaluation |
 | `sync_modules/kill_processor.py` | Kill queue processing |
 | `sync_modules/retention.py` | Data retention |

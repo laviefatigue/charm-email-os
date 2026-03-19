@@ -40,6 +40,7 @@ from sync_modules import (
     DailySnapshotModule,
     LifecycleTagSyncModule,
     SetTagSyncModule,
+    EngagementSyncModule,
 )
 
 # Configuration from environment
@@ -55,6 +56,7 @@ POLL_INTERVAL_FULL = int(os.getenv('SYNC_INTERVAL_FULL', 3600))         # 1 hour
 POLL_INTERVAL_HEALTH = int(os.getenv('SYNC_INTERVAL_HEALTH', 900))      # 15 min
 POLL_INTERVAL_KILL = int(os.getenv('SYNC_INTERVAL_KILL', 1800))         # 30 min
 POLL_INTERVAL_WARMUP = int(os.getenv('SYNC_INTERVAL_WARMUP', 1800))     # 30 min (warmup tracking)
+POLL_INTERVAL_ENGAGEMENT = int(os.getenv('SYNC_INTERVAL_ENGAGEMENT', 86400))  # 24 hours (daily engagement snapshots)
 POLL_INTERVAL_OAUTH_QUEUE = int(os.getenv('SYNC_INTERVAL_OAUTH_QUEUE', 300))  # 5 min (queue processing)
 POLL_INTERVAL_OAUTH_VERIFY = int(os.getenv('SYNC_INTERVAL_OAUTH_VERIFY', 30 * 24 * 3600))  # 30 days (verification)
 
@@ -82,6 +84,7 @@ class SyncOrchestrator:
         self.last_health_check: Optional[datetime] = None
         self.last_kill_check: Optional[datetime] = None
         self.last_warmup_sync: Optional[datetime] = None
+        self.last_engagement_sync: Optional[datetime] = None
         self.last_retention_cleanup: Optional[datetime] = None
         self.last_daily_counter_reset: Optional[datetime] = None
         self.last_oauth_queue_check: Optional[datetime] = None
@@ -182,6 +185,11 @@ class SyncOrchestrator:
                 if self._should_run(self.last_lifecycle_tag_sync, POLL_INTERVAL_WARMUP):
                     await self.run_lifecycle_tag_sync()
                     self.last_lifecycle_tag_sync = now
+
+                # Engagement sync - daily snapshots (per-inbox opens, replies, interested)
+                if self._should_run(self.last_engagement_sync, POLL_INTERVAL_ENGAGEMENT):
+                    await self.run_engagement_sync()
+                    self.last_engagement_sync = now
 
                 # Daily retention cleanup (run at midnight)
                 if self._should_run_daily(self.last_retention_cleanup):
@@ -318,6 +326,20 @@ class SyncOrchestrator:
             if result.records_processed > 0:
                 status = 'OK' if result.success else 'FAILED'
                 print(f"  Kill Queue: {result.records_processed} processed [{status}]")
+
+    async def run_engagement_sync(self):
+        """Capture daily engagement snapshots per inbox (opens, replies, interested)."""
+        print(f"[{datetime.now()}] Engagement sync (daily snapshots)...")
+
+        async with EmailBisonClient() as client:
+            engagement_sync = EngagementSyncModule(
+                db=self.db,
+                client=client,
+                audit_logger=self.audit_logger,
+                alerter=self.alerter
+            )
+            results = await engagement_sync.sync_all_workspaces()
+            self._print_results('Engagement', results)
 
     async def run_warmup_sync(self):
         """Sync warmup status and auto-enable warmup for connected inboxes.

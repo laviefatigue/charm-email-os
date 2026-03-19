@@ -100,6 +100,31 @@
 
 **CRITICAL FOR ANALYSIS:** Use `emails_sent_all_time` for volume-adjusted metrics (e.g., burns per million emails).
 
+#### Engagement Metrics (All-Time)
+
+Synced daily from EmailBison campaign-events/stats endpoint by `sync_engagement.py`. These are **informational only** -- NOT used for kill triggers.
+
+| Field | Type | Default | Description | Source |
+|-------|------|---------|-------------|--------|
+| **total_opened_count** | integer | 0 | All-time total opens | EmailBison API |
+| **unique_opened_count** | integer | 0 | All-time unique opens | EmailBison API |
+| **unique_replied_count** | integer | 0 | All-time unique replies | EmailBison API |
+| **total_leads_contacted_count** | integer | 0 | All-time leads contacted | EmailBison API |
+| **interested_leads_count** | integer | 0 | All-time interested leads | EmailBison API |
+| **unsubscribed_count** | integer | 0 | All-time unsubscribes | EmailBison API |
+
+#### Engagement Metrics (7-Day Window)
+
+| Field | Type | Default | Description | Source |
+|-------|------|---------|-------------|--------|
+| **opens_7d** | integer | 0 | Opens in last 7 days | EmailBison API |
+| **unique_opens_7d** | integer | 0 | Unique opens in last 7 days | EmailBison API |
+| **replies_7d** | integer | 0 | Replies in last 7 days | EmailBison API |
+| **interested_7d** | integer | 0 | Interested leads in last 7 days | EmailBison API |
+| **sent_7d** | integer | 0 | Emails sent in last 7 days | EmailBison API |
+| **unsubscribed_7d** | integer | 0 | Unsubscribes in last 7 days | EmailBison API |
+| **engagement_synced_at** | timestamptz | NULL | Last engagement sync timestamp | Set by sync_engagement.py |
+
 #### Warmup Tracking
 
 | Field | Type | Default | Description | Notes |
@@ -214,6 +239,21 @@
 | **domain_complaint_count** | integer | 0 | Total complaints | Lifetime |
 | **inboxes_with_complaints** | integer | 0 | Count of inboxes with ≥1 complaint | Cross-inbox pattern detection |
 | **inboxes_with_blocks** | integer | 0 | Count of inboxes with blocks | Cross-inbox pattern detection |
+
+#### Engagement Rollup Columns
+
+Aggregated from inbox-level engagement via `rollup_domain_engagement()` SQL function. Called after daily engagement sync.
+
+| Field | Type | Default | Description | Source |
+|-------|------|---------|-------------|--------|
+| **domain_opens_all_time** | integer | 0 | All-time opens across all inboxes | rollup_domain_engagement() |
+| **domain_unique_opens_all_time** | integer | 0 | All-time unique opens | rollup_domain_engagement() |
+| **domain_unique_replies_all_time** | integer | 0 | All-time unique replies | rollup_domain_engagement() |
+| **domain_leads_contacted_all_time** | integer | 0 | All-time leads contacted | rollup_domain_engagement() |
+| **domain_interested_leads_all_time** | integer | 0 | All-time interested leads | rollup_domain_engagement() |
+| **domain_unsubscribes_all_time** | integer | 0 | All-time unsubscribes | rollup_domain_engagement() |
+| **domain_sends_all_time** | integer | 0 | All-time sends | rollup_domain_engagement() |
+| **engagement_rolled_up_at** | timestamptz | NULL | When engagement was last rolled up | Set by rollup function |
 
 #### Burn Analysis
 
