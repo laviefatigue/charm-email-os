@@ -298,6 +298,25 @@ class DailySnapshotModule:
             except Exception as e:
                 logger.warning(f"Failed to log audit event: {e}")
 
+        # Capture warmup snapshots for incubating inboxes
+        try:
+            warmup_count = await self.snapshot_warmup_incubating(snapshot_date)
+            summary['warmup_snapshots'] = warmup_count
+        except Exception as e:
+            logger.error(f"Failed to capture warmup snapshots: {e}")
+            summary['warmup_snapshots_error'] = str(e)
+
+        # Recalculate domain burn velocities (30-day window)
+        try:
+            velocity_count = await self.db.fetchval(
+                "SELECT recalculate_all_domain_velocities()"
+            )
+            summary['velocity_recalculated'] = velocity_count
+            logger.info(f"Recalculated burn velocity for {velocity_count} domains")
+        except Exception as e:
+            logger.error(f"Failed to recalculate domain velocities: {e}")
+            summary['velocity_error'] = str(e)
+
         # Alert on failures
         if errors and self.alerter:
             await self.alerter.send_message(
@@ -306,6 +325,95 @@ class DailySnapshotModule:
             )
 
         return summary
+
+    async def snapshot_warmup_incubating(
+        self,
+        snapshot_date: Optional[date] = None
+    ) -> int:
+        """
+        Capture warmup metrics for all incubating inboxes across all workspaces.
+
+        Only snapshots inboxes with inventory_lifecycle_status = 'incubating'.
+        After graduation to 'active', tracking stops (kill triggers take over).
+
+        Returns:
+            Count of warmup snapshots created
+        """
+        if snapshot_date is None:
+            snapshot_date = date.today()
+
+        async with self.db.acquire() as conn:
+            # Snapshot all incubating inboxes in one bulk INSERT
+            result = await conn.execute("""
+                INSERT INTO warmup_snapshots (
+                    sender_account_id,
+                    workspace_id,
+                    snapshot_date,
+                    warmup_score,
+                    warmup_emails_sent,
+                    warmup_replies_received,
+                    warmup_emails_saved_from_spam,
+                    warmup_bounces_received,
+                    warmup_bounces_caused,
+                    warmup_daily_limit,
+                    warmup_enabled,
+                    inbox_connected,
+                    days_since_warmup_start,
+                    emails_sent_all_time
+                )
+                SELECT
+                    sa.id,
+                    sa.workspace_id,
+                    $1,
+                    sa.warmup_score,
+                    0,  -- warmup_emails_sent: not tracked per-sync, EB only gives aggregated
+                    0,  -- warmup_replies_received: same
+                    0,  -- warmup_emails_saved_from_spam: same
+                    COALESCE(sa.warmup_bounces_received, 0),
+                    COALESCE(sa.warmup_bounces_caused, 0),
+                    sa.daily_limit,
+                    COALESCE(sa.warmup_enabled, FALSE),
+                    (sa.status = 'Connected'),
+                    CASE
+                        WHEN sa.warmup_started_at IS NOT NULL
+                        THEN EXTRACT(DAY FROM NOW() - sa.warmup_started_at)::INTEGER
+                        ELSE 0
+                    END,
+                    COALESCE(sa.emails_sent_all_time, 0)
+                FROM sender_accounts sa
+                LEFT JOIN domains d ON sa.domain_id = d.id
+                WHERE sa.inventory_lifecycle_status = 'incubating'
+                AND sa.is_active = TRUE
+                AND (d.pool_status IS NULL OR d.pool_status != 'cancelled')
+                ON CONFLICT (sender_account_id, snapshot_date)
+                DO UPDATE SET
+                    warmup_score = EXCLUDED.warmup_score,
+                    warmup_bounces_received = EXCLUDED.warmup_bounces_received,
+                    warmup_bounces_caused = EXCLUDED.warmup_bounces_caused,
+                    warmup_daily_limit = EXCLUDED.warmup_daily_limit,
+                    warmup_enabled = EXCLUDED.warmup_enabled,
+                    inbox_connected = EXCLUDED.inbox_connected,
+                    days_since_warmup_start = EXCLUDED.days_since_warmup_start,
+                    emails_sent_all_time = EXCLUDED.emails_sent_all_time
+            """, snapshot_date)
+
+            # Parse row count from "INSERT 0 N"
+            count = int(result.split()[-1]) if result else 0
+
+            # Purge snapshots older than 30 days
+            purged = await conn.execute("""
+                DELETE FROM warmup_snapshots
+                WHERE snapshot_date < $1
+            """, date.today() - timedelta(days=30))
+
+            purged_count = int(purged.split()[-1]) if purged else 0
+
+            logger.info(
+                f"Warmup snapshots: {count} incubating inboxes captured for {snapshot_date}"
+                + (f", purged {purged_count} old rows" if purged_count > 0 else "")
+            )
+
+            return count
 
     async def backfill_snapshots(
         self,

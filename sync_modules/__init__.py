@@ -36,6 +36,7 @@ from .daily_snapshot import DailySnapshotModule
 from .lifecycle_tag_sync import LifecycleTagSyncModule
 from .set_tag_sync import SetTagSyncModule
 from .sync_engagement import EngagementSyncModule
+from .onboarding_monitor import OnboardingMonitorModule
 
 __all__ = [
     'EmailBisonClient',
@@ -54,4 +55,5 @@ __all__ = [
     'LifecycleTagSyncModule',
     'SetTagSyncModule',
     'EngagementSyncModule',
+    'OnboardingMonitorModule',
 ]

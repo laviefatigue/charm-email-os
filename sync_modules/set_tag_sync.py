@@ -10,6 +10,14 @@ Entire DOMAINS are allocated to A-Set or B-Set, not individual inboxes.
 - domain.pool_status = 'burned'  → Skip (compromised)
 - domain.pool_status = 'unassigned' → Skip (needs allocation first)
 
+CRITICAL RULE — NO MIXED DOMAINS:
+Inboxes within a domain must NEVER have mixed pool tags. Every alive inbox
+on a domain gets the SAME tag (live or reserve) based on domain.pool_status.
+This is non-negotiable. Warning/degraded inboxes stay tagged with their domain's
+pool tag — the warning state is tracked in the DB (inventory_pool_status='warning'),
+NOT in EB tags. If a single inbox triggers a domain-level kill (e.g. spam_complaint),
+the ENTIRE domain burns and ALL inboxes lose their pool tags.
+
 WHY DOMAIN-LEVEL?
 When a domain-killing trigger (spam_complaint) fires, ALL inboxes on that
 domain are compromised. Mixed A/B per domain means B-Set is useless.
@@ -447,9 +455,11 @@ class SetTagSyncModule:
         ]
 
         # 1. Bulk-update DB for DISCONNECTED inboxes (no EB work needed)
+        # Skip warning/quarantined inboxes — they have active health issues
         disconnected_mismatched = [
             inbox['id'] for inbox in disconnected_inboxes
             if inbox['inventory_pool_status'] != target_set
+            and inbox['inventory_pool_status'] not in ('warning', 'quarantined')
         ]
         if disconnected_mismatched:
             await self.db.execute("""
@@ -466,6 +476,11 @@ class SetTagSyncModule:
 
             # Skip if already in correct set (EB tag already correct)
             if current_pool == target_set:
+                continue
+
+            # NEVER override warning or quarantined — these inboxes have
+            # active bounce/health issues and must not re-enter the pool
+            if current_pool in ('warning', 'quarantined'):
                 continue
 
             # Check if this is a promotion (reserve → deployed)

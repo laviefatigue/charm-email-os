@@ -171,9 +171,16 @@ class WarmupSyncModule:
 
         # Detect warmup start
         if eb_warmup_enabled and not existing_warmup_started_at:
-            # Record when we FIRST OBSERVED warmup_enabled=TRUE
-            # This is observation-based tracking, not estimation
-            warmup_started_at = now
+            # Use EB created_at as warmup start (accurate for pre-warmed workspaces)
+            # Falls back to NOW() if created_at not available
+            eb_created_str = account.get('created_at')
+            if eb_created_str:
+                try:
+                    warmup_started_at = datetime.fromisoformat(eb_created_str.replace('Z', '+00:00'))
+                except (ValueError, AttributeError):
+                    warmup_started_at = now
+            else:
+                warmup_started_at = now
 
         # Detect warmup stop
         if not eb_warmup_enabled and existing_warmup_enabled:
