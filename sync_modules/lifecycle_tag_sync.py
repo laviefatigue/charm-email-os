@@ -26,6 +26,11 @@ from .slack_alerter import SlackAlerter
 
 # Tag names used for lifecycle management
 INCUBATING_TAG = 'incubating'
+# INTENTIONAL: LIVE_TAG = 'live' shares the name with A-Set pool tag.
+# Execution order resolves it: lifecycle_tag_sync adds 'live' on graduation,
+# then set_tag_sync runs immediately after (orchestrator line 424) and
+# overrides with the correct pool tag (reserve domains get 'reserve').
+# Do NOT rename — EB campaign filters depend on the 'live' tag name.
 LIVE_TAG = 'live'
 INCUBATION_DAYS = 21
 
@@ -324,7 +329,9 @@ class LifecycleTagSyncModule:
         Returns:
             Number of tags removed
         """
-        # Find dead inboxes that might still have 'live' tag
+        # Find dead inboxes that might still have 'live' tag.
+        # Safety net: catches partial kill_processor failures where inbox_state
+        # was set to 'dead' but inventory_lifecycle_status wasn't updated.
         dead_with_live = await self.db.fetch("""
             SELECT
                 id,
@@ -334,7 +341,7 @@ class LifecycleTagSyncModule:
             WHERE workspace_id = $1
             AND inbox_state = 'dead'
             AND emailbison_account_id IS NOT NULL
-            AND inventory_lifecycle_status = 'active'
+            AND inventory_lifecycle_status != 'dead'
         """, workspace_id)
 
         cleaned_count = 0

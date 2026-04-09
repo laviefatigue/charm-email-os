@@ -82,6 +82,15 @@ KILL_THRESHOLDS = {
 # Domain health thresholds — rate-based + capacity safety net
 # Use Decimal for all numeric values to prevent asyncpg type inference errors
 # (Python float vs int inconsistency on prepared statement reuse)
+#
+# CRITICAL RULE — DOMAIN-LEVEL TAGGING:
+# A domain's inboxes must NEVER have mixed pool tags (some live, some reserve).
+# When a kill trigger fires, the domain-level decision determines ALL inboxes:
+# - spam_complaint on ANY inbox → entire domain burns, ALL inboxes lose pool tags
+# - Other kills (hard_blocked, hard_bounces) → inbox dies, domain flagged for monitoring
+# - Domain burn = ALL inboxes retired regardless of individual health
+# Warning/degraded inboxes keep their domain's pool tag in EB; warning state
+# is tracked only in DB (inventory_pool_status='warning').
 DOMAIN_THRESHOLDS = {
     'complaint_rate_healthy': Decimal('0.001'),    # < 0.1% = domain is fine
     'complaint_rate_flagged': Decimal('0.003'),    # 0.1-0.3% = flagged, monitor closely
@@ -90,6 +99,15 @@ DOMAIN_THRESHOLDS = {
     'unhealthy_pause': Decimal('0.30'),            # 30% unhealthy = capacity safety net
     'unhealthy_min_count': 2,                      # Min unhealthy inboxes before % threshold applies
 }
+
+# ESP-aware domain burn thresholds (bounce-rate path)
+# Entra domains (52 inboxes) burn on bounce pattern, not spam complaints.
+# Google domains burn on spam complaints (handled by kill_processor ESP logic).
+# Hard-bounce-only rate avoids false positives from transient Microsoft soft bounces.
+ENTRA_DOMAIN_BURN_HARD_BOUNCE_RATE = Decimal('0.05')  # >5% hard bounce rate = domain compromised
+ENTRA_DOMAIN_BURN_MIN_SENDS = 50       # Min sends before bounce rate is meaningful
+ENTRA_DOMAIN_BURN_MIN_BLOCKED = 2      # 2+ blocked inboxes = cross-inbox pattern
+ENTRA_DOMAIN_BURN_CIRCUIT_BREAKER = 2  # Max auto-burns per workspace per health check cycle
 
 
 class HealthCheckModule:
@@ -575,7 +593,11 @@ class HealthCheckModule:
                         AND (sub.total_count >= 10 OR sub.unhealthy_count >= $4) THEN 'dead'
                     -- Complaint rate > 0.3% = flagged
                     WHEN COALESCE(d.domain_complaint_rate_7d, 0) >= $5 THEN 'flagged'
-                    -- 1 reputation kill = flagged (non-spam triggers)
+                    -- 1+ reputation kills = flagged. INTENTIONAL: No time window on
+                    -- reputation_dead. Domains with past reputation kills stay 'flagged'
+                    -- permanently. domain_complaint_rate_7d provides time-windowed
+                    -- escalation to 'dead'. This prevents compromised domains from
+                    -- silently recovering. Monitoring evaluates escalation separately.
                     WHEN COALESCE(sub.reputation_dead, 0) >= 1 THEN 'flagged'
                     -- Otherwise live
                     ELSE 'live'
@@ -620,8 +642,12 @@ class HealthCheckModule:
         """
         Evaluate domains in 'monitoring' state after their observation window.
 
+        This module is ANALYSIS ONLY — it updates domain_state but NEVER burns
+        domains (pool_status). Burns are handled exclusively by the kill processor's
+        rate-based evaluation path.
+
         After 7-day window:
-        - Rate >= 0.3%: burn domain (sustained damage confirmed)
+        - Rate >= 0.3%: set domain_state = 'dead' (kill processor handles burn decision)
         - Rate 0.1-0.3%: extend monitoring 7 more days
         - Rate < 0.1%: recover to 'live' (domain recovered after inbox kills)
         """
@@ -655,9 +681,10 @@ class HealthCheckModule:
 
             # Window expired — make decision
             if rate >= DOMAIN_THRESHOLDS['complaint_rate_flagged']:
-                # Rate >= 0.3% sustained — burn the domain
-                print(f"    [MONITORING → BURN] {domain_name}: rate {rate*100:.3f}% "
-                      f"sustained after {window_days}d — burning domain")
+                # Rate >= 0.3% sustained — mark domain dead
+                # Kill processor will handle the actual burn when it processes the next kill
+                print(f"    [MONITORING → DEAD] {domain_name}: rate {rate*100:.3f}% "
+                      f"sustained after {window_days}d — marking dead")
 
                 await self.db.execute("""
                     UPDATE domains
@@ -668,46 +695,21 @@ class HealthCheckModule:
                     WHERE id = $1
                 """, domain_id)
 
-                # Call burn_domain_and_promote if domain is still live pool_status
-                pool_status = await self.db.fetchval(
-                    "SELECT pool_status FROM domains WHERE id = $1", domain_id
-                )
-                if pool_status == 'live':
-                    try:
-                        result = await self.db.fetchrow(
-                            "SELECT * FROM burn_domain_and_promote($1, $2)",
-                            domain_id, 'spam_complaint'
-                        )
-                        if result:
-                            action = result.get('action', 'unknown')
-                            promoted = result.get('promoted_domain_name')
-                            print(f"    [BURN] {domain_name}: action={action}, "
-                                  f"promoted={promoted or 'none'}")
-                    except Exception as e:
-                        # Fallback: manually burn if function doesn't exist
-                        print(f"    [WARNING] burn_domain_and_promote failed: {e}")
-                        await self.db.execute("""
-                            UPDATE domains
-                            SET pool_status = 'burned',
-                                burned_at = NOW(),
-                                burn_trigger = 'spam_complaint'
-                            WHERE id = $1 AND pool_status = 'live'
-                        """, domain_id)
-
-                # Log event
+                # Log event (informational — no burn action taken)
                 try:
                     await self.db.execute("""
                         INSERT INTO domain_rotation_events (
                             domain_id, workspace_id, event_type,
                             trigger_type, old_status, new_status, notes
-                        ) VALUES ($1, $2, 'monitoring_burn', 'spam_complaint',
-                                  'monitoring', 'burned',
+                        ) VALUES ($1, $2, 'monitoring_expired', 'spam_complaint',
+                                  'monitoring', 'dead',
                                   $3)
                     """, domain_id, workspace_id,
                         f"Monitoring window expired: complaint rate {rate*100:.3f}% "
-                        f"exceeded 0.3% threshold. Domain burned.")
+                        f"exceeded 0.3% threshold. Domain marked dead. "
+                        f"Kill processor handles burn decision.")
                 except Exception as e:
-                    print(f"    [WARNING] Could not log monitoring burn event: {e}")
+                    print(f"    [WARNING] Could not log monitoring event: {e}")
 
             elif rate >= DOMAIN_THRESHOLDS['complaint_rate_healthy']:
                 # Rate 0.1-0.3% — borderline, extend monitoring
@@ -777,32 +779,50 @@ class HealthCheckModule:
         """
         V3 Section 5: Check domain-wide bounce rate thresholds.
 
-        Thresholds:
-        - domain_bounce_rate_7d > 5% = flag domain for review
-        - inboxes_with_complaints >= 2 = flag domain (cross-inbox pattern)
-        - inboxes_with_blocks >= 2 = flag domain (cross-inbox pattern)
+        ESP-aware behavior:
+        - Entra domains with >5% hard bounce rate OR 2+ blocked inboxes:
+          AUTO-BURN via burn_domain_and_promote(). Microsoft gives no warning
+          before blocking — recovery takes 2-4 weeks. Must be aggressive.
+        - Google domains: FLAG only. Google gives graduated Postmaster warnings
+          and burns are handled by kill_processor's spam complaint path.
 
-        NOTE: This flags domains for review, doesn't auto-kill.
+        Circuit breaker: max ENTRA_DOMAIN_BURN_CIRCUIT_BREAKER burns per
+        workspace per cycle to prevent mass burns from transient Microsoft issues.
         """
-        # Find domains that exceed thresholds
+        # Find domains that exceed thresholds.
+        # Calculate hard-bounce-only rate inline (domain_bounce_rate_7d includes soft bounces).
+        # Require minimum sends to avoid false positives on low-volume domains.
         flagged_domains = await self.db.fetch("""
             SELECT
-                id,
-                domain_name,
-                domain_bounce_rate_7d,
-                inboxes_with_complaints,
-                inboxes_with_blocks,
-                domain_state
-            FROM domains
-            WHERE workspace_id = $1
-            AND domain_state = 'live'
-            AND pool_status != 'cancelled'
+                d.id,
+                d.domain_name,
+                d.domain_bounce_rate_7d,
+                d.inboxes_with_complaints,
+                d.inboxes_with_blocks,
+                d.domain_state,
+                d.pool_status,
+                d.infrastructure_type,
+                COALESCE((
+                    SELECT CASE
+                        WHEN SUM(sa.total_sends_7d) >= $2
+                        THEN SUM(sa.hard_bounces_7d)::DECIMAL / SUM(sa.total_sends_7d)
+                        ELSE 0
+                    END
+                    FROM sender_accounts sa
+                    WHERE sa.domain_id = d.id AND sa.is_active = TRUE
+                ), 0) as hard_bounce_rate_7d
+            FROM domains d
+            WHERE d.workspace_id = $1
+            AND d.domain_state IN ('live', 'flagged')
+            AND d.pool_status IN ('live', 'reserve')
             AND (
-                domain_bounce_rate_7d > 0.05
-                OR inboxes_with_complaints >= 2
-                OR inboxes_with_blocks >= 2
+                d.domain_bounce_rate_7d > 0.05
+                OR d.inboxes_with_complaints >= 2
+                OR d.inboxes_with_blocks >= 2
             )
-        """, workspace_id)
+        """, workspace_id, ENTRA_DOMAIN_BURN_MIN_SENDS)
+
+        burns_this_cycle = 0
 
         for domain in flagged_domains:
             reasons = []
@@ -813,19 +833,94 @@ class HealthCheckModule:
             if domain['inboxes_with_blocks'] and domain['inboxes_with_blocks'] >= 2:
                 reasons.append(f"blocks_across_{domain['inboxes_with_blocks']}_inboxes")
 
-            # Flag the domain
+            reason_str = ', '.join(reasons)
+
+            # ESP-aware: Entra domains auto-burn on hard bounce rate or cross-inbox blocks
+            if domain['infrastructure_type'] == 'entra':
+                hard_bounce_rate = float(domain['hard_bounce_rate_7d'] or 0)
+                blocked_count = domain['inboxes_with_blocks'] or 0
+
+                should_burn = (
+                    hard_bounce_rate >= float(ENTRA_DOMAIN_BURN_HARD_BOUNCE_RATE)
+                    or blocked_count >= ENTRA_DOMAIN_BURN_MIN_BLOCKED
+                )
+
+                if should_burn and burns_this_cycle < ENTRA_DOMAIN_BURN_CIRCUIT_BREAKER:
+                    # Determine burn trigger type
+                    if hard_bounce_rate >= float(ENTRA_DOMAIN_BURN_HARD_BOUNCE_RATE):
+                        trigger = 'bounce_rate_domain'
+                    else:
+                        trigger = 'cross_inbox_blocks'
+
+                    try:
+                        result = await self.db.fetchrow(
+                            "SELECT * FROM burn_domain_and_promote($1, $2)",
+                            domain['id'], trigger
+                        )
+                        burns_this_cycle += 1
+
+                        action = result.get('action', '') if result else 'unknown'
+                        promoted = result['promoted_domain_name'] if result and result['promoted_domain_name'] else None
+
+                        # Log rotation event
+                        try:
+                            await self.db.execute("""
+                                INSERT INTO domain_rotation_events (
+                                    domain_id, workspace_id, event_type,
+                                    trigger_type, old_status, new_status, notes
+                                ) VALUES ($1, $2, 'domain_burn', $3,
+                                          $4, 'burned', $5)
+                            """, domain['id'], workspace_id, trigger,
+                                domain['pool_status'], reason_str)
+                        except Exception:
+                            pass
+
+                        promoted_msg = f", promoted {promoted}" if promoted else ""
+                        print(f"    [ENTRA BURN] {domain['domain_name']}: "
+                              f"hard_bounce={hard_bounce_rate*100:.1f}%, "
+                              f"blocks={blocked_count} — {trigger}{promoted_msg}")
+
+                        # Slack alert
+                        if self.alerter:
+                            if promoted:
+                                action_text = f"Reserve domain `{promoted}` promoted to live."
+                            else:
+                                action_text = "No reserve domain available to promote."
+                            await self.alerter.send_alert(
+                                level="critical",
+                                title=f"Entra Domain Burned: {domain['domain_name']}",
+                                message=(
+                                    f"*Trigger:* `{trigger}`\n"
+                                    f"*Reasons:* {reason_str}\n"
+                                    f"*Hard bounce rate:* {hard_bounce_rate*100:.1f}%\n"
+                                    f"*Blocked inboxes:* {blocked_count}\n"
+                                    f"*Action:* {action_text}"
+                                ),
+                                context={
+                                    "domain": domain['domain_name'],
+                                    "trigger": trigger,
+                                    "hard_bounce_rate": hard_bounce_rate,
+                                    "action": action
+                                }
+                            )
+                        continue
+
+                    except Exception as e:
+                        print(f"    [ERROR] Failed to burn Entra domain {domain['domain_name']}: {e}")
+                        # Fall through to flag instead
+
+                elif should_burn:
+                    reason_str += " (circuit breaker: burn deferred to next cycle)"
+
+            # Default path: flag domain (Google, unknown ESP, or circuit breaker hit)
             await self.db.execute("""
                 UPDATE domains
-                SET
-                    domain_state = 'flagged',
-                    updated_at = NOW()
+                SET domain_state = 'flagged', updated_at = NOW()
                 WHERE id = $1
             """, domain['id'])
 
-            reason_str = ', '.join(reasons)
             print(f"    [DOMAIN FLAGGED] {domain['domain_name']}: {reason_str}")
 
-            # Alert
             if self.alerter:
                 await self.alerter.alert_domain_flagged(
                     domain=domain['domain_name'],

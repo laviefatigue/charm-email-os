@@ -41,6 +41,7 @@ from sync_modules import (
     LifecycleTagSyncModule,
     SetTagSyncModule,
     EngagementSyncModule,
+    OnboardingMonitorModule,
 )
 
 # Configuration from environment
@@ -93,6 +94,7 @@ class SyncOrchestrator:
         self.last_lifecycle_tag_sync: Optional[datetime] = None
         self.last_slack_audit: Optional[datetime] = None
         self.last_workspace_discovery: Optional[datetime] = None
+        self.last_onboarding_monitor: Optional[datetime] = None
 
     async def start(self, single_pass: bool = False):
         """Initialize connections and start the sync worker."""
@@ -215,6 +217,11 @@ class SyncOrchestrator:
                 if self._should_run_daily(self.last_workspace_discovery):
                     await self.run_workspace_discovery()
                     self.last_workspace_discovery = now
+
+                # Daily onboarding form monitor
+                if self._should_run_daily(self.last_onboarding_monitor):
+                    await self.run_onboarding_monitor()
+                    self.last_onboarding_monitor = now
 
                 # OAuth queue processing - every 5 min (for new workspaces)
                 if self._should_run(self.last_oauth_queue_check, POLL_INTERVAL_OAUTH_QUEUE):
@@ -477,8 +484,9 @@ class SyncOrchestrator:
             alerter=self.alerter
         )
         await health_module.reset_daily_counters()
+        await health_module.decay_weekly_counters()
 
-        print(f"  24h counters reset for all active inboxes")
+        print(f"  24h counters reset, 7d counters decayed for all active inboxes")
 
     async def run_daily_snapshot(self):
         """Create daily volume snapshots for client dashboard capacity chart.
@@ -535,6 +543,29 @@ class SyncOrchestrator:
             )
         else:
             print(f"  Audit failed: {result.get('error')}")
+
+    async def run_onboarding_monitor(self):
+        """Check for new onboarding form submissions and stale clients."""
+        print(f"[{datetime.now()}] Onboarding form monitor...")
+        try:
+            monitor = OnboardingMonitorModule(
+                db=self.db,
+                alerter=self.alerter,
+                audit_logger=self.audit_logger
+            )
+            results = await monitor.run()
+            processed = results.get("submissions", {}).get("processed", 0)
+            reminded = results.get("stale", {}).get("reminded", 0)
+            errors = results.get("submissions", {}).get("errors", 0)
+            print(f"  Onboarding: {processed} processed, {reminded} reminders, {errors} errors")
+        except Exception as e:
+            print(f"[ERROR] Onboarding monitor failed: {e}")
+            if self.alerter:
+                await self.alerter.send_alert(
+                    level="error",
+                    title="Onboarding Monitor Failed",
+                    message=str(e)
+                )
 
     async def run_workspace_discovery(self):
         """Discover new EmailBison workspaces and create local records.

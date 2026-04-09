@@ -62,6 +62,16 @@ MONITORING_WINDOW_DAYS = 7               # Observation window duration
 CIRCUIT_BREAKER_DOMAINS_24H = 3          # Domains hit in 24h to trip workspace breaker
 UNHEALTHY_MIN_COUNT = 2                  # Min unhealthy before 30% safety net applies
 
+# ESP-aware domain burn thresholds (Option A)
+# Google domains have ~3 inboxes each — 1 spam kill = 33%, a strong signal.
+# Microsoft/Entra domains have ~52 inboxes — 1 spam kill = 1.9%, noise.
+# Use absolute complaint counts instead of rates to avoid denominator distortion.
+ESP_BURN_MIN_COMPLAINTS = {
+    'google': 1,   # Any spam complaint = domain burn (1/3 = 33% rate)
+    'entra': 3,    # Require pattern: 3+ spam kills before domain burn
+}
+ESP_BURN_MIN_COMPLAINTS_DEFAULT = 1  # Unknown ESP: conservative, treat like Google
+
 # Inbox-killing triggers indicate inbox-level or list-level issues.
 # Safe to promote B-Set inboxes from the same domain.
 INBOX_KILLING_TRIGGERS = {
@@ -276,6 +286,7 @@ class KillProcessor:
                 kq.trigger_type,
                 kq.trigger_value,
                 kq.trigger_threshold,
+                kq.status as queue_status,
                 sa.email_address,
                 sa.emailbison_account_id,
                 sa.domain_id,
@@ -286,7 +297,7 @@ class KillProcessor:
             JOIN sender_accounts sa ON kq.inbox_id = sa.id
             JOIN workspaces w ON kq.workspace_id = w.id
             LEFT JOIN domains d ON sa.domain_id = d.id
-            WHERE kq.status = 'pending'
+            WHERE kq.status IN ('pending', 'eb_pending')
             AND sa.emailbison_account_id IS NOT NULL
             AND w.emailbison_workspace_id IS NOT NULL
             AND (d.pool_status IS NULL OR d.pool_status != 'cancelled')
@@ -314,13 +325,86 @@ class KillProcessor:
                 tag_cache = {}  # {trigger_type: tag_id}
 
                 # Tag each inbox with its specific trigger tag
+                # Order of operations: DB first, EB second.
+                # If DB succeeds but EB fails, inbox is correctly dead in DB
+                # and kill_queue gets 'eb_pending' status for retry next cycle.
                 for item in items:
                     audit.increment_processed()
                     trigger_type = item['trigger_type']
-
-                    # Build trigger-specific tag name: flagged_{trigger_type}
                     tag_name = f"flagged_{trigger_type}"
+                    is_eb_retry = item.get('queue_status') == 'eb_pending'
+                    eb_account_id = int(item['emailbison_account_id'])
 
+                    # ── STEP 1: DB operations (skip if retrying EB only) ──
+                    if not is_eb_retry:
+                        try:
+                            # Mark kill_queue as flagged
+                            await self.db.execute("""
+                                UPDATE kill_queue
+                                SET
+                                    status = 'flagged',
+                                    tagged_at = NOW(),
+                                    tag_name = $2,
+                                    updated_at = NOW()
+                                WHERE id = $1
+                            """, item['id'], tag_name)
+
+                            # Mark inbox as dead — cannot be used in new campaigns
+                            await self.db.execute("""
+                                UPDATE sender_accounts
+                                SET
+                                    inbox_state = 'dead',
+                                    killed_at = NOW(),
+                                    kill_trigger = $2::kill_trigger_type,
+                                    inventory_lifecycle_status = 'dead',
+                                    inventory_pool_status = NULL,
+                                    updated_at = NOW()
+                                WHERE id = $1
+                            """, item['inbox_id'], trigger_type)
+
+                            # Update domain metrics and promote backup
+                            await self._update_domain_on_inbox_death(item['inbox_id'])
+
+                            await self._update_campaign_burn_counters(
+                                inbox_id=item['inbox_id'],
+                                workspace_id=item['workspace_id'],
+                                trigger_type=trigger_type,
+                                trigger_value=item.get('trigger_value'),
+                                trigger_threshold=item.get('trigger_threshold'),
+                                inbox_email=item['email_address'],
+                                domain_id=item.get('domain_id'),
+                                domain_name=item.get('domain_name')
+                            )
+
+                            if item.get('domain_id'):
+                                await self._recalculate_domain_metrics(item['domain_id'])
+                                await self._recalculate_domain_velocity(item['domain_id'])
+
+                            # Promote backup inbox to fill the gap
+                            await self._promote_backup_inbox(
+                                item['inbox_id'],
+                                item['workspace_id'],
+                                trigger_type=trigger_type
+                            )
+
+                        except Exception as db_err:
+                            # DB failed — do NOT touch EB, mark as failed
+                            audit.add_error(
+                                record_id=item['email_address'],
+                                error=f"DB update failed: {db_err}",
+                                details={'inbox_id': str(item['inbox_id']), 'tag': tag_name}
+                            )
+                            try:
+                                await self.db.execute("""
+                                    UPDATE kill_queue
+                                    SET status = 'failed', error_message = $2, updated_at = NOW()
+                                    WHERE id = $1
+                                """, item['id'], str(db_err)[:500])
+                            except Exception:
+                                pass
+                            continue
+
+                    # ── STEP 2: EB operations (tag flagged_*, remove pool tags) ──
                     try:
                         # Get or create the trigger-specific tag (cached per workspace)
                         if trigger_type not in tag_cache:
@@ -333,24 +417,30 @@ class KillProcessor:
                                     record_id=item['email_address'],
                                     error=f"Failed to create tag: {tag_name}"
                                 )
+                                # DB is already updated; mark eb_pending for retry
+                                await self.db.execute("""
+                                    UPDATE kill_queue
+                                    SET status = 'eb_pending', error_message = 'Tag creation failed', updated_at = NOW()
+                                    WHERE id = $1
+                                """, item['id'])
                                 continue
                         else:
                             tag_id = tag_cache[trigger_type]
 
                         # Tag in EmailBison with trigger-specific tag
                         await self.client.tag_inbox(
-                            account_id=int(item['emailbison_account_id']),
+                            account_id=eb_account_id,
                             tag_id=tag_id
                         )
 
-                        # Remove A-Set tag (live or 'A Set' depending on workspace)
-                        # This ensures the team can't accidentally assign dead inboxes
-                        # Get workspace tag config
+                        # Get workspace A-Set and B-Set tag config
                         ws_tags = await self.db.fetchrow("""
-                            SELECT a_set_tag_name FROM workspaces WHERE id = $1
+                            SELECT a_set_tag_name, b_set_tag_name FROM workspaces WHERE id = $1
                         """, item['workspace_id'])
                         a_set_tag_name = (ws_tags.get('a_set_tag_name') if ws_tags else None) or 'live'
+                        b_set_tag_name = (ws_tags.get('b_set_tag_name') if ws_tags else None) or 'reserve'
 
+                        # Remove A-Set tag — dead inboxes must have NO pool tags
                         a_set_tag_id = tag_cache.get(a_set_tag_name)
                         if not a_set_tag_id:
                             a_set_tag = await self.client.get_or_create_tag(a_set_tag_name)
@@ -361,95 +451,71 @@ class KillProcessor:
                         if a_set_tag_id:
                             try:
                                 await self.client.untag_inbox(
-                                    account_id=int(item['emailbison_account_id']),
+                                    account_id=eb_account_id,
                                     tag_id=a_set_tag_id
                                 )
-                            except EmailBisonAPIError as e:
-                                print(f"    [WARN] Failed to remove tag {a_set_tag_id} from inbox {item['emailbison_account_id']}: {e}")
+                            except EmailBisonAPIError:
+                                pass  # May not have A-Set tag
 
-                        # Also try to remove legacy 'live' if using different tag name
+                        # Also remove legacy 'live' if workspace uses different A-Set name
                         if a_set_tag_name != 'live':
                             try:
                                 live_tag = await self.client.get_or_create_tag('live')
                                 if live_tag.get('id'):
                                     await self.client.untag_inbox(
-                                        account_id=int(item['emailbison_account_id']),
+                                        account_id=eb_account_id,
                                         tag_id=live_tag['id']
                                     )
-                            except EmailBisonAPIError as e:
-                                print(f"    [WARN] Failed to remove legacy 'live' tag from inbox {item['emailbison_account_id']}: {e}")
+                            except EmailBisonAPIError:
+                                pass
 
-                        # Update queue status to 'flagged' (final state - no deletion)
-                        await self.db.execute("""
-                            UPDATE kill_queue
-                            SET
-                                status = 'flagged',
-                                tagged_at = NOW(),
-                                tag_name = $2,
-                                updated_at = NOW()
-                            WHERE id = $1
-                        """, item['id'], tag_name)
+                        # Remove B-Set tag (reserve) — dead inboxes must have NO pool tags
+                        b_set_tag_id = tag_cache.get(b_set_tag_name)
+                        if not b_set_tag_id:
+                            b_set_tag = await self.client.get_or_create_tag(b_set_tag_name)
+                            b_set_tag_id = b_set_tag.get('id')
+                            if b_set_tag_id:
+                                tag_cache[b_set_tag_name] = b_set_tag_id
 
-                        # Mark inbox as dead locally - cannot be used in new campaigns
-                        # Also update inventory status columns for capacity tracking
-                        await self.db.execute("""
-                            UPDATE sender_accounts
-                            SET
-                                inbox_state = 'dead',
-                                killed_at = NOW(),
-                                kill_trigger = $2::kill_trigger_type,
-                                inventory_lifecycle_status = 'dead',
-                                inventory_pool_status = NULL,
-                                updated_at = NOW()
-                            WHERE id = $1
-                        """, item['inbox_id'], trigger_type)
+                        if b_set_tag_id:
+                            try:
+                                await self.client.untag_inbox(
+                                    account_id=eb_account_id,
+                                    tag_id=b_set_tag_id
+                                )
+                            except EmailBisonAPIError:
+                                pass  # May not have B-Set tag
 
-                        # V3: Update domain dead_inbox_count and check state transitions
-                        await self._update_domain_on_inbox_death(item['inbox_id'])
-
-                        # V3: Update campaign burn counters + insert burn events
-                        await self._update_campaign_burn_counters(
-                            inbox_id=item['inbox_id'],
-                            workspace_id=item['workspace_id'],
-                            trigger_type=trigger_type,
-                            trigger_value=item.get('trigger_value'),
-                            trigger_threshold=item.get('trigger_threshold'),
-                            inbox_email=item['email_address'],
-                            domain_id=item.get('domain_id'),
-                            domain_name=item.get('domain_name')
-                        )
-
-                        # V3: Recalculate domain aggregate metrics + velocity
-                        if item.get('domain_id'):
-                            await self._recalculate_domain_metrics(item['domain_id'])
-                            await self._recalculate_domain_velocity(item['domain_id'])
-
-                        # V3: Promote backup inbox to fill the gap
-                        # Pass trigger_type for severity-aware rotation
-                        await self._promote_backup_inbox(
-                            item['inbox_id'],
-                            item['workspace_id'],
-                            trigger_type=trigger_type
-                        )
+                        # EB succeeded — finalize status
+                        if is_eb_retry:
+                            await self.db.execute("""
+                                UPDATE kill_queue
+                                SET status = 'flagged', updated_at = NOW()
+                                WHERE id = $1
+                            """, item['id'])
 
                         tagged_count += 1
                         audit.increment_updated()
 
                         print(f"    [FLAGGED] {item['email_address']} - tag: {tag_name}")
 
-                    except EmailBisonAPIError as e:
+                    except (EmailBisonAPIError, Exception) as eb_err:
+                        # EB failed but DB is already correct (inbox is dead in DB).
+                        # Mark for retry next cycle — only EB operations will be retried.
                         audit.add_error(
                             record_id=item['email_address'],
-                            error=f"Failed to tag: {e}",
+                            error=f"EB tagging failed (DB updated): {eb_err}",
                             details={'inbox_id': str(item['inbox_id']), 'tag': tag_name}
                         )
-
-                        # Mark as failed
-                        await self.db.execute("""
-                            UPDATE kill_queue
-                            SET status = 'failed', error_message = $2, updated_at = NOW()
-                            WHERE id = $1
-                        """, item['id'], str(e))
+                        try:
+                            await self.db.execute("""
+                                UPDATE kill_queue
+                                SET status = 'eb_pending', error_message = $2, updated_at = NOW()
+                                WHERE id = $1
+                            """, item['id'], str(eb_err)[:500])
+                        except Exception:
+                            pass
+                        print(f"    [EB_PENDING] {item['email_address']} - DB updated, EB retry next cycle")
 
             except Exception as e:
                 audit.add_error(
@@ -969,13 +1035,32 @@ class KillProcessor:
                 await self.db.execute(
                     "SELECT recalculate_domain_complaint_rate($1)", domain_id
                 )
-                complaint_rate = await self._get_domain_complaint_rate(domain_id)
 
-                # Step 3: Rate-based decision
-                if complaint_rate >= DOMAIN_COMPLAINT_RATE_BURN:
-                    # >1.0% sustained = burn immediately (no observation needed)
-                    print(f"    [DOMAIN KILL] {domain_name}: complaint rate "
-                          f"{complaint_rate*100:.3f}% > 1.0% — burning domain")
+                # Fetch rate AND complaint count + ESP type for ESP-aware decision
+                domain_stats = await self.db.fetchrow("""
+                    SELECT
+                        COALESCE(domain_complaint_rate_7d, 0) as complaint_rate,
+                        COALESCE(domain_complaints_7d, 0) as complaints_7d,
+                        infrastructure_type
+                    FROM domains WHERE id = $1
+                """, domain_id)
+                complaint_rate = float(domain_stats['complaint_rate'] or 0)
+                complaints_7d = int(domain_stats['complaints_7d'] or 0)
+                esp_type = domain_stats['infrastructure_type']  # 'google', 'entra', or None
+
+                # Step 3: ESP-aware burn decision
+                # Google (3 inboxes/domain): 1 spam kill = 33% rate — strong signal, burn.
+                # Microsoft/Entra (52 inboxes/domain): 1 spam kill = 1.9% — noise.
+                #   Require 3+ spam kills to confirm a pattern before burning.
+                min_complaints = ESP_BURN_MIN_COMPLAINTS.get(
+                    esp_type, ESP_BURN_MIN_COMPLAINTS_DEFAULT
+                )
+
+                if complaints_7d >= min_complaints and complaint_rate >= DOMAIN_COMPLAINT_RATE_BURN:
+                    # Complaint count meets ESP threshold AND rate exceeds burn threshold
+                    print(f"    [DOMAIN KILL] {domain_name} ({esp_type or 'unknown'}): "
+                          f"{complaints_7d} spam kills, rate {complaint_rate*100:.3f}% "
+                          f"(min {min_complaints} for {esp_type or 'default'}) — burning domain")
                     await self._handle_domain_killing_trigger(
                         domain_id=domain_id,
                         domain_name=domain_name,
@@ -985,19 +1070,33 @@ class KillProcessor:
                     )
                     return  # Domain compromised
 
-                elif complaint_rate >= DOMAIN_COMPLAINT_RATE_FLAGGED:
-                    # 0.3-1.0% = enter 7-day monitoring window
+                elif complaints_7d >= min_complaints and complaint_rate >= DOMAIN_COMPLAINT_RATE_FLAGGED:
+                    # Meets ESP threshold but rate in monitoring range (0.3-1.0%)
                     await self._enter_domain_monitoring(
                         domain_id, domain_name, effective_trigger,
-                        reason=f"Complaint rate {complaint_rate*100:.3f}% exceeds "
-                               f"0.3% — monitoring {MONITORING_WINDOW_DAYS} days"
+                        reason=f"{esp_type or 'unknown'}: {complaints_7d} spam kills, "
+                               f"rate {complaint_rate*100:.3f}% — monitoring "
+                               f"{MONITORING_WINDOW_DAYS} days"
+                    )
+                    # Fall through to normal promotion logic below
+
+                elif complaint_rate >= DOMAIN_COMPLAINT_RATE_BURN and complaints_7d < min_complaints:
+                    # Rate exceeds burn threshold but complaint count below ESP minimum.
+                    # This happens for Entra domains with 1-2 spam kills (1.9-3.8% rate).
+                    # Enter monitoring instead of burning — wait for pattern confirmation.
+                    await self._enter_domain_monitoring(
+                        domain_id, domain_name, effective_trigger,
+                        reason=f"{esp_type or 'unknown'}: rate {complaint_rate*100:.3f}% "
+                               f"exceeds burn threshold but only {complaints_7d}/{min_complaints} "
+                               f"spam kills — monitoring for pattern"
                     )
                     # Fall through to normal promotion logic below
 
                 else:
-                    # < 0.3%. Inbox kill was sufficient. Domain is fine.
-                    print(f"    [INBOX KILL] {domain_name}: complaint rate "
-                          f"{complaint_rate*100:.3f}% — inbox-level only, domain safe")
+                    # Below thresholds. Inbox kill was sufficient. Domain is fine.
+                    print(f"    [INBOX KILL] {domain_name} ({esp_type or 'unknown'}): "
+                          f"{complaints_7d} spam kills, rate {complaint_rate*100:.3f}% "
+                          f"— inbox-level only, domain safe")
 
         # Only promote if the killed inbox was in A-Set (deployed)
         if killed_pool != 'deployed':
@@ -1208,18 +1307,24 @@ class KillProcessor:
         """, domain_id)
 
         # 2. Burn the domain and promote reserve domain (using SQL function)
+        # Both live AND reserve domains can be burned. Reserve domains with
+        # high complaint rates must not be immune — and must not be promoted.
         promoted_domain = None
-        if current_pool == 'live':
+        if current_pool in ('live', 'reserve'):
             try:
                 result = await self.db.fetchrow("""
                     SELECT * FROM burn_domain_and_promote($1, $2)
                 """, domain_id, trigger_type)
 
-                if result and result['promoted_domain_name']:
-                    promoted_domain = result['promoted_domain_name']
-                    print(f"    [DOMAIN KILL] Promoted reserve domain: {promoted_domain}")
-                elif result and result['action'] == 'no_reserve':
-                    print(f"    [DOMAIN KILL] WARNING: No reserve domain available to promote!")
+                if result:
+                    action = result.get('action', '')
+                    if result['promoted_domain_name']:
+                        promoted_domain = result['promoted_domain_name']
+                        print(f"    [DOMAIN KILL] Promoted reserve domain: {promoted_domain}")
+                    elif action == 'no_reserve':
+                        print(f"    [DOMAIN KILL] WARNING: No healthy reserve domain available to promote!")
+                    elif action == 'burned_reserve':
+                        print(f"    [DOMAIN KILL] Burned reserve domain {domain_name} (no promotion needed)")
             except Exception as e:
                 # Function may not exist yet - fall back to manual update
                 print(f"    [DOMAIN KILL] burn_domain_and_promote not available: {e}")
@@ -1231,6 +1336,7 @@ class KillProcessor:
                         burn_trigger = $2,
                         updated_at = NOW()
                     WHERE id = $1
+                    AND pool_status IN ('live', 'reserve')
                 """, domain_id, trigger_type)
 
         # 3. Update domain state (legacy compatibility)
