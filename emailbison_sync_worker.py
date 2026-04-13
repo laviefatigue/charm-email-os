@@ -621,8 +621,9 @@ class SyncOrchestrator:
         if response.status_code not in (200, 201):
             raise Exception(f"EB API returned {response.status_code}: {response.text[:200]}")
 
-        data = response.json()
-        # EB API (Laravel Sanctum) returns the plain-text token only on creation
+        resp = response.json()
+        # EB API wraps response under "data" key; token is plain_text_token
+        data = resp.get("data", resp)
         token = (
             data.get("plain_text_token")
             or data.get("token")
