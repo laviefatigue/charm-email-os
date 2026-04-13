@@ -154,9 +154,13 @@ class WorkspaceSyncQueue:
 
         rows_inserted = 0
         for sync_type, interval_seconds in type_intervals:
-            result = await self.db.execute("""
+            # sync_type is always one of SYNC_TYPES (hardcoded tuple) — safe to inline
+            # as a SQL literal. Using a $N parameter for it causes asyncpg type-inference
+            # conflicts because the same param appears against both VARCHAR(20) and
+            # VARCHAR(50) columns (sync_status vs workspace_sync_queue).
+            result = await self.db.execute(f"""
                 INSERT INTO workspace_sync_queue (workspace_id, sync_type, priority)
-                SELECT w.id, $1, $2
+                SELECT w.id, '{sync_type}', $1
                 FROM workspaces w
                 -- Only workspaces with an active workspace-scoped API key
                 JOIN workspace_api_keys wak
@@ -169,18 +173,18 @@ class WorkspaceSyncQueue:
                   AND NOT EXISTS (
                       SELECT 1 FROM sync_status ss
                       WHERE ss.workspace_id = w.id
-                        AND ss.sync_type = $1
-                        AND ss.last_successful_sync >= NOW() - ($3 * INTERVAL '1 second')
+                        AND ss.sync_type = '{sync_type}'
+                        AND ss.last_successful_sync >= NOW() - ($2 * INTERVAL '1 second')
                   )
                   -- Skip if already pending (partial unique index covers this,
                   -- but being explicit avoids unnecessary conflict escalation)
                   AND NOT EXISTS (
                       SELECT 1 FROM workspace_sync_queue q
                       WHERE q.workspace_id = w.id
-                        AND q.sync_type = $1
+                        AND q.sync_type = '{sync_type}'
                         AND q.status = 'pending'
                   )
-            """, sync_type, PRIORITY_NORMAL, interval_seconds)
+            """, PRIORITY_NORMAL, interval_seconds)
 
             # asyncpg returns "INSERT 0 N" — extract the count
             try:

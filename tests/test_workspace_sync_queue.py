@@ -126,11 +126,17 @@ class TestScheduleOverdueSyncs:
                   'warmup': 222, 'engagement': 333}
         await queue.schedule_overdue_syncs(custom)
 
-        # Each call should pass the matching interval as a positional arg
+        # sync_type is inlined as a literal in the SQL f-string; only
+        # (priority, interval) are passed as positional args.
         for c in db.execute.call_args_list:
-            args = c[0]  # positional args: (sql, sync_type, priority, interval)
-            sync_type = args[1]
-            interval = args[3]
+            sql  = c[0][0]      # f-string SQL
+            # args: (PRIORITY_NORMAL, interval_seconds)
+            interval = c[0][2]  # positional index 2 = interval
+            # Extract the inlined sync_type from the SQL literal
+            import re
+            m = re.search(r"'(\w+)'", sql)
+            assert m, "Could not find inlined sync_type in SQL"
+            sync_type = m.group(1)
             assert interval == custom[sync_type], (
                 f"Expected interval {custom[sync_type]} for {sync_type}, got {interval}"
             )
