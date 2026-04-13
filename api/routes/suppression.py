@@ -728,19 +728,22 @@ async def get_stats(client_id: UUID):
     lead_stats = {"suppressed": 0, "checked": 0}
 
     if workspace_id:
-        row = await fetch_one(
-            """
-            SELECT
-                COUNT(*) FILTER (WHERE l.suppression_status = 'suppressed') AS suppressed,
-                COUNT(*) FILTER (WHERE l.suppression_status IS NOT NULL)     AS checked
-            FROM leads l
-            JOIN emailbison_campaigns ec ON ec.id = l.campaign_id
-            WHERE ec.workspace_id = $1
-            """,
-            workspace_id
-        )
-        if row:
-            lead_stats = {"suppressed": row["suppressed"], "checked": row["checked"]}
+        try:
+            row = await fetch_one(
+                """
+                SELECT
+                    COUNT(*) FILTER (WHERE l.suppression_status = 'suppressed') AS suppressed,
+                    COUNT(*) FILTER (WHERE l.suppression_status IS NOT NULL)     AS checked
+                FROM leads l
+                JOIN emailbison_campaigns ec ON ec.id = l.campaign_id
+                WHERE ec.workspace_id = $1
+                """,
+                workspace_id
+            )
+            if row:
+                lead_stats = {"suppressed": row["suppressed"], "checked": row["checked"]}
+        except Exception:
+            pass  # leads table may not yet have campaign_id column — default to 0
 
     # Clay call stats from the log table
     call_row = await fetch_one(
