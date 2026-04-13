@@ -39,6 +39,8 @@ production/
 │   └── README.md             # Daily inbox audit notifications
 ├── environment/              # Environment variables reference
 │   └── README.md
+├── suppression/              # Per-client domain suppression module
+│   └── README.md             # Clay integration, API reference, onboarding guide
 └── security/                 # Security procedures
     └── deployment-procedures.md
 ```
