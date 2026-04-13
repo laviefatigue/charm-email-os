@@ -156,7 +156,7 @@ class WorkspaceSyncQueue:
         for sync_type, interval_seconds in type_intervals:
             result = await self.db.execute("""
                 INSERT INTO workspace_sync_queue (workspace_id, sync_type, priority)
-                SELECT w.id, $1::text, $2
+                SELECT w.id, $1, $2
                 FROM workspaces w
                 -- Only workspaces with an active workspace-scoped API key
                 JOIN workspace_api_keys wak
@@ -169,7 +169,7 @@ class WorkspaceSyncQueue:
                   AND NOT EXISTS (
                       SELECT 1 FROM sync_status ss
                       WHERE ss.workspace_id = w.id
-                        AND ss.sync_type = $1::text
+                        AND ss.sync_type = $1
                         AND ss.last_successful_sync >= NOW() - ($3 * INTERVAL '1 second')
                   )
                   -- Skip if already pending (partial unique index covers this,
@@ -177,7 +177,7 @@ class WorkspaceSyncQueue:
                   AND NOT EXISTS (
                       SELECT 1 FROM workspace_sync_queue q
                       WHERE q.workspace_id = w.id
-                        AND q.sync_type = $1::text
+                        AND q.sync_type = $1
                         AND q.status = 'pending'
                   )
             """, sync_type, PRIORITY_NORMAL, interval_seconds)
