@@ -187,4 +187,9 @@ SELECT
 FROM sender_accounts sa
 JOIN domains d ON sa.domain_id = d.id
 WHERE sa.is_active = TRUE
-GROUP BY d.workspace_id, provider;
+GROUP BY d.workspace_id,
+    CASE
+        WHEN sa.esp::text = 'microsoft' THEN 'entra'
+        WHEN sa.esp::text = 'gmail' THEN 'google'
+        ELSE sa.esp::text
+    END;
