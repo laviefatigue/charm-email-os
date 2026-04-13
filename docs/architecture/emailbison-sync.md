@@ -18,7 +18,13 @@ The worker does two distinct things. They share the same process but are archite
 | **Data pull** | sync_accounts, sync_campaigns, sync_events, sync_warmup, sync_engagement | EB → DB | 3 workspaces concurrent |
 | **Tag write** | lifecycle_tag_sync, set_tag_sync, kill_processor | DB → EB | Sequential (all workspaces per run) |
 
-Data pull is managed by `WorkspaceSyncQueue`. Tag writes are called directly from the poll loop on their own schedules and remain sequential — they use the shared admin API key and manage their own workspace context.
+### Why tag writes are still sequential
+
+Tag write modules (lifecycle_tag_sync, set_tag_sync, kill_processor) use the shared **admin API key** (`EMAILBISON_API_KEY`). This key is not workspace-scoped — it can see all workspaces, but to make writes to a specific workspace it still calls `switch_workspace()`. Running two tag writes concurrently with the same key would race over the workspace context, causing writes to land on the wrong workspace.
+
+Tag writes are also less time-critical than data pulls — they run every 30 minutes and each workspace typically takes seconds. Concurrent execution offers less benefit and more risk for this path.
+
+Data pull modules have no such constraint: each gets its own `EmailBisonClient` with a per-workspace key, so no shared state exists to race over.
 
 ---
 
@@ -51,18 +57,51 @@ workspace_sync_queue table
 
 Total time ≈ max(single workspace sync) × ⌈N / 3⌉ instead of sum(all).
 
-### Workspace-Scoped Keys
+### Workspace-Scoped API Keys
 
-Each workspace has its own EB API token stored in `workspace_api_keys` (migration 089). The token is context-bound to that workspace — no `switch_workspace()` call is needed. The queue loads the key at job dispatch time.
+#### Why they replace switch_workspace()
+
+EmailBison uses Laravel Sanctum for API auth. When you create a token scoped to a specific workspace, every request made with that token is automatically restricted to that workspace — no `switch_workspace()` call is needed and none is possible. The key itself *is* the workspace context.
+
+The old model used a single shared admin key and called `switch_workspace(eb_workspace_id)` before each sync. This was:
+- **Sequential by design** — two concurrent callers using the same key would fight over which workspace it was "switched" to
+- **Fragile** — a crash between switch and sync left the client in the wrong workspace for the next call
+- **Slow** — every `switch_workspace()` was a round-trip API call before the actual work started
+
+With per-workspace keys, each `EmailBisonClient` instance is independent. Ten can run in parallel with no coordination.
+
+#### Table structure (`workspace_api_keys`, migration 089)
 
 ```sql
--- Check key status
+workspace_api_keys (
+    id                     UUID PRIMARY KEY,
+    workspace_id           UUID REFERENCES workspaces(id),  -- our internal ID
+    emailbison_workspace_id INT,                             -- EB numeric ID (for reference)
+    key_name               VARCHAR,                         -- human label
+    key_token              TEXT,                            -- the actual Bearer token
+    is_active              BOOLEAN DEFAULT TRUE,
+    created_at / updated_at TIMESTAMPTZ
+)
+```
+
+One row per workspace. `UNIQUE(workspace_id)` — only one active key per workspace at a time.
+
+#### How keys are provisioned
+
+New workspaces discovered by the daily workspace discovery task are auto-provisioned: the task calls the EB API to generate a scoped token and inserts it into `workspace_api_keys` immediately. No manual steps.
+
+For manual provisioning (e.g. re-keying a workspace): use the internal `_tmp_create_key.py` script, which calls the EB token creation endpoint and inserts the result.
+
+```sql
+-- Check which active workspaces have keys
 SELECT w.workspace_name, w.emailbison_workspace_id::text as eb_id,
        (wak.id IS NOT NULL) as has_key
 FROM workspaces w
 LEFT JOIN workspace_api_keys wak ON wak.workspace_id = w.id AND wak.is_active = TRUE
 WHERE w.is_active = TRUE ORDER BY w.workspace_name;
 ```
+
+Workspaces without a key are excluded from queue scheduling. `log_missing_keys()` logs a warning at worker startup listing any that are missing.
 
 ### Sync Types and Intervals
 
@@ -144,6 +183,62 @@ sync_modules/
 ├── audit_logger.py            ← sync_audit_log + sync_status writes
 └── slack_alerter.py           ← Slack webhook notifications
 ```
+
+---
+
+## Per-Workspace Module Contract
+
+Each data pull module was refactored from a global orchestrator to a single-workspace unit. This is what changed and what the contract looks like now.
+
+### What was removed from every module
+
+| Removed | Why |
+|---------|-----|
+| `sync_all_workspaces()` | Replaced by `WorkspaceSyncQueue.schedule_overdue_syncs()` |
+| `emailbison_workspace_id: int` parameter | No longer needed — client is pre-scoped |
+| `switch_workspace(eb_workspace_id)` call | Eliminated by workspace-scoped API keys |
+| `inter_batch_delay()` calls | No shared client = no shared rate limit to throttle |
+
+### What every data pull module looks like now
+
+```python
+class SomeSyncModule:
+    def __init__(self, db, client, audit_logger, alerter):
+        # client is already scoped to one workspace — caller's responsibility
+        self.client = client
+        ...
+
+    async def sync_workspace(self, workspace_id: UUID, workspace_name: str) -> SyncResult:
+        # Operates on exactly one workspace.
+        # No switch_workspace(). No global queries across workspaces.
+        # Returns SyncResult so the queue can mark the job complete/failed.
+        ...
+```
+
+`WorkspaceSyncQueue._dispatch()` instantiates the module, passes the pre-scoped client, calls `sync_workspace()`, then calls any post-hooks.
+
+### Module-specific notes
+
+**sync_events.py** — Unlike the others, events sync iterates campaigns (not inboxes directly). The new `sync_workspace()` queries `emailbison_campaigns WHERE workspace_id = $1` to scope it. The old `sync_all_active_campaigns()` is retained in the file as `DEPRECATED` — it still uses `switch_workspace()` and is valid for one-off manual backfills but must never be called from the concurrent worker.
+
+**sync_warmup.py** — `auto_enable_warmup_for_connected()` was previously called by the orchestrator after the warmup sync. It's now called as a post-step *inside* `sync_workspace_warmup()`, since the workspace-scoped client is already available there. The queue doesn't need to know about it.
+
+**sync_engagement.py** — `backfill_workspace()` is retained unchanged as a standalone script helper for historical data loads. It's not called from the worker.
+
+**sync_campaigns.py** — `sync_campaign_inbox_assignments()` was previously global (iterated all workspaces, called `switch_workspace()` between each). It's now workspace-scoped: takes `workspace_id` and only processes that workspace's inboxes. The queue calls it as a post-hook after `sync_workspace()` completes.
+
+### Writing a new data pull module
+
+If you add a sixth sync type:
+
+1. Create `sync_modules/sync_something.py` with `sync_workspace(workspace_id, workspace_name) -> SyncResult`
+2. Add `'something'` to `SYNC_TYPES` in `workspace_sync_queue.py`
+3. Add an interval to `DEFAULT_INTERVALS`
+4. Add a dispatch branch in `_dispatch()`
+5. Add the interval to the worker's `run_data_sync()` call
+6. Add tests to `tests/test_workspace_sync_queue.py`
+
+The module must not call `switch_workspace()`, must not make cross-workspace queries, and must not call `inter_batch_delay()`.
 
 ---
 
