@@ -748,7 +748,7 @@ class KillProcessor:
                 COUNT(*) FILTER (WHERE health_score < 60) as unhealthy_count,
                 COUNT(*) FILTER (WHERE inbox_state = 'dead' AND (
                     kill_trigger IN ('spam_complaint', 'hard_blocked_24h')
-                    OR kill_trigger LIKE 'provider_block_%'
+                    OR kill_trigger::text LIKE 'provider_block_%'
                 )) as reputation_dead
             FROM sender_accounts
             WHERE domain_id = $1 AND is_active = TRUE
