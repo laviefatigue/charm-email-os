@@ -201,6 +201,7 @@ class LifecycleTagSyncModule:
             FROM sender_accounts
             WHERE workspace_id = $1
             AND inbox_state = 'live'
+            AND is_active = TRUE
             AND warmup_started_at IS NOT NULL
             AND warmup_started_at <= $2
             AND inventory_lifecycle_status = 'incubating'
@@ -275,6 +276,7 @@ class LifecycleTagSyncModule:
             FROM sender_accounts
             WHERE workspace_id = $1
             AND inbox_state = 'live'
+            AND is_active = TRUE
             AND warmup_started_at IS NOT NULL
             AND warmup_started_at > $2
             AND emailbison_account_id IS NOT NULL
