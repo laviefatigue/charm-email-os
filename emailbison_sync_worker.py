@@ -1,20 +1,37 @@
 #!/usr/bin/env python3
 """
-EmailBison Daily Sync Worker
+EmailBison Sync Worker
 
-Modular sync system for keeping local database fresh with EmailBison data.
+Concurrent, workspace-scoped sync system that keeps the local database fresh
+with EmailBison data.
+
+Architecture:
+    Data-pull syncs (EB → DB) are managed by WorkspaceSyncQueue — a persistent
+    PostgreSQL job queue that enables concurrent per-workspace processing.  Each
+    workspace has a scoped API key (workspace_api_keys, migration 089) so all 5
+    data-pull modules run without switch_workspace() calls and can run in parallel.
+
+    Poll loop sleeps for POLL_INTERVAL_PRIORITY (30s).  On each tick:
+      1. run_priority_sync() — claim any force-refresh (priority=10) jobs
+      2. run_data_sync()     — schedule overdue workspaces, process concurrent batch
+      3. Other non-data tasks on their own intervals (health checks, tagging, etc.)
+
 Features:
-- Account & domain synchronization (hourly)
-- Campaign metrics snapshots (hourly)
-- Event & response message sync (every 5 min)
-- Health checks and kill trigger detection (every 15 min)
-- Kill queue processing with 24hr tagging (every 30 min)
-- Workspace discovery - auto-import new EmailBison workspaces (daily)
-- Data retention cleanup (daily)
+- Accounts & domains        — hourly, concurrent per workspace
+- Campaigns & snapshots     — hourly, concurrent per workspace
+- Events (replies/bounces)  — every 5 min, concurrent per workspace
+- Warmup tracking           — every 30 min, concurrent per workspace
+- Engagement snapshots      — daily, concurrent per workspace
+- Force-refresh (client UI) — picked up within ~30s via priority queue
+- Health checks & kill triggers — every 15 min
+- Kill queue processing     — every 30 min
+- Lifecycle + Set tagging   — every 30 min (writes EB → DB, sequential)
+- Workspace discovery       — daily (auto-import new EB workspaces)
+- Data retention cleanup    — daily
 
 Usage:
     python emailbison_sync_worker.py           # Run continuous polling
-    python emailbison_sync_worker.py --once    # Run single pass and exit
+    python emailbison_sync_worker.py --once    # Force-refresh all + single pass
 """
 import argparse
 import asyncio
@@ -29,10 +46,7 @@ from sync_modules import (
     EmailBisonClient,
     AuditLogger,
     SlackAlerter,
-    AccountSyncModule,
-    CampaignSyncModule,
-    EventSyncModule,
-    WarmupSyncModule,
+    WorkspaceSyncQueue,
     HealthCheckModule,
     KillProcessor,
     RetentionManager,
@@ -40,7 +54,6 @@ from sync_modules import (
     DailySnapshotModule,
     LifecycleTagSyncModule,
     SetTagSyncModule,
-    EngagementSyncModule,
     OnboardingMonitorModule,
 )
 
@@ -51,15 +64,23 @@ POSTGRES_USER = os.getenv('POSTGRES_USER', 'postgres')
 POSTGRES_PASSWORD = os.getenv('POSTGRES_PASSWORD', 'localdevpassword')
 POSTGRES_DB = os.getenv('POSTGRES_DB', 'postgres')
 
-# Sync intervals (seconds)
-POLL_INTERVAL_EVENTS = int(os.getenv('SYNC_INTERVAL_EVENTS', 300))      # 5 min
-POLL_INTERVAL_FULL = int(os.getenv('SYNC_INTERVAL_FULL', 3600))         # 1 hour
-POLL_INTERVAL_HEALTH = int(os.getenv('SYNC_INTERVAL_HEALTH', 900))      # 15 min
-POLL_INTERVAL_KILL = int(os.getenv('SYNC_INTERVAL_KILL', 1800))         # 30 min
-POLL_INTERVAL_WARMUP = int(os.getenv('SYNC_INTERVAL_WARMUP', 1800))     # 30 min (warmup tracking)
-POLL_INTERVAL_ENGAGEMENT = int(os.getenv('SYNC_INTERVAL_ENGAGEMENT', 86400))  # 24 hours (daily engagement snapshots)
-POLL_INTERVAL_OAUTH_QUEUE = int(os.getenv('SYNC_INTERVAL_OAUTH_QUEUE', 300))  # 5 min (queue processing)
-POLL_INTERVAL_OAUTH_VERIFY = int(os.getenv('SYNC_INTERVAL_OAUTH_VERIFY', 30 * 24 * 3600))  # 30 days (verification)
+# Sync intervals (seconds) — used by WorkspaceSyncQueue.schedule_overdue_syncs()
+POLL_INTERVAL_EVENTS = int(os.getenv('SYNC_INTERVAL_EVENTS', 300))          # 5 min  (events)
+POLL_INTERVAL_FULL = int(os.getenv('SYNC_INTERVAL_FULL', 3600))             # 1 hour (accounts, campaigns)
+POLL_INTERVAL_HEALTH = int(os.getenv('SYNC_INTERVAL_HEALTH', 900))          # 15 min
+POLL_INTERVAL_KILL = int(os.getenv('SYNC_INTERVAL_KILL', 1800))             # 30 min
+POLL_INTERVAL_WARMUP = int(os.getenv('SYNC_INTERVAL_WARMUP', 1800))         # 30 min (warmup)
+POLL_INTERVAL_ENGAGEMENT = int(os.getenv('SYNC_INTERVAL_ENGAGEMENT', 86400))  # 24 hours (daily snapshots)
+POLL_INTERVAL_OAUTH_QUEUE = int(os.getenv('SYNC_INTERVAL_OAUTH_QUEUE', 300))  # 5 min  (queue processing)
+POLL_INTERVAL_OAUTH_VERIFY = int(os.getenv('SYNC_INTERVAL_OAUTH_VERIFY', 30 * 24 * 3600))  # 30 days
+
+# Concurrent workspace processing — how many workspaces run in parallel per batch
+SYNC_WORKSPACE_CONCURRENCY = int(os.getenv('SYNC_WORKSPACE_CONCURRENCY', '3'))
+
+# How often to poll for force-refresh (priority) jobs from the client dashboard
+# This is the main poll loop sleep interval — all other schedules are managed by
+# the queue's last_successful_sync checks, not by timer loops here.
+POLL_INTERVAL_PRIORITY = int(os.getenv('SYNC_INTERVAL_PRIORITY', '30'))     # 30s priority poll
 
 # Slack webhook for alerts
 SLACK_WEBHOOK_URL = os.getenv('SLACK_WEBHOOK_URL', '')
@@ -75,23 +96,23 @@ class SyncOrchestrator:
 
     def __init__(self):
         self.db: Optional[asyncpg.Pool] = None
-        self.client: Optional[EmailBisonClient] = None
         self.alerter: Optional[SlackAlerter] = None
         self.audit_logger: Optional[AuditLogger] = None
+        self.sync_queue: Optional[WorkspaceSyncQueue] = None
         self.running = True
 
-        # Track last run times
-        self.last_full_sync: Optional[datetime] = None
+        # Track last run times for non-queue-managed tasks
+        # Data-pull syncs (accounts/campaigns/events/warmup/engagement) are managed
+        # entirely by WorkspaceSyncQueue.schedule_overdue_syncs() — no last_*_sync
+        # trackers needed here for those types.
         self.last_health_check: Optional[datetime] = None
         self.last_kill_check: Optional[datetime] = None
-        self.last_warmup_sync: Optional[datetime] = None
-        self.last_engagement_sync: Optional[datetime] = None
+        self.last_lifecycle_tag_sync: Optional[datetime] = None
         self.last_retention_cleanup: Optional[datetime] = None
         self.last_daily_counter_reset: Optional[datetime] = None
         self.last_oauth_queue_check: Optional[datetime] = None
         self.last_oauth_verify: Optional[datetime] = None
         self.last_daily_snapshot: Optional[datetime] = None
-        self.last_lifecycle_tag_sync: Optional[datetime] = None
         self.last_slack_audit: Optional[datetime] = None
         self.last_workspace_discovery: Optional[datetime] = None
         self.last_onboarding_monitor: Optional[datetime] = None
@@ -104,9 +125,12 @@ class SyncOrchestrator:
         print(f"  Kill processing: {'Enabled' if ENABLE_KILL_PROCESSING else 'DISABLED'}")
         print(f"  Lifecycle tagging: {'Enabled' if ENABLE_LIFECYCLE_TAGGING else 'DISABLED'}")
         print(f"  Intervals: events={POLL_INTERVAL_EVENTS}s, full={POLL_INTERVAL_FULL}s, health={POLL_INTERVAL_HEALTH}s, kill={POLL_INTERVAL_KILL}s, warmup={POLL_INTERVAL_WARMUP}s, oauth_queue={POLL_INTERVAL_OAUTH_QUEUE}s")
+        print(f"  Workspace concurrency: {SYNC_WORKSPACE_CONCURRENCY} parallel | Priority poll: {POLL_INTERVAL_PRIORITY}s")
 
         try:
             # Initialize database connection pool
+            # max_size=20 supports SYNC_WORKSPACE_CONCURRENCY=3 workspaces × 5 sync types
+            # with headroom for health checks, tagging, and admin queries.
             self.db = await asyncpg.create_pool(
                 host=POSTGRES_HOST,
                 port=POSTGRES_PORT,
@@ -114,13 +138,23 @@ class SyncOrchestrator:
                 password=POSTGRES_PASSWORD,
                 database=POSTGRES_DB,
                 min_size=2,
-                max_size=10
+                max_size=20
             )
             print("  Database pool created")
 
             # Initialize shared services
             self.alerter = SlackAlerter(SLACK_WEBHOOK_URL)
             self.audit_logger = AuditLogger(self.db)
+
+            # Initialize workspace sync queue — manages concurrent per-workspace data pulls
+            self.sync_queue = WorkspaceSyncQueue(
+                db=self.db,
+                audit_logger=self.audit_logger,
+                alerter=self.alerter,
+                concurrency=SYNC_WORKSPACE_CONCURRENCY,
+            )
+            # Warn about workspaces that don't have API keys yet (cannot be synced)
+            await self.sync_queue.log_missing_keys()
 
             # Test database connection
             async with self.db.acquire() as conn:
@@ -159,13 +193,16 @@ class SyncOrchestrator:
             try:
                 now = datetime.now()
 
-                # Events sync (highest priority, most frequent)
-                await self.run_events_sync()
+                # ── Data-pull syncs (EB → DB) — managed by WorkspaceSyncQueue ──────────
+                # Priority jobs first: force-refresh requests from the client dashboard.
+                # These use priority=10 and are picked up every 30s (POLL_INTERVAL_PRIORITY).
+                await self.run_priority_sync()
 
-                # Full sync (accounts, campaigns) - hourly
-                if self._should_run(self.last_full_sync, POLL_INTERVAL_FULL):
-                    await self.run_full_sync()
-                    self.last_full_sync = now
+                # Scheduled sync: enqueue any overdue workspaces, then process a concurrent
+                # batch (up to SYNC_WORKSPACE_CONCURRENCY workspaces at once).
+                # schedule_overdue_syncs() is idempotent — safe to call every 30s.
+                await self.run_data_sync()
+                # ─────────────────────────────────────────────────────────────────────────
 
                 # Health checks - every 15 min
                 if self._should_run(self.last_health_check, POLL_INTERVAL_HEALTH):
@@ -177,21 +214,11 @@ class SyncOrchestrator:
                     await self.run_kill_processing()
                     self.last_kill_check = now
 
-                # Warmup sync - every 30 min
-                if self._should_run(self.last_warmup_sync, POLL_INTERVAL_WARMUP):
-                    await self.run_warmup_sync()
-                    self.last_warmup_sync = now
-
-                # Lifecycle tag sync - runs with warmup sync
+                # Lifecycle tag sync - runs every 30 min (with warmup cadence)
                 # Manages 'incubating' and 'live' tags in EmailBison based on warmup age
                 if self._should_run(self.last_lifecycle_tag_sync, POLL_INTERVAL_WARMUP):
                     await self.run_lifecycle_tag_sync()
                     self.last_lifecycle_tag_sync = now
-
-                # Engagement sync - daily snapshots (per-inbox opens, replies, interested)
-                if self._should_run(self.last_engagement_sync, POLL_INTERVAL_ENGAGEMENT):
-                    await self.run_engagement_sync()
-                    self.last_engagement_sync = now
 
                 # Daily retention cleanup (run at midnight)
                 if self._should_run_daily(self.last_retention_cleanup):
@@ -257,8 +284,10 @@ class SyncOrchestrator:
                         print(f"[ERROR] OAuth verification failed: {e}")
                     self.last_oauth_verify = now
 
-                # Sleep until next poll interval
-                await asyncio.sleep(POLL_INTERVAL_EVENTS)
+                # Sleep for priority poll interval (30s).
+                # All sync schedules are driven by the queue's schedule_overdue_syncs()
+                # logic, not by this sleep interval — so 30s is fine.
+                await asyncio.sleep(POLL_INTERVAL_PRIORITY)
 
             except asyncio.CancelledError:
                 print("[INFO] Poll loop cancelled")
@@ -271,57 +300,67 @@ class SyncOrchestrator:
 
     async def run_single_pass(self):
         """Run all sync operations once and exit."""
-        print(f"[{datetime.now()}] Running single pass...")
+        print(f"[{datetime.now()}] Running single pass (force-refresh all workspaces)...")
 
-        await self.run_full_sync()
-        await self.run_events_sync()
-        await self.run_warmup_sync()
+        # Force-refresh enqueues all 5 sync types at priority=10 for every workspace.
+        # This is the equivalent of the old run_full_sync + run_events_sync + run_warmup_sync
+        # + run_engagement_sync, but concurrent instead of sequential.
+        workspaces = await self.db.fetch("""
+            SELECT w.id FROM workspaces w
+            JOIN workspace_api_keys k ON k.workspace_id = w.id AND k.is_active = TRUE
+            WHERE w.is_active = TRUE
+        """)
+        for ws in workspaces:
+            await self.sync_queue.request_force_refresh(ws['id'])
+
+        # Process until queue drains (multiple passes since batch size = concurrency)
+        for _ in range(len(workspaces) * 2 + 1):
+            await self.sync_queue.process_pending_batch()
+
         await self.run_health_checks()
         await self.run_kill_processing()
 
         print(f"[{datetime.now()}] Single pass complete")
 
-    async def run_full_sync(self):
-        """Run full account and campaign sync."""
-        print(f"\n[{datetime.now()}] === FULL SYNC ===")
+    async def run_data_sync(self):
+        """
+        Schedule overdue workspace syncs and process the next concurrent batch.
 
-        async with EmailBisonClient() as client:
-            # Sync accounts
-            account_sync = AccountSyncModule(
-                db=self.db,
-                client=client,
-                audit_logger=self.audit_logger,
-                alerter=self.alerter
-            )
-            account_results = await account_sync.sync_all_workspaces()
-            self._print_results('Accounts', account_results)
+        Two-phase operation:
+        1. schedule_overdue_syncs(): for each active workspace with a valid API key,
+           insert pending jobs for any sync type whose last_successful_sync is older
+           than its configured interval.  Uses ON CONFLICT DO NOTHING — safe to call
+           every 30s (POLL_INTERVAL_PRIORITY).
+        2. process_pending_batch(): claim up to SYNC_WORKSPACE_CONCURRENCY jobs via
+           FOR UPDATE SKIP LOCKED and run them concurrently with asyncio.gather.
 
-            # Sync campaigns
-            campaign_sync = CampaignSyncModule(
-                db=self.db,
-                client=client,
-                audit_logger=self.audit_logger,
-                alerter=self.alerter
-            )
-            campaign_results = await campaign_sync.sync_all_workspaces()
-            self._print_results('Campaigns', campaign_results)
+        Sync intervals per type:
+          accounts   — POLL_INTERVAL_FULL       (1 hour)
+          campaigns  — POLL_INTERVAL_FULL       (1 hour)
+          events     — POLL_INTERVAL_EVENTS     (5 min)
+          warmup     — POLL_INTERVAL_WARMUP     (30 min)
+          engagement — POLL_INTERVAL_ENGAGEMENT (24 hours)
+        """
+        await self.sync_queue.schedule_overdue_syncs({
+            'accounts':   POLL_INTERVAL_FULL,
+            'campaigns':  POLL_INTERVAL_FULL,
+            'events':     POLL_INTERVAL_EVENTS,
+            'warmup':     POLL_INTERVAL_WARMUP,
+            'engagement': POLL_INTERVAL_ENGAGEMENT,
+        })
+        await self.sync_queue.process_pending_batch()
 
-    async def run_events_sync(self):
-        """Run event/response message sync."""
-        print(f"[{datetime.now()}] Events sync...")
+    async def run_priority_sync(self):
+        """
+        Process force-refresh (priority=10) jobs without waiting for the normal batch.
 
-        async with EmailBisonClient() as client:
-            event_sync = EventSyncModule(
-                db=self.db,
-                client=client,
-                audit_logger=self.audit_logger,
-                alerter=self.alerter
-            )
-            result = await event_sync.sync_all_active_campaigns()
+        Called every POLL_INTERVAL_PRIORITY (30s) so client dashboard refresh
+        requests are picked up within ~30s of submission.
 
-            if result.records_processed > 0 or not result.success:
-                status = 'OK' if result.success else 'FAILED'
-                print(f"  Events: {result.records_processed} campaigns, {result.records_updated} with new events [{status}]")
+        Force-refresh jobs are inserted by POST /api/sync/workspaces/{id}/refresh
+        (via WorkspaceSyncQueue.request_force_refresh).
+        """
+        await self.sync_queue.process_priority_batch()
 
     async def run_health_checks(self):
         """Run health checks and kill trigger detection."""
@@ -357,58 +396,6 @@ class SyncOrchestrator:
             if result.records_processed > 0:
                 status = 'OK' if result.success else 'FAILED'
                 print(f"  Kill Queue: {result.records_processed} processed [{status}]")
-
-    async def run_engagement_sync(self):
-        """Capture daily engagement snapshots per inbox (opens, replies, interested)."""
-        print(f"[{datetime.now()}] Engagement sync (daily snapshots)...")
-
-        async with EmailBisonClient() as client:
-            engagement_sync = EngagementSyncModule(
-                db=self.db,
-                client=client,
-                audit_logger=self.audit_logger,
-                alerter=self.alerter
-            )
-            results = await engagement_sync.sync_all_workspaces()
-            self._print_results('Engagement', results)
-
-    async def run_warmup_sync(self):
-        """Sync warmup status and auto-enable warmup for connected inboxes.
-
-        Per user requirement: "We should always try to keep connected inboxes in warming."
-        """
-        print(f"[{datetime.now()}] Warmup sync...")
-
-        async with EmailBisonClient() as client:
-            warmup_sync = WarmupSyncModule(
-                db=self.db,
-                client=client,
-                audit_logger=self.audit_logger,
-                alerter=self.alerter
-            )
-
-            # Sync warmup stats from EmailBison
-            results = await warmup_sync.sync_all_workspaces()
-            self._print_results('Warmup', results)
-
-            # Auto-enable warmup for connected inboxes without it
-            workspaces = await self.db.fetch("""
-                SELECT id, workspace_name
-                FROM workspaces
-                WHERE emailbison_workspace_id IS NOT NULL
-                AND is_active = TRUE
-            """)
-
-            total_auto_enabled = 0
-            for ws in workspaces:
-                try:
-                    enabled = await warmup_sync.auto_enable_warmup_for_connected(ws['id'])
-                    total_auto_enabled += enabled
-                except Exception as e:
-                    print(f"  [WARN] Auto-enable warmup failed for {ws['workspace_name']}: {e}")
-
-            if total_auto_enabled > 0:
-                print(f"  Auto-enabled warmup for {total_auto_enabled} connected inboxes")
 
     async def run_lifecycle_tag_sync(self):
         """Sync lifecycle tags in EmailBison based on warmup age.
@@ -769,37 +756,20 @@ class SyncOrchestrator:
                     except Exception as e:
                         print(f"    Error creating {eb_name}: {e}")
 
-                # Immediate backfill: sync accounts/domains for all new workspaces
+                # Immediate backfill: enqueue force-refresh for all new workspaces.
+                # The workspace API key was just created in _create_workspace_api_key(),
+                # so schedule_overdue_syncs() will see it on the next pass.  Submitting
+                # force-refresh (priority=10) ensures the new workspace is processed within
+                # POLL_INTERVAL_PRIORITY (30s) without waiting for the normal schedule.
                 if created_workspaces:
-                    print(f"  Backfilling data for {len(created_workspaces)} new workspaces...")
+                    print(f"  Queueing force-refresh for {len(created_workspaces)} new workspaces...")
 
-                    async with EmailBisonClient() as client:
-                        account_sync = AccountSyncModule(
-                            db=self.db,
-                            client=client,
-                            audit_logger=self.audit_logger,
-                            alerter=self.alerter
-                        )
-
-                        for ws in created_workspaces:
-                            try:
-                                result = await account_sync.sync_workspace(
-                                    workspace_id=ws['id'],
-                                    workspace_name=ws['name'],
-                                    emailbison_workspace_id=ws['eb_id']
-                                )
-                                status = 'OK' if result.success else 'FAILED'
-                                print(f"    Backfill {ws['name']}: {result.records_processed} accounts [{status}]")
-
-                                # Rate limit between workspaces
-                                await client.inter_batch_delay(1.0)
-
-                            except Exception as e:
-                                print(f"    Backfill error for {ws['name']}: {e}")
-
-                        # Sync domains after all accounts are imported
-                        await account_sync.sync_all_domains()
-                        print(f"    Domain sync complete")
+                    for ws in created_workspaces:
+                        try:
+                            queued = await self.sync_queue.request_force_refresh(ws['id'])
+                            print(f"    Sync queued for {ws['name']}: {queued}")
+                        except Exception as e:
+                            print(f"    Queue error for {ws['name']}: {e}")
 
                 print(f"  Discovery complete: {len(created_workspaces)} workspaces created and backfilled")
 

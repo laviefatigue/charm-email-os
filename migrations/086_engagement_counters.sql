@@ -146,9 +146,9 @@ CREATE OR REPLACE VIEW v_esp_performance AS
 SELECT
     d.workspace_id,
     CASE
-        WHEN sa.esp = 'microsoft' THEN 'entra'
-        WHEN sa.esp = 'gmail' THEN 'google'
-        ELSE sa.esp
+        WHEN sa.esp::text = 'microsoft' THEN 'entra'
+        WHEN sa.esp::text = 'gmail' THEN 'google'
+        ELSE sa.esp::text
     END AS provider,
     COUNT(DISTINCT d.id) AS domain_count,
     COUNT(sa.id) AS inbox_count,

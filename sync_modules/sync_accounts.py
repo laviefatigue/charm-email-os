@@ -2,9 +2,30 @@
 Account & Domain Sync Module
 
 Synchronizes sender accounts and domains from EmailBison.
+
+Architecture (workspace-concurrent model):
+    This module is designed for per-workspace parallel execution.
+    It is called by WorkspaceSyncQueue._dispatch() with a workspace-scoped
+    EmailBisonClient already initialised with the per-workspace API key.
+
+    Contract:
+        - Caller is responsible for passing a client scoped to the correct workspace.
+        - NO switch_workspace() call is made here.  The workspace-scoped API key
+          (stored in workspace_api_keys, migration 089) is context-bound at creation
+          time — every request it makes is already scoped to one workspace.
+        - sync_workspace(workspace_id, workspace_name) operates on one workspace only.
+        - sync_all_domains() is a pure-SQL global operation with no API calls;
+          it is safe to call concurrently from multiple workspace tasks and is
+          invoked as a post-hook by WorkspaceSyncQueue after each accounts sync.
+
+    Removed (old sequential model):
+        - sync_all_workspaces()   — replaced by WorkspaceSyncQueue scheduler
+        - emailbison_workspace_id param — no longer needed; client is pre-scoped
+        - switch_workspace() call  — eliminated by workspace-scoped API keys
+        - inter_batch_delay()      — no shared client = no shared rate limit
 """
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Dict, Optional
 from uuid import UUID
 import asyncpg
 
@@ -122,56 +143,18 @@ class AccountSyncModule:
         self.audit_logger = audit_logger
         self.alerter = alerter or SlackAlerter()
 
-    async def sync_all_workspaces(self) -> List[SyncResult]:
-        """Sync accounts for all active workspaces."""
-        results = []
-
-        # Get all workspaces with EmailBison IDs
-        workspaces = await self.db.fetch("""
-            SELECT id, workspace_name, emailbison_workspace_id
-            FROM workspaces
-            WHERE emailbison_workspace_id IS NOT NULL
-            AND is_active = TRUE
-        """)
-
-        print(f"[AccountSync] Syncing {len(workspaces)} workspaces")
-
-        for ws in workspaces:
-            try:
-                result = await self.sync_workspace(
-                    workspace_id=ws['id'],
-                    workspace_name=ws['workspace_name'],
-                    emailbison_workspace_id=int(ws['emailbison_workspace_id'])
-                )
-                results.append(result)
-
-                if result.status == 'failed' and self.alerter:
-                    await self.alerter.alert_sync_failure(
-                        module='accounts',
-                        error=result.error_message or 'Unknown error',
-                        workspace=ws['workspace_name'],
-                        records_processed=result.records_processed
-                    )
-
-                # Add delay between workspaces to avoid rate limiting
-                await self.client.inter_batch_delay(1.0)
-
-            except Exception as e:
-                print(f"[AccountSync] Error syncing {ws['workspace_name']}: {e}")
-                # Continue with other workspaces
-
-        # Sync domains after accounts
-        await self.sync_all_domains()
-
-        return results
-
     async def sync_workspace(
         self,
         workspace_id: UUID,
         workspace_name: str,
-        emailbison_workspace_id: int
     ) -> SyncResult:
-        """Sync accounts for a single workspace."""
+        """
+        Sync accounts for a single workspace.
+
+        The EmailBisonClient (self.client) must already be scoped to this
+        workspace via its API key.  No switch_workspace() call is made here.
+        Called by WorkspaceSyncQueue._dispatch() with a per-workspace client.
+        """
         audit = await self.audit_logger.start_audit(
             sync_type='accounts',
             workspace_id=workspace_id,
@@ -179,10 +162,6 @@ class AccountSyncModule:
         )
 
         try:
-            # Switch to workspace context
-            if not await self.client.switch_workspace(emailbison_workspace_id):
-                return await audit.fail(Exception(f"Failed to switch to workspace {workspace_name}"))
-
             # Fetch all accounts from EmailBison
             accounts = await self.client.get_all_sender_accounts()
             print(f"  [{workspace_name}] Found {len(accounts)} accounts in EmailBison")

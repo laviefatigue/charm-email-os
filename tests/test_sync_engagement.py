@@ -200,13 +200,12 @@ class TestEngagementSyncModule:
     async def test_sync_workspace_handles_empty_inbox_list(self):
         module, db, client, audit_ctx = self._make_module()
 
-        client.switch_workspace = AsyncMock(return_value=True)
         db.fetch = AsyncMock(return_value=[])  # No inboxes
 
+        # eb_workspace_id removed — client is pre-scoped to the workspace
         result = await module.sync_workspace(
             workspace_id=uuid4(),
             workspace_name="Test",
-            eb_workspace_id=123
         )
 
         audit_ctx.complete.assert_called_once()
@@ -216,7 +215,7 @@ class TestEngagementSyncModule:
         module, db, client, audit_ctx = self._make_module()
 
         inbox_id = uuid4()
-        client.switch_workspace = AsyncMock(return_value=True)
+        # switch_workspace removed — client is pre-scoped to the workspace
         db.fetch = AsyncMock(return_value=[
             {"id": inbox_id, "emailbison_account_id": "12345", "email_address": "test@example.com"}
         ])
@@ -229,7 +228,8 @@ class TestEngagementSyncModule:
         })
 
         ws_id = uuid4()
-        await module.sync_workspace(ws_id, "Test", 123)
+        # eb_workspace_id removed — client is pre-scoped to the workspace
+        await module.sync_workspace(ws_id, "Test")
 
         # Should have called event stats for the inbox
         client.get_campaign_event_stats.assert_called_once()

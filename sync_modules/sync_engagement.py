@@ -12,9 +12,30 @@ Sync cadence:
 - All-time counters: captured by sync_accounts.py hourly (zero extra API calls)
 - Daily snapshots: captured once per day during low-traffic hours
 - 7-day windowed metrics: derived from snapshot table after daily capture
+
+Architecture (workspace-concurrent model):
+    This module is designed for per-workspace parallel execution.
+    It is called by WorkspaceSyncQueue._dispatch() with a workspace-scoped
+    EmailBisonClient already initialised with the per-workspace API key.
+
+    Contract:
+        - Caller passes a client already scoped to the target workspace.
+        - NO switch_workspace() calls in sync_workspace().
+        - sync_workspace(workspace_id, workspace_name) handles one workspace only.
+
+    Removed (old sequential model):
+        - sync_all_workspaces()   — replaced by WorkspaceSyncQueue scheduler
+        - eb_workspace_id param   — no longer needed; client is pre-scoped
+        - switch_workspace() call — eliminated by workspace-scoped API keys
+        - inter_batch_delay()     — no shared client = no shared rate limit
+
+    Retained (one-time script):
+        - backfill_workspace() — still takes eb_workspace_id and calls
+          switch_workspace() because it is a standalone script helper
+          (scripts/backfill_engagement_90d.py), NOT called from the worker.
 """
 from datetime import datetime, timedelta, timezone
-from typing import Dict, List, Optional
+from typing import Dict, Optional
 from uuid import UUID
 
 import asyncpg
@@ -57,35 +78,17 @@ class EngagementSyncModule:
         self.audit_logger = audit_logger
         self.alerter = alerter or SlackAlerter()
 
-    async def sync_all_workspaces(self) -> List[SyncResult]:
-        """Capture daily engagement snapshots for all workspaces."""
-        workspaces = await self.db.fetch("""
-            SELECT id, workspace_name, emailbison_workspace_id
-            FROM workspaces
-            WHERE emailbison_workspace_id IS NOT NULL
-            AND is_active = TRUE
-        """)
-
-        results = []
-        for ws in workspaces:
-            result = await self.sync_workspace(
-                workspace_id=ws['id'],
-                workspace_name=ws['workspace_name'],
-                eb_workspace_id=ws['emailbison_workspace_id']
-            )
-            results.append(result)
-            await self.client.inter_batch_delay(1.0)
-
-        return results
-
     async def sync_workspace(
         self,
         workspace_id: UUID,
         workspace_name: str,
-        eb_workspace_id: int
     ) -> SyncResult:
         """
         Capture daily engagement snapshots for all connected inboxes in a workspace.
+
+        The EmailBisonClient (self.client) must already be scoped to this
+        workspace via its API key.  No switch_workspace() call is made here.
+        Called by WorkspaceSyncQueue._dispatch() with a per-workspace client.
 
         For each inbox, calls /api/campaign-events/stats with yesterday's date range
         and stores the daily event counts in inbox_engagement_snapshots.
@@ -98,10 +101,6 @@ class EngagementSyncModule:
         )
 
         try:
-            # Switch to workspace
-            if not await self.client.switch_workspace(int(eb_workspace_id)):
-                return await audit.fail(Exception(f"Failed to switch workspace {eb_workspace_id}"))
-
             # Get all connected inboxes with EB account IDs
             inboxes = await self.db.fetch("""
                 SELECT id, emailbison_account_id, email_address

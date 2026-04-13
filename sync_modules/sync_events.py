@@ -3,6 +3,29 @@ Event & Response Sync Module
 
 Synchronizes reply and bounce events from EmailBison campaigns.
 Stores full message content in response_messages table.
+
+Architecture (workspace-concurrent model):
+    This module is designed for per-workspace parallel execution.
+    It is called by WorkspaceSyncQueue._dispatch() with a workspace-scoped
+    EmailBisonClient already initialised with the per-workspace API key.
+
+    Contract:
+        - Caller passes a client already scoped to the target workspace.
+        - NO switch_workspace() calls in sync_workspace().
+        - sync_workspace(workspace_id, workspace_name) queries campaigns in that
+          workspace and processes all three folders (inbox, bounced, spam) per
+          campaign without any client context switching.
+        - No inter_batch_delay() between campaigns — each workspace has its own
+          client instance, so there is no shared rate-limit state.
+
+    Removed from sync_workspace() (old sequential model):
+        - switch_workspace() call per campaign  — eliminated by workspace-scoped API keys
+        - inter_batch_delay() between campaigns — no shared client = no shared rate limit
+
+    Retained (legacy / non-parallel path):
+        - sync_all_active_campaigns() — DEPRECATED. Retained for manual/backfill use only.
+          Uses switch_workspace() internally and must NOT be called from the concurrent
+          worker.  Will be removed in a future cleanup pass.
 """
 import json
 from datetime import datetime, timezone
@@ -30,8 +53,106 @@ class EventSyncModule:
         self.audit_logger = audit_logger
         self.alerter = alerter or SlackAlerter()
 
+    async def sync_workspace(
+        self,
+        workspace_id: UUID,
+        workspace_name: str,
+    ) -> SyncResult:
+        """
+        Sync events for all active campaigns in a single workspace.
+
+        The EmailBisonClient (self.client) must already be scoped to this
+        workspace via its API key.  No switch_workspace() calls are made.
+        Called by WorkspaceSyncQueue._dispatch() with a per-workspace client.
+
+        Processes three folders per campaign: inbox (replies), bounced, spam.
+        No inter_batch_delay() between campaigns — each workspace has its own
+        isolated client instance with independent rate-limit state.
+        """
+        audit = await self.audit_logger.start_audit(
+            sync_type='events',
+            workspace_id=workspace_id,
+            metadata={'workspace_name': workspace_name}
+        )
+
+        try:
+            # Get all active campaigns for THIS workspace
+            campaigns = await self.db.fetch("""
+                SELECT
+                    ec.id as local_id,
+                    ec.emailbison_campaign_id,
+                    ec.campaign_name,
+                    ec.workspace_id
+                FROM emailbison_campaigns ec
+                JOIN workspaces w ON ec.workspace_id = w.id
+                WHERE ec.workspace_id = $1
+                AND ec.campaign_status IN ('active', 'running', 'sending', 'paused')
+                AND w.is_active = TRUE
+            """, workspace_id)
+
+            print(f"[EventSync] [{workspace_name}] Syncing events for {len(campaigns)} campaigns")
+
+            for campaign in campaigns:
+                audit.increment_processed()
+
+                try:
+                    # Sync all three folders — no workspace switch needed, client is pre-scoped
+                    inbox_count = await self.sync_campaign_replies(
+                        local_campaign_id=campaign['local_id'],
+                        eb_campaign_id=int(campaign['emailbison_campaign_id']),
+                        workspace_id=campaign['workspace_id'],
+                        folder='inbox'
+                    )
+                    bounce_count = await self.sync_campaign_replies(
+                        local_campaign_id=campaign['local_id'],
+                        eb_campaign_id=int(campaign['emailbison_campaign_id']),
+                        workspace_id=campaign['workspace_id'],
+                        folder='bounced'
+                    )
+                    spam_count = await self.sync_campaign_replies(
+                        local_campaign_id=campaign['local_id'],
+                        eb_campaign_id=int(campaign['emailbison_campaign_id']),
+                        workspace_id=campaign['workspace_id'],
+                        folder='spam'
+                    )
+
+                    if inbox_count > 0 or bounce_count > 0 or spam_count > 0:
+                        audit.increment_updated()
+                        print(f"    [{campaign['campaign_name']}] {inbox_count} replies, {bounce_count} bounces, {spam_count} spam")
+
+                except EmailBisonAPIError as e:
+                    audit.add_error(
+                        record_id=campaign['campaign_name'],
+                        error=str(e),
+                        details={'campaign_id': campaign['emailbison_campaign_id']}
+                    )
+                except Exception as e:
+                    audit.add_error(
+                        record_id=campaign['campaign_name'],
+                        error=str(e)
+                    )
+
+            await self.audit_logger.update_sync_status(
+                sync_type='events',
+                workspace_id=workspace_id,
+                record_count=len(campaigns)
+            )
+
+            return await audit.complete()
+
+        except Exception as e:
+            return await audit.fail(e)
+
     async def sync_all_active_campaigns(self) -> SyncResult:
-        """Sync events for all active campaigns."""
+        """
+        DEPRECATED — retained for manual/backfill use only.
+
+        This method uses switch_workspace() internally and processes all
+        workspaces sequentially.  It must NOT be called from the concurrent
+        WorkspaceSyncQueue worker.  Use sync_workspace() instead.
+
+        Will be removed in a future cleanup pass once confirmed unused.
+        """
         audit = await self.audit_logger.start_audit(
             sync_type='events',
             metadata={'scope': 'all_active_campaigns'}

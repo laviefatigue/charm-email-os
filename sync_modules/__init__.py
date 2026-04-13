@@ -3,27 +3,34 @@ EmailBison Daily Sync Modules
 
 Modular sync system for keeping local database fresh with EmailBison data.
 
-Modules:
-- emailbison_client: Shared API client with workspace switching
+Data-pull modules (EB → DB), concurrent-safe:
+- workspace_sync_queue: Persistent DB job queue for concurrent per-workspace sync
+- sync_accounts: Account & domain synchronization (no switch_workspace)
+- sync_campaigns: Campaign & metrics synchronization (no switch_workspace)
+- sync_events: Event & response message synchronization (no switch_workspace)
+- sync_warmup: Warmup status and statistics synchronization (no switch_workspace)
+- sync_engagement: Inbox engagement metrics with daily snapshots (no switch_workspace)
+
+Tagging/write modules (DB → EB), sequential:
+- lifecycle_tag_sync: Lifecycle tag management (incubating/live) in EmailBison
+- set_tag_sync: A-Set/B-Set tag management and promotion in EmailBison
+- kill_processor: Kill queue processing with 24hr tagging
+
+Shared infrastructure:
+- emailbison_client: Per-workspace EmailBison API client (workspace-scoped API key)
 - audit_logger: Audit logging to sync_audit_log table
 - slack_alerter: Slack webhook notifications
-- sync_accounts: Account & domain synchronization
-- sync_campaigns: Campaign & metrics synchronization
-- sync_events: Event & response message synchronization
-- sync_warmup: Warmup status and statistics synchronization
 - health_checks: Inbox and domain health evaluation
-- kill_processor: Kill queue processing with 24hr tagging
 - retention: Data retention/cleanup logic
 - sync_oauth: OAuth config scraping from EmailBison UI
 - daily_snapshot: Daily volume and capacity snapshots for dashboard charts
-- lifecycle_tag_sync: Lifecycle tag management (incubating/live) in EmailBison
-- set_tag_sync: A-Set/B-Set tag management and promotion in EmailBison
-- sync_engagement: Inbox engagement metrics (opens, replies, interested) with daily snapshots
+- onboarding_monitor: New workspace/client onboarding tracking
 """
 
 from .emailbison_client import EmailBisonClient
 from .audit_logger import AuditLogger, SyncResult
 from .slack_alerter import SlackAlerter
+from .workspace_sync_queue import WorkspaceSyncQueue
 from .sync_accounts import AccountSyncModule
 from .sync_campaigns import CampaignSyncModule
 from .sync_events import EventSyncModule
@@ -43,6 +50,7 @@ __all__ = [
     'AuditLogger',
     'SyncResult',
     'SlackAlerter',
+    'WorkspaceSyncQueue',
     'AccountSyncModule',
     'CampaignSyncModule',
     'EventSyncModule',

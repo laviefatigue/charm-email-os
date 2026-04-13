@@ -3,9 +3,26 @@ Warmup Sync Module
 
 Synchronizes warmup status and statistics from EmailBison's dedicated warmup API.
 Tracks warmup lifecycle: start times, progress, and completion.
+
+Architecture (workspace-concurrent model):
+    This module is designed for per-workspace parallel execution.
+    It is called by WorkspaceSyncQueue._dispatch() with a workspace-scoped
+    EmailBisonClient already initialised with the per-workspace API key.
+
+    Contract:
+        - Caller passes a client already scoped to the target workspace.
+        - NO switch_workspace() calls anywhere in this module.
+        - sync_workspace_warmup(workspace_id, workspace_name) handles one workspace.
+        - auto_enable_warmup_for_connected() is called as an internal post-step
+          at the end of sync_workspace_warmup() — the same scoped client is reused.
+
+    Removed (old sequential model):
+        - sync_all_workspaces()      — replaced by WorkspaceSyncQueue scheduler
+        - emailbison_workspace_id param — no longer needed; client is pre-scoped
+        - switch_workspace() calls   — eliminated by workspace-scoped API keys
 """
 from datetime import datetime, timedelta, timezone
-from typing import Dict, List, Optional
+from typing import Dict, Optional
 from uuid import UUID
 import asyncpg
 
@@ -29,56 +46,27 @@ class WarmupSyncModule:
         self.audit_logger = audit_logger
         self.alerter = alerter or SlackAlerter()
 
-    async def sync_all_workspaces(self) -> List[SyncResult]:
-        """Sync warmup data for all active workspaces."""
-        results = []
-
-        workspaces = await self.db.fetch("""
-            SELECT id, workspace_name, emailbison_workspace_id
-            FROM workspaces
-            WHERE emailbison_workspace_id IS NOT NULL
-            AND is_active = TRUE
-        """)
-
-        print(f"[WarmupSync] Syncing warmup for {len(workspaces)} workspaces")
-
-        for ws in workspaces:
-            try:
-                result = await self.sync_workspace_warmup(
-                    workspace_id=ws['id'],
-                    workspace_name=ws['workspace_name'],
-                    emailbison_workspace_id=int(ws['emailbison_workspace_id'])
-                )
-                results.append(result)
-
-                if result.status == 'failed' and self.alerter:
-                    await self.alerter.alert_sync_failure(
-                        module='warmup',
-                        error=result.error_message or 'Unknown error',
-                        workspace=ws['workspace_name'],
-                        records_processed=result.records_processed
-                    )
-
-            except Exception as e:
-                print(f"[WarmupSync] Error syncing {ws['workspace_name']}: {e}")
-
-        return results
-
     async def sync_workspace_warmup(
         self,
         workspace_id: UUID,
         workspace_name: str,
-        emailbison_workspace_id: int
     ) -> SyncResult:
         """
-        Sync warmup stats for a workspace.
+        Sync warmup stats for a single workspace.
 
+        The EmailBisonClient (self.client) must already be scoped to this
+        workspace via its API key.  No switch_workspace() call is made here.
+        Called by WorkspaceSyncQueue._dispatch() with a per-workspace client.
+
+        Steps:
         1. Call GET /api/warmup/sender-emails with date range (last 7 days)
         2. For each inbox:
            - Update warmup_enabled status
            - Set warmup_started_at if first time seeing warmup_enabled=true
            - Create sender_warmup_snapshot record
            - Calculate warmup_progress (days/30 capped at 100%)
+        3. auto_enable_warmup_for_connected() — enable warmup for inboxes that
+           are connected but not yet in warmup (uses same scoped client).
         """
         audit = await self.audit_logger.start_audit(
             sync_type='warmup',
@@ -87,10 +75,6 @@ class WarmupSyncModule:
         )
 
         try:
-            # Switch to workspace context
-            if not await self.client.switch_workspace(emailbison_workspace_id):
-                return await audit.fail(Exception(f"Failed to switch to workspace {workspace_name}"))
-
             # Get date range for warmup stats (last 7 days)
             end_date = datetime.now(timezone.utc).strftime('%Y-%m-%d')
             start_date = (datetime.now(timezone.utc) - timedelta(days=7)).strftime('%Y-%m-%d')
@@ -120,6 +104,15 @@ class WarmupSyncModule:
                 workspace_id=workspace_id,
                 record_count=len(warmup_accounts)
             )
+
+            # Post-step: ensure all connected inboxes have warmup enabled
+            # Reuses the same workspace-scoped client — no switch needed
+            try:
+                enabled = await self.auto_enable_warmup_for_connected(workspace_id, workspace_name)
+                if enabled > 0:
+                    print(f"  [{workspace_name}] Auto-enabled warmup for {enabled} inboxes")
+            except Exception as e:
+                print(f"  [{workspace_name}] [WARN] auto_enable_warmup failed: {e}")
 
             return await audit.complete()
 
@@ -271,31 +264,33 @@ class WarmupSyncModule:
             status
         )
 
-    async def auto_enable_warmup_for_connected(self, workspace_id: UUID) -> int:
+    async def auto_enable_warmup_for_connected(
+        self,
+        workspace_id: UUID,
+        workspace_name: str = None
+    ) -> int:
         """
         Find connected inboxes without warmup and enable it.
 
         Per user requirement: "We should always try to keep connected inboxes in warming."
 
+        The EmailBisonClient (self.client) must already be scoped to this workspace.
+        No switch_workspace() call is made — the caller is responsible for passing a
+        correctly-scoped client.  Invoked as a post-step from sync_workspace_warmup().
+
+        Args:
+            workspace_id: Internal workspace UUID for DB queries.
+            workspace_name: Display name for logging (optional, queried if not provided).
+
         Returns:
             Count of inboxes that had warmup enabled
         """
-        # Get workspace info
-        workspace = await self.db.fetchrow("""
-            SELECT emailbison_workspace_id, workspace_name
-            FROM workspaces
-            WHERE id = $1
-        """, workspace_id)
-
-        if not workspace or not workspace['emailbison_workspace_id']:
-            return 0
-
-        eb_workspace_id = int(workspace['emailbison_workspace_id'])
-
-        # Switch to workspace context
-        if not await self.client.switch_workspace(eb_workspace_id):
-            print(f"[WarmupSync] Failed to switch workspace for auto-enable")
-            return 0
+        # Resolve workspace name for logging if not passed in
+        if not workspace_name:
+            row = await self.db.fetchrow(
+                "SELECT workspace_name FROM workspaces WHERE id = $1", workspace_id
+            )
+            workspace_name = row['workspace_name'] if row else str(workspace_id)
 
         # Find connected inboxes without warmup enabled
         accounts = await self.db.fetch("""
@@ -311,7 +306,7 @@ class WarmupSyncModule:
         if not accounts:
             return 0
 
-        print(f"  [{workspace['workspace_name']}] Found {len(accounts)} connected inboxes without warmup")
+        print(f"  [{workspace_name}] Found {len(accounts)} connected inboxes without warmup")
 
         # Enable warmup in batches
         batch_size = 50

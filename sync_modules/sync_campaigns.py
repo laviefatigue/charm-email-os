@@ -3,6 +3,25 @@ Campaign & Metrics Sync Module
 
 Synchronizes campaigns and creates snapshots from EmailBison.
 
+Architecture (workspace-concurrent model):
+    This module is designed for per-workspace parallel execution.
+    It is called by WorkspaceSyncQueue._dispatch() with a workspace-scoped
+    EmailBisonClient already initialised with the per-workspace API key.
+
+    Contract:
+        - Caller passes a client already scoped to the target workspace.
+        - NO switch_workspace() calls anywhere in this module.
+        - sync_workspace(workspace_id, workspace_name) — one workspace, one client.
+        - sync_campaign_inbox_assignments(workspace_id) — filters accounts to one
+          workspace and makes API calls using the scoped client.  Called as a
+          post-hook by WorkspaceSyncQueue._dispatch() after campaigns completes.
+
+    Removed (old sequential model):
+        - sync_all_workspaces()              — replaced by WorkspaceSyncQueue scheduler
+        - emailbison_workspace_id param      — no longer needed; client is pre-scoped
+        - switch_workspace() calls           — eliminated by workspace-scoped API keys
+        - sync_all_campaign_inbox_assignments() — replaced by sync_campaign_inbox_assignments(workspace_id)
+
 IMPORTANT: sending_started_at Lifecycle Tracking
 ----------------------------------------------
 This module sets `sender_accounts.sending_started_at` when an inbox is
@@ -44,54 +63,21 @@ class CampaignSyncModule:
         self.audit_logger = audit_logger
         self.alerter = alerter or SlackAlerter()
 
-    async def sync_all_workspaces(self) -> List[SyncResult]:
-        """Sync campaigns for all active workspaces."""
-        results = []
-
-        workspaces = await self.db.fetch("""
-            SELECT id, workspace_name, emailbison_workspace_id
-            FROM workspaces
-            WHERE emailbison_workspace_id IS NOT NULL
-            AND is_active = TRUE
-        """)
-
-        print(f"[CampaignSync] Syncing {len(workspaces)} workspaces")
-
-        for ws in workspaces:
-            try:
-                result = await self.sync_workspace(
-                    workspace_id=ws['id'],
-                    workspace_name=ws['workspace_name'],
-                    emailbison_workspace_id=int(ws['emailbison_workspace_id'])
-                )
-                results.append(result)
-
-                if result.status == 'failed' and self.alerter:
-                    await self.alerter.alert_sync_failure(
-                        module='campaigns',
-                        error=result.error_message or 'Unknown error',
-                        workspace=ws['workspace_name'],
-                        records_processed=result.records_processed
-                    )
-
-            except Exception as e:
-                print(f"[CampaignSync] Error syncing {ws['workspace_name']}: {e}")
-
-        # After syncing all campaigns, sync campaign-inbox assignments
-        try:
-            await self.sync_all_campaign_inbox_assignments()
-        except Exception as e:
-            print(f"[CampaignSync] Error syncing campaign-inbox assignments: {e}")
-
-        return results
-
     async def sync_workspace(
         self,
         workspace_id: UUID,
         workspace_name: str,
-        emailbison_workspace_id: int
     ) -> SyncResult:
-        """Sync campaigns for a single workspace."""
+        """
+        Sync campaigns for a single workspace.
+
+        The EmailBisonClient (self.client) must already be scoped to this
+        workspace via its API key.  No switch_workspace() call is made here.
+        Called by WorkspaceSyncQueue._dispatch() with a per-workspace client.
+
+        Post-hook: WorkspaceSyncQueue calls sync_campaign_inbox_assignments()
+        after this method completes successfully.
+        """
         audit = await self.audit_logger.start_audit(
             sync_type='campaigns',
             workspace_id=workspace_id,
@@ -99,10 +85,6 @@ class CampaignSyncModule:
         )
 
         try:
-            # Switch to workspace context
-            if not await self.client.switch_workspace(emailbison_workspace_id):
-                return await audit.fail(Exception(f"Failed to switch to workspace {workspace_name}"))
-
             # Fetch all campaigns
             campaigns = await self.client.get_all_campaigns()
             print(f"  [{workspace_name}] Found {len(campaigns)} campaigns")
@@ -114,10 +96,7 @@ class CampaignSyncModule:
                     # Upsert campaign record
                     local_campaign_id = await self.upsert_campaign(workspace_id, campaign)
 
-                    # CRITICAL: Switch workspace before detail fetch
-                    await self.client.switch_workspace(emailbison_workspace_id)
-
-                    # Fetch detailed metrics
+                    # Fetch detailed metrics — no workspace switch needed, client is already scoped
                     try:
                         details = await self.client.get_campaign_details(campaign['id'])
                         # Unwrap data if nested
@@ -281,49 +260,47 @@ class CampaignSyncModule:
             Decimal(str(round(float(unsubscribe_rate), 2)))
         )
 
-    async def sync_all_campaign_inbox_assignments(self) -> int:
+    async def sync_campaign_inbox_assignments(self, workspace_id: UUID) -> int:
         """
-        Sync campaign-inbox associations by querying each inbox's campaigns.
+        Sync campaign-inbox associations for a single workspace.
 
         Uses the API: GET /api/sender-emails/{id}/campaigns
         This is the authoritative source for which inboxes are assigned to campaigns.
 
+        The EmailBisonClient (self.client) must already be scoped to this workspace.
+        No switch_workspace() calls are made.  Called as a post-hook by
+        WorkspaceSyncQueue._dispatch() immediately after sync_workspace() completes.
+
+        Args:
+            workspace_id: Our internal workspace UUID.  Used to filter accounts
+                          so only this workspace's inboxes are queried.
+
         Returns:
             Number of campaign-inbox associations synced
         """
-        print("[CampaignSync] Syncing campaign-inbox assignments...")
+        print(f"[CampaignSync] Syncing campaign-inbox assignments for workspace {workspace_id}...")
 
-        # Get all sender accounts with EmailBison IDs
+        # Get sender accounts for THIS workspace only
         accounts = await self.db.fetch("""
             SELECT sa.id, sa.email_address, sa.emailbison_account_id,
-                   w.emailbison_workspace_id, w.workspace_name
+                   w.workspace_name
             FROM sender_accounts sa
             JOIN workspaces w ON sa.workspace_id = w.id
-            WHERE sa.emailbison_account_id IS NOT NULL
+            WHERE sa.workspace_id = $1
+            AND sa.emailbison_account_id IS NOT NULL
             AND sa.is_active = TRUE
-            AND w.emailbison_workspace_id IS NOT NULL
             AND w.is_active = TRUE
-            ORDER BY w.emailbison_workspace_id
-        """)
+        """, workspace_id)
 
-        print(f"  Found {len(accounts)} active sender accounts")
+        print(f"  Found {len(accounts)} active sender accounts in workspace")
 
         total_synced = 0
-        current_workspace_id = None
 
         for account in accounts:
             eb_account_id = int(account['emailbison_account_id'])
-            eb_workspace_id = int(account['emailbison_workspace_id'])
             sender_account_id = account['id']
 
-            # Switch workspace if needed
-            if current_workspace_id != eb_workspace_id:
-                if not await self.client.switch_workspace(eb_workspace_id):
-                    print(f"    [WARN] Failed to switch to workspace {account['workspace_name']}")
-                    continue
-                current_workspace_id = eb_workspace_id
-
-            # Get campaigns for this inbox
+            # Get campaigns for this inbox — client is already scoped to workspace
             try:
                 campaigns = await self.client.get_sender_campaigns(eb_account_id)
             except EmailBisonAPIError as e:
