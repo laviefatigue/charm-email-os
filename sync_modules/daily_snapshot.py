@@ -319,8 +319,10 @@ class DailySnapshotModule:
 
         # Alert on failures
         if errors and self.alerter:
-            await self.alerter.send_message(
-                f"⚠️ Daily snapshot had {len(errors)} failures:\n" +
+            await self.alerter.send_alert(
+                level='warning',
+                title='Daily Snapshot Failures',
+                message=f"Daily snapshot had {len(errors)} failures:\n" +
                 "\n".join(f"- {e['workspace_name']}: {e['error']}" for e in errors[:5])
             )
 

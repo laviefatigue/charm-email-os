@@ -195,42 +195,66 @@ class SyncOrchestrator:
 
                 # Daily retention cleanup (run at midnight)
                 if self._should_run_daily(self.last_retention_cleanup):
-                    await self.run_retention_cleanup()
+                    try:
+                        await self.run_retention_cleanup()
+                    except Exception as e:
+                        print(f"[ERROR] Retention cleanup failed: {e}")
                     self.last_retention_cleanup = now
 
                 # Daily 24h counter reset (CRITICAL: prevents false positives)
                 if self._should_run_daily(self.last_daily_counter_reset):
-                    await self.run_daily_counter_reset()
+                    try:
+                        await self.run_daily_counter_reset()
+                    except Exception as e:
+                        print(f"[ERROR] Daily counter reset failed: {e}")
                     self.last_daily_counter_reset = now
 
                 # Daily volume snapshot (for client dashboard capacity chart)
                 if self._should_run_daily(self.last_daily_snapshot):
-                    await self.run_daily_snapshot()
+                    try:
+                        await self.run_daily_snapshot()
+                    except Exception as e:
+                        print(f"[ERROR] Daily snapshot failed: {e}")
                     self.last_daily_snapshot = now
 
                 # Slack audit at 6 AM and 1 PM Pacific (send audit summary to #inbox-audits)
                 if self._should_run_slack_audit(self.last_slack_audit):
-                    await self.run_slack_audit()
+                    try:
+                        await self.run_slack_audit()
+                    except Exception as e:
+                        print(f"[ERROR] Slack audit failed: {e}")
                     self.last_slack_audit = now
 
                 # Daily workspace discovery (find new EmailBison workspaces we've been added to)
                 if self._should_run_daily(self.last_workspace_discovery):
-                    await self.run_workspace_discovery()
+                    try:
+                        await self.run_workspace_discovery()
+                    except Exception as e:
+                        print(f"[ERROR] Workspace discovery failed: {e}")
                     self.last_workspace_discovery = now
 
                 # Daily onboarding form monitor
                 if self._should_run_daily(self.last_onboarding_monitor):
-                    await self.run_onboarding_monitor()
+                    try:
+                        await self.run_onboarding_monitor()
+                    except Exception as e:
+                        print(f"[ERROR] Onboarding monitor failed: {e}")
                     self.last_onboarding_monitor = now
 
                 # OAuth queue processing - every 5 min (for new workspaces)
                 if self._should_run(self.last_oauth_queue_check, POLL_INTERVAL_OAUTH_QUEUE):
-                    await self.run_oauth_queue()
+                    try:
+                        await self.run_oauth_queue()
+                    except Exception as e:
+                        print(f"[ERROR] OAuth queue failed: {e}")
                     self.last_oauth_queue_check = now
 
                 # OAuth monthly verification - every 30 days
                 if self._should_run(self.last_oauth_verify, POLL_INTERVAL_OAUTH_VERIFY):
-                    await self.run_oauth_verification()
+                    try:
+                        await self.run_oauth_verification()
+                    except Exception as e:
+                        print(f"[ERROR] OAuth verification failed: {e}")
                     self.last_oauth_verify = now
 
                 # Sleep until next poll interval
@@ -567,6 +591,59 @@ class SyncOrchestrator:
                     message=str(e)
                 )
 
+    async def _create_workspace_api_key(
+        self,
+        http_client,
+        workspace_id,
+        eb_workspace_id: int,
+        workspace_name: str,
+        api_url: str,
+        api_key: str,
+    ) -> str:
+        """Generate a workspace-scoped EB API key and store it in workspace_api_keys.
+
+        The key is for client-facing dashboards to query EmailBison data scoped
+        to a single workspace. It is stored in a dedicated table and never returned
+        in general workspace API responses.
+        """
+        key_name = f"{workspace_name} dashboard key"
+        response = await http_client.post(
+            f"{api_url}/api/workspaces/v1.1/{eb_workspace_id}/api-tokens",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Accept": "application/json",
+                "Content-Type": "application/json",
+            },
+            json={"name": key_name},
+            timeout=30.0,
+        )
+
+        if response.status_code not in (200, 201):
+            raise Exception(f"EB API returned {response.status_code}: {response.text[:200]}")
+
+        data = response.json()
+        # EB API (Laravel Sanctum) returns the plain-text token only on creation
+        token = (
+            data.get("plain_text_token")
+            or data.get("token")
+            or data.get("key")
+        )
+        if not token:
+            raise Exception(f"EB API returned no token value: {list(data.keys())}")
+
+        await self.db.execute("""
+            INSERT INTO workspace_api_keys
+                (workspace_id, emailbison_workspace_id, key_name, key_token)
+            VALUES ($1, $2, $3, $4)
+            ON CONFLICT (workspace_id) DO UPDATE SET
+                key_token = EXCLUDED.key_token,
+                key_name = EXCLUDED.key_name,
+                updated_at = NOW(),
+                is_active = TRUE
+        """, workspace_id, eb_workspace_id, key_name, token)
+
+        return token
+
     async def run_workspace_discovery(self):
         """Discover new EmailBison workspaces and create local records.
 
@@ -659,6 +736,20 @@ class SyncOrchestrator:
                             ON CONFLICT (workspace_id) DO NOTHING
                         """, workspace_id, eb_id)
 
+                        # Generate workspace-scoped API key for client dashboard access
+                        try:
+                            await self._create_workspace_api_key(
+                                http_client=http_client,
+                                workspace_id=workspace_id,
+                                eb_workspace_id=eb_id,
+                                workspace_name=eb_name,
+                                api_url=EMAILBISON_API_URL,
+                                api_key=EMAILBISON_API_KEY,
+                            )
+                            print(f"    API key generated for {eb_name}")
+                        except Exception as key_err:
+                            print(f"    WARNING: API key generation failed for {eb_name}: {key_err}")
+
                         created_workspaces.append({
                             'id': workspace_id,
                             'name': eb_name,
@@ -669,8 +760,9 @@ class SyncOrchestrator:
                         # Alert on new workspace
                         if self.alerter:
                             await self.alerter.send_alert(
-                                f":new: New workspace discovered: {eb_name}",
-                                f"EmailBison ID: {eb_id}\nStarting immediate data backfill..."
+                                level='info',
+                                title=f'New Workspace Discovered: {eb_name}',
+                                message=f"EmailBison ID: {eb_id}\nStarting immediate data backfill..."
                             )
 
                     except Exception as e:

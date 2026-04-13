@@ -45,7 +45,14 @@ NEXT_PUBLIC_API_URL=https://api.wizardgrimoire.cloud
 ### emailbison-sync
 - **Type**: Background worker
 - **Schedule**: Continuous sync
-- **Purpose**: Pull inbox data from EmailBison API
+- **Purpose**: Pull inbox data from EmailBison API, manage inbox lifecycle tags, process kill triggers
+- **Tagging status** (as of 2026-04-09):
+  - `ENABLE_LIFECYCLE_TAGGING=true` — lifecycle tags (`live`, `reserve`, `incubating`, `flagged_*`) synced to EB
+  - `ENABLE_KILL_PROCESSING=false` — kill queue processing still paused pending 24h monitoring
+- **Tag system**: Inboxes are tagged `live` (deployed/sending) or `reserve` (backup pool). Tags are domain-level — all inboxes on a domain share the same pool tag. Burned domains have all tags removed.
+- **ESP-aware burns** (deployed 2026-04-09): Google domains burn from 1 spam complaint, Entra domains require 3+ spam kills or >5% hard bounce rate. Circuit breakers prevent cascading burns.
+- **Workspace discovery** (deployed 2026-04-13): Daily task polls EB API for workspaces the admin key has access to. New workspaces not yet in the DB get a workspace record, client record, OAuth queue entry, and a workspace-scoped API key auto-generated. Poll loop tasks are now isolated — one task crash no longer blocks subsequent tasks.
+- **Workspace API keys**: Each workspace gets a scoped EB API token stored in `workspace_api_keys` table. Used by client-facing dashboards. Never returned in list API responses. Backfill script: `scripts/backfill_workspace_keys.py` (untracked, fill in values from Coolify before running).
 
 ### hypertide-worker
 - **Type**: Background worker
