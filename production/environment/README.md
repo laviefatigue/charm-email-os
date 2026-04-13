@@ -42,6 +42,32 @@ All production environment variables are managed in Coolify UI, not in files.
 | `HYPERTIDE_API_KEY` | HyperTide API key |
 | Various API keys | Per-worker requirements |
 
+## EmailBison Workspace API Keys
+
+Workspace-scoped EB API tokens are stored in the **`workspace_api_keys` database table** (migration 089) — not in Coolify env vars.
+
+| Variable | Service | Purpose |
+|----------|---------|---------|
+| `EMAILBISON_API_KEY` | emailbison-sync | Admin-level key used for workspace discovery and tagging modules |
+
+The per-workspace scoped keys in `workspace_api_keys` are used by the concurrent sync queue (migration 091). All 10 active workspaces are provisioned. Keys are context-bound — no `switch_workspace()` calls needed. New workspaces discovered by the daily workspace discovery task are auto-provisioned.
+
+To check key status:
+```sql
+SELECT w.workspace_name, w.emailbison_workspace_id::text as eb_id,
+       (wak.id IS NOT NULL) as has_key
+FROM workspaces w
+LEFT JOIN workspace_api_keys wak ON wak.workspace_id = w.id AND wak.is_active = TRUE
+WHERE w.is_active = TRUE ORDER BY w.workspace_name;
+```
+
+### emailbison-sync — New Env Vars (added 2026-04-13)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SYNC_WORKSPACE_CONCURRENCY` | `3` | Workspaces processed in parallel by the queue |
+| `SYNC_INTERVAL_PRIORITY` | `30` | Seconds between priority-queue polls (force-refresh latency) |
+
 ## Local Development
 
 For local development, use these files in project root:

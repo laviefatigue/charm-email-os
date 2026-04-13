@@ -44,15 +44,40 @@ NEXT_PUBLIC_API_URL=https://api.wizardgrimoire.cloud
 
 ### emailbison-sync
 - **Type**: Background worker
-- **Schedule**: Continuous sync
+- **Schedule**: Continuous poll loop (30s priority tick, 5-min events, 1-hr accounts/campaigns, 30-min warmup, 24-hr engagement)
 - **Purpose**: Pull inbox data from EmailBison API, manage inbox lifecycle tags, process kill triggers
-- **Tagging status** (as of 2026-04-09):
-  - `ENABLE_LIFECYCLE_TAGGING=true` — lifecycle tags (`live`, `reserve`, `incubating`, `flagged_*`) synced to EB
-  - `ENABLE_KILL_PROCESSING=false` — kill queue processing still paused pending 24h monitoring
-- **Tag system**: Inboxes are tagged `live` (deployed/sending) or `reserve` (backup pool). Tags are domain-level — all inboxes on a domain share the same pool tag. Burned domains have all tags removed.
-- **ESP-aware burns** (deployed 2026-04-09): Google domains burn from 1 spam complaint, Entra domains require 3+ spam kills or >5% hard bounce rate. Circuit breakers prevent cascading burns.
-- **Workspace discovery** (deployed 2026-04-13): Daily task polls EB API for workspaces the admin key has access to. New workspaces not yet in the DB get a workspace record, client record, OAuth queue entry, and a workspace-scoped API key auto-generated. Poll loop tasks are now isolated — one task crash no longer blocks subsequent tasks.
-- **Workspace API keys**: Each workspace gets a scoped EB API token stored in `workspace_api_keys` table. Used by client-facing dashboards. Never returned in list API responses. Backfill script: `scripts/backfill_workspace_keys.py` (untracked, fill in values from Coolify before running).
+
+#### Sync Architecture (deployed 2026-04-13)
+
+**Concurrent workspace queue** — replaces the old sequential `switch_workspace()` model.
+
+Old model: one shared client → `switch_workspace(A)` → sync A → `switch_workspace(B)` → sync B → ...  
+New model: each workspace has a scoped EB API token → jobs claimed from `workspace_sync_queue` → up to 3 workspaces processed in parallel via `asyncio.gather`.
+
+Key components:
+- `workspace_sync_queue` table — persistent job queue with `FOR UPDATE SKIP LOCKED` for safe concurrent consumers
+- `sync_status` table — tracks `last_successful_sync` per `(workspace_id, sync_type)`; used to determine which workspaces are overdue
+- Priority queue — normal scheduler jobs use `priority=0`; force-refresh from client dashboard uses `priority=10` (picked up within ~30s)
+- Post-hooks — `sync_all_domains()` runs after accounts sync; `sync_campaign_inbox_assignments()` runs after campaigns sync
+
+Force-refresh API (for client dashboard):
+- `POST /api/sync/workspaces/{id}/refresh` — enqueues all 5 sync types at priority=10
+- `GET /api/sync/workspaces/{id}/status` — returns last sync times + pending/running queue state
+
+Key env vars (set on emailbison-sync service):
+```
+SYNC_WORKSPACE_CONCURRENCY=3   # workspaces processed in parallel
+SYNC_INTERVAL_PRIORITY=30      # seconds between priority-queue checks
+```
+
+#### Tagging & Kill Processing (as of 2026-04-13)
+- `ENABLE_LIFECYCLE_TAGGING=true` — lifecycle tags (`live`, `reserve`, `incubating`, `flagged_*`) synced to EB
+- `ENABLE_KILL_PROCESSING=false` — kill queue processing still paused pending 24h monitoring
+- **Tag system**: Tags are domain-level — all inboxes on a domain share the same pool tag. Burned domains have all tags removed.
+- **ESP-aware burns**: Google domains burn from 1 spam complaint, Entra domains require 3+ spam kills or >5% hard bounce rate. Circuit breakers prevent cascading burns.
+
+#### Workspace API Keys
+Each active workspace has a scoped EB API token stored in the `workspace_api_keys` DB table (migration 089). Keys are context-bound — no `switch_workspace()` calls needed. All 10 active workspaces are provisioned. New workspaces discovered via daily workspace discovery task are auto-provisioned.
 
 ### hypertide-worker
 - **Type**: Background worker
