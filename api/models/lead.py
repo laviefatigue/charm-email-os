@@ -8,7 +8,7 @@ from datetime import datetime
 from uuid import UUID
 
 
-LeadStatus = Literal["queued", "contacted", "replied", "bounced", "unsubscribed"]
+LeadStatus = Literal["queued", "contacted", "replied", "bounced", "unsubscribed", "suppressed"]
 LeadSource = Literal["manual_upload", "csv_upload", "script_pull", "enrichment", "manual_entry", "emailbison_sync"]
 
 
@@ -19,6 +19,7 @@ class LeadBase(BaseModel):
     last_name: Optional[str] = None
     company: Optional[str] = None
     title: Optional[str] = None
+    company_domain: Optional[str] = None
 
 
 class LeadCreate(LeadBase):
@@ -85,6 +86,11 @@ class Lead(LeadBase):
     contacted_at: Optional[datetime] = None
     enriched_at: Optional[datetime] = None
 
+    # Suppression tracking
+    suppression_status: Optional[str] = None
+    suppressed_at: Optional[datetime] = None
+    suppressed_by_domain: Optional[str] = None
+
     # Original data
     raw_data: Optional[dict[str, Any]] = None
 
@@ -109,6 +115,7 @@ class LeadList(BaseModel):
     replied_count: int = 0
     bounced_count: int = 0
     unsubscribed_count: int = 0
+    suppressed_count: int = 0
 
 
 class LeadStatusUpdate(BaseModel):

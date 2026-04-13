@@ -5,8 +5,10 @@ Lead routes - CRUD for the new leads table
 from fastapi import APIRouter, HTTPException, Query
 from typing import Optional
 from uuid import UUID
+from datetime import datetime, timezone
 import json
 import logging
+import re
 
 from database import fetch_all, fetch_one, execute, execute_many
 from models.lead import (
@@ -16,6 +18,64 @@ from models.lead import (
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+# ── Suppression gate helpers ──────────────────────────────────────────────────
+# Lightweight domain cleaner used to normalise domains before the suppression
+# check. Mirrors the logic in routes/suppression.py — kept here to avoid a
+# cross-module import between two route modules.
+
+_SUPPRESSION_DOMAIN_RE = re.compile(
+    r'^(?:[a-z0-9](?:[a-z0-9\-]{0,61}[a-z0-9])?\.)+[a-z]{2,}$'
+)
+
+
+def _clean_candidate_domain(raw: str) -> Optional[str]:
+    if not raw:
+        return None
+    d = raw.strip().lower()
+    d = re.sub(r'^https?://', '', d)
+    d = re.sub(r'^www\.', '', d)
+    d = re.sub(r':\d+', '', d)
+    d = d.split('/')[0].split('?')[0].split('#')[0].strip()
+    if '@' in d or not d or not _SUPPRESSION_DOMAIN_RE.match(d) or len(d) > 253:
+        return None
+    return d
+
+
+def _build_suppression_candidates(email: str, company_domain: Optional[str]) -> list[str]:
+    candidates: list[str] = []
+    if email and '@' in email:
+        ed = _clean_candidate_domain(email.rsplit('@', 1)[1])
+        if ed:
+            candidates.append(ed)
+    if company_domain:
+        cd = _clean_candidate_domain(company_domain)
+        if cd and cd not in candidates:
+            candidates.append(cd)
+    return candidates
+
+
+async def _run_suppression_check(client_id: UUID, candidates: list[str]) -> Optional[dict]:
+    """Returns first matching suppression rule row, or None."""
+    return await fetch_one(
+        """
+        SELECT domain, umbrella_domain
+        FROM client_suppression_domains
+        WHERE client_id = $1
+          AND (
+            domain = ANY($2::text[])
+            OR umbrella_domain = ANY($2::text[])
+            OR EXISTS (
+                SELECT 1
+                FROM unnest($2::text[]) AS c(d)
+                WHERE umbrella_domain IS NOT NULL
+                  AND c.d LIKE '%.' || umbrella_domain
+            )
+          )
+        LIMIT 1
+        """,
+        client_id, candidates
+    )
 
 
 @router.get("", response_model=LeadList)
@@ -63,7 +123,8 @@ async def list_leads(
             COUNT(*) FILTER (WHERE status = 'contacted') as contacted,
             COUNT(*) FILTER (WHERE status = 'replied') as replied,
             COUNT(*) FILTER (WHERE status = 'bounced') as bounced,
-            COUNT(*) FILTER (WHERE status = 'unsubscribed') as unsubscribed
+            COUNT(*) FILTER (WHERE status = 'unsubscribed') as unsubscribed,
+            COUNT(*) FILTER (WHERE status = 'suppressed') as suppressed
         FROM leads l
         {where_clause}
     """
@@ -94,7 +155,11 @@ async def list_leads(
             l.enriched_at,
             l.raw_data,
             l.created_at,
-            l.updated_at
+            l.updated_at,
+            l.company_domain,
+            l.suppression_status,
+            l.suppressed_at,
+            l.suppressed_by_domain
         FROM leads l
         {where_clause}
         ORDER BY l.created_at DESC
@@ -113,7 +178,8 @@ async def list_leads(
         contacted_count=status_counts["contacted"] if status_counts else 0,
         replied_count=status_counts["replied"] if status_counts else 0,
         bounced_count=status_counts["bounced"] if status_counts else 0,
-        unsubscribed_count=status_counts["unsubscribed"] if status_counts else 0
+        unsubscribed_count=status_counts["unsubscribed"] if status_counts else 0,
+        suppressed_count=status_counts["suppressed"] if status_counts else 0,
     )
 
 
@@ -144,7 +210,11 @@ async def get_lead(lead_id: UUID):
             enriched_at,
             raw_data,
             created_at,
-            updated_at
+            updated_at,
+            company_domain,
+            suppression_status,
+            suppressed_at,
+            suppressed_by_domain
         FROM leads
         WHERE id = $1
     """
@@ -172,13 +242,46 @@ async def create_lead(lead: LeadCreate):
     if existing:
         raise HTTPException(status_code=409, detail="Lead with this email already exists in campaign")
 
+    # ── Suppression gate ──────────────────────────────────────────────────────
+    suppression_status = None
+    suppressed_at_val = None
+    suppressed_by_domain_val = None
+    lead_status = "queued"
+
+    suppression_cfg = await fetch_one(
+        """
+        SELECT csc.client_id, csc.is_enabled
+        FROM emailbison_campaigns ec
+        JOIN client_suppression_configs csc ON csc.workspace_id = ec.workspace_id
+        WHERE ec.id = $1
+        """,
+        lead.campaign_id
+    )
+    if suppression_cfg and suppression_cfg["is_enabled"]:
+        candidates = _build_suppression_candidates(str(lead.email), lead.company_domain)
+        if candidates:
+            match = await _run_suppression_check(suppression_cfg["client_id"], candidates)
+            if match:
+                suppression_status = "suppressed"
+                suppressed_at_val = datetime.now(timezone.utc)
+                suppressed_by_domain_val = match["umbrella_domain"] or match["domain"]
+                lead_status = "suppressed"
+            else:
+                suppression_status = "allowed"
+        else:
+            suppression_status = "allowed"
+    # ── End suppression gate ──────────────────────────────────────────────────
+
     query = """
         INSERT INTO leads (
             campaign_id, email, first_name, last_name, company, title,
             linkedin_url, phone, website, location, industry, company_size,
-            notes, tags, custom_fields, source
+            notes, tags, custom_fields, source,
+            company_domain, suppression_status, suppressed_at, suppressed_by_domain,
+            status
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16,
+                $17, $18, $19, $20, $21)
         RETURNING *
     """
     row = await fetch_one(
@@ -188,7 +291,9 @@ async def create_lead(lead: LeadCreate):
         lead.website, lead.location, lead.industry, lead.company_size,
         lead.notes, lead.tags,
         json.dumps(lead.custom_fields) if lead.custom_fields else None,
-        lead.source
+        lead.source,
+        lead.company_domain, suppression_status, suppressed_at_val, suppressed_by_domain_val,
+        lead_status
     )
 
     if not row:
@@ -212,6 +317,19 @@ async def bulk_create_leads(bulk: LeadBulkCreate):
     )
     existing_emails = {r["email"].lower() for r in existing}
 
+    # Look up suppression config once for this campaign's workspace
+    suppression_cfg = await fetch_one(
+        """
+        SELECT csc.client_id, csc.is_enabled
+        FROM emailbison_campaigns ec
+        JOIN client_suppression_configs csc ON csc.workspace_id = ec.workspace_id
+        WHERE ec.id = $1
+        """,
+        bulk.campaign_id
+    )
+    suppression_active = suppression_cfg is not None and suppression_cfg["is_enabled"]
+    suppression_client_id = suppression_cfg["client_id"] if suppression_active else None
+
     successful = 0
     failed = 0
     duplicates_skipped = 0
@@ -223,13 +341,38 @@ async def bulk_create_leads(bulk: LeadBulkCreate):
             duplicates_skipped += 1
             continue
 
+        # ── Suppression gate ──────────────────────────────────────────────────
+        suppression_status = None
+        suppressed_at_val = None
+        suppressed_by_domain_val = None
+        lead_status = "queued"
+
+        if suppression_active:
+            candidates = _build_suppression_candidates(str(lead.email), lead.company_domain)
+            if candidates:
+                match = await _run_suppression_check(suppression_client_id, candidates)
+                if match:
+                    suppression_status = "suppressed"
+                    suppressed_at_val = datetime.now(timezone.utc)
+                    suppressed_by_domain_val = match["umbrella_domain"] or match["domain"]
+                    lead_status = "suppressed"
+                else:
+                    suppression_status = "allowed"
+            else:
+                suppression_status = "allowed"
+        # ── End suppression gate ──────────────────────────────────────────────
+
         try:
             await execute("""
-                INSERT INTO leads (campaign_id, email, first_name, last_name, company, title, source)
-                VALUES ($1, $2, $3, $4, $5, $6, $7)
+                INSERT INTO leads (campaign_id, email, first_name, last_name, company, title,
+                                   source, company_domain, suppression_status, suppressed_at,
+                                   suppressed_by_domain, status)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
             """,
                 bulk.campaign_id, lead.email, lead.first_name, lead.last_name,
-                lead.company, lead.title, bulk.source
+                lead.company, lead.title, bulk.source,
+                lead.company_domain, suppression_status, suppressed_at_val,
+                suppressed_by_domain_val, lead_status
             )
             existing_emails.add(lead.email.lower())
             successful += 1
