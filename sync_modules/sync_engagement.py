@@ -121,7 +121,7 @@ class EngagementSyncModule:
             print(f"  [Engagement] {workspace_name}: {len(inboxes)} inboxes, date={yesterday}")
 
             for inbox in inboxes:
-                await audit.increment_processed()
+                audit.increment_processed()
                 try:
                     eb_id = int(inbox['emailbison_account_id'])
                     stats = await self.client.get_campaign_event_stats(
@@ -159,17 +159,17 @@ class EngagementSyncModule:
                             day_data.get('bounced', 0),
                             day_data.get('unsubscribed', 0)
                         )
-                        await audit.increment_created()
+                        audit.increment_created()
                     else:
-                        await audit.increment_updated()
+                        audit.increment_updated()
 
                 except EmailBisonAPIError as e:
-                    await audit.add_error(
+                    audit.add_error(
                         record_id=inbox['email_address'],
                         error=f"API error: {e}"
                     )
                 except Exception as e:
-                    await audit.add_error(
+                    audit.add_error(
                         record_id=inbox['email_address'],
                         error=str(e)
                     )
