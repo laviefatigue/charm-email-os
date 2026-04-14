@@ -122,6 +122,72 @@ Pure log noise. No data was lost, no sync was broken. Events sync will no longer
 
 ---
 
+---
+
+## Issue 4 — Engagement sync crashing on every workspace every 30s
+
+**Severity:** High — no engagement data captured since concurrent queue was deployed  
+**Status:** Fixed and deployed (`848c8d8`)
+
+### What was happening
+
+Every engagement sync was failing immediately with:
+```
+object NoneType can't be used in 'await' expression
+```
+
+Because `last_successful_sync` was being stamped even on failures (see Issue 5), the flood of failures silently stopped — but engagement data stopped being captured entirely.
+
+### Root cause
+
+`AuditContext.increment_processed()`, `increment_created()`, `increment_updated()`, and `add_error()` are synchronous methods. `sync_engagement.py` called them with `await`, returning `None` from each call. `await None` raises the NoneType error immediately on the first inbox.
+
+The other sync modules call these methods correctly without `await` — only engagement had this bug.
+
+### Fix
+
+Removed `await` from 5 calls in `sync_modules/sync_engagement.py`.
+
+---
+
+## Issue 5 — sync_status updated on failures, masking crashes and blocking retries
+
+**Severity:** High — silent failure mode across all sync types  
+**Status:** Fixed and deployed (`de2e108`)
+
+### What was happening
+
+`WorkspaceSyncQueue._run_job()` called `audit_logger.update_sync_status()` unconditionally after every job — success or failure. This stamped `last_successful_sync` even when the sync crashed, so:
+- The scheduler treated the workspace as "recently synced" and didn't re-queue it
+- Failed syncs waited a full interval (up to 24h for engagement) before being retried
+- The engagement flood from Issue 4 stopped naturally, but engagement data silently stopped too
+
+### Fix
+
+Added `if result.status != 'failed':` guard around `update_sync_status()` in `workspace_sync_queue.py`. Also cleared all stale engagement `sync_status` records via DB so syncs ran immediately post-fix.
+
+---
+
+## Issue 6 — kill_processor marking kills as failed when backup promotion hits EB error
+
+**Severity:** Medium — 182 kill queue items incorrectly failed; kills were completing in DB but not in EB  
+**Status:** Fixed and deployed (`be189f8`)
+
+### What was happening
+
+`_promote_backup_inbox()` makes EB API calls but was nested inside the DB step's `try/except` block. When it raised an EB error (HTTP 422 from stale workspace context), the DB exception handler caught it and:
+- Marked the kill_queue item as `failed`
+- Set `tag_name = NULL` (the kill_queue UPDATE that sets tag_name was rolled back at app level)
+- Skipped the EB tagging step entirely
+
+Result: 182 items in `failed` state — 170 with inbox already dead in DB but no EB flagging tag applied.
+
+### Fix
+
+Moved `_promote_backup_inbox()` into its own isolated `try/except` after the DB step closes. Promotion failures now log a warning but the kill continues to the EB tagging step. The 170 dead-in-DB items were reset to `eb_pending` for retry; 12 stale duplicates were deleted.
+
+---
+
 ## Summary
 
 | # | Issue | Root Cause | Fixed |
@@ -129,5 +195,8 @@ Pure log noise. No data was lost, no sync was broken. Events sync will no longer
 | 1 | Health checks failing for all workspaces | `kill_trigger` enum used with `LIKE` without `::text` cast | Code fix, deployed |
 | 2 | Lifecycle tag sync showing FAILED | Missing `is_active = TRUE` on graduation queries | Code fix, deployed |
 | 3 | Campaign 175 — 404 on every events poll | Campaign deleted from EB, not marked in our DB | DB update |
+| 4 | Engagement sync crashing every workspace every 30s | `await` on sync AuditContext methods (non-async) | Code fix, deployed |
+| 5 | sync_status stamped on failures — masked crashes, blocked retries | `update_sync_status()` called unconditionally in queue dispatcher | Code fix, deployed |
+| 6 | Kill processor marking kills failed on backup promotion EB error | `_promote_backup_inbox()` inside DB step try block | Code fix, deployed |
 
-Commits: `faebccb` (health checks), `7a0c2a2` (lifecycle tags)
+Commits: `faebccb` (health checks), `7a0c2a2` (lifecycle tags), `848c8d8` (engagement), `de2e108` (sync_status), `be189f8` (kill_processor)
