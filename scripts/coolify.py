@@ -171,13 +171,10 @@ def cmd_env_set(app_name, key, value):
             break
 
     if existing:
-        # Update existing
-        env_id = existing["id"]
-        result = api("PATCH", f"/applications/{uuid}/envs/{env_id}", {
+        # Update existing — Coolify PATCH works on the collection endpoint with key+value
+        result = api("PATCH", f"/applications/{uuid}/envs", {
             "key": key,
             "value": value,
-            "is_build_time": existing.get("is_build_time", False),
-            "is_preview": existing.get("is_preview", False),
         })
         print(f"UPDATED {key}={value} on {name}")
     else:
@@ -201,7 +198,8 @@ def cmd_env_delete(app_name, key):
 
     for env in (envs if isinstance(envs, list) else []):
         if env.get("key") == key:
-            api("DELETE", f"/applications/{uuid}/envs/{env['id']}")
+            env_id = env.get("uuid") or env.get("id")
+            api("DELETE", f"/applications/{uuid}/envs/{env_id}")
             print(f"DELETED {key} from {name}")
             return
 
