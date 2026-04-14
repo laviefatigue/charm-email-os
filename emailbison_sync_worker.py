@@ -73,6 +73,7 @@ POLL_INTERVAL_WARMUP = int(os.getenv('SYNC_INTERVAL_WARMUP', 1800))         # 30
 POLL_INTERVAL_ENGAGEMENT = int(os.getenv('SYNC_INTERVAL_ENGAGEMENT', 86400))  # 24 hours (daily snapshots)
 POLL_INTERVAL_OAUTH_QUEUE = int(os.getenv('SYNC_INTERVAL_OAUTH_QUEUE', 300))  # 5 min  (queue processing)
 POLL_INTERVAL_OAUTH_VERIFY = int(os.getenv('SYNC_INTERVAL_OAUTH_VERIFY', 30 * 24 * 3600))  # 30 days
+POLL_INTERVAL_WORKSPACE_DISCOVERY = int(os.getenv('SYNC_INTERVAL_WORKSPACE_DISCOVERY', 300))  # 5 min
 
 # Concurrent workspace processing — how many workspaces run in parallel per batch
 SYNC_WORKSPACE_CONCURRENCY = int(os.getenv('SYNC_WORKSPACE_CONCURRENCY', '3'))
@@ -252,8 +253,8 @@ class SyncOrchestrator:
                         print(f"[ERROR] Slack audit failed: {e}")
                     self.last_slack_audit = now
 
-                # Daily workspace discovery (find new EmailBison workspaces we've been added to)
-                if self._should_run_daily(self.last_workspace_discovery):
+                # Workspace discovery — check every 5 min for new EB workspaces
+                if self._should_run(self.last_workspace_discovery, POLL_INTERVAL_WORKSPACE_DISCOVERY):
                     try:
                         await self.run_workspace_discovery()
                     except Exception as e:
