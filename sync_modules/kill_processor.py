@@ -380,13 +380,6 @@ class KillProcessor:
                                 await self._recalculate_domain_metrics(item['domain_id'])
                                 await self._recalculate_domain_velocity(item['domain_id'])
 
-                            # Promote backup inbox to fill the gap
-                            await self._promote_backup_inbox(
-                                item['inbox_id'],
-                                item['workspace_id'],
-                                trigger_type=trigger_type
-                            )
-
                         except Exception as db_err:
                             # DB failed — do NOT touch EB, mark as failed
                             audit.add_error(
@@ -403,6 +396,19 @@ class KillProcessor:
                             except Exception:
                                 pass
                             continue
+
+                        # Promote backup inbox — isolated from the DB step so that
+                        # EB errors here don't abort the kill or mark it failed.
+                        try:
+                            await self._promote_backup_inbox(
+                                item['inbox_id'],
+                                item['workspace_id'],
+                                trigger_type=trigger_type
+                            )
+                        except Exception as promo_err:
+                            # Promotion failure is non-fatal — inbox is already dead in DB.
+                            # Log it but continue so the EB tagging step still runs.
+                            print(f"    [WARN] Backup promotion failed for {item['email_address']}: {promo_err}")
 
                     # ── STEP 2: EB operations (tag flagged_*, remove pool tags) ──
                     try:
