@@ -367,14 +367,15 @@ class WorkspaceSyncQueue:
 
                 await self._mark_job_complete(job_id, result.records_processed)
 
-                # Update sync_status so this workspace isn't rescheduled immediately.
-                # Note: individual modules also call audit_logger.update_sync_status,
-                # but we write here too in case dispatch raises after partial success.
-                await self.audit_logger.update_sync_status(
-                    sync_type=sync_type,
-                    workspace_id=workspace_id,
-                    record_count=result.records_processed,
-                )
+                # Update sync_status only on success/partial so failed jobs are
+                # rescheduled on the next scheduler tick instead of being silently
+                # skipped for a full interval.
+                if result.status != 'failed':
+                    await self.audit_logger.update_sync_status(
+                        sync_type=sync_type,
+                        workspace_id=workspace_id,
+                        record_count=result.records_processed,
+                    )
 
                 logger.debug(
                     "[SyncQueue] %s / %s — %d records in %.1fs [%s]",
