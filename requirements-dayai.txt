@@ -1,0 +1,8 @@
+# dayai-watcher worker dependencies
+# Python 3.11+
+
+# HTTP client (async) — used by both dayai/ package and charm-api POSTs
+httpx==0.27.2
+
+# Postgres driver (matches other workers)
+asyncpg==0.29.0

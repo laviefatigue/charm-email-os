@@ -1,0 +1,47 @@
+# Day.AI Watcher Worker — charm-email-os
+#
+# Long-running Python worker that polls Day.AI and records state in Postgres.
+# Mirrors the structure of Dockerfile.emailbison-sync; differs only in deps
+# (no Playwright needed — pure HTTP + postgres) and entry point.
+#
+# See dayai_watcher_worker.py docstring for runtime env vars.
+
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Minimal runtime deps — no browser needed for Day.AI
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Python dependencies
+COPY requirements-dayai.txt .
+RUN pip install --no-cache-dir -r requirements-dayai.txt
+
+# Copy the dayai package + worker entry point
+COPY dayai/ ./dayai/
+COPY dayai_watcher_worker.py .
+
+# Non-root user for security (matches emailbison-sync pattern)
+RUN useradd -m -u 1000 dayaiworker && \
+    chown -R dayaiworker:dayaiworker /app
+USER dayaiworker
+
+# Environment defaults (may be overridden in Coolify env)
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    POLL_INTERVAL_SECONDS=600 \
+    DETECT_ONLY=true \
+    LOG_LEVEL=info \
+    DAY_AI_BASE_URL=https://day.ai \
+    CHARM_API_URL=https://api.wizardgrimoire.cloud
+
+# Health check — verify postgres reachable
+HEALTHCHECK --interval=60s --timeout=10s --start-period=30s --retries=3 \
+    CMD python -c "import asyncio, asyncpg, os; asyncio.run(asyncpg.connect(host=os.environ['POSTGRES_HOST'], port=int(os.environ.get('POSTGRES_PORT', '5432')), user=os.environ['POSTGRES_USER'], password=os.environ['POSTGRES_PASSWORD'], database=os.environ.get('POSTGRES_DB', 'postgres')))" || exit 1
+
+# Long-running — worker has internal poll loop; do NOT exit after first poll.
+# This is the fix for the restart-loop issue that killed the Node watcher.
+CMD ["python", "dayai_watcher_worker.py"]
