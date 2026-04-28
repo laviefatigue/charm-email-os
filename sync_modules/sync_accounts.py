@@ -370,6 +370,12 @@ class AccountSyncModule:
                 inventory_pool_status = CASE
                     WHEN sender_accounts.killed_at IS NOT NULL THEN NULL
                     WHEN EXCLUDED.inbox_state = 'dead' THEN NULL
+                    -- Burned/cancelled domain inboxes never carry a pool tag.
+                    -- Without this gate, the bounce-threshold branch below would
+                    -- keep flipping pool back to 'warning' on every sync, fighting
+                    -- the burned-domain handler in set_tag_sync that NULLs them.
+                    WHEN (SELECT pool_status FROM domains WHERE id = sender_accounts.domain_id)
+                         IN ('burned', 'cancelled') THEN NULL
                     WHEN COALESCE(sender_accounts.hard_bounces_24h, 0) >= 1
                          OR COALESCE(sender_accounts.hard_bounces_7d, 0) >= 3 THEN 'warning'
                     -- Auto-clear warning when bounces subside: restore pool from domain
