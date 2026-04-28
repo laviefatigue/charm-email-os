@@ -40,6 +40,14 @@ Detected anomalies
      while still `incubating` — promoted/dead/graduated inboxes drop
      out automatically once the bypass is reconciled.
 
+6. Burned-domain inboxes still assigned to active EB campaigns
+     reputation risk: domains marked `pool_status='burned'` (or
+     `cancelled`) shouldn't be sending. Per Rule C7 we don't
+     auto-kill connected inboxes, but we should flag them so the
+     team removes them from EB campaigns. Until an auto-cleanup
+     function is built (TODO: see plan doc), this audit + manual
+     EB cleanup is the loop closure.
+
 Output
 ──────
 A single Slack message with section blocks per anomaly. If all counts
@@ -92,6 +100,7 @@ class OverhaulAuditModule:
                 or metrics['orphan_inactive_live_count'] > 0
                 or metrics['stuck_incubation_14bd'] > 0
                 or metrics['incubating_in_campaigns'] > 0
+                or metrics['burned_inboxes_in_campaigns'] > 0
             )
 
             if metrics['has_anomalies'] and self.alerter:
@@ -102,7 +111,8 @@ class OverhaulAuditModule:
                 f"warmup_off={metrics['warmup_disabled_active_24h']} "
                 f"orphans={metrics['orphan_inactive_live_count']} "
                 f"stuck_incubation={metrics['stuck_incubation_14bd']} "
-                f"incubating_in_campaigns={metrics['incubating_in_campaigns']}"
+                f"incubating_in_campaigns={metrics['incubating_in_campaigns']} "
+                f"burned_in_campaigns={metrics['burned_inboxes_in_campaigns']}"
             )
             return await audit.complete(metadata=metrics)
         except Exception as e:
@@ -184,12 +194,32 @@ class OverhaulAuditModule:
               AND sa.inventory_lifecycle_status = 'incubating'
         """) or 0
 
+        # 6. Burned-domain inboxes still in active campaigns — reputation
+        # risk. Per Rule C7 we don't auto-kill connected inboxes, but
+        # burned-domain inboxes shouldn't be sending. Surfaces the gap
+        # between domain pool state and campaign membership.
+        # TODO(auto-cleanup): Build a function that calls EB to remove
+        # burned-domain inboxes from active campaigns. The audit catches
+        # the state but team currently fixes manually.
+        burned_in_campaigns = await self.db.fetchval("""
+            SELECT COUNT(DISTINCT sa.id)
+            FROM sender_accounts sa
+            JOIN domains d ON d.id = sa.domain_id
+            JOIN campaign_inboxes ci
+              ON ci.sender_account_id = sa.id
+             AND ci.is_active = TRUE
+            WHERE sa.is_active = TRUE
+              AND sa.inbox_state = 'live'
+              AND d.pool_status IN ('burned', 'cancelled')
+        """) or 0
+
         return {
             'dual_tag_candidates': int(dual_tag),
             'warmup_disabled_active_24h': int(warmup_off),
             'orphan_inactive_live_count': int(orphan_inactive),
             'stuck_incubation_14bd': int(stuck),
             'incubating_in_campaigns': int(incubating_in_campaigns),
+            'burned_inboxes_in_campaigns': int(burned_in_campaigns),
         }
 
     async def _post_alert(self, metrics: Dict[str, int]) -> None:
@@ -222,6 +252,12 @@ class OverhaulAuditModule:
                 f"• *Incubating inboxes in active campaigns:* {metrics['incubating_in_campaigns']}. "
                 f"Bypass guard — un-warmed inboxes are sending production volume. "
                 f"Either graduate (if warmup window is complete) or remove from campaigns."
+            )
+        if metrics['burned_inboxes_in_campaigns']:
+            lines.append(
+                f"• *Burned-domain inboxes in active campaigns:* {metrics['burned_inboxes_in_campaigns']}. "
+                f"Reputation risk — these domains are flagged but their inboxes are still in EB campaigns. "
+                f"Team must remove from campaigns manually until auto-cleanup is built."
             )
 
         # SlackAlerter.context expects a string; serialize the metrics dict.

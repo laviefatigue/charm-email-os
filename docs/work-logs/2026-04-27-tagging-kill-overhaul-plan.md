@@ -418,6 +418,7 @@ Sets `is_active=FALSE` when EB stops returning an inbox; never sets it back to T
 | 22 | Patch warning-pool sync race | `sync_accounts.upsert` keeps flipping pool back to `warning` when bounces are present, even on cancelled/burned domains. Add domain pool filter to that branch. |
 | 23 | Incubation enforcement: prevent EB ops from assigning incubating inboxes to campaigns | Can't enforce at EB write time; surface as audit alert (item 6 above is the start). |
 | 24 | Rate limiting per-workspace EB API calls | Currently 3 workspaces concurrent via `SYNC_WORKSPACE_CONCURRENCY`. If EB rate-limits, may need throttle. |
+| 29 | **Auto-cleanup function: remove burned-domain inboxes from active EB campaigns** | Per 2026-04-28 (session-2) user directive: *"ok if burned inboxes are appearing in campaigns since we are constantly checking. Notate we need to build a function to address this."* The audit now surfaces a `burned_inboxes_in_campaigns` count; team removes manually until automated. Build a sync_module that, per workspace, lists `campaign_inboxes` where `domain.pool_status IN ('burned','cancelled')` and calls EB API to remove those sender_email_ids from each campaign. Run on same 15-min cadence as `workspace_writes`. Constraints: Rule C7 (don't auto-kill connected inboxes — only remove from campaigns; the inbox stays alive in EB until `disconnected_timeout` fires). EB endpoint TBD (likely `DELETE /campaigns/{id}/sender-emails/{sender_email_id}`). |
 
 ### F. Documentation updates needed
 

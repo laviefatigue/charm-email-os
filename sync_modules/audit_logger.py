@@ -171,6 +171,11 @@ class AuditContext:
 
         error_details = {'errors': self.errors} if self.errors else None
 
+        # Merge end-of-run metadata into the row's existing metadata jsonb
+        # (start_audit set keys like {"scope": "fleet"}, complete adds metric
+        # counts). When metadata is None, leave the column untouched.
+        metadata_param = json.dumps(metadata) if metadata is not None else None
+
         await self.db.execute("""
             UPDATE sync_audit_log
             SET
@@ -181,7 +186,11 @@ class AuditContext:
                 records_updated = $6,
                 records_failed = $7,
                 error_message = $8,
-                error_details = $9
+                error_details = $9,
+                metadata = CASE
+                    WHEN $10::jsonb IS NULL THEN metadata
+                    ELSE COALESCE(metadata, '{}'::jsonb) || $10::jsonb
+                END
             WHERE id = $1
         """,
             self.audit_id,
@@ -192,7 +201,8 @@ class AuditContext:
             self.records_updated,
             self.records_failed,
             error_message,
-            json.dumps(error_details) if error_details else None
+            json.dumps(error_details) if error_details else None,
+            metadata_param,
         )
 
         return SyncResult(
