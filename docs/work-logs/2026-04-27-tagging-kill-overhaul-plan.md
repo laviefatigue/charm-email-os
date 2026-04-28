@@ -324,11 +324,29 @@ Min-sends floor (20 sends/24h with 7d fallback). Cross-domain promotion. Small-d
 | 2. Apply migration 097 (workspace_packages) | ✓ 2026-04-28 |
 | 3. Run backfill_pool_status.py | ✓ 2026-04-27 (with design flaw, self-corrected to +212 net) |
 | 4. DB cleanup (Phases A+E, B, C) | ✓ 2026-04-28 |
-| 5. **Code deploy via CI/CD** | **PENDING — your action** |
-| 6. Watch first 2-3 sync cycles after deploy | pending |
-| 7. Verify daily overhaul audit posts to Slack | pending |
-| 8. Reconciliation pass (re-run fix_dual_tags or let new code drain naturally) | pending |
+| 5. **Code deploy via CI/CD** | ✓ 2026-04-28 session-2 (commit `b4c5bda`) |
+| 6. Watch first 2-3 sync cycles after deploy | ✓ partial — surfaced 4 latent bugs (see below) |
+| 7. Verify daily overhaul audit posts to Slack | ✓ fired post-deploy, metric counts now persisted |
+| 8. Reconciliation pass | ✓ in progress — first-cycle catch-up reconciled +319 Hello Hero live tags etc. |
 | 9. Hold kill triggers in alert-only for 48h before allowing real kills | pending (per C5 paranoia) |
+
+### Post-deploy fixes shipped (2026-04-28 session-2)
+
+The post-deploy audit caught 4 latent bugs that the overhaul didn't surface in code review. Each was fixed and redeployed within the session:
+
+| # | Commit | Fix | Caught by |
+|---|---|---|---|
+| 1 | `7e79c0e` | `lifecycle_tag_sync._tag_new_warmup_inboxes` reverting graduations same cycle (filter `!= 'incubating'` matched `'active'`). Tightened to `IS NULL`. | `stuck_incubation_14bd=85` not draining despite 85 successful graduations in `inbox_rotation_history`. |
+| 2 | `9e1c43f` | (a) New audit metric `burned_inboxes_in_campaigns` (baseline 1019). (b) `AuditContext.complete(metadata=)` now persists end-of-run metric counts to `sync_audit_log.metadata` (jsonb merge with start metadata). | First audit row post-deploy showed only `{"scope":"fleet"}` start metadata — metric counts were lost. |
+| 3 | `45ed164` | `daily_snapshot.capacity_utilization_pct` clamped to 999.99 to fit `NUMERIC(5,2)` column. | 10 of 11 workspaces' `daily_snapshot` ran with `partial` status due to numeric overflow. |
+| 4 | `13523ca` | `sync_accounts` upsert now NULLs `inventory_pool_status` for burned/cancelled domain inboxes. Was flipping to `'warning'` every cycle when bounces present. | 1,031 burned-domain inboxes oscillating pool='warning' ↔ NULL between sync_accounts and set_tag_sync passes. |
+| 5 | `c866929` | `sync_accounts` upsert preserves `'active'`/`'dead'` lifecycle through merges (same revert-bug class as #1, different code path). Without the guard, recently-graduated inboxes (warmup_started_at < 21d) and clerical-bypass UPDATEs got reverted hourly. | `incubating_in_campaigns` jumped 1 → 11 within 30 min after Phase C-style UPDATE for the 10 new ODSC inboxes. |
+
+### Additional cleanup in session-2
+
+| Action | Rows | Note |
+|---|---|---|
+| Phase G — clerical bypass UPDATE for 10 NEW Stable Kernel ODSC inboxes (assigned 2026-04-28 after Phase C original 3) → `lifecycle='active'`, `pool='deployed'` | 10 | Same pattern as Phase C; user authorized "may need to set them live" while flagging team-discipline issue. Pre-state at `scripts/backfill_snapshots/2026-04-28_odsc_clerical_bypass_pre_state.txt`. |
 
 ---
 
