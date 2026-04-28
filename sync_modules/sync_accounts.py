@@ -358,9 +358,19 @@ class AccountSyncModule:
                 is_active = EXCLUDED.is_active,
                 -- Update inventory lifecycle status based on warmup_started_at
                 -- Incubation = 21 days from EB created_at (when inbox was uploaded to EmailBison)
+                --
+                -- IMPORTANT: never revert 'active' → 'incubating'. Graduations
+                -- are sticky: once an inbox graduates (via lifecycle_tag_sync OR
+                -- a clerical bypass UPDATE), it stays graduated until killed.
+                -- Without this guard, the calendar-day rule below would flip
+                -- recently-graduated inboxes (warmup_started_at < 21d) back to
+                -- 'incubating' on every hourly sync. Same bug class as the
+                -- lifecycle_tag_sync._tag_new_warmup_inboxes fix (commit 7e79c0e).
                 inventory_lifecycle_status = CASE
                     WHEN sender_accounts.killed_at IS NOT NULL THEN 'dead'
                     WHEN EXCLUDED.inbox_state = 'dead' THEN 'dead'
+                    WHEN sender_accounts.inventory_lifecycle_status IN ('active', 'dead')
+                         THEN sender_accounts.inventory_lifecycle_status
                     WHEN sender_accounts.warmup_started_at IS NULL THEN 'incubating'
                     WHEN sender_accounts.warmup_started_at > NOW() - INTERVAL '21 days' THEN 'incubating'
                     ELSE 'active'
