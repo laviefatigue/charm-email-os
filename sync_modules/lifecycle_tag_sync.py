@@ -189,13 +189,25 @@ class LifecycleTagSyncModule:
                 audit=audit
             )
 
-            if graduated > 0 or new_incubating > 0 or cleaned > 0:
-                print(f"  [{workspace_name}] Graduated: {graduated}, New incubating: {new_incubating}, Cleaned: {cleaned}")
+            # 4. Untag 'incubating' from inboxes that are now lifecycle='active'.
+            # Catches the orphan-tag pattern where:
+            #   - Graduation untag failed silently (try/except on line 292)
+            #   - Clerical-bypass UPDATE set lifecycle='active' without untagging
+            # Scoped to recent activity to limit per-cycle EB calls.
+            untag_orphan = await self._untag_incubating_from_active(
+                workspace_id=workspace_id,
+                incubating_tag_id=incubating_tag_id,
+                audit=audit
+            )
+
+            if graduated > 0 or new_incubating > 0 or cleaned > 0 or untag_orphan > 0:
+                print(f"  [{workspace_name}] Graduated: {graduated}, New incubating: {new_incubating}, Cleaned: {cleaned}, Untag orphan incubating: {untag_orphan}")
 
             return await audit.complete(metadata={
                 'graduated': graduated,
                 'new_incubating': new_incubating,
-                'live_removed_dead': cleaned
+                'live_removed_dead': cleaned,
+                'untag_orphan_incubating': untag_orphan,
             })
 
         except Exception as e:
@@ -359,13 +371,21 @@ class LifecycleTagSyncModule:
         - Have warmup_started_at set (recently started warming)
         - Are live
         - Have warmup_started_at < 21 days ago
-        - Have NULL inventory_lifecycle_status (never classified)
+        - Are not yet graduated (inventory_lifecycle_status IS NULL OR 'incubating')
 
         IMPORTANT: This must NOT match 'active' (graduated) or 'dead' (killed)
-        inboxes. The previous filter `!= 'incubating'` matched 'active' and
-        re-tagged graduated inboxes as 'incubating' the same cycle they
-        graduated, reverting the graduation and producing dual tags in EB
-        (incubating + reserve). NULL-only is the correct gate.
+        inboxes. The pre-overhaul filter `!= 'incubating'` matched 'active'
+        and re-tagged graduated inboxes back to 'incubating', reverting the
+        graduation (commit 7e79c0e fixed that). However, NULL-only was too
+        narrow: sync_accounts.upsert independently sets lifecycle='incubating'
+        for new inboxes via its calendar-day CASE without ever calling EB to
+        tag them. Result: 266 fleet-wide inboxes (Charm 251, SKMR 14, Spout 1)
+        had lifecycle='incubating' in DB but NO 'incubating' tag in EB —
+        invisible to this function. Caught by 2026-04-28 fleet tag audit.
+
+        Including 'incubating' here lets the function self-heal that orphan
+        state. The DB UPDATE is conditional (only fires for NULL → 'incubating')
+        so already-incubating rows don't bump updated_at unnecessarily.
 
         Returns:
             Number of inboxes tagged
@@ -378,7 +398,8 @@ class LifecycleTagSyncModule:
                 id,
                 email_address,
                 emailbison_account_id,
-                warmup_started_at
+                warmup_started_at,
+                inventory_lifecycle_status
             FROM sender_accounts
             WHERE workspace_id = $1
             AND inbox_state = 'live'
@@ -386,7 +407,8 @@ class LifecycleTagSyncModule:
             AND warmup_started_at IS NOT NULL
             AND warmup_started_at > $2
             AND emailbison_account_id IS NOT NULL
-            AND inventory_lifecycle_status IS NULL
+            AND (inventory_lifecycle_status IS NULL
+                 OR inventory_lifecycle_status = 'incubating')
         """, workspace_id, cutoff)
 
         tagged_count = 0
@@ -396,22 +418,32 @@ class LifecycleTagSyncModule:
             eb_account_id = int(inbox['emailbison_account_id'])
 
             try:
-                # Add 'incubating' tag
+                # Add 'incubating' tag (idempotent in EB — re-tagging a
+                # tagged inbox is a no-op).
                 await self.client.tag_inbox(eb_account_id, incubating_tag_id)
 
-                # Update local status
+                # Conditional UPDATE: only fires when DB lifecycle is NULL
+                # (truly new inbox). For inboxes already at 'incubating'
+                # (the self-heal case), the WHERE doesn't match and no
+                # UPDATE happens — avoids bumping updated_at uselessly
+                # and triggering downstream domain_health updates.
                 await self.db.execute("""
                     UPDATE sender_accounts
                     SET
                         inventory_lifecycle_status = 'incubating',
                         updated_at = NOW()
                     WHERE id = $1
+                      AND inventory_lifecycle_status IS NULL
                 """, inbox['id'])
 
                 tagged_count += 1
                 audit.increment_updated()
 
-                print(f"    [TAG] {inbox['email_address']} - added 'incubating' tag")
+                # Different log line for self-heal vs. brand-new tag.
+                if inbox['inventory_lifecycle_status'] == 'incubating':
+                    print(f"    [TAG SELF-HEAL] {inbox['email_address']} - re-applied missing 'incubating' tag")
+                else:
+                    print(f"    [TAG] {inbox['email_address']} - added 'incubating' tag")
 
             except EmailBisonAPIError as e:
                 audit.add_error(
@@ -420,6 +452,69 @@ class LifecycleTagSyncModule:
                 )
 
         return tagged_count
+
+    async def _untag_incubating_from_active(
+        self,
+        workspace_id: UUID,
+        incubating_tag_id: int,
+        audit
+    ) -> int:
+        """
+        Remove 'incubating' tag from inboxes that are now lifecycle='active'.
+
+        Catches the orphan-tag pattern where the EB 'incubating' tag persists
+        after an inbox transitions out of incubating:
+          - Graduation untag failed silently (best-effort try/except in
+            _graduate_mature_inboxes line 292).
+          - Clerical-bypass UPDATE (admin SQL setting lifecycle='active'
+            for inboxes that were pushed into campaigns prematurely, e.g.
+            the Stable Kernel ODSC pattern of 2026-04-28) doesn't go
+            through the graduation untag path.
+
+        Scope is limited to inboxes that recently became 'active' (per
+        inbox_rotation_history within the last 24h) to bound the per-cycle
+        EB call count. Pre-existing orphans older than that need a one-shot
+        cleanup script (scripts/cleanup_orphan_incubating_tags.py).
+
+        Returns:
+            Number of tags removed (idempotent — repeated runs return 0).
+        """
+        # Recent transitions to 'active' via either graduation or threshold/
+        # promote. Clerical bypasses that don't write a history row would
+        # need to do so to be picked up here — that's the rule going forward.
+        candidates = await self.db.fetch("""
+            SELECT DISTINCT
+                sa.id,
+                sa.email_address,
+                sa.emailbison_account_id
+            FROM sender_accounts sa
+            JOIN inbox_rotation_history irh ON irh.target_inbox_id = sa.id
+            WHERE sa.workspace_id = $1
+              AND sa.is_active = TRUE
+              AND sa.inbox_state = 'live'
+              AND sa.inventory_lifecycle_status = 'active'
+              AND sa.emailbison_account_id IS NOT NULL
+              AND irh.executed_at > NOW() - INTERVAL '24 hours'
+              AND irh.rotation_type IN ('graduate', 'promote', 'threshold_promotion', 'clerical_bypass')
+        """, workspace_id)
+
+        if not candidates:
+            return 0
+
+        untagged_count = 0
+        for inbox in candidates:
+            eb_account_id = int(inbox['emailbison_account_id'])
+            try:
+                await self.client.untag_inbox(eb_account_id, incubating_tag_id)
+                untagged_count += 1
+            except EmailBisonAPIError as e:
+                # 404/not-tagged is the steady state — already cleaned. Only
+                # log if the error looks unexpected.
+                msg = str(e)
+                if '404' not in msg and 'not found' not in msg.lower():
+                    print(f"    [WARN] untag 'incubating' on active inbox {inbox['email_address']} failed: {e}")
+
+        return untagged_count
 
     async def _remove_live_from_dead(
         self,
