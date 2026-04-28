@@ -357,7 +357,10 @@ class WorkspaceSyncQueue:
             ws_api_key: str = ws_row['key_token']
 
             try:
-                async with EmailBisonClient(api_key=ws_api_key) as client:
+                async with EmailBisonClient(
+                    api_key=ws_api_key,
+                    is_workspace_scoped=True,
+                ) as client:
                     result = await self._dispatch(
                         sync_type=sync_type,
                         workspace_id=workspace_id,

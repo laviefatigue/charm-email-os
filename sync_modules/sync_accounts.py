@@ -445,18 +445,19 @@ class AccountSyncModule:
 
         created = result['created']
 
-        # Track send delta to populate total_sends_7d for rate-based kill triggers
+        # Track send delta to populate total_sends_7d AND total_sends_24h.
+        # Both feed kill-trigger floors:
+        #   total_sends_7d  → rate-based triggers (hard_bounce_rate_7d, bounce_rate_all_7d)
+        #   total_sends_24h → count-based trigger floor (hard_bounces_24h floor, migration 095)
         #
         # KEY DIFFERENCE FROM BOUNCES:
         # - Bounces: We DON'T track delta here (warmup bounces shouldn't trigger kills)
         # - Sends: We DO track delta (ALL sends matter for rate calculations)
         #
-        # Rate calculation: bounce_rate = hard_bounces_7d / total_sends_7d
-        # - Numerator (bounces): Campaign-only via sync_events.py
-        # - Denominator (sends): ALL sends (warmup + campaign) via this delta
-        #
-        # This gives accurate rates: inboxes that send more have lower rates.
-        # Daily decay (0.86x in health_checks.py) handles 7-day rolling window.
+        # The 7d counter decays 14% daily in health_checks.decay_weekly_counters.
+        # The 24h counter resets to 0 at midnight in reset_daily_counters; the
+        # delta accumulated between midnight and the next sync is what
+        # health_checks.evaluate_inbox_health reads as "did this inbox send today?"
         if not created and result['prev_sends'] is not None:
             prev_sends = result['prev_sends'] or 0
             send_delta = max(0, emails_sent_all_time - prev_sends)
@@ -466,6 +467,7 @@ class AccountSyncModule:
                     UPDATE sender_accounts
                     SET
                         total_sends_7d = COALESCE(total_sends_7d, 0) + $2,
+                        total_sends_24h = COALESCE(total_sends_24h, 0) + $2,
                         updated_at = NOW()
                     WHERE email_address = $1
                 """, email, send_delta)
@@ -473,15 +475,36 @@ class AccountSyncModule:
         return created
 
     async def mark_stale_accounts(self, workspace_id: UUID, active_eb_ids: set):
-        """Mark accounts that are no longer in EmailBison as inactive."""
+        """
+        Mark accounts that are no longer in EmailBison as DEAD.
+
+        Per the operator decision rule (2026-04-28): if an inbox is no longer
+        returned by EmailBison's sender-emails endpoint, it has been removed
+        from EB — meaning the workspace stopped paying for it via Hypertide
+        OR the inbox was manually deleted. Either way, treat it as terminally
+        dead, not just "inactive."
+
+        Previous behavior set is_active=FALSE only, leaving inbox_state='live'.
+        That left thousands of stale rows that looked alive but were actually
+        gone — surfaced during the 2026-04-28 audit as 793+ cancelled-domain
+        inboxes that should have been killed weeks ago.
+
+        Setting inbox_state='dead' + kill_trigger='disconnected_timeout' aligns
+        DB to operational reality and lets the daily audit + downstream
+        analytics treat them correctly.
+        """
         if not active_eb_ids:
             return
 
-        # Find accounts in our DB but not in EmailBison
         stale = await self.db.fetch("""
             UPDATE sender_accounts
             SET
                 is_active = FALSE,
+                inbox_state = 'dead',
+                inventory_lifecycle_status = 'dead',
+                inventory_pool_status = NULL,
+                kill_trigger = COALESCE(kill_trigger, 'disconnected_timeout'::kill_trigger_type),
+                killed_at = COALESCE(killed_at, NOW()),
                 updated_at = NOW()
             WHERE workspace_id = $1
             AND emailbison_account_id IS NOT NULL
@@ -491,7 +514,7 @@ class AccountSyncModule:
         """, workspace_id, list(active_eb_ids))
 
         if stale:
-            print(f"    Marked {len(stale)} stale accounts as inactive")
+            print(f"    Marked {len(stale)} stale accounts as dead (removed from EmailBison)")
 
     async def sync_all_domains(self):
         """

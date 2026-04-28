@@ -43,7 +43,8 @@ class EmailBisonClient:
         timeout: float = DEFAULT_TIMEOUT,
         max_retries: int = DEFAULT_RETRIES,
         retry_delay: float = DEFAULT_RETRY_DELAY,
-        min_request_interval: float = MIN_REQUEST_INTERVAL
+        min_request_interval: float = MIN_REQUEST_INTERVAL,
+        is_workspace_scoped: bool = False
     ):
         self.api_url = api_url or EMAILBISON_API_URL
         self.api_key = api_key or EMAILBISON_API_KEY
@@ -51,6 +52,11 @@ class EmailBisonClient:
         self.max_retries = max_retries
         self.retry_delay = retry_delay
         self.min_request_interval = min_request_interval
+        # When True, this client was built with a workspace-scoped API key from
+        # workspace_api_keys (migration 089). switch_workspace() becomes a no-op
+        # because the API token itself carries workspace context — no /switch-workspace
+        # call is needed, and concurrent clients can run without context-race issues.
+        self.is_workspace_scoped = is_workspace_scoped
         self.client: Optional[httpx.AsyncClient] = None
         self.current_workspace_id: Optional[int] = None
         # Rate limiting state
@@ -167,8 +173,16 @@ class EmailBisonClient:
     async def switch_workspace(self, workspace_id: int) -> bool:
         """
         Switch to a workspace context.
-        CRITICAL: Must be called before any workspace-scoped operation.
+        CRITICAL: Must be called before any workspace-scoped operation
+                 UNLESS this client was constructed with is_workspace_scoped=True,
+                 in which case the API token already carries workspace context
+                 and switching would be a no-op (and a wasted API call).
         """
+        if self.is_workspace_scoped:
+            # Workspace context is bound to the API token itself.
+            self.current_workspace_id = workspace_id
+            return True
+
         if self.current_workspace_id == workspace_id:
             return True
 

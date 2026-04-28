@@ -1,18 +1,31 @@
 """
 Lifecycle Tag Sync Module
 
-Manages inbox lifecycle tags in EmailBison to control campaign assignment:
-- 'incubating' - Inbox in warmup period (< 21 days from warmup_started_at)
-- 'live' - Inbox graduated and available for campaigns (21+ days warmup)
-- 'flagged_{trigger}' - Applied by kill_processor.py when inbox is killed
+Manages inbox lifecycle tags in EmailBison to control campaign assignment.
 
-Tag Transitions:
-1. When warmup_started_at is set -> add 'incubating' tag
-2. When 21 days warmup complete -> remove 'incubating', add 'live'
-3. When kill trigger fires -> remove 'live', add 'flagged_{trigger}' (handled by kill_processor)
+Graduation model (post-2026-04-27 overhaul)
+───────────────────────────────────────────
+Reserve is the bench: graduation lands inboxes there, and kill_processor
+promotes from reserve to live to maintain sending capacity. Campaigns are
+reapplied by filtering on the 'live' tag, which naturally drains stale
+campaign_inboxes entries when reapply runs.
 
-The team uses these tags in EmailBison to filter which inboxes can be assigned to campaigns.
-Only inboxes with the 'live' tag should be used for campaign sending.
+ESP-aware graduation:
+- Google: graduate to RESERVE (tag 'reserve', inventory_pool_status='reserve').
+  Cross-domain promotion to live happens via kill_processor when a live
+  inbox dies.
+- Microsoft Entra (legacy): graduate directly to LIVE (tag 'live',
+  inventory_pool_status='deployed'). No reserve concept for Entra — the
+  legacy fleet rides to death.
+
+Tag transitions handled here:
+1. warmup_started_at set, < 14 BD                → add 'incubating' tag
+2. 14 BD warmup complete, esp='microsoft'        → remove 'incubating', add 'live'
+3. 14 BD warmup complete, esp='gmail' (Google)   → remove 'incubating', add 'reserve'
+4. inbox_state='dead'                            → remove 'live' (safety net for kill_processor)
+
+Phase 3 will replace the calendar-day INCUBATION_DAYS check with a
+business-day calculation. This module currently still uses 21 calendar days.
 """
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional
@@ -26,13 +39,26 @@ from .slack_alerter import SlackAlerter
 
 # Tag names used for lifecycle management
 INCUBATING_TAG = 'incubating'
-# INTENTIONAL: LIVE_TAG = 'live' shares the name with A-Set pool tag.
-# Execution order resolves it: lifecycle_tag_sync adds 'live' on graduation,
-# then set_tag_sync runs immediately after (orchestrator line 424) and
-# overrides with the correct pool tag (reserve domains get 'reserve').
-# Do NOT rename — EB campaign filters depend on the 'live' tag name.
-LIVE_TAG = 'live'
+LIVE_TAG = 'live'        # A-Set: deployed, sending campaigns (Microsoft direct, Google after promotion)
+RESERVE_TAG = 'reserve'  # B-Set: warmed bench, awaiting promotion (Google graduations)
+
+# Graduation window: 14 BUSINESS days (Mon-Fri), measured from warmup_started_at.
+# Holiday awareness is intentionally not included for v1 — the SQL uses
+# EXTRACT(DOW FROM d) NOT IN (0,6) so weekends are excluded but federal /
+# bank holidays still count as business days. This was acceptable for v1
+# because the kill triggers downstream re-evaluate on real send activity, so
+# a one-day-too-early graduation does not mean an immediate problem.
+INCUBATION_BUSINESS_DAYS = 14
+
+# Calendar-day fallback constant kept for legacy callers (e.g. dashboards).
+# All graduation logic in this module uses INCUBATION_BUSINESS_DAYS.
 INCUBATION_DAYS = 21
+
+# ESP identifier used by sender_accounts.esp for Google Workspace inboxes.
+# Code that branches "Microsoft = legacy live, Google = reserve graduation"
+# must use this constant — historic data uses 'gmail' rather than 'google'.
+ESP_GOOGLE = 'gmail'
+ESP_MICROSOFT = 'microsoft'
 
 
 class LifecycleTagSyncModule:
@@ -123,25 +149,29 @@ class LifecycleTagSyncModule:
         )
 
         try:
-            # Switch to workspace context
+            # Switch to workspace context (no-op for workspace-scoped clients).
             if not await self.client.switch_workspace(emailbison_workspace_id):
                 return await audit.fail(Exception(f"Failed to switch to workspace {workspace_name}"))
 
-            # Get or create the lifecycle tags
+            # Get or create the three lifecycle tags. 'reserve' is needed because
+            # Google graduations now land in reserve rather than live.
             incubating_tag = await self.client.get_or_create_tag(INCUBATING_TAG)
             live_tag = await self.client.get_or_create_tag(LIVE_TAG)
+            reserve_tag = await self.client.get_or_create_tag(RESERVE_TAG)
 
             incubating_tag_id = incubating_tag.get('id')
             live_tag_id = live_tag.get('id')
+            reserve_tag_id = reserve_tag.get('id')
 
-            if not incubating_tag_id or not live_tag_id:
+            if not incubating_tag_id or not live_tag_id or not reserve_tag_id:
                 return await audit.fail(Exception("Failed to get/create lifecycle tags"))
 
-            # 1. Graduate inboxes: incubating -> live (21+ days warmup)
+            # 1. Graduate mature inboxes (ESP-aware: Google→reserve, Microsoft→live)
             graduated = await self._graduate_mature_inboxes(
                 workspace_id=workspace_id,
                 incubating_tag_id=incubating_tag_id,
                 live_tag_id=live_tag_id,
+                reserve_tag_id=reserve_tag_id,
                 audit=audit
             )
 
@@ -152,7 +182,7 @@ class LifecycleTagSyncModule:
                 audit=audit
             )
 
-            # 3. Remove 'live' tag from dead inboxes (consistency)
+            # 3. Remove 'live' tag from dead inboxes (consistency safety net)
             cleaned = await self._remove_live_from_dead(
                 workspace_id=workspace_id,
                 live_tag_id=live_tag_id,
@@ -176,67 +206,137 @@ class LifecycleTagSyncModule:
         workspace_id: UUID,
         incubating_tag_id: int,
         live_tag_id: int,
+        reserve_tag_id: int,
         audit
     ) -> int:
         """
-        Graduate inboxes from incubating to live after 21 days of warmup.
+        Graduate inboxes that have completed warmup.
 
-        Finds inboxes that:
-        - Have warmup_started_at >= 21 days ago
-        - Are live (inbox_state = 'live')
-        - Are still marked as incubating locally
+        ESP-aware destination (post-overhaul):
+        - Microsoft Entra inboxes  → live (inventory_pool_status='deployed')
+          Legacy fleet rides to death; reserve concept does not apply.
+        - Google / unknown ESP     → reserve (inventory_pool_status='reserve')
+          Bench position; kill_processor promotes to live when capacity drops.
+
+        Eligibility:
+        - inbox_state = 'live'
+        - is_active = TRUE
+        - warmup_started_at >= INCUBATION_BUSINESS_DAYS business days ago
+          (Mon-Fri only; holiday awareness deferred to v2)
+        - warmup_enabled = TRUE  (current state; historical pause is invisible)
+        - inventory_lifecycle_status = 'incubating'
+        - emailbison_account_id IS NOT NULL
+
+        Order of operations matters: we tag in EmailBison FIRST, and only update
+        the DB on success. If tagging fails the inbox stays incubating in DB
+        and the next cycle retries — preventing a desync where DB shows
+        'active' but EB still has the 'incubating' tag.
 
         Returns:
-            Number of inboxes graduated
+            Number of inboxes graduated.
         """
-        cutoff = datetime.now(timezone.utc) - timedelta(days=INCUBATION_DAYS)
-
-        # Find inboxes ready to graduate
+        # Eligibility uses BUSINESS days (Mon-Fri) since warmup_enabled_since
+        # — the timestamp of the most recent FALSE/NULL → TRUE transition of
+        # warmup_enabled. This is maintained by the trigger added in migration
+        # 094 and gives us a continuous-enabled requirement: a paused-then-
+        # resumed warmup resets the clock, which matches the operational
+        # intent ("warmed for 14 business days without interruption").
         ready_to_graduate = await self.db.fetch("""
             SELECT
                 id,
                 email_address,
                 emailbison_account_id,
-                warmup_started_at
+                warmup_started_at,
+                warmup_enabled_since,
+                esp
             FROM sender_accounts
             WHERE workspace_id = $1
             AND inbox_state = 'live'
             AND is_active = TRUE
-            AND warmup_started_at IS NOT NULL
-            AND warmup_started_at <= $2
+            AND warmup_enabled = TRUE
+            AND warmup_enabled_since IS NOT NULL
             AND inventory_lifecycle_status = 'incubating'
             AND emailbison_account_id IS NOT NULL
-        """, workspace_id, cutoff)
+            AND (
+                SELECT COUNT(*)
+                FROM generate_series(
+                    warmup_enabled_since::date,
+                    CURRENT_DATE - INTERVAL '1 day',
+                    INTERVAL '1 day'
+                ) AS d
+                WHERE EXTRACT(DOW FROM d) NOT IN (0, 6)
+            ) >= $2
+        """, workspace_id, INCUBATION_BUSINESS_DAYS)
 
         graduated_count = 0
 
         for inbox in ready_to_graduate:
             audit.increment_processed()
             eb_account_id = int(inbox['emailbison_account_id'])
+            esp = inbox.get('esp')
+
+            # Microsoft → deployed (live tag, permanent).
+            # Google / unknown → reserve (bench, awaits promotion).
+            if esp == ESP_MICROSOFT:
+                target_tag_id = live_tag_id
+                target_pool_status = 'deployed'
+                target_tag_label = 'live'
+            else:
+                target_tag_id = reserve_tag_id
+                target_pool_status = 'reserve'
+                target_tag_label = 'reserve'
 
             try:
-                # Remove 'incubating' tag
+                # Remove 'incubating' tag (best-effort; absence is fine).
                 try:
                     await self.client.untag_inbox(eb_account_id, incubating_tag_id)
                 except EmailBisonAPIError as e:
                     print(f"    [WARN] Failed to remove 'incubating' tag from inbox {eb_account_id} ({inbox['email_address']}): {e}")
 
-                # Add 'live' tag
-                await self.client.tag_inbox(eb_account_id, live_tag_id)
+                # Add destination tag (live for Microsoft, reserve for Google).
+                await self.client.tag_inbox(eb_account_id, target_tag_id)
 
-                # Update local status
-                await self.db.execute("""
-                    UPDATE sender_accounts
-                    SET
-                        inventory_lifecycle_status = 'active',
-                        updated_at = NOW()
-                    WHERE id = $1
-                """, inbox['id'])
+                # EB succeeded — update DB to match. inventory_pool_status is the
+                # authority for set_tag_sync going forward (post-overhaul model).
+                # The graduation is logged to inbox_rotation_history so the
+                # transition from incubating → reserve/deployed has an audit
+                # row alongside other pool transitions.
+                async with self.db.acquire() as conn:
+                    async with conn.transaction():
+                        await conn.execute("""
+                            UPDATE sender_accounts
+                            SET
+                                inventory_lifecycle_status = 'active',
+                                inventory_pool_status = $2,
+                                updated_at = NOW()
+                            WHERE id = $1
+                        """, inbox['id'], target_pool_status)
+
+                        await conn.execute("""
+                            INSERT INTO inbox_rotation_history (
+                                workspace_id, rotation_type,
+                                target_inbox_id, target_inbox_email,
+                                source_pool, target_pool,
+                                reason, triggered_by,
+                                success, executed_at
+                            ) VALUES (
+                                $1, 'graduate',
+                                $2, $3,
+                                NULL, $4,
+                                $5, 'lifecycle_tag_sync',
+                                TRUE, NOW()
+                            )
+                        """,
+                            workspace_id,
+                            inbox['id'], inbox['email_address'],
+                            target_pool_status,
+                            f"14 BD warmup complete for {esp or 'unknown'} inbox",
+                        )
 
                 graduated_count += 1
                 audit.increment_updated()
 
-                print(f"    [GRADUATE] {inbox['email_address']} - incubating -> live")
+                print(f"    [GRADUATE] {inbox['email_address']} ({esp or 'unknown'}) - incubating -> {target_tag_label}")
 
             except EmailBisonAPIError as e:
                 audit.add_error(

@@ -47,6 +47,7 @@ from sync_modules import (
     AuditLogger,
     SlackAlerter,
     WorkspaceSyncQueue,
+    WorkspaceWriteOrchestrator,
     HealthCheckModule,
     KillProcessor,
     RetentionManager,
@@ -55,6 +56,7 @@ from sync_modules import (
     LifecycleTagSyncModule,
     SetTagSyncModule,
     OnboardingMonitorModule,
+    OverhaulAuditModule,
 )
 
 # Configuration from environment
@@ -68,7 +70,7 @@ POSTGRES_DB = os.getenv('POSTGRES_DB', 'postgres')
 POLL_INTERVAL_EVENTS = int(os.getenv('SYNC_INTERVAL_EVENTS', 300))          # 5 min  (events)
 POLL_INTERVAL_FULL = int(os.getenv('SYNC_INTERVAL_FULL', 3600))             # 1 hour (accounts, campaigns)
 POLL_INTERVAL_HEALTH = int(os.getenv('SYNC_INTERVAL_HEALTH', 900))          # 15 min
-POLL_INTERVAL_KILL = int(os.getenv('SYNC_INTERVAL_KILL', 1800))             # 30 min
+POLL_INTERVAL_KILL = int(os.getenv('SYNC_INTERVAL_KILL', 900))              # 15 min — drives workspace_writes (lifecycle + threshold + set_tags + kill)
 POLL_INTERVAL_WARMUP = int(os.getenv('SYNC_INTERVAL_WARMUP', 1800))         # 30 min (warmup)
 POLL_INTERVAL_ENGAGEMENT = int(os.getenv('SYNC_INTERVAL_ENGAGEMENT', 86400))  # 24 hours (daily snapshots)
 POLL_INTERVAL_OAUTH_QUEUE = int(os.getenv('SYNC_INTERVAL_OAUTH_QUEUE', 300))  # 5 min  (queue processing)
@@ -107,8 +109,9 @@ class SyncOrchestrator:
         # entirely by WorkspaceSyncQueue.schedule_overdue_syncs() — no last_*_sync
         # trackers needed here for those types.
         self.last_health_check: Optional[datetime] = None
-        self.last_kill_check: Optional[datetime] = None
-        self.last_lifecycle_tag_sync: Optional[datetime] = None
+        # last_workspace_writes drives lifecycle + set + kill in one orchestrated
+        # pass per workspace (replaces last_kill_check + last_lifecycle_tag_sync).
+        self.last_workspace_writes: Optional[datetime] = None
         self.last_retention_cleanup: Optional[datetime] = None
         self.last_daily_counter_reset: Optional[datetime] = None
         self.last_oauth_queue_check: Optional[datetime] = None
@@ -117,6 +120,7 @@ class SyncOrchestrator:
         self.last_slack_audit: Optional[datetime] = None
         self.last_workspace_discovery: Optional[datetime] = None
         self.last_onboarding_monitor: Optional[datetime] = None
+        self.last_overhaul_audit: Optional[datetime] = None
 
     async def start(self, single_pass: bool = False):
         """Initialize connections and start the sync worker."""
@@ -210,16 +214,12 @@ class SyncOrchestrator:
                     await self.run_health_checks()
                     self.last_health_check = now
 
-                # Kill queue processing - every 30 min
-                if self._should_run(self.last_kill_check, POLL_INTERVAL_KILL):
-                    await self.run_kill_processing()
-                    self.last_kill_check = now
-
-                # Lifecycle tag sync - runs every 30 min (with warmup cadence)
-                # Manages 'incubating' and 'live' tags in EmailBison based on warmup age
-                if self._should_run(self.last_lifecycle_tag_sync, POLL_INTERVAL_WARMUP):
-                    await self.run_lifecycle_tag_sync()
-                    self.last_lifecycle_tag_sync = now
+                # Workspace writes — lifecycle + set + kill, concurrent per workspace,
+                # workspace-scoped API keys (migration 089). Replaces the previous
+                # serial run_lifecycle_tag_sync + run_kill_processing path.
+                if self._should_run(self.last_workspace_writes, POLL_INTERVAL_KILL):
+                    await self.run_workspace_writes()
+                    self.last_workspace_writes = now
 
                 # Daily retention cleanup (run at midnight)
                 if self._should_run_daily(self.last_retention_cleanup):
@@ -268,6 +268,16 @@ class SyncOrchestrator:
                     except Exception as e:
                         print(f"[ERROR] Onboarding monitor failed: {e}")
                     self.last_onboarding_monitor = now
+
+                # Daily overhaul audit — surfaces dual-tag drift, silently
+                # disabled warmup, and is_active=FALSE orphans (CEO ask:
+                # "daily checks with notifications", 2026-04-27 plan).
+                if self._should_run_daily(self.last_overhaul_audit):
+                    try:
+                        await self.run_overhaul_audit()
+                    except Exception as e:
+                        print(f"[ERROR] Overhaul audit failed: {e}")
+                    self.last_overhaul_audit = now
 
                 # OAuth queue processing - every 5 min (for new workspaces)
                 if self._should_run(self.last_oauth_queue_check, POLL_INTERVAL_OAUTH_QUEUE):
@@ -319,7 +329,7 @@ class SyncOrchestrator:
             await self.sync_queue.process_pending_batch()
 
         await self.run_health_checks()
-        await self.run_kill_processing()
+        await self.run_workspace_writes()
 
         print(f"[{datetime.now()}] Single pass complete")
 
@@ -377,96 +387,58 @@ class SyncOrchestrator:
         status = 'OK' if result.success else 'FAILED'
         print(f"  Health: {result.records_processed} workspaces, {result.records_updated} with triggers [{status}]")
 
-    async def run_kill_processing(self):
-        """Process the kill queue (tag and flag inboxes as inactive - NO DELETION)."""
+    async def run_workspace_writes(self):
+        """
+        Orchestrated DB→EB writes per workspace.
+
+        Replaces the legacy run_lifecycle_tag_sync + run_kill_processing pair.
+        Each workspace runs lifecycle → set tags → kill processing in order,
+        through a workspace-scoped EmailBisonClient (migration 089) — no
+        switch_workspace() calls, safe concurrency across workspaces.
+
+        Honors the same feature flags as before:
+        - ENABLE_LIFECYCLE_TAGGING gates lifecycle + set tagging
+        - ENABLE_KILL_PROCESSING gates kill queue processing
+
+        When both are disabled the orchestrator is skipped entirely.
+        """
+        if not ENABLE_LIFECYCLE_TAGGING and not ENABLE_KILL_PROCESSING:
+            print(f"[{datetime.now()}] Workspace writes DISABLED (lifecycle + kill both off)")
+            return
+
+        if not ENABLE_LIFECYCLE_TAGGING:
+            print(f"[{datetime.now()}] Lifecycle tagging DISABLED — kill processing only")
         if not ENABLE_KILL_PROCESSING:
-            print(f"[{datetime.now()}] Kill queue processing DISABLED (ENABLE_KILL_PROCESSING=false)")
-            return
+            print(f"[{datetime.now()}] Kill processing DISABLED — tagging only")
 
-        print(f"[{datetime.now()}] Kill queue processing...")
+        print(f"[{datetime.now()}] Workspace writes (lifecycle + set + kill, concurrent={SYNC_WORKSPACE_CONCURRENCY})...")
 
-        async with EmailBisonClient() as client:
-            kill_processor = KillProcessor(
-                db=self.db,
-                client=client,
-                audit_logger=self.audit_logger,
-                alerter=self.alerter
-            )
-            result = await kill_processor.process_queue()
-
-            if result.records_processed > 0:
-                status = 'OK' if result.success else 'FAILED'
-                print(f"  Kill Queue: {result.records_processed} processed [{status}]")
-
-    async def run_lifecycle_tag_sync(self):
-        """Sync lifecycle tags in EmailBison based on warmup age.
-
-        Manages tags to control which inboxes can be assigned to campaigns:
-        - 'incubating': Inbox in warmup period (< 14 days from warmup_started_at)
-        - 'live': Inbox graduated from incubation and available for campaigns
-
-        Team uses 'live' tag in EmailBison to filter inboxes for campaign assignment.
-        Kill processor removes 'live' tag when inbox is killed.
-        """
-        if not ENABLE_LIFECYCLE_TAGGING:
-            print(f"[{datetime.now()}] Lifecycle tag sync DISABLED (ENABLE_LIFECYCLE_TAGGING=false)")
-            return
-
-        print(f"[{datetime.now()}] Lifecycle tag sync...")
-
-        async with EmailBisonClient() as client:
-            lifecycle_sync = LifecycleTagSyncModule(
-                db=self.db,
-                client=client,
-                audit_logger=self.audit_logger,
-                alerter=self.alerter
-            )
-            results = await lifecycle_sync.sync_all_workspaces()
-
-            total_graduated = sum(r.metadata.get('graduated', 0) for r in results if r.metadata)
-            total_tagged = sum(r.metadata.get('new_incubating', 0) for r in results if r.metadata)
-            total_removed = sum(r.metadata.get('live_removed_dead', 0) for r in results if r.metadata)
-            failed_count = sum(1 for r in results if not r.success)
-
-            if total_graduated > 0 or total_tagged > 0 or total_removed > 0:
-                status = 'FAILED' if failed_count > 0 else 'OK'
-                print(f"  Lifecycle Tags: {total_graduated} graduated to live, {total_tagged} new incubating, {total_removed} dead removed [{status}]")
-
-            # Run A-Set/B-Set tagging after lifecycle graduation
-            await self._run_set_tag_sync(client)
-
-    async def _run_set_tag_sync(self, client: EmailBisonClient):
-        """
-        Run A-Set/B-Set tag sync after lifecycle graduation.
-
-        This assigns graduated inboxes to either A-Set (deployed) or B-Set (reserve)
-        based on provider capacity targets:
-        - Entra: 80% A-Set, 20% B-Set
-        - Google: 100% A-Set (no inbox-level B-Set)
-
-        Also promotes B-Set → A-Set when A-Set capacity drops.
-        """
-        if not ENABLE_LIFECYCLE_TAGGING:
-            return
-
-        print(f"  Running A-Set/B-Set tag sync...")
-
-        set_sync = SetTagSyncModule(
+        orchestrator = WorkspaceWriteOrchestrator(
             db=self.db,
-            client=client,
             audit_logger=self.audit_logger,
-            alerter=self.alerter
+            alerter=self.alerter,
+            concurrency=SYNC_WORKSPACE_CONCURRENCY,
+            enable_lifecycle_tagging=ENABLE_LIFECYCLE_TAGGING,
+            enable_kill_processing=ENABLE_KILL_PROCESSING,
         )
-        results = await set_sync.sync_all_workspaces()
+        results = await orchestrator.run()
 
-        total_a_tagged = sum(r.metadata.get('tagged_a_set', 0) for r in results if r.metadata)
-        total_b_tagged = sum(r.metadata.get('tagged_b_set', 0) for r in results if r.metadata)
-        total_promoted = sum(r.metadata.get('promoted_to_a_set', 0) for r in results if r.metadata)
-        failed_count = sum(1 for r in results if not r.success)
+        # Roll up per-phase metadata across workspaces for a one-line status print.
+        graduated = sum(r.metadata.get('graduated', 0) for r in results if r.metadata)
+        new_incubating = sum(r.metadata.get('new_incubating', 0) for r in results if r.metadata)
+        dead_cleaned = sum(r.metadata.get('live_removed_dead', 0) for r in results if r.metadata)
+        a_tagged = sum(r.metadata.get('tagged_a_set', 0) for r in results if r.metadata)
+        b_tagged = sum(r.metadata.get('tagged_b_set', 0) for r in results if r.metadata)
+        promoted = sum(r.metadata.get('promoted_to_a_set', 0) for r in results if r.metadata)
+        kills_tagged = sum(r.metadata.get('tagged_count', 0) for r in results if r.metadata)
+        failed = sum(1 for r in results if not r.success)
 
-        if total_a_tagged > 0 or total_b_tagged > 0 or total_promoted > 0:
-            status = 'FAILED' if failed_count > 0 else 'OK'
-            print(f"  Set Tags: +{total_a_tagged} A-Set, +{total_b_tagged} B-Set, {total_promoted} promoted [{status}]")
+        status = 'FAILED' if failed > 0 else 'OK'
+        print(
+            f"  Writes: graduated={graduated}, new_incubating={new_incubating}, "
+            f"dead_cleaned={dead_cleaned}, +A={a_tagged}, +B={b_tagged}, "
+            f"promoted={promoted}, kills_flagged={kills_tagged} [{status}]"
+        )
 
     async def run_retention_cleanup(self):
         """Run data retention cleanup."""
@@ -555,6 +527,21 @@ class SyncOrchestrator:
             )
         else:
             print(f"  Audit failed: {result.get('error')}")
+
+    async def run_overhaul_audit(self):
+        """Daily reconciliation audit for the 2026-04-27 tagging-kill model.
+
+        Read-only — counts the three drift signals (dual-tag candidates,
+        silently-disabled warmup, orphan is_active=FALSE inboxes) and
+        posts a single Slack message if any are non-zero.
+        """
+        print(f"[{datetime.now()}] Overhaul audit (daily reconciliation)...")
+        audit = OverhaulAuditModule(
+            db=self.db,
+            audit_logger=self.audit_logger,
+            alerter=self.alerter,
+        )
+        await audit.run()
 
     async def run_onboarding_monitor(self):
         """Check for new onboarding form submissions and stale clients."""

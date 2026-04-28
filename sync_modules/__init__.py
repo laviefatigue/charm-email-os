@@ -11,7 +11,8 @@ Data-pull modules (EB → DB), concurrent-safe:
 - sync_warmup: Warmup status and statistics synchronization (no switch_workspace)
 - sync_engagement: Inbox engagement metrics with daily snapshots (no switch_workspace)
 
-Tagging/write modules (DB → EB), sequential:
+Tagging/write modules (DB → EB), driven by WorkspaceWriteOrchestrator:
+- workspace_writes: Concurrent per-workspace driver for the three modules below
 - lifecycle_tag_sync: Lifecycle tag management (incubating/live) in EmailBison
 - set_tag_sync: A-Set/B-Set tag management and promotion in EmailBison
 - kill_processor: Kill queue processing with 24hr tagging
@@ -44,6 +45,8 @@ from .lifecycle_tag_sync import LifecycleTagSyncModule
 from .set_tag_sync import SetTagSyncModule
 from .sync_engagement import EngagementSyncModule
 from .onboarding_monitor import OnboardingMonitorModule
+from .workspace_writes import WorkspaceWriteOrchestrator
+from .overhaul_audit import OverhaulAuditModule
 
 __all__ = [
     'EmailBisonClient',
@@ -64,4 +67,6 @@ __all__ = [
     'SetTagSyncModule',
     'EngagementSyncModule',
     'OnboardingMonitorModule',
+    'WorkspaceWriteOrchestrator',
+    'OverhaulAuditModule',
 ]

@@ -1,36 +1,53 @@
 """
-Set Tag Sync Module (A-Set / B-Set Management)
+Set Tag Sync Module — Per-Inbox Pool Authority
 
-Manages A-Set and B-Set inbox tags in EmailBison.
+Manages the 'live' and 'reserve' pool tags in EmailBison so they reflect each
+inbox's `inventory_pool_status`.
 
-DOMAIN-LEVEL ALLOCATION (Migration 076):
-Entire DOMAINS are allocated to A-Set or B-Set, not individual inboxes.
-- domain.pool_status = 'live'    → ALL inboxes tagged 'live' (A-Set)
-- domain.pool_status = 'reserve' → ALL inboxes tagged 'reserve' (B-Set)
-- domain.pool_status = 'burned'  → Skip (compromised)
-- domain.pool_status = 'unassigned' → Skip (needs allocation first)
+Authority model (post-2026-04-27 overhaul)
+──────────────────────────────────────────
+`sender_accounts.inventory_pool_status` is the SOLE authority for which pool
+tag an inbox carries in EmailBison. `domains.pool_status` is no longer read
+here — it stays as a domain-level concept for allocation/burn scope but does
+not drive per-inbox tagging.
 
-CRITICAL RULE — NO MIXED DOMAINS:
-Inboxes within a domain must NEVER have mixed pool tags. Every alive inbox
-on a domain gets the SAME tag (live or reserve) based on domain.pool_status.
-This is non-negotiable. Warning/degraded inboxes stay tagged with their domain's
-pool tag — the warning state is tracked in the DB (inventory_pool_status='warning'),
-NOT in EB tags. If a single inbox triggers a domain-level kill (e.g. spam_complaint),
-the ENTIRE domain burns and ALL inboxes lose their pool tags.
+Per-inbox state → EB tag:
 
-WHY DOMAIN-LEVEL?
-When a domain-killing trigger (spam_complaint) fires, ALL inboxes on that
-domain are compromised. Mixed A/B per domain means B-Set is useless.
-With domain-level: B-Set domains are completely isolated, safe to promote.
+    inventory_pool_status     EB pool tag(s)
+    ─────────────────────────────────────────
+    'deployed'                live (and untag reserve)
+    'reserve'                 reserve (and untag live)
+    'warning'                 NEITHER — active circuit breaker
+    'quarantined'             NEITHER — active circuit breaker
+    NULL                      NEITHER — unallocated, no pool
 
-STANDARD TAG NAMING:
-- 'live'       = A-Set (deployed to campaigns, actively sending)
-- 'reserve'    = B-Set (warmed reserve, ready to promote when A-Set burns)
-- 'incubating' = Warming up (< 21 days), not yet graduated
+Reconciliation discipline
+─────────────────────────
+Every cycle, set_tag_sync issues an untag of the OPPOSITE pool tag even when
+the DB and EB already match — idempotent, no-cost if absent. This fixes the
+historic skip-bug where an inbox with `inventory_pool_status='reserve'` and
+target='reserve' was skipped, leaving an orphan 'live' tag in EB from a
+previous graduation.
 
-Legacy tags ('A Set'/'B Set', 'bset') are detected but new workspaces use standard names.
+ESP differentiation
+───────────────────
+- Microsoft Entra inboxes are managed by lifecycle_tag_sync directly: they
+  graduate to 'deployed' permanently and ride to death. set_tag_sync still
+  enforces that 'live' is set and 'reserve' is absent for them — but never
+  changes their pool status.
+- Google inboxes graduate to 'reserve'. Cross-domain promotion to 'deployed'
+  is performed by kill_processor and reflected here on the next cycle.
 
-This module runs AFTER lifecycle_tag_sync.py - it only acts on graduated inboxes.
+Standard tag names (only)
+─────────────────────────
+- 'live'       = deployed to campaigns
+- 'reserve'    = warmed bench, awaits promotion
+- 'incubating' = warming up (managed by lifecycle_tag_sync)
+
+Legacy tag names ('A Set', 'B Set', 'bset') are no longer supported.
+Workspaces with non-standard names raise an error at sync time. Phase 0
+diagnostics (2026-04-27) confirmed all 11 active workspaces use 'live' and
+'reserve' — there is nothing to migrate.
 """
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple
@@ -42,19 +59,19 @@ from .audit_logger import AuditLogger, SyncResult
 from .slack_alerter import SlackAlerter
 
 
-# Standard tag names (use these for new workspaces)
-DEFAULT_A_SET_TAG = 'live'      # A-Set: deployed to campaigns
-DEFAULT_B_SET_TAG = 'reserve'   # B-Set: warmed reserve, ready to promote
+# Required tag names — workspaces MUST use these.
+REQUIRED_A_SET_TAG = 'live'      # deployed
+REQUIRED_B_SET_TAG = 'reserve'   # bench
 
-# Legacy tag names (some older workspaces use these - will migrate over time)
-LEGACY_A_SET_TAGS = ['A Set', 'a set', 'a-set', 'aset']
-LEGACY_B_SET_TAGS = ['B Set', 'b set', 'b-set', 'bset']  # 'bset' is legacy, use 'reserve'
-
-# Legacy: inbox-level percentages (no longer used with domain-level allocation)
-# Domain-level allocation: ALL inboxes follow domain.pool_status
-# Kept for reference only - allocation now happens at domain level (50/50 domains)
+# Legacy compat exports (kept for any external imports; constants remain
+# unused inside this module).
+DEFAULT_A_SET_TAG = REQUIRED_A_SET_TAG
+DEFAULT_B_SET_TAG = REQUIRED_B_SET_TAG
 
 INCUBATION_DAYS = 21
+
+# ESP markers (must match values stored in sender_accounts.esp).
+ESP_MICROSOFT = 'microsoft'
 
 
 class SetTagSyncModule:
@@ -193,6 +210,7 @@ class SetTagSyncModule:
             tagged_a = 0
             tagged_b = 0
             promoted = 0
+            cleared = 0
 
             for domain in domains:
                 domain_result = await self._sync_domain_sets(
@@ -204,15 +222,17 @@ class SetTagSyncModule:
                 tagged_a += domain_result['tagged_a']
                 tagged_b += domain_result['tagged_b']
                 promoted += domain_result['promoted']
+                cleared += domain_result.get('cleared', 0)
 
-            if tagged_a > 0 or tagged_b > 0 or promoted > 0:
-                print(f"  [{workspace_name}] A-Set: +{tagged_a}, B-Set: +{tagged_b}, Promoted: {promoted}")
+            if tagged_a > 0 or tagged_b > 0 or promoted > 0 or cleared > 0:
+                print(f"  [{workspace_name}] live: +{tagged_a}, reserve: +{tagged_b}, promoted: {promoted}, cleared: {cleared}")
 
             return await audit.complete(metadata={
                 'domains_processed': len(domains),
                 'tagged_a_set': tagged_a,
                 'tagged_b_set': tagged_b,
-                'promoted_to_a_set': promoted
+                'promoted_to_a_set': promoted,
+                'cleared_pool_tags': cleared,
             })
 
         except Exception as e:
@@ -224,50 +244,29 @@ class SetTagSyncModule:
         configured_b: Optional[str]
     ) -> Tuple[str, str]:
         """
-        Resolve tag names - use configured values or detect from existing tags.
+        Validate workspace tag config. Standard names ('live'/'reserve') are required.
 
-        Detection priority:
-        1. Use explicitly configured names
-        2. Check for standard tags ('live'/'reserve')
-        3. Check for legacy tags ('A Set'/'B Set', 'bset')
-        4. Fall back to defaults ('live'/'reserve')
+        Phase 0 of the 2026-04-27 overhaul confirmed all active workspaces use
+        the standard names. Legacy detection ('A Set'/'B Set'/'bset') was
+        removed because it lets a misconfigured workspace silently mis-tag.
 
-        Standard naming:
-        - live = A-Set (deployed to campaigns)
-        - reserve = B-Set (warmed reserve)
-        - incubating = Still warming up
+        Behavior:
+        - If both configured values are 'live'/'reserve' → use them.
+        - If unset (NULL) → use standards.
+        - If anything else → raise: workspace must be migrated to standards
+          before this sync can run safely.
         """
-        if configured_a and configured_b:
-            return configured_a, configured_b
+        a = configured_a or REQUIRED_A_SET_TAG
+        b = configured_b or REQUIRED_B_SET_TAG
 
-        # Try to detect existing tags
-        try:
-            existing_tags = await self.client.list_tags()
-            tag_names_lower = {t.get('name', '').lower(): t.get('name') for t in existing_tags}
+        if a != REQUIRED_A_SET_TAG or b != REQUIRED_B_SET_TAG:
+            raise ValueError(
+                f"Workspace tag config must be a_set='{REQUIRED_A_SET_TAG}' / "
+                f"b_set='{REQUIRED_B_SET_TAG}' but got a_set='{a}' / b_set='{b}'. "
+                f"Migrate the workspace to standard tag names before re-running."
+            )
 
-            # Prefer standard tags first
-            if 'live' in tag_names_lower and 'reserve' in tag_names_lower:
-                return 'live', 'reserve'
-
-            # Check for 'live' with legacy 'bset' (migrate to 'reserve')
-            if 'live' in tag_names_lower and 'bset' in tag_names_lower:
-                print("    [MIGRATE] Found 'bset' tag, will create 'reserve' instead")
-                return 'live', 'reserve'
-
-            # Check for legacy 'A Set'/'B Set' tags
-            for legacy_a in LEGACY_A_SET_TAGS:
-                if legacy_a.lower() in tag_names_lower:
-                    # Find matching B-Set tag
-                    for legacy_b in LEGACY_B_SET_TAGS:
-                        if legacy_b.lower() in tag_names_lower:
-                            return tag_names_lower[legacy_a.lower()], tag_names_lower[legacy_b.lower()]
-                    # A-Set found but no B-Set, use reserve
-                    return tag_names_lower[legacy_a.lower()], 'reserve'
-
-        except Exception:
-            pass  # Fall back to defaults
-
-        return DEFAULT_A_SET_TAG, DEFAULT_B_SET_TAG
+        return a, b
 
     async def _save_workspace_tag_config(
         self,
@@ -360,46 +359,59 @@ class SetTagSyncModule:
         audit
     ) -> Dict:
         """
-        Sync A-Set/B-Set for a single domain.
+        Reconcile EB pool tags with each inbox's `inventory_pool_status`.
 
-        DOMAIN-LEVEL ALLOCATION (Migration 076):
-        - Entire domains are A-Set or B-Set, not individual inboxes
-        - If domain.pool_status = 'live': ALL inboxes tagged 'live' (A-Set)
-        - If domain.pool_status = 'reserve': ALL inboxes tagged 'reserve' (B-Set)
-        - If domain.pool_status = 'burned': Skip (compromised)
-        - If domain.pool_status = 'unassigned'/NULL: Skip (needs allocation first)
+        Per-inbox authority (post-2026-04-27 overhaul):
+        - 'deployed'    → ensure 'live' tag, untag 'reserve'
+        - 'reserve'     → ensure 'reserve' tag, untag 'live'
+        - 'warning'     → untag both (active circuit breaker)
+        - 'quarantined' → untag both (active circuit breaker)
+        - NULL          → untag both (unallocated)
 
-        This prevents blast radius: when a domain burns, B-Set domains are isolated.
+        Domain-scope actions still apply:
+        - domain.pool_status = 'burned'    → clear all inbox pool tags + DB
+        - domain.pool_status = 'cancelled' → skip (HyperTide order cancelled)
+
+        Reconciliation discipline: every cycle issues an untag of the OPPOSITE
+        pool tag even when DB and EB agree on target. This is idempotent (a
+        no-op if absent) and is what fixes the 133 dual-tagged inboxes from
+        the previous skip-bug, without requiring a separate cleanup pass.
+
+        Microsoft Entra inboxes are NEVER re-pooled here — lifecycle_tag_sync
+        sets them to 'deployed' permanently and they ride to death. We still
+        emit the reconciling untag of 'reserve' on them in case a stale tag
+        slipped in.
         """
         domain_id = domain['domain_id']
         domain_name = domain['domain_name']
         domain_pool_status = domain.get('pool_status')
         graduated_count = domain['graduated_inbox_count']
 
-        result = {'tagged_a': 0, 'tagged_b': 0, 'promoted': 0}
+        result = {'tagged_a': 0, 'tagged_b': 0, 'promoted': 0, 'cleared': 0}
 
-        # Skip domains with no graduated inboxes
+        # No graduated inboxes — nothing to reconcile.
         if graduated_count == 0:
             return result
 
-        # Burned domains: remove live/reserve tags from all inboxes (prevent campaign assignment)
+        # Cancelled domains: HyperTide order cancelled, inboxes are orphaned.
+        # We don't touch them — leave whatever EB has, they're not our concern.
+        if domain_pool_status == 'cancelled':
+            return result
+
+        # Burned domains: domain-scope action, clear ALL pool tags from EB and DB.
         if domain_pool_status == 'burned':
-            print(f"    [BURNED] {domain_name}: Removing live/reserve tags from burned domain inboxes")
+            print(f"    [BURNED] {domain_name}: Clearing pool tags from burned-domain inboxes")
             burned_inboxes = await self._get_all_graduated_inboxes(domain_id)
             for inbox in burned_inboxes:
                 account_id = inbox.get('emailbison_account_id')
                 if not account_id or inbox.get('status') != 'Connected':
                     continue
                 try:
-                    # Remove both A-Set and B-Set tags
-                    if a_set_tag_id:
-                        await self.client.untag_inbox(account_id, a_set_tag_id)
-                    if b_set_tag_id:
-                        await self.client.untag_inbox(account_id, b_set_tag_id)
-                    result['tagged_a'] += 1  # Track cleanup count
+                    await self.client.untag_inbox(account_id, a_set_tag_id)
+                    await self.client.untag_inbox(account_id, b_set_tag_id)
+                    result['cleared'] += 1
                 except Exception as e:
                     print(f"      [WARN] Failed to untag {inbox.get('email_address')}: {e}")
-            # Update DB: clear pool status for burned domain inboxes
             await self.db.execute("""
                 UPDATE sender_accounts
                 SET inventory_pool_status = NULL, updated_at = NOW()
@@ -409,122 +421,151 @@ class SetTagSyncModule:
             """, domain_id)
             return result
 
-        # Skip cancelled domains - HyperTide order cancelled, inboxes are orphaned
-        if domain_pool_status == 'cancelled':
-            return result
-
-        # Skip unassigned domains - they need allocation first
-        if domain_pool_status in (None, 'unassigned'):
-            # Don't spam logs - this is expected for domains not yet allocated
-            return result
-
-        # DOMAIN-LEVEL ALLOCATION: All inboxes follow the domain's pool status
-        # If domain is 'live' -> all inboxes are A-Set (deployed)
-        # If domain is 'reserve' -> all inboxes are B-Set (reserve)
-        if domain_pool_status == 'live':
-            target_set = 'deployed'
-            target_tag_id = a_set_tag_id
-            other_tag_id = b_set_tag_id
-            set_label = 'A-Set'
-        elif domain_pool_status == 'reserve':
-            target_set = 'reserve'
-            target_tag_id = b_set_tag_id
-            other_tag_id = a_set_tag_id
-            set_label = 'B-Set'
-        else:
-            # Unknown status
-            return result
-
-        # Get ALL graduated inboxes and split by connection state.
-        # Disconnected inboxes: DB-only update (no EB operations possible).
-        # Connected inboxes: EB tagging FIRST, then DB update per-inbox on success.
-        # This prevents the race condition where DB updates before EB, causing
-        # next sync to skip retrying failed EB operations.
+        # All other domain states (live, reserve, unassigned, NULL): iterate
+        # by inbox and let per-inbox `inventory_pool_status` drive the decision.
         all_inboxes = await self._get_all_graduated_inboxes(domain_id)
-
         if not all_inboxes:
             return result
 
-        connected_inboxes = [
-            inbox for inbox in all_inboxes
-            if inbox['status'] == 'Connected' and inbox['emailbison_account_id']
-        ]
-        disconnected_inboxes = [
-            inbox for inbox in all_inboxes
-            if inbox['status'] != 'Connected' or not inbox['emailbison_account_id']
-        ]
-
-        # 1. Bulk-update DB for DISCONNECTED inboxes (no EB work needed)
-        # Skip warning/quarantined inboxes — they have active health issues
-        disconnected_mismatched = [
-            inbox['id'] for inbox in disconnected_inboxes
-            if inbox['inventory_pool_status'] != target_set
-            and inbox['inventory_pool_status'] not in ('warning', 'quarantined')
-        ]
-        if disconnected_mismatched:
-            await self.db.execute("""
-                UPDATE sender_accounts
-                SET inventory_pool_status = $2, updated_at = NOW()
-                WHERE id = ANY($1::uuid[])
-            """, disconnected_mismatched, target_set)
-
-        # 2. Tag CONNECTED inboxes in EB, then update DB per-inbox on success
-        for inbox in connected_inboxes:
+        for inbox in all_inboxes:
             audit.increment_processed()
-            eb_account_id = int(inbox['emailbison_account_id'])
-            current_pool = inbox['inventory_pool_status']
 
-            # Skip if already in correct set (EB tag already correct)
-            if current_pool == target_set:
+            # Skip inboxes with no EB ID or not connected — we cannot tag them
+            # in EB. The DB is already authoritative; nothing to reconcile.
+            account_id = inbox.get('emailbison_account_id')
+            if not account_id or inbox.get('status') != 'Connected':
                 continue
 
-            # NEVER override warning or quarantined — these inboxes have
-            # active bounce/health issues and must not re-enter the pool
-            if current_pool in ('warning', 'quarantined'):
+            eb_account_id = int(account_id)
+            current_pool = inbox.get('inventory_pool_status')
+            esp = inbox.get('esp')
+
+            # Microsoft Entra is permanent-live (CEO directive — legacy fleet
+            # rides to death). Force live + strip reserve regardless of what
+            # the per-inbox DB column happens to say. This makes the rollout
+            # forgiving to the 1,032 Microsoft inboxes whose
+            # inventory_pool_status was NULL pre-backfill — without this
+            # branch the NULL → "untag both" path would strip live tags
+            # from currently-sending Microsoft inboxes during the deploy
+            # window before scripts/backfill_pool_status.py runs.
+            if esp == ESP_MICROSOFT:
+                # Microsoft pin: tag-first ensures we never strip the live tag
+                # if the subsequent untag(reserve) fails.
+                try:
+                    await self.client.tag_inbox(eb_account_id, a_set_tag_id)
+                    result['tagged_a'] += 1
+                    audit.increment_updated()
+                except EmailBisonAPIError as e:
+                    audit.add_error(
+                        record_id=inbox['email_address'],
+                        error=f"MS live-tag enforcement failed: {e}",
+                    )
+                    continue  # don't proceed to untag if tag failed
+                try:
+                    await self.client.untag_inbox(eb_account_id, b_set_tag_id)
+                except EmailBisonAPIError:
+                    pass  # transient dual tag, heals next cycle
                 continue
 
-            # Check if this is a promotion (reserve → deployed)
-            is_promotion = current_pool == 'reserve' and target_set == 'deployed'
+            # Decide target tag and which other tag to remove.
+            target_tag_id, other_tag_id, target_label = self._pool_to_tag_targets(
+                current_pool, a_set_tag_id, b_set_tag_id
+            )
 
+            # Reconciliation: ALWAYS converge to the desired tag set.
+            # Order matters for failure-mode safety:
+            #   - TAG TARGET FIRST. If the tag call fails, the inbox keeps its
+            #     prior valid tag and we abort the per-inbox sequence — no
+            #     orphan/stripped state is created.
+            #   - UNTAG OPPOSITE SECOND. If this fails, the inbox briefly has
+            #     both tags. The next cycle's reconciling untag clears it.
+            # Untag-first would have the opposite (worse) failure mode: a
+            # successful untag followed by a failed tag would leave the inbox
+            # with no pool tag, causing campaigns to drop it from the live pool.
             try:
-                # Remove old tag if present
-                if current_pool in ('deployed', 'reserve'):
+                if target_tag_id is None:
+                    # No target — circuit breaker (warning/quarantined) or
+                    # unallocated (NULL). Untag both. Order doesn't matter
+                    # because we're not adding anything.
                     try:
-                        await self.client.untag_inbox(eb_account_id, other_tag_id)
-                    except EmailBisonAPIError as e:
-                        print(f"    [WARN] Failed to remove tag {other_tag_id} from inbox {eb_account_id} ({inbox['email_address']}): {e}")
+                        await self.client.untag_inbox(eb_account_id, a_set_tag_id)
+                    except EmailBisonAPIError:
+                        pass
+                    try:
+                        await self.client.untag_inbox(eb_account_id, b_set_tag_id)
+                    except EmailBisonAPIError:
+                        pass
+                    if current_pool in ('warning', 'quarantined'):
+                        result['cleared'] += 1
+                    continue
 
-                # Add new tag
+                # TAG TARGET FIRST.
                 await self.client.tag_inbox(eb_account_id, target_tag_id)
 
-                # EB tagging succeeded — now update DB
-                await self.db.execute("""
-                    UPDATE sender_accounts
-                    SET inventory_pool_status = $2, updated_at = NOW()
-                    WHERE id = $1
-                """, inbox['id'], target_set)
+                # UNTAG OPPOSITE SECOND. Failure here = transient dual tag,
+                # self-heals on the next cycle (which is now 15 min, per the
+                # POLL_INTERVAL_KILL bump in the orchestrator).
+                try:
+                    await self.client.untag_inbox(eb_account_id, other_tag_id)
+                except EmailBisonAPIError as e:
+                    msg = str(e)
+                    if '404' not in msg and 'not found' not in msg.lower():
+                        print(f"    [WARN] Untag opposite failed for {inbox['email_address']} (will retry next cycle): {e}")
 
-                if target_set == 'deployed':
+                # Microsoft inboxes: DO NOT update inventory_pool_status from
+                # set_tag_sync. lifecycle_tag_sync owns their pool lifetime.
+                # Only count for visibility.
+                if esp == ESP_MICROSOFT:
+                    if target_label == 'live':
+                        result['tagged_a'] += 1
+                    audit.increment_updated()
+                    continue
+
+                # Google / unknown: DB already reflects per-inbox status because
+                # promotion (kill_processor) and graduation (lifecycle_tag_sync)
+                # both update inventory_pool_status. set_tag_sync just enforces
+                # EB tags. No DB write needed here.
+                if target_label == 'live':
                     result['tagged_a'] += 1
-                    if is_promotion:
-                        result['promoted'] += 1
-                        print(f"    [PROMOTE] {inbox['email_address']} → {set_label} (domain promotion)")
-                    else:
-                        print(f"    [TAG] {inbox['email_address']} → {set_label}")
                 else:
                     result['tagged_b'] += 1
-                    print(f"    [TAG] {inbox['email_address']} → {set_label}")
-
                 audit.increment_updated()
 
             except EmailBisonAPIError as e:
-                # EB tagging failed — DB NOT updated so next sync will retry
+                # Tag/untag failed mid-write. DB authority is unaffected; the
+                # next cycle will re-attempt because we always emit reconciling
+                # untags whether or not DB matches.
                 audit.add_error(
                     record_id=inbox['email_address'],
-                    error=f"Failed to tag: {e}"
+                    error=f"Tag reconciliation failed: {e}"
                 )
 
         return result
+
+    @staticmethod
+    def _pool_to_tag_targets(
+        pool_status: Optional[str],
+        a_set_tag_id: int,
+        b_set_tag_id: int,
+    ) -> Tuple[Optional[int], Optional[int], Optional[str]]:
+        """
+        Map an inbox's `inventory_pool_status` to (target_tag_id, opposite_tag_id, label).
+
+        target_tag_id is None when no pool tag should be present (warning,
+        quarantined, NULL, or unknown). In that case opposite_tag_id is also
+        None and the caller untags BOTH pool tags.
+
+        Returns:
+            (target_tag_id, opposite_tag_id, label):
+                - 'deployed'    → (live, reserve, 'live')
+                - 'reserve'     → (reserve, live, 'reserve')
+                - else          → (None, None, None)
+        """
+        if pool_status == 'deployed':
+            return a_set_tag_id, b_set_tag_id, 'live'
+        if pool_status == 'reserve':
+            return b_set_tag_id, a_set_tag_id, 'reserve'
+        return None, None, None
 
     async def _get_all_graduated_inboxes(self, domain_id: UUID) -> List[Dict]:
         """
@@ -548,7 +589,8 @@ class SetTagSyncModule:
                 inventory_pool_status,
                 inventory_lifecycle_status,
                 warmup_started_at,
-                health_score
+                health_score,
+                esp
             FROM sender_accounts
             WHERE domain_id = $1
             AND is_active = TRUE

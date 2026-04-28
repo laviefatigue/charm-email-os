@@ -24,6 +24,26 @@ KILL_THRESHOLD_HARD_BOUNCES_24H = int(os.getenv('KILL_THRESHOLD_HARD_BOUNCES_24H
 KILL_THRESHOLD_HARD_BOUNCE_RATE = float(os.getenv('KILL_THRESHOLD_HARD_BOUNCE_RATE', 0.02))
 KILL_THRESHOLD_TOTAL_BOUNCE_RATE = float(os.getenv('KILL_THRESHOLD_TOTAL_BOUNCE_RATE', 0.05))
 KILL_THRESHOLD_MIN_SENDS = int(os.getenv('KILL_THRESHOLD_MIN_SENDS', 100))  # Industry standard: min 100 sends before rate triggers
+# Min campaign send volume required before count-based bounce triggers
+# (hard_bounces_24h, hard_blocked_24h, hard_unknown_24h, combined
+# hard_bounces_24h) fire. CEO target of 15-20 sends/day per inbox is the
+# floor — below that, a few hard bounces are noise, not signal.
+#
+# We accept EITHER total_sends_24h ≥ floor OR total_sends_7d ≥ floor.
+# Reasoning: post-2026-04-27 overhaul we want to read the 24h column
+# (migration 095) as the canonical signal because it answers "did this
+# inbox send today?" directly. But sync_warmup is not yet writing the
+# new column on every cycle — until it does, the 24h column will be
+# zero for everyone and the floor would silently pause all count-based
+# kills fleet-wide. The 7d fallback keeps the existing protection
+# active during the rollout window. Once sync_warmup populates 24h
+# reliably, the 7d fallback can be removed.
+KILL_THRESHOLD_MIN_SENDS_24H_FOR_COUNT_TRIGGER = int(
+    os.getenv('KILL_THRESHOLD_MIN_SENDS_24H_FOR_COUNT_TRIGGER', 20)
+)
+KILL_THRESHOLD_MIN_SENDS_7D_FALLBACK = int(
+    os.getenv('KILL_THRESHOLD_MIN_SENDS_7D_FALLBACK', 20)
+)
 KILL_THRESHOLD_FRESH_INBOX_DAYS = int(os.getenv('KILL_THRESHOLD_FRESH_INBOX_DAYS', 21))
 KILL_THRESHOLD_FRESH_BLOCKED = int(os.getenv('KILL_THRESHOLD_FRESH_BLOCKED', 1))
 KILL_THRESHOLD_FRESH_UNKNOWN = int(os.getenv('KILL_THRESHOLD_FRESH_UNKNOWN', 3))
@@ -262,6 +282,7 @@ class HealthCheckModule:
                 sa.hard_unknown_24h,
                 sa.hard_bounces_7d,
                 sa.soft_bounces_7d,
+                sa.total_sends_24h,
                 sa.total_sends_7d,
                 sa.bounce_rate_7d,
                 sa.health_score,
@@ -329,6 +350,7 @@ class HealthCheckModule:
         hard_unknown_24h = inbox.get('hard_unknown_24h') or 0
         hard_bounces_7d = inbox.get('hard_bounces_7d') or 0
         soft_bounces_7d = inbox.get('soft_bounces_7d') or 0
+        total_sends_24h = inbox.get('total_sends_24h') or 0
         total_sends_7d = inbox.get('total_sends_7d') or 0
         warmup_started_at = inbox.get('warmup_started_at')
 
@@ -357,6 +379,9 @@ class HealthCheckModule:
 
         # Check each kill threshold (priority order: spam > provider_block > blocked > unknown > combined > rates)
         # 0. Spam complaints (HIGHEST PRIORITY - v3 spec: 1 complaint = death)
+        # Spam complaints are not subject to the min-sends floor: a single
+        # complaint is signal regardless of volume, and Google instant-burns
+        # the domain anyway downstream.
         threshold = KILL_THRESHOLDS['spam_complaint']
         complaints = inbox.get('complaints_lifetime') or 0
         if complaints >= threshold['value']:
@@ -372,10 +397,24 @@ class HealthCheckModule:
         # which is a DOMAIN_KILLING_TRIGGER, causing instant domain burns on single recipient rejections.
         # Provider blocks should be detected via account disconnection/suspension signals instead.
 
+        # Min-sends floor for COUNT-based bounce triggers. With CEO target of
+        # 15-20 sends/day per inbox, 2 hard bounces on an inbox below that
+        # floor is overwhelmingly a warmup-network artifact, not list-quality
+        # damage. Without this floor we were killing healthy graduated
+        # inboxes (Phase 0: 65% of last week's hard_bounces_24h kills had
+        # total_sends_7d < 20).
+        #
+        # Accept EITHER 24h or 7d signal — see comment on the constants for
+        # rollout-safety reasoning.
+        has_min_send_volume = (
+            total_sends_24h >= KILL_THRESHOLD_MIN_SENDS_24H_FOR_COUNT_TRIGGER
+            or total_sends_7d >= KILL_THRESHOLD_MIN_SENDS_7D_FALLBACK
+        )
+
         # 1. Hard blocked (spam/policy rejection) - HIGHEST PRIORITY after spam
         # These indicate sender reputation damage - threshold: >=2
         threshold = KILL_THRESHOLDS['hard_blocked_24h']
-        if hard_blocked_24h >= threshold['value']:
+        if hard_blocked_24h >= threshold['value'] and has_min_send_volume:
             triggers.append({
                 'trigger_type': 'hard_blocked_24h',
                 'value': hard_blocked_24h,
@@ -385,7 +424,7 @@ class HealthCheckModule:
         # 2. Hard unknown (bad email addresses) - threshold: >=3
         # These indicate list quality issues, less urgent than blocked
         threshold = KILL_THRESHOLDS['hard_unknown_24h']
-        if hard_unknown_24h >= threshold['value']:
+        if hard_unknown_24h >= threshold['value'] and has_min_send_volume:
             triggers.append({
                 'trigger_type': 'hard_unknown_24h',
                 'value': hard_unknown_24h,
@@ -395,7 +434,7 @@ class HealthCheckModule:
         # 3. Combined hard bounces - FALLBACK (threshold: >=2)
         # Only triggers if neither specific trigger fired (catches edge cases)
         threshold = KILL_THRESHOLDS['hard_bounces_24h']
-        if hard_bounces_24h >= threshold['value']:
+        if hard_bounces_24h >= threshold['value'] and has_min_send_volume:
             # Only add if no specific trigger already added
             if not any(t['trigger_type'] in ['hard_blocked_24h', 'hard_unknown_24h'] for t in triggers):
                 triggers.append({
@@ -587,7 +626,15 @@ class HealthCheckModule:
                     WHEN d.domain_state = 'monitoring' THEN 'monitoring'
                     -- Complaint rate > 1.0% = dead
                     WHEN COALESCE(d.domain_complaint_rate_7d, 0) >= $2 THEN 'dead'
-                    -- Quality safety net: >30% of inboxes have health_score < 60, size-aware
+                    -- Small-domain capacity safety net (Google 3-inbox/domain math):
+                    -- total ≤ 5 AND dead ≥ 2 → retire entire domain. CEO commitment
+                    -- for 50k sends/month requires cross-domain promotion to fill
+                    -- the gap; keeping the lone surviving inbox 'live' would mean
+                    -- the domain's reputation rests on a single account.
+                    WHEN sub.total_count > 0
+                        AND sub.total_count <= 5
+                        AND sub.dead_count >= 2 THEN 'dead'
+                    -- Legacy size-aware unhealthy% rule (Microsoft 52-inbox domains).
                     WHEN sub.total_count > 0
                         AND (sub.unhealthy_count::numeric / sub.total_count) > $3
                         AND (sub.total_count >= 10 OR sub.unhealthy_count >= $4) THEN 'dead'
@@ -606,6 +653,7 @@ class HealthCheckModule:
             FROM (
                 SELECT domain_id,
                     COUNT(*) as total_count,
+                    COUNT(*) FILTER (WHERE inbox_state = 'dead') as dead_count,
                     COUNT(*) FILTER (WHERE health_score < 60) as unhealthy_count,
                     COUNT(*) FILTER (WHERE inbox_state = 'dead' AND (
                         kill_trigger IN ('spam_complaint', 'hard_blocked_24h')
@@ -1056,12 +1104,17 @@ class HealthCheckModule:
         }
 
     async def reset_daily_counters(self):
-        """Reset 24h bounce counters (run daily at midnight).
+        """Reset 24h counters (run daily at midnight).
 
-        Resets all 24h counters:
+        Resets:
         - hard_bounces_24h (combined)
         - hard_blocked_24h (spam/policy rejections)
         - hard_unknown_24h (bad addresses)
+        - total_sends_24h  (campaign send count, migration 095)
+
+        sync_warmup re-populates total_sends_24h on its next pull from
+        EmailBison; this reset just bounds the counter to today's window
+        in case the worker restarts or sync is delayed.
         """
         result = await self.db.execute("""
             UPDATE sender_accounts
@@ -1069,12 +1122,14 @@ class HealthCheckModule:
                 hard_bounces_24h = 0,
                 hard_blocked_24h = 0,
                 hard_unknown_24h = 0,
+                total_sends_24h = 0,
                 updated_at = NOW()
             WHERE hard_bounces_24h > 0
                OR hard_blocked_24h > 0
                OR hard_unknown_24h > 0
+               OR total_sends_24h > 0
         """)
-        print(f"[HealthCheck] Reset 24h counters (combined, blocked, unknown): {result}")
+        print(f"[HealthCheck] Reset 24h counters (bounces + sends): {result}")
 
     async def decay_weekly_counters(self):
         """Decay 7d bounce counters (run daily to approximate rolling window)."""
