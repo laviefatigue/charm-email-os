@@ -359,7 +359,13 @@ class LifecycleTagSyncModule:
         - Have warmup_started_at set (recently started warming)
         - Are live
         - Have warmup_started_at < 21 days ago
-        - Don't have lifecycle_status set to 'incubating' yet
+        - Have NULL inventory_lifecycle_status (never classified)
+
+        IMPORTANT: This must NOT match 'active' (graduated) or 'dead' (killed)
+        inboxes. The previous filter `!= 'incubating'` matched 'active' and
+        re-tagged graduated inboxes as 'incubating' the same cycle they
+        graduated, reverting the graduation and producing dual tags in EB
+        (incubating + reserve). NULL-only is the correct gate.
 
         Returns:
             Number of inboxes tagged
@@ -380,7 +386,7 @@ class LifecycleTagSyncModule:
             AND warmup_started_at IS NOT NULL
             AND warmup_started_at > $2
             AND emailbison_account_id IS NOT NULL
-            AND (inventory_lifecycle_status IS NULL OR inventory_lifecycle_status != 'incubating')
+            AND inventory_lifecycle_status IS NULL
         """, workspace_id, cutoff)
 
         tagged_count = 0
