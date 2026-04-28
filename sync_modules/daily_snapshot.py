@@ -142,9 +142,13 @@ class DailySnapshotModule:
             emails_bounced = volume['emails_bounced'] if volume and volume['emails_bounced'] else 0
             emails_complained = volume['emails_complained'] if volume and volume['emails_complained'] else 0
 
-            # Calculate utilization
+            # Calculate utilization. Cap at 999.99 to fit NUMERIC(5,2) — a
+            # workspace with daily_capacity≈0 but active sends (e.g. inboxes
+            # without daily_limit set) would otherwise produce values >1000%
+            # and trigger numeric field overflow on insert.
             daily_capacity = capacity['daily_capacity'] or 1
-            utilization_pct = (emails_sent / daily_capacity) * 100 if daily_capacity > 0 else 0
+            raw_utilization = (emails_sent / daily_capacity) * 100 if daily_capacity > 0 else 0
+            utilization_pct = min(raw_utilization, 999.99)
 
             # Insert or update snapshot
             await conn.execute("""
