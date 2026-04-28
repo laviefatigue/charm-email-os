@@ -347,6 +347,51 @@ The post-deploy audit caught 4 latent bugs that the overhaul didn't surface in c
 | Action | Rows | Note |
 |---|---|---|
 | Phase G — clerical bypass UPDATE for 10 NEW Stable Kernel ODSC inboxes (assigned 2026-04-28 after Phase C original 3) → `lifecycle='active'`, `pool='deployed'` | 10 | Same pattern as Phase C; user authorized "may need to set them live" while flagging team-discipline issue. Pre-state at `scripts/backfill_snapshots/2026-04-28_odsc_clerical_bypass_pre_state.txt`. |
+| Phase H — `inbox_rotation_history` rows added for ODSC clerical bypass (rotation_type='clerical_bypass') so the new `_untag_incubating_from_active` phase 4 picks them up and untags 'incubating' from EB | 10 | Rotation type is free-text in DB; chose 'clerical_bypass' as the canonical label. |
+
+### Fleet tag audit (session-2)
+
+After the 6 code fixes shipped in session-2, ran [scripts/audit_tags_fleet.py](../../scripts/audit_tags_fleet.py) — fleet-wide DB-vs-EB tag comparison via workspace-scoped API keys. Pulled all 11 active workspaces, compared `inventory_pool_status` and `inventory_lifecycle_status` to actual EB tag state on each sender account.
+
+**Audit findings (initial run):**
+
+| Issue | Count | Root cause | Status |
+|---|---|---|---|
+| `incubating_lifecycle_missing_incubating_tag` | 266 (Charm 251, SKMR 14, Spout 1) | sync_accounts.upsert sets lifecycle='incubating' independently via calendar-day CASE; lifecycle_tag_sync's `_tag_new_warmup_inboxes` filter (post-7e79c0e fix) only matched NULL, missing these. | ✅ Fixed by `7089acb` — broadened filter + conditional UPDATE. |
+| `active_lifecycle_still_has_incubating_tag` | 3 (Stable Kernel ODSC) | Clerical-bypass UPDATE doesn't trigger EB untag of 'incubating'. Pattern repeats with every bypass. | ✅ Fixed by `7089acb` — new phase 4 `_untag_incubating_from_active` driven by `inbox_rotation_history` rows. |
+| `pool_warning_should_have_no_pool_tag` | 224 (~211 Microsoft + ~13 Gmail) | Microsoft 211 are BY DESIGN per CEO Rule C2 (pin force-tags `live` regardless of pool). Gmail 13 are disconnected — set_tag_sync skips disconnected inboxes (line 436 `status != 'Connected' → continue`). | ⚠️ Microsoft: design choice. Gmail disconnected: self-resolves via 21-day disconnected_timeout kill. Documented; defer. |
+| `eb_only_no_db_record` | 1,515 | Mostly DB inboxes filtered out by audit's `is_active=TRUE AND inbox_state='live'` clause + cross-workspace recordings (Sammy=664 most extreme). | ⚠️ Investigation deferred. Audit script bug: doesn't include count in fleet rollup. Cross-workspace cleanup needs focused effort. |
+
+**Audit findings (post-fix run):**
+
+| Issue | Before | After |
+|---|---|---|
+| `incubating_lifecycle_missing_incubating_tag` | 266 | **0** ✅ |
+| `active_lifecycle_still_has_incubating_tag` | 3 | **0** ✅ |
+| `pool_warning_should_have_no_pool_tag` | 224 | 194 (−30; mostly MS pin remaining) |
+| `missing_reserve_tag` | 3 | 3 (unchanged transient) |
+| `missing_live_tag` | 1 | 1 (unchanged transient) |
+
+**Healthy invariants (zero violations both runs):**
+- Dual pool tags (live + reserve simultaneously) — 0
+- Burned/cancelled-domain inboxes with pool tag — 0 (validated the warning-pool race fix #4)
+- NULL-pool inboxes with stale pool tag — 0
+- Microsoft inboxes wrongly tagged `reserve` — 0
+
+The DB-authority enforcement is solid post-overhaul. Remaining issues are tag-cleanup paths, not authority violations.
+
+### Note on `inventory_pool_status='warning'` (session-2 user question)
+
+`'warning'` is a DB-driven soft pause, distinct from kill triggers:
+
+- **Set by**: `sync_accounts.upsert` CASE — fires on `hard_bounces_24h ≥ 1 OR hard_bounces_7d ≥ 3`.
+- **Effect**: `set_tag_sync` untags both `live` and `reserve` (active circuit breaker). Inbox stops being eligible for new campaign assignments without being killed.
+- **Reversibility**: Auto-clears when bounces subside — sync_accounts CASE restores pool from `domain.pool_status`.
+- **Vs. kill triggers**: separate, parallel paths. Kill triggers (`health_checks` → `kill_queue`) fire on stricter signals (≥5 hb_24h, consecutive bounces, complaint rate, etc.) and are **permanent** (`inbox_state='dead'`). `warning` is the soft first line; kill is the hard escalation.
+- **Microsoft caveat**: Microsoft pin overrides `warning` — those inboxes always get `live` tag regardless. So `warning` is a dead signal for the legacy MS fleet (211 inboxes affected; design choice per Rule C2).
+- **Gmail disconnected caveat**: set_tag_sync skips disconnected inboxes, so Gmail inboxes that flip to `warning` AND lose connection retain stale pool tags until the 21-day disconnected_timeout kill.
+
+If we wanted tighter kill integration, options would be: (a) have `kill_processor` read `warning` state as input ("stuck in warning > 7 days → escalate to kill"), or (b) deprecate `warning` and rely solely on kill triggers (simpler, loses soft-pause auto-recovery).
 
 ---
 

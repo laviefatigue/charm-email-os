@@ -1,0 +1,16 @@
+# Pre-state snapshot before clerical-bypass UPDATE for 10 Stable Kernel ODSC East 2026 inboxes
+# Mirrors Phase C (2026-04-28 first session) but for additional 10 inboxes that team
+# assigned to the ODSC campaign AFTER the original Phase C cleanup of 3.
+# User authorization: "may need to set them live" (2026-04-28 session-2)
+# Target state: lifecycle='active', inventory_pool_status='deployed' (override warning)
+
+david.meeker@evolvestablekernel.com  lifecycle=incubating pool=deployed
+david.meeker@inferstablekernel.com   lifecycle=incubating pool=None
+david.meeker@optimizekernel.com      lifecycle=incubating pool=None
+david.meeker@trainstablekernel.com   lifecycle=incubating pool=None
+david.meeker@tunestablekernel.com    lifecycle=incubating pool=None
+david@evolvestablekernel.com         lifecycle=incubating pool=warning
+david@inferstablekernel.com          lifecycle=incubating pool=warning
+david@optimizekernel.com             lifecycle=incubating pool=None
+david@trainstablekernel.com          lifecycle=incubating pool=None
+david@tunestablekernel.com           lifecycle=incubating pool=warning
