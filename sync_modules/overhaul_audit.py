@@ -25,6 +25,17 @@ Detected anomalies
      inboxes in the indefinite warning soft-pause state, which no longer
      exists. Stuck-pending kills are the new "watch this" signal.
 
+2c. Flagged but alive in DB
+     kill_queue rows with status='flagged' for inboxes that still have
+     `inbox_state='live'` and `killed_at IS NULL`. This is the legacy
+     bug class that motivated migration 099 — it occurs when the OLD
+     kill_processor (pre-overhaul) tagged in EB but failed to update
+     the DB. The current code path is DB-first inside a single try
+     block, so this should be 0 in steady state. Migration 099 narrows
+     the dedup index so existing flagged-but-alive rows no longer
+     block legit new kills, but having any drift here means something
+     reverted an inbox after kill_processor marked it dead. Investigate.
+
 3. Orphan `is_active=FALSE` graduated inboxes
      inboxes with `inbox_state='live'`, `is_active=FALSE`, and a real
      `emailbison_account_id`. These are invisible to all sync paths
@@ -109,6 +120,7 @@ class OverhaulAuditModule:
                 or metrics['incubating_in_campaigns'] > 0
                 or metrics['burned_inboxes_in_campaigns'] > 0
                 or metrics['kill_queue_pending_over_2h'] > 0
+                or metrics['flagged_but_alive_count'] > 0
             )
 
             if metrics['has_anomalies'] and self.alerter:
@@ -121,7 +133,8 @@ class OverhaulAuditModule:
                 f"stuck_incubation={metrics['stuck_incubation_14bd']} "
                 f"incubating_in_campaigns={metrics['incubating_in_campaigns']} "
                 f"burned_in_campaigns={metrics['burned_inboxes_in_campaigns']} "
-                f"kill_pending_2h={metrics['kill_queue_pending_over_2h']}"
+                f"kill_pending_2h={metrics['kill_queue_pending_over_2h']} "
+                f"flagged_alive={metrics['flagged_but_alive_count']}"
             )
             return await audit.complete(metadata=metrics)
         except Exception as e:
@@ -233,6 +246,23 @@ class OverhaulAuditModule:
               AND created_at < NOW() - INTERVAL '2 hours'
         """) or 0
 
+        # 8. Flagged-but-alive — kill_queue rows with status='flagged' that
+        # SHOULD imply the inbox is dead in DB (current kill_processor is
+        # DB-first inside a single try block). This metric surfaces drift
+        # if anything reverts an inbox post-kill, OR catches legacy partial
+        # kills that pre-overhaul code left behind. Migration 099 prevents
+        # this state from blocking new kills, but the metric still warns
+        # because the underlying drift is meaningful.
+        flagged_but_alive = await self.db.fetchval("""
+            SELECT COUNT(*)
+            FROM kill_queue kq
+            JOIN sender_accounts sa ON sa.id = kq.inbox_id
+            WHERE kq.status = 'flagged'
+              AND sa.is_active = TRUE
+              AND sa.inbox_state = 'live'
+              AND sa.killed_at IS NULL
+        """) or 0
+
         return {
             'dual_tag_candidates': int(dual_tag),
             'warmup_disabled_active_24h': int(warmup_off),
@@ -241,6 +271,7 @@ class OverhaulAuditModule:
             'incubating_in_campaigns': int(incubating_in_campaigns),
             'burned_inboxes_in_campaigns': int(burned_in_campaigns),
             'kill_queue_pending_over_2h': int(kill_queue_stuck),
+            'flagged_but_alive_count': int(flagged_but_alive),
         }
 
     async def _post_alert(self, metrics: Dict[str, int]) -> None:
@@ -285,6 +316,12 @@ class OverhaulAuditModule:
                 f"• *Kill queue stuck:* {metrics['kill_queue_pending_over_2h']} kill_queue rows pending >2h. "
                 f"kill_processor runs every 15 min — investigate worker health, "
                 f"workspace API key validity, EB API errors."
+            )
+        if metrics['flagged_but_alive_count']:
+            lines.append(
+                f"• *Flagged-but-alive:* {metrics['flagged_but_alive_count']} kill_queue rows with status='flagged' "
+                f"but inbox_state='live' AND killed_at IS NULL. Should be 0 (kill_processor is DB-first). "
+                f"Drift here means an inbox got resurrected post-kill, or a legacy partial-kill row exists."
             )
 
         # SlackAlerter.context expects a string; serialize the metrics dict.

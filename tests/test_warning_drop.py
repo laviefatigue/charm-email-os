@@ -486,6 +486,58 @@ async def test_w10_migration_restores_microsoft_to_deployed(
 
 
 # ──────────────────────────────────────────────────────────────────────────
+# W11: kill_queue dedup — flagged + alive should NOT block new kill (mig 099)
+# ──────────────────────────────────────────────────────────────────────────
+async def test_w11_flagged_but_alive_does_not_block_new_kill(
+    db_pool, fake_client, workspace_factory
+):
+    """
+    Migration 099 narrows the dedup index from `status IN ('pending','flagged')`
+    to `status = 'pending'` only.
+
+    Pre-fix: an inbox with a flagged kill_queue row was blocked from new
+    kills, even if it was somehow still alive (legacy kill_processor
+    partial-failure case).
+
+    Post-fix: only pending blocks. Flagged + alive can be re-queued, and the
+    next kill_processor cycle handles the new pending row.
+    """
+    ws_id = await workspace_factory(name="ws-w11", eb_id=211)
+    dom_id = await _make_domain(db_pool, ws_id, "w11.example", "live")
+    inbox_id = await _make_inbox(
+        db_pool, ws_id, dom_id,
+        email="g@w11.example",
+        eb_account_id=20011,
+        esp="gmail",
+        hard_bounces_24h=1,
+        total_sends_24h=25,
+    )
+
+    # Plant a stale flagged row (legacy partial-kill state).
+    await db_pool.execute("""
+        INSERT INTO kill_queue
+            (inbox_id, workspace_id, trigger_type, trigger_value, trigger_threshold, status, created_at)
+        VALUES ($1, $2, 'provider_block_gmail', 1, 1, 'flagged', NOW() - INTERVAL '30 days')
+    """, inbox_id, ws_id)
+
+    health = HealthCheckModule(
+        db=db_pool, audit_logger=_audit_logger(db_pool), alerter=_alerter()
+    )
+    await health.check_workspace_health(workspace_id=ws_id, workspace_name="ws-w11")
+
+    rows = await db_pool.fetch(
+        "SELECT trigger_type::text, status FROM kill_queue WHERE inbox_id = $1 ORDER BY created_at",
+        inbox_id,
+    )
+    statuses = [(r["trigger_type"], r["status"]) for r in rows]
+
+    # Should have BOTH the legacy flagged row AND a new pending row.
+    assert ("provider_block_gmail", "flagged") in statuses, "Stale flagged row should remain"
+    assert any(s == "pending" for _, s in statuses), \
+        "New kill must queue despite flagged row (post-mig-099 dedup behavior)"
+
+
+# ──────────────────────────────────────────────────────────────────────────
 # REGRESSION TESTS
 # ──────────────────────────────────────────────────────────────────────────
 

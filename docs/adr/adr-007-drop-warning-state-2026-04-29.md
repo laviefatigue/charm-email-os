@@ -153,6 +153,27 @@ Each count-based trigger evaluation in `evaluate_inbox_health` calls this functi
 | R3 | hb_rate_7d=2.5% + 200 sends | kill via `hard_bounce_rate_7d` |
 | R4 | MS pin: NULL pool inbox | Tagged `live` (pin overrides NULL) |
 
+## Followup (2026-04-29 same day): kill_queue dedup index relaxed (migration 099)
+
+After deploying ADR-007, an investigation into "why aren't certain inboxes with current bounce signals being killed" surfaced a related structural issue: the partial unique index `idx_kill_queue_inbox_pending` was `WHERE status IN ('pending', 'flagged')`. That assumed `flagged` always means the inbox is dead — but pre-overhaul kill_processor (EB-tag-first ordering) sometimes succeeded on EB tagging while failing the DB death-state update. Result: 76 inboxes (47 MS + 29 Gmail) had `kill_queue.status='flagged'` from March 2026 with `inbox_state='live'`, blocking new spam_complaint or hard_bounces kills from queueing via the partial unique index.
+
+**Decision**: narrow the index to `WHERE status = 'pending'` only. Migration 099 ships alongside ADR-007.
+
+**Why safe**:
+- The current kill_processor (post-overhaul) is DB-first inside a single try block (kill_processor.py:336-360 — sets `kill_queue.status='flagged'` AND `inbox_state='dead'` together). Steady-state never produces flagged-but-alive.
+- Properly-dead inboxes (`inbox_state='dead'`) are filtered out of `health_checks.check_workspace_health` (line 330: `WHERE inbox_state = 'live'`). They cannot be re-queued, so the index doesn't need to "protect" them.
+- Only the buggy/legacy "flagged but alive" case is unblocked. If signals fire, health_checks queues a new pending row, kill_processor processes it normally — self-heals the bad state.
+
+**New audit metric**: `flagged_but_alive_count` in `OverhaulAuditModule`. Counts kill_queue rows with `status='flagged'` for inboxes with `inbox_state='live' AND killed_at IS NULL`. Should be 0 in steady state. Non-zero alerts on Slack.
+
+**Affected files**:
+- `migrations/099_relax_kill_queue_dedup.sql` (NEW)
+- `sync_modules/health_checks.py` — `queue_for_kill` ON CONFLICT clause matches new index
+- `sync_modules/overhaul_audit.py` — new `flagged_but_alive_count` metric
+- `tests/test_warning_drop.py` — W11 verifies flagged+alive can re-queue
+
+**Pre-state cleanup** (ran 2026-04-29 ~15:35 UTC, before the migration): 76 stale provider_block_* flagged rows cancelled via admin SQL. Pre-state snapshot at `scripts/backfill_snapshots/2026-04-29_provider_block_cleanup_pre_state.json`. 41 of those 76 inboxes had current bounce signals and re-trigger kills under ADR-007 thresholds on the next health_checks cycle.
+
 ## Related
 
 - [[adr-006-tagging-kill-overhaul-2026-04-27]] — overhaul that introduced the per-inbox pool authority model

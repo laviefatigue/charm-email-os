@@ -47,6 +47,7 @@ Notable recent migrations:
 | `096_warmup_trigger_handles_insert.sql` | **Overhaul:** Bug fix to migration 094 — original trigger fired on UPDATE only, missing INSERT. Without this, newly-synced inboxes never got `warmup_enabled_since` stamped → graduation eligibility broken for new fleet |
 | `097_workspace_packages.sql` | **Overhaul:** `workspace_packages` reference table (seeded with `50k_google` and `100k_google`) + `workspaces.package_id`, `target_live_count_override`, `pause_pool_transitions`, `package_assigned_at` columns + validation trigger + `workspace_effective_targets` view |
 | `098_drop_warning_pool.sql` | **ADR-007:** Drains the 299 existing `inventory_pool_status='warning'` rows (75 Gmail + 224 Microsoft as of 2026-04-29). Gmail inboxes meeting the new `hb_24h ≥ 1` threshold WITH ≥20 sends are queued for kill; the rest get pool restored to domain default. Microsoft inboxes restored to `'deployed'` (pin behavior). Idempotent. |
+| `099_relax_kill_queue_dedup.sql` | **ADR-007 followup:** Narrows the kill_queue partial unique index from `WHERE status IN ('pending', 'flagged')` to `WHERE status = 'pending'` only. Pre-overhaul kill_processor's EB-first ordering left 76 flagged-but-alive rows from March that silently blocked new kills via the index. Current code is DB-first, so flagged-but-alive shouldn't recur, but the narrower index prevents future drift from blocking legit kills. Companion: `health_checks.queue_for_kill` ON CONFLICT clause + `overhaul_audit.flagged_but_alive_count` metric. |
 
 ---
 

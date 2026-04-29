@@ -554,11 +554,18 @@ class HealthCheckModule:
         trigger_value: float,
         trigger_threshold: float
     ):
-        """Add inbox to kill queue if not already queued.
+        """Add inbox to kill queue if not already pending.
 
-        Uses ON CONFLICT with partial unique index (inbox_id WHERE status IN pending/flagged)
-        to prevent duplicate entries. This replaces the previous SELECT-then-INSERT pattern
-        which had race conditions.
+        Uses ON CONFLICT with partial unique index (migration 099):
+            idx_kill_queue_inbox_pending ON (inbox_id) WHERE status = 'pending'
+
+        Pre-2026-04-29 the index also blocked on 'flagged' — but `flagged`
+        rows in legacy code could correspond to inboxes still alive in DB
+        (kill_processor partial-failure pattern). That silently blocked
+        legitimate new kills from being queued. The narrower index lets
+        health_checks re-queue after a flagged kill if the inbox is somehow
+        still alive (the steady-state filter `WHERE inbox_state = 'live'`
+        prevents re-queueing of properly-dead inboxes).
         """
         result = await self.db.fetchval("""
             INSERT INTO kill_queue (
@@ -568,7 +575,7 @@ class HealthCheckModule:
                 trigger_value,
                 trigger_threshold
             ) VALUES ($1, $2, $3, $4, $5)
-            ON CONFLICT (inbox_id) WHERE status IN ('pending', 'flagged')
+            ON CONFLICT (inbox_id) WHERE status = 'pending'
             DO NOTHING
             RETURNING id
         """,
