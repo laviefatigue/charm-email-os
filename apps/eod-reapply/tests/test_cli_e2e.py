@@ -12,8 +12,7 @@ column name in db.py, EB client constructed with wrong base URL, etc.).
 from __future__ import annotations
 
 import json
-from datetime import date, datetime, timezone
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 from uuid import uuid4
 
 import httpx
@@ -22,7 +21,6 @@ import respx
 from click.testing import CliRunner
 
 from eod_reapply.cli import main
-
 
 EB_BASE = "https://eb.example.com"
 DB_URL = "postgresql://fake/test"

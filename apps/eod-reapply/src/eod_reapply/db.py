@@ -6,7 +6,6 @@ charm-email-os tables to resolve a workspace name → API key.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
 from uuid import UUID
 
 import asyncpg
@@ -16,14 +15,14 @@ import asyncpg
 class WorkspaceContext:
     workspace_id: UUID
     workspace_name: str
-    emailbison_workspace_id: Optional[str]
+    emailbison_workspace_id: str | None
     api_key: str
 
 
 async def fetch_workspace_context(
     conn: asyncpg.Connection,
     workspace_name: str,
-) -> Optional[WorkspaceContext]:
+) -> WorkspaceContext | None:
     """Look up an active workspace by name and return its API key context.
 
     Returns None if the workspace doesn't exist, isn't active, or has no

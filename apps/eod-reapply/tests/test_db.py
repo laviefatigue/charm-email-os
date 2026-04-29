@@ -4,10 +4,7 @@ Mocks asyncpg.Connection — verifies SQL query shape and result mapping.
 """
 from __future__ import annotations
 
-from unittest.mock import AsyncMock
-from uuid import UUID, uuid4
-
-import pytest
+from uuid import uuid4
 
 from eod_reapply.db import WorkspaceContext, fetch_workspace_context
 

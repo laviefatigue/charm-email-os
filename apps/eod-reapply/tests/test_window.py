@@ -15,12 +15,11 @@ The test matrix covers:
 """
 from __future__ import annotations
 
-from datetime import date, datetime, time, timezone, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 
 import pytest
 
 from eod_reapply.window import CampaignSchedule, WindowDecision, evaluate_window
-
 
 # ---------- Fixture builder ----------
 
@@ -108,7 +107,7 @@ class TestInputGuards:
         with pytest.raises(ValueError, match=">= 0"):
             evaluate_window(
                 schedule=s,
-                now_utc=datetime(2026, 5, 1, 12, 0, tzinfo=timezone.utc),
+                now_utc=datetime(2026, 5, 1, 12, 0, tzinfo=UTC),
                 last_run_local_date=None,
                 buffer_minutes=-1,
             )
@@ -119,7 +118,7 @@ class TestInputGuards:
         with pytest.raises(ValueError, match="crosses midnight"):
             evaluate_window(
                 schedule=s,
-                now_utc=datetime(2026, 5, 1, 12, 0, tzinfo=timezone.utc),
+                now_utc=datetime(2026, 5, 1, 12, 0, tzinfo=UTC),
                 last_run_local_date=None,
                 buffer_minutes=60,
             )
@@ -130,7 +129,7 @@ class TestInputGuards:
         with pytest.raises(ValueError, match="crosses midnight"):
             evaluate_window(
                 schedule=s,
-                now_utc=datetime(2026, 5, 1, 12, 0, tzinfo=timezone.utc),
+                now_utc=datetime(2026, 5, 1, 12, 0, tzinfo=UTC),
                 last_run_local_date=None,
                 buffer_minutes=60,
             )
@@ -141,7 +140,7 @@ class TestInputGuards:
         # Don't care about result, just that no ValueError raised
         evaluate_window(
             schedule=s,
-            now_utc=datetime(2026, 5, 1, 12, 0, tzinfo=timezone.utc),
+            now_utc=datetime(2026, 5, 1, 12, 0, tzinfo=UTC),
             last_run_local_date=None,
             buffer_minutes=60,
         )
@@ -160,7 +159,7 @@ class TestSydneySammy:
     def test_aedt_summer_at_trigger_exactly(self):
         # 2026-01-15 is Thursday in Sydney (AEDT, UTC+11)
         # Trigger: 18:00 AEDT = 07:00 UTC same day
-        now_utc = datetime(2026, 1, 15, 7, 0, tzinfo=timezone.utc)
+        now_utc = datetime(2026, 1, 15, 7, 0, tzinfo=UTC)
         d = evaluate_window(
             schedule=self.SCHEDULE,
             now_utc=now_utc,
@@ -173,7 +172,7 @@ class TestSydneySammy:
 
     def test_aedt_one_minute_before_trigger(self):
         # 17:59 AEDT = 06:59 UTC
-        now_utc = datetime(2026, 1, 15, 6, 59, tzinfo=timezone.utc)
+        now_utc = datetime(2026, 1, 15, 6, 59, tzinfo=UTC)
         d = evaluate_window(
             schedule=self.SCHEDULE,
             now_utc=now_utc,
@@ -184,7 +183,7 @@ class TestSydneySammy:
 
     def test_aedt_one_minute_after_trigger(self):
         # 18:01 AEDT = 07:01 UTC
-        now_utc = datetime(2026, 1, 15, 7, 1, tzinfo=timezone.utc)
+        now_utc = datetime(2026, 1, 15, 7, 1, tzinfo=UTC)
         d = evaluate_window(
             schedule=self.SCHEDULE,
             now_utc=now_utc,
@@ -195,7 +194,7 @@ class TestSydneySammy:
     def test_aest_winter_at_trigger_exactly(self):
         # 2026-07-15 is Wednesday in Sydney (AEST, UTC+10)
         # Trigger: 18:00 AEST = 08:00 UTC same day
-        now_utc = datetime(2026, 7, 15, 8, 0, tzinfo=timezone.utc)
+        now_utc = datetime(2026, 7, 15, 8, 0, tzinfo=UTC)
         d = evaluate_window(
             schedule=self.SCHEDULE,
             now_utc=now_utc,
@@ -207,7 +206,7 @@ class TestSydneySammy:
     def test_saturday_sydney_skipped(self):
         # 2026-01-17 is Saturday in Sydney
         # 19:00 Sat AEDT = 08:00 UTC
-        now_utc = datetime(2026, 1, 17, 8, 0, tzinfo=timezone.utc)
+        now_utc = datetime(2026, 1, 17, 8, 0, tzinfo=UTC)
         d = evaluate_window(
             schedule=self.SCHEDULE,
             now_utc=now_utc,
@@ -217,7 +216,7 @@ class TestSydneySammy:
         assert "saturday" in d.reason.lower()
 
     def test_already_ran_today_skipped(self):
-        now_utc = datetime(2026, 1, 15, 8, 0, tzinfo=timezone.utc)
+        now_utc = datetime(2026, 1, 15, 8, 0, tzinfo=UTC)
         d = evaluate_window(
             schedule=self.SCHEDULE,
             now_utc=now_utc,
@@ -227,7 +226,7 @@ class TestSydneySammy:
         assert "already ran" in d.reason
 
     def test_already_ran_yesterday_does_not_block_today(self):
-        now_utc = datetime(2026, 1, 15, 8, 0, tzinfo=timezone.utc)
+        now_utc = datetime(2026, 1, 15, 8, 0, tzinfo=UTC)
         d = evaluate_window(
             schedule=self.SCHEDULE,
             now_utc=now_utc,
@@ -238,7 +237,7 @@ class TestSydneySammy:
 
     def test_future_last_run_treated_as_already_ran(self):
         # Defensive: if somehow last_run is in the future, refuse to run
-        now_utc = datetime(2026, 1, 15, 8, 0, tzinfo=timezone.utc)
+        now_utc = datetime(2026, 1, 15, 8, 0, tzinfo=UTC)
         d = evaluate_window(
             schedule=self.SCHEDULE,
             now_utc=now_utc,
@@ -263,7 +262,7 @@ class TestDSTSydney:
         # 2026-10-04 (Sun): AEST → AEDT spring forward at 02:00
         # 2026-10-05 (Mon): first regular weekday in AEDT
         # Trigger 18:00 AEDT Oct 5 = 07:00 UTC Oct 5
-        now_utc = datetime(2026, 10, 5, 7, 0, tzinfo=timezone.utc)
+        now_utc = datetime(2026, 10, 5, 7, 0, tzinfo=UTC)
         d = evaluate_window(
             schedule=self.SCHEDULE,
             now_utc=now_utc,
@@ -276,7 +275,7 @@ class TestDSTSydney:
         # 2026-04-05 (Sun): AEDT → AEST fall back at 03:00
         # 2026-04-06 (Mon): first regular weekday in AEST
         # Trigger 18:00 AEST Apr 6 = 08:00 UTC Apr 6
-        now_utc = datetime(2026, 4, 6, 8, 0, tzinfo=timezone.utc)
+        now_utc = datetime(2026, 4, 6, 8, 0, tzinfo=UTC)
         d = evaluate_window(
             schedule=self.SCHEDULE,
             now_utc=now_utc,
@@ -292,12 +291,12 @@ class TestDSTSydney:
         # Both should evaluate true at their respective UTC moments.
         d_aedt = evaluate_window(
             schedule=self.SCHEDULE,
-            now_utc=datetime(2026, 4, 3, 7, 0, tzinfo=timezone.utc),
+            now_utc=datetime(2026, 4, 3, 7, 0, tzinfo=UTC),
             last_run_local_date=None,
         )
         d_aest = evaluate_window(
             schedule=self.SCHEDULE,
-            now_utc=datetime(2026, 4, 6, 8, 0, tzinfo=timezone.utc),
+            now_utc=datetime(2026, 4, 6, 8, 0, tzinfo=UTC),
             last_run_local_date=None,
         )
         assert d_aedt.should_run
@@ -316,7 +315,7 @@ class TestDSTNewYork:
     def test_winter_est(self):
         # 2026-01-14 (Wed) is EST (UTC-5)
         # 18:00 EST = 23:00 UTC
-        now_utc = datetime(2026, 1, 14, 23, 0, tzinfo=timezone.utc)
+        now_utc = datetime(2026, 1, 14, 23, 0, tzinfo=UTC)
         d = evaluate_window(
             schedule=self.SCHEDULE,
             now_utc=now_utc,
@@ -327,7 +326,7 @@ class TestDSTNewYork:
     def test_summer_edt(self):
         # 2026-07-15 (Wed) is EDT (UTC-4)
         # 18:00 EDT = 22:00 UTC
-        now_utc = datetime(2026, 7, 15, 22, 0, tzinfo=timezone.utc)
+        now_utc = datetime(2026, 7, 15, 22, 0, tzinfo=UTC)
         d = evaluate_window(
             schedule=self.SCHEDULE,
             now_utc=now_utc,
@@ -338,12 +337,12 @@ class TestDSTNewYork:
     def test_offsets_differ_summer_vs_winter(self):
         winter = evaluate_window(
             schedule=self.SCHEDULE,
-            now_utc=datetime(2026, 1, 14, 23, 0, tzinfo=timezone.utc),
+            now_utc=datetime(2026, 1, 14, 23, 0, tzinfo=UTC),
             last_run_local_date=None,
         )
         summer = evaluate_window(
             schedule=self.SCHEDULE,
-            now_utc=datetime(2026, 7, 15, 22, 0, tzinfo=timezone.utc),
+            now_utc=datetime(2026, 7, 15, 22, 0, tzinfo=UTC),
             last_run_local_date=None,
         )
         assert winter.now_local.utcoffset() == timedelta(hours=-5)
@@ -360,7 +359,7 @@ class TestNoDSTPhoenix:
 
     def test_january_offset(self):
         # 2026-01-14 (Wed). 18:00 MST = 01:00 UTC NEXT DAY (Jan 15)
-        now_utc = datetime(2026, 1, 15, 1, 0, tzinfo=timezone.utc)
+        now_utc = datetime(2026, 1, 15, 1, 0, tzinfo=UTC)
         d = evaluate_window(
             schedule=self.SCHEDULE,
             now_utc=now_utc,
@@ -372,7 +371,7 @@ class TestNoDSTPhoenix:
 
     def test_july_offset_unchanged(self):
         # 2026-07-15 (Wed). Same UTC-7 offset year-round.
-        now_utc = datetime(2026, 7, 16, 1, 0, tzinfo=timezone.utc)
+        now_utc = datetime(2026, 7, 16, 1, 0, tzinfo=UTC)
         d = evaluate_window(
             schedule=self.SCHEDULE,
             now_utc=now_utc,
@@ -384,12 +383,12 @@ class TestNoDSTPhoenix:
     def test_offsets_identical_year_round(self):
         win = evaluate_window(
             schedule=self.SCHEDULE,
-            now_utc=datetime(2026, 1, 15, 1, 0, tzinfo=timezone.utc),
+            now_utc=datetime(2026, 1, 15, 1, 0, tzinfo=UTC),
             last_run_local_date=None,
         )
         sum_ = evaluate_window(
             schedule=self.SCHEDULE,
-            now_utc=datetime(2026, 7, 16, 1, 0, tzinfo=timezone.utc),
+            now_utc=datetime(2026, 7, 16, 1, 0, tzinfo=UTC),
             last_run_local_date=None,
         )
         assert win.now_local.utcoffset() == sum_.now_local.utcoffset()
@@ -401,7 +400,7 @@ class TestUTC:
 
     def test_runs_at_18_00_utc(self):
         # 2026-01-14 (Wed) 18:00 UTC
-        now_utc = datetime(2026, 1, 14, 18, 0, tzinfo=timezone.utc)
+        now_utc = datetime(2026, 1, 14, 18, 0, tzinfo=UTC)
         d = evaluate_window(
             schedule=self.SCHEDULE,
             now_utc=now_utc,
@@ -420,7 +419,7 @@ class TestSendingDayMask:
         s = make_schedule(days=(False,) * 7)
         d = evaluate_window(
             schedule=s,
-            now_utc=datetime(2026, 5, 1, 12, 0, tzinfo=timezone.utc),
+            now_utc=datetime(2026, 5, 1, 12, 0, tzinfo=UTC),
             last_run_local_date=None,
         )
         assert not d.should_run
@@ -430,7 +429,7 @@ class TestSendingDayMask:
         # Sat=True, Sun=True, all weekdays False
         s = make_schedule(days=(False, False, False, False, False, True, True))
         # 2026-01-17 (Sat) 18:00 EST = 23:00 UTC
-        now_utc = datetime(2026, 1, 17, 23, 0, tzinfo=timezone.utc)
+        now_utc = datetime(2026, 1, 17, 23, 0, tzinfo=UTC)
         d = evaluate_window(
             schedule=s,
             now_utc=now_utc,
@@ -442,7 +441,7 @@ class TestSendingDayMask:
     def test_weekend_only_skipped_on_weekday(self):
         s = make_schedule(days=(False, False, False, False, False, True, True))
         # 2026-01-14 (Wed) 18:00 EST
-        now_utc = datetime(2026, 1, 14, 23, 0, tzinfo=timezone.utc)
+        now_utc = datetime(2026, 1, 14, 23, 0, tzinfo=UTC)
         d = evaluate_window(
             schedule=s,
             now_utc=now_utc,
@@ -460,7 +459,7 @@ class TestBuffer:
     def test_zero_buffer_runs_at_end_time_exactly(self):
         s = make_schedule()
         # Wed 2026-01-14 17:00 EST = 22:00 UTC
-        now_utc = datetime(2026, 1, 14, 22, 0, tzinfo=timezone.utc)
+        now_utc = datetime(2026, 1, 14, 22, 0, tzinfo=UTC)
         d = evaluate_window(
             schedule=s,
             now_utc=now_utc,
@@ -472,7 +471,7 @@ class TestBuffer:
     def test_zero_buffer_skips_before_end_time(self):
         s = make_schedule()
         # Wed 2026-01-14 16:59 EST = 21:59 UTC
-        now_utc = datetime(2026, 1, 14, 21, 59, tzinfo=timezone.utc)
+        now_utc = datetime(2026, 1, 14, 21, 59, tzinfo=UTC)
         d = evaluate_window(
             schedule=s,
             now_utc=now_utc,
@@ -484,7 +483,7 @@ class TestBuffer:
     def test_120min_buffer(self):
         s = make_schedule()
         # 17:00 EST + 120min = 19:00 EST = 00:00 UTC NEXT DAY
-        now_utc = datetime(2026, 1, 15, 0, 0, tzinfo=timezone.utc)
+        now_utc = datetime(2026, 1, 15, 0, 0, tzinfo=UTC)
         d = evaluate_window(
             schedule=s,
             now_utc=now_utc,
@@ -496,7 +495,7 @@ class TestBuffer:
     def test_120min_buffer_one_minute_early_skipped(self):
         s = make_schedule()
         # 18:59 EST = 23:59 UTC same day
-        now_utc = datetime(2026, 1, 14, 23, 59, tzinfo=timezone.utc)
+        now_utc = datetime(2026, 1, 14, 23, 59, tzinfo=UTC)
         d = evaluate_window(
             schedule=s,
             now_utc=now_utc,
@@ -518,7 +517,7 @@ class TestAuckland:
 
     def test_local_date_can_be_ahead_of_utc_date(self):
         # 2026-01-15 18:00 NZDT (UTC+13) = 05:00 UTC same day
-        now_utc = datetime(2026, 1, 15, 5, 0, tzinfo=timezone.utc)
+        now_utc = datetime(2026, 1, 15, 5, 0, tzinfo=UTC)
         d = evaluate_window(
             schedule=self.SCHEDULE,
             now_utc=now_utc,
@@ -530,7 +529,7 @@ class TestAuckland:
 
     def test_morning_in_auckland_too_early(self):
         # 02:00 Auckland Jan 15 NZDT = 13:00 Jan 14 UTC
-        now_utc = datetime(2026, 1, 14, 13, 0, tzinfo=timezone.utc)
+        now_utc = datetime(2026, 1, 14, 13, 0, tzinfo=UTC)
         d = evaluate_window(
             schedule=self.SCHEDULE,
             now_utc=now_utc,
@@ -548,7 +547,7 @@ class TestAuckland:
 class TestDeterminism:
     def test_same_inputs_produce_same_output(self):
         s = make_schedule(tz="Australia/Sydney")
-        now_utc = datetime(2026, 1, 15, 7, 0, tzinfo=timezone.utc)
+        now_utc = datetime(2026, 1, 15, 7, 0, tzinfo=UTC)
         d1 = evaluate_window(schedule=s, now_utc=now_utc, last_run_local_date=None)
         d2 = evaluate_window(schedule=s, now_utc=now_utc, last_run_local_date=None)
         assert d1 == d2

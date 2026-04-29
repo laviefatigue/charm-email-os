@@ -19,19 +19,18 @@ state where the campaign is left in a non-running condition without intent.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import date, datetime, time, timezone
-from enum import Enum
-from typing import Optional, Protocol
+from datetime import UTC, date, datetime, time
+from enum import StrEnum
+from typing import Any, Protocol
 
 from .window import CampaignSchedule, evaluate_window
-
 
 # Active EB statuses on which we operate. EB has been observed to mix case;
 # we lowercase for comparison. "Sending" appears when a campaign is mid-send.
 _ACTIVE_STATUSES = {"active", "queued", "sending"}
 
 
-class ReapplyStatus(str, Enum):
+class ReapplyStatus(StrEnum):
     SUCCEEDED = "succeeded"
     SKIPPED_NO_DIFF = "skipped_no_diff"
     SKIPPED_EMPTY_LIVE = "skipped_empty_live"
@@ -57,9 +56,9 @@ class ReapplyResult:
     removed_ids: list[int] = field(default_factory=list)
     final_set: list[int] = field(default_factory=list)
 
-    verify_passed: Optional[bool] = None
-    error_message: Optional[str] = None
-    error_step: Optional[str] = None
+    verify_passed: bool | None = None
+    error_message: str | None = None
+    error_step: str | None = None
 
     @property
     def operator_action_required(self) -> bool:
@@ -72,15 +71,15 @@ class _EBProtocol(Protocol):
 
     Defined as a Protocol so tests can substitute a fake without inheriting.
     """
-    async def get_campaign(self, campaign_id: int) -> dict: ...
-    async def get_campaign_schedule(self, campaign_id: int) -> dict: ...
-    async def pause_campaign(self, campaign_id: int) -> dict: ...
-    async def resume_campaign(self, campaign_id: int) -> dict: ...
-    async def get_campaign_senders(self, campaign_id: int) -> list[dict]: ...
-    async def attach_senders(self, campaign_id: int, sender_email_ids: list[int]) -> dict: ...
-    async def remove_senders(self, campaign_id: int, sender_email_ids: list[int]) -> dict: ...
-    async def list_senders_with_tag(self, tag_id: int, *, per_page: int = 100) -> list[dict]: ...
-    async def resolve_tag_id(self, tag_name: str) -> Optional[int]: ...
+    async def get_campaign(self, campaign_id: int) -> dict[str, Any]: ...
+    async def get_campaign_schedule(self, campaign_id: int) -> dict[str, Any]: ...
+    async def pause_campaign(self, campaign_id: int) -> dict[str, Any]: ...
+    async def resume_campaign(self, campaign_id: int) -> dict[str, Any]: ...
+    async def get_campaign_senders(self, campaign_id: int) -> list[dict[str, Any]]: ...
+    async def attach_senders(self, campaign_id: int, sender_email_ids: list[int]) -> dict[str, Any]: ...
+    async def remove_senders(self, campaign_id: int, sender_email_ids: list[int]) -> dict[str, Any]: ...
+    async def list_senders_with_tag(self, tag_id: int, *, per_page: int = 100) -> list[dict[str, Any]]: ...
+    async def resolve_tag_id(self, tag_name: str) -> int | None: ...
 
 
 def _parse_eb_time(s: str) -> time:
@@ -93,7 +92,7 @@ def _parse_eb_time(s: str) -> time:
     raise ValueError(f"unrecognized time format: {s!r}")
 
 
-def _build_schedule_from_eb(data: dict) -> CampaignSchedule:
+def _build_schedule_from_eb(data: dict[str, Any]) -> CampaignSchedule:
     """Construct a CampaignSchedule from the EB /schedule response payload."""
     required = (
         "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
@@ -125,8 +124,8 @@ async def reapply_campaign(
     apply: bool = False,
     skip_time_check: bool = False,
     buffer_minutes: int = 60,
-    now_utc: Optional[datetime] = None,
-    last_run_local_date: Optional[date] = None,
+    now_utc: datetime | None = None,
+    last_run_local_date: date | None = None,
     min_target_size: int = 1,
     max_removal_pct: float = 50.0,
 ) -> ReapplyResult:
@@ -139,7 +138,7 @@ async def reapply_campaign(
     from .eb_client import EmailBisonAPIError
 
     if now_utc is None:
-        now_utc = datetime.now(timezone.utc)
+        now_utc = datetime.now(UTC)
 
     result = ReapplyResult(
         status=ReapplyStatus.FAILED_PRE_PAUSE,
@@ -276,7 +275,7 @@ async def reapply_campaign(
         # (it might still be Active and acked the call as a no-op).
         # If the defensive resume ALSO fails, escalate to FAILED_LEFT_PAUSED — the
         # campaign may genuinely be paused and we have no signal otherwise.
-        defensive_resume_error: Optional[str] = None
+        defensive_resume_error: str | None = None
         try:
             await eb.resume_campaign(campaign_id)
         except EmailBisonAPIError as resume_e:

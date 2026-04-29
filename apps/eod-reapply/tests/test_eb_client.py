@@ -19,7 +19,6 @@ import respx
 
 from eod_reapply.eb_client import EBClient, EmailBisonAPIError
 
-
 BASE_URL = "https://spellcast.example.com"
 API_KEY = "test-token-deadbeef"
 

@@ -13,18 +13,15 @@ Critical invariants (must hold across ALL tests, especially failure cases):
 """
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
-from typing import Optional
+from datetime import UTC, date, datetime
 
 import pytest
 
 from eod_reapply.eb_client import EmailBisonAPIError
 from eod_reapply.reapply import (
-    ReapplyResult,
     ReapplyStatus,
     reapply_campaign,
 )
-
 
 # ---------- Schedule fixture (matches a Sammy-like Sydney schedule) ----------
 
@@ -40,9 +37,9 @@ SAMMY_SCHEDULE_RESPONSE = {
 }
 
 # A UTC time inside the Sydney reapply window (Thu 18:00 AEDT = 07:00 UTC same day)
-INSIDE_SYDNEY_WINDOW = datetime(2026, 1, 15, 7, 0, tzinfo=timezone.utc)
+INSIDE_SYDNEY_WINDOW = datetime(2026, 1, 15, 7, 0, tzinfo=UTC)
 # Outside window — Thursday 16:00 AEDT (before end) = 05:00 UTC
-OUTSIDE_SYDNEY_WINDOW = datetime(2026, 1, 15, 5, 0, tzinfo=timezone.utc)
+OUTSIDE_SYDNEY_WINDOW = datetime(2026, 1, 15, 5, 0, tzinfo=UTC)
 
 
 # =============================================================================
@@ -76,7 +73,7 @@ class FakeEBClient:
         self.remove_response: dict = {"success": True}
 
         # Failure injection: if set, the named method will raise on its next call
-        self.fail_at: Optional[str] = None
+        self.fail_at: str | None = None
         self.fail_with_status: int = 500
 
         # Counter for prior_senders_history
@@ -475,8 +472,7 @@ class TestFailureInjection:
         eb = FakeEBClient()
         eb.pause_response = {"id": 1, "status": "Active"}  # triggers defensive path
 
-        # Make resume_campaign fail
-        original_resume = eb.resume_campaign
+        # Make resume_campaign fail (we don't need to keep the original)
         async def failing_resume(*args):
             eb.calls.append(("resume_campaign", args))
             raise EmailBisonAPIError(500, "resume failed in defensive path")
@@ -568,8 +564,6 @@ class TestFailureInjection:
         # because resume failure overrides attach failure (more critical)
         eb = FakeEBClient()
         # Make attach fail, then resume also fail
-        original_resume = eb.resume_campaign
-        original_attach = eb.attach_senders
         attach_called = {"v": False}
         resume_called = {"v": False}
 

@@ -13,6 +13,11 @@ dependencies = [
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
+    "pytest-cov>=4.1",
+    "respx>=0.21",
+    "hypothesis>=6.0",
+    "mypy>=1.8",
+    "ruff>=0.5",
 ]
 
 [project.scripts]
@@ -24,6 +29,26 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+# Default rules (E, F, W) plus a few extras that catch real bugs
+select = ["E", "F", "W", "B", "UP", "I"]
+ignore = [
+    "E501",  # line length — we have line-length set; ruff still flags some long strings
+]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+files = ["src"]
+
+[[tool.mypy.overrides]]
+module = "asyncpg.*"
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

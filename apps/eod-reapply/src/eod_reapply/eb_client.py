@@ -10,10 +10,9 @@ token bakes the workspace context — no switch_workspace() calls anywhere.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any
 
 import httpx
-
 
 # Pagination safety: we should never see anywhere near this many pages, but
 # never loop forever on a malformed `meta.last_page`.
@@ -62,9 +61,9 @@ class EBClient:
             "Accept": "application/json",
         }
         self._timeout = timeout_seconds
-        self._client: Optional[httpx.AsyncClient] = None
+        self._client: httpx.AsyncClient | None = None
 
-    async def __aenter__(self) -> "EBClient":
+    async def __aenter__(self) -> EBClient:
         self._client = httpx.AsyncClient(
             timeout=self._timeout,
             headers=self._headers,
@@ -81,8 +80,8 @@ class EBClient:
         method: str,
         path: str,
         *,
-        params: Optional[dict] = None,
-        json: Optional[dict] = None,
+        params: dict[str, Any] | None = None,
+        json: dict[str, Any] | None = None,
     ) -> Any:
         if self._client is None:
             raise RuntimeError("EBClient must be used as an async context manager")
@@ -121,27 +120,27 @@ class EBClient:
     # Campaigns
     # ========================================================================
 
-    async def get_campaign(self, campaign_id: int) -> dict:
+    async def get_campaign(self, campaign_id: int) -> dict[str, Any]:
         """GET /api/campaigns/{id} — full campaign incl. status."""
         result = await self._request("GET", f"/api/campaigns/{campaign_id}")
         return self._unwrap(result) or {}
 
-    async def get_campaign_schedule(self, campaign_id: int) -> dict:
+    async def get_campaign_schedule(self, campaign_id: int) -> dict[str, Any]:
         """GET /api/campaigns/{id}/schedule — read-only, never write."""
         result = await self._request("GET", f"/api/campaigns/{campaign_id}/schedule")
         return self._unwrap(result) or {}
 
-    async def pause_campaign(self, campaign_id: int) -> dict:
+    async def pause_campaign(self, campaign_id: int) -> dict[str, Any]:
         """PATCH /api/campaigns/{id}/pause."""
         result = await self._request("PATCH", f"/api/campaigns/{campaign_id}/pause")
         return self._unwrap(result) or {}
 
-    async def resume_campaign(self, campaign_id: int) -> dict:
+    async def resume_campaign(self, campaign_id: int) -> dict[str, Any]:
         """PATCH /api/campaigns/{id}/resume."""
         result = await self._request("PATCH", f"/api/campaigns/{campaign_id}/resume")
         return self._unwrap(result) or {}
 
-    async def get_campaign_senders(self, campaign_id: int) -> list[dict]:
+    async def get_campaign_senders(self, campaign_id: int) -> list[dict[str, Any]]:
         """GET /api/campaigns/{id}/sender-emails — currently attached senders."""
         result = await self._request("GET", f"/api/campaigns/{campaign_id}/sender-emails")
         unwrapped = self._unwrap(result)
@@ -155,7 +154,7 @@ class EBClient:
             )
         return unwrapped
 
-    async def attach_senders(self, campaign_id: int, sender_email_ids: list[int]) -> dict:
+    async def attach_senders(self, campaign_id: int, sender_email_ids: list[int]) -> dict[str, Any]:
         """POST /api/campaigns/{id}/attach-sender-emails."""
         if not sender_email_ids:
             raise ValueError("sender_email_ids must not be empty")
@@ -166,7 +165,7 @@ class EBClient:
         )
         return result or {}
 
-    async def remove_senders(self, campaign_id: int, sender_email_ids: list[int]) -> dict:
+    async def remove_senders(self, campaign_id: int, sender_email_ids: list[int]) -> dict[str, Any]:
         """DELETE /api/campaigns/{id}/remove-sender-emails."""
         if not sender_email_ids:
             raise ValueError("sender_email_ids must not be empty")
@@ -186,7 +185,7 @@ class EBClient:
         tag_id: int,
         *,
         per_page: int = 100,
-    ) -> list[dict]:
+    ) -> list[dict[str, Any]]:
         """GET /api/sender-emails?tag_ids[0]={tag_id} — paginated.
 
         Returns the full list of senders that have the given tag. The orchestrator
@@ -199,9 +198,9 @@ class EBClient:
           - empty data array
           - safety limit (_PAGINATION_SAFETY_LIMIT) reached → raises
         """
-        all_senders: list[dict] = []
+        all_senders: list[dict[str, Any]] = []
         for page in range(1, _PAGINATION_SAFETY_LIMIT + 1):
-            params = {
+            params: dict[str, Any] = {
                 "tag_ids[0]": tag_id,
                 "page": page,
                 "per_page": per_page,
@@ -244,7 +243,7 @@ class EBClient:
     # Tags
     # ========================================================================
 
-    async def get_workspace_tags(self) -> list[dict]:
+    async def get_workspace_tags(self) -> list[dict[str, Any]]:
         """GET /api/tags — list all tags for the current workspace.
 
         Used to resolve the 'live' tag id once per run.
@@ -261,7 +260,7 @@ class EBClient:
             )
         return unwrapped
 
-    async def resolve_tag_id(self, tag_name: str) -> Optional[int]:
+    async def resolve_tag_id(self, tag_name: str) -> int | None:
         """Convenience: find the numeric id of a tag by exact-match name.
         Returns None if not found.
         """

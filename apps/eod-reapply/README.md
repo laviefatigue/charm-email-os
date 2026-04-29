@@ -173,8 +173,10 @@ apps/eod-reapply/
 │   └── cli.py                      ← entrypoint (L4)
 └── tests/
     ├── test_window.py              ← 43 cases — TZ matrix, DST, Sammy-Sydney
+    ├── test_window_properties.py   ← 7 Hypothesis property tests (~700 generated cases)
     ├── test_eb_client.py           ← 44 cases — mocked httpx, errors, defensive shapes, pagination safety
     ├── test_reapply.py             ← 53 cases — orchestrator + invariant sweep + defensive resume
+    ├── test_reapply_cancellation.py ← 1 case — real asyncio.Task.cancel mid-attach proves finally fires
     ├── test_cli.py                 ← 27 cases — exit codes, arg parsing, output rendering
     ├── test_cli_e2e.py             ← 5 cases — full async pipeline against respx + mocked asyncpg
     └── test_db.py                  ← 5 cases — fetch_workspace_context query shape + result mapping
@@ -184,12 +186,35 @@ apps/eod-reapply/
 
 ```bash
 cd apps/eod-reapply
-py -m pytest                                              # 177 tests, ~21s, 99% coverage
+py -m pytest                                              # 185 tests, ~22s, 99% coverage
 py -m pytest -v                                           # verbose
 py -m pytest --strict-markers --strict-config             # warnings as errors (filterwarnings = ["error"] in pyproject)
 py -m pytest --cov=src/eod_reapply --cov-report=term-missing   # coverage breakdown
 py -m pytest tests/test_window.py -v                      # single suite
 ```
+
+### Static checks
+
+Run all three before any commit. CI should run them too.
+
+```bash
+py -m ruff check src tests          # lint: select E, F, W, B, UP, I
+py -m mypy --strict src/eod_reapply # type checking
+py -m pytest                        # 185 tests
+```
+
+`pyproject.toml` configures all three. The dev-extras install everything: `pip install -e ".[dev]"`.
+
+### Mutation testing — deliberately not run
+
+Considered and skipped. Rationale:
+
+- Hypothesis property tests on `window.py` already generate hundreds of inputs the developer didn't think of.
+- Real `asyncio.Task.cancel` test proves the load-bearing `finally` semantics hold under cancellation, not just exception throws.
+- 99% line coverage with no silent error swallows.
+- mutmut on Windows + Python 3.13 + async code has known flakiness; the setup cost outweighs the marginal signal.
+
+If a mutation testing pass becomes valuable later (e.g., when v2 adds a scheduler), `mutmut run --paths-to-mutate src/eod_reapply` is the entry point.
 
 ## Roadmap (v2)
 

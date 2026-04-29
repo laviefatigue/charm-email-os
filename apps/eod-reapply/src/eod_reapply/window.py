@@ -12,9 +12,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
-from typing import Optional
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
-
 
 _WEEKDAY_NAMES = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
 
@@ -72,7 +70,7 @@ class WindowDecision:
     """Result of evaluate_window. Always populated; should_run is the gate."""
     should_run: bool
     reason: str
-    run_local_date: Optional[date]
+    run_local_date: date | None
     now_local: datetime
 
 
@@ -80,7 +78,7 @@ def evaluate_window(
     *,
     schedule: CampaignSchedule,
     now_utc: datetime,
-    last_run_local_date: Optional[date],
+    last_run_local_date: date | None,
     buffer_minutes: int = 60,
 ) -> WindowDecision:
     """Decide whether reapply should run for this campaign right now.

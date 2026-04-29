@@ -17,11 +17,9 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import sys
 from dataclasses import asdict
-from datetime import datetime, timezone
-from typing import Optional
+from datetime import UTC, datetime
 
 import asyncpg
 import click
@@ -29,7 +27,6 @@ import click
 from .db import fetch_workspace_context
 from .eb_client import EBClient
 from .reapply import ReapplyResult, ReapplyStatus, reapply_campaign
-
 
 # Status → exit code mapping. Single source of truth.
 _EXIT_CODE_BY_STATUS = {
@@ -129,7 +126,7 @@ async def _async_run(
             apply=apply_changes,
             skip_time_check=skip_time_check,
             buffer_minutes=buffer_minutes,
-            now_utc=datetime.now(timezone.utc),
+            now_utc=datetime.now(UTC),
             last_run_local_date=None,  # v1: operator-driven, no DB-side idempotency
             min_target_size=min_target_size,
             max_removal_pct=max_removal_pct,
@@ -162,7 +159,7 @@ def reapply(
     buffer_minutes: int,
     min_target_size: int,
     max_removal_pct: float,
-    database_url: Optional[str],
+    database_url: str | None,
     eb_base_url: str,
     json_only: bool,
 ) -> None:

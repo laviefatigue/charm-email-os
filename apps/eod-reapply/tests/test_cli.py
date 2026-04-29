@@ -8,7 +8,6 @@ from __future__ import annotations
 import json
 from unittest.mock import AsyncMock, patch
 
-import pytest
 from click.testing import CliRunner
 
 from eod_reapply.cli import (
@@ -18,7 +17,6 @@ from eod_reapply.cli import (
     render_summary,
 )
 from eod_reapply.reapply import ReapplyResult, ReapplyStatus
-
 
 # =============================================================================
 # Exit code mapping (single source of truth)
@@ -288,12 +286,12 @@ class TestCliInvocation:
         # mixed by default. Filter for the JSON block.
         json_block = result.output.strip().split("\n")
         # Find a line starting with '{'
-        json_start = next((i for i, l in enumerate(json_block) if l.strip().startswith("{")), None)
+        json_start = next((i for i, line in enumerate(json_block) if line.strip().startswith("{")), None)
         assert json_start is not None
         json_text = "\n".join(json_block[json_start:])
         # Trim trailing non-json lines if any
         # Find the last '}' line
-        json_end = max((i for i, l in enumerate(json_block) if l.strip() == "}"), default=len(json_block) - 1)
+        json_end = max((i for i, line in enumerate(json_block) if line.strip() == "}"), default=len(json_block) - 1)
         json_text = "\n".join(json_block[json_start:json_end + 1])
         parsed = json.loads(json_text)
         assert parsed["status"] == "succeeded"
