@@ -11,6 +11,7 @@
 | hypertide-worker | Worker | Domain provisioning | N/A (background) |
 | price-checker | Worker | Domain price checks | N/A (background) |
 | domain-worker | Worker | Domain management | N/A (background) |
+| eod-reapply | CLI / on-demand | EOD campaign sender-tag reapply (operator-invoked) | N/A (no service) |
 
 ## Service Details
 
@@ -92,6 +93,58 @@ Each active workspace has a scoped EB API token stored in the `workspace_api_key
 ### domain-worker
 - **Type**: Background worker
 - **Purpose**: Domain lifecycle management
+
+### eod-reapply
+- **Type**: CLI / on-demand container
+- **Purpose**: Reapply a campaign's `live`-tagged sender set as its EmailBison sender attachment. Closes the loop that `kill_processor` leaves open: dead inboxes lose the `live` tag in EB but stay attached to active campaigns until something reconciles them.
+- **Status**: v1 — operator-invoked, not a continuous service. v2 (the scheduler) is documented in [docs/plans/eod-campaign-reapply.md](../../docs/plans/eod-campaign-reapply.md).
+- **Source**: [apps/eod-reapply/](../../apps/eod-reapply/) — see README + STAGING-RUNBOOK.
+
+#### Subcommands
+- `eod-reapply check --workspace <name> [--campaign-id N]` — read-only pre-flight (DB + EB auth + campaign + tag + expected diff). Never mutates. Run before any `--apply`.
+- `eod-reapply reapply --workspace <name> --campaign-id N [--apply]` — pause → diff → attach → remove → verify → resume. Default dry-run; `--apply` is opt-in.
+
+#### Deployment patterns
+
+**Pattern A — sleeping container, exec on demand** (recommended for v1):
+- Build context: `apps/eod-reapply/`
+- Dockerfile: `apps/eod-reapply/Dockerfile`
+- Service type: "Dockerfile" (not docker-compose)
+- Override CMD: `sleep infinity` so the container stays up
+- Env vars (set in Coolify UI from secrets): `DATABASE_URL`, `EMAILBISON_API_URL`
+- No public URL, no health check
+- Restart policy: `unless-stopped`
+- Operator runs commands via `coolify exec <service> eod-reapply check --workspace Sammy`
+
+**Pattern B — Run as needed** (no continuous resource use):
+- Build the image and push to a registry, OR build on the operator's host
+- Operator runs `docker run --rm -e DATABASE_URL=... <image> reapply ...` from a host with prod DB access (e.g. a jumphost or one of the existing worker containers via exec)
+
+#### Exit codes (load-bearing for any future scheduler)
+| Code | Subcommand | Meaning |
+|---|---|---|
+| 0 | both | Success / clean no-op |
+| 1 | check | At least one warning |
+| 1 | reapply | Dry-run completed and would have made changes |
+| 2 | both | Failure but no campaign mutation occurred (or check has FAILs) |
+| 3 | reapply | **CRITICAL** — campaign may be left paused. Operator must verify and resume. |
+
+#### Required env vars
+```
+DATABASE_URL=postgresql://...                          # same DB as charm-api / emailbison-sync
+EMAILBISON_API_URL=https://spellcast.hirecharm.com/api # same as emailbison-sync
+```
+
+#### Reads (no writes in v1)
+- `workspaces` — workspace name → id
+- `workspace_api_keys` — workspace-scoped Sanctum token
+- `campaign_inboxes` — only via existing operational queries (not by this app)
+- `sender_accounts.inventory_pool_status` — only via existing operational queries
+
+v1 owns no tables. Operational metrics (daily live-set shrinkage etc.) are answered by SQL against existing tables — see app README "Tracking & operational metrics" section.
+
+#### Pre-staging gate
+**Not yet promoted past L4** (mocked + e2e tests). L5 (real-EB staging) is documented in [apps/eod-reapply/STAGING-RUNBOOK.md](../../apps/eod-reapply/STAGING-RUNBOOK.md) and is the mandatory gate before any production workspace touches the tool.
 
 ## Health Checks
 
