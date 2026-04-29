@@ -341,6 +341,87 @@ direct supervision.
 
 ---
 
+## Appendix A — Setting up a throwaway test campaign
+
+For sections 7–9, you need a dedicated low-risk test campaign with a known sender shape so the diff is deterministic. Recipe:
+
+### Pick 5 sender accounts in the Charm workspace
+
+Label them A, B, C, D, E (use real emails — these are existing senders, not new ones). Apply the following state via the EB UI:
+
+| Sender | Attach to test campaign? | Apply `live` tag? |
+|---|---|---|
+| A | yes | yes |
+| B | yes | yes |
+| C | yes | **no** |
+| D | no | yes |
+| E | no | yes |
+
+This gives:
+- `prior_set = {A, B, C}` (currently attached to the campaign)
+- `target_set = {A, B, D, E}` (have the `live` tag)
+- Diff: **attach D and E**, **remove C** — 33% removal (passes the 50% guard)
+- Final after reapply: `{A, B, D, E}` (matches target — verify-equality target)
+
+This shape exercises both attach and remove in one run, with realistic but small numbers.
+
+### EB UI walkthrough
+
+1. **Apply tags** — *Email Accounts* tab → multi-select A, B, D, E → "Add tag" → `live`. Verify C does NOT have `live`.
+2. **Create the test campaign** — *Campaigns* → new outbound campaign. Schedule M-F 8am-5pm in `Australia/Sydney` (validates Sammy/Sydney path live). Add a single trivial sequence step. **Add zero leads** if EB allows; otherwise add 1–2 dummy addresses you own (e.g. `eod-test+1@yourdomain.com`).
+3. **Attach senders** — On the new campaign → *Sender Emails* tab → attach A, B, C only. Detach anything else.
+4. **Confirm status** — Campaign should be `Active` or `Queued`. If it's stuck in `Draft`, EB requires at least one lead and one sequence step; check both.
+
+### Sanity-verify with `check`
+
+Before any `--apply`, run pre-flight:
+
+```bash
+eod-reapply check --workspace Charm --campaign-id <TEST_CAMPAIGN_ID>
+```
+
+You should see all checks `[ OK  ]` with `expected_diff` showing `would attach 2 [D_id, E_id], remove 1 [C_id] (33% of currently-attached)`. If the diff doesn't match the recipe, the EB UI state diverged from what you set — fix before proceeding.
+
+### After staging is complete — clean up
+
+- Detach all senders from the test campaign.
+- Either archive the test campaign or rename it to `EOD-REAPPLY-TEST-DONE-YYYYMMDD` so it's clear it's not active.
+- Decide whether to leave the `live` tags on D and E (they were already part of your normal pool) or remove the manual additions.
+
+---
+
+## Appendix B — Running staging via Docker (alternative to local install)
+
+If you don't want to install Python locally on the host running staging, use the included Dockerfile.
+
+```bash
+# Build once on the host (or pull from your registry)
+cd apps/eod-reapply
+docker build -t eod-reapply:staging .
+
+# Pre-flight check
+docker run --rm \
+  -e DATABASE_URL="$DATABASE_URL" \
+  -e EMAILBISON_API_URL="$EMAILBISON_API_URL" \
+  eod-reapply:staging check --workspace Charm --campaign-id <TEST_CAMPAIGN_ID>
+
+# Dry-run reapply
+docker run --rm \
+  -e DATABASE_URL="$DATABASE_URL" \
+  -e EMAILBISON_API_URL="$EMAILBISON_API_URL" \
+  eod-reapply:staging reapply --workspace Charm --campaign-id <TEST_CAMPAIGN_ID> --skip-time-check
+
+# Apply (only after dry-run + EB UI verification)
+docker run --rm \
+  -e DATABASE_URL="$DATABASE_URL" \
+  -e EMAILBISON_API_URL="$EMAILBISON_API_URL" \
+  eod-reapply:staging reapply --workspace Charm --campaign-id <TEST_CAMPAIGN_ID> --apply --skip-time-check
+```
+
+Same `eod-reapply` exit codes; same `--json-only` flag for log capture.
+
+---
+
 ## Known v1 limitations (operator-facing)
 
 - One campaign per invocation. To handle N campaigns, run N times.

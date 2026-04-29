@@ -18,7 +18,16 @@ For a single (workspace, campaign) pair:
 4. If diff is empty → no-op success.
 5. If `--apply`: pause campaign → attach added → remove dropped → fetch & verify set equality → resume campaign. The resume is in a `finally` block.
 
-## Run
+## Subcommands
+
+```
+eod-reapply check    # read-only pre-flight (DB + EB auth + campaign + tag)
+eod-reapply reapply  # the actual reapply (default dry-run; --apply to mutate)
+```
+
+`check` is the safest first step — it never makes a mutating EB call. Run it before any `reapply --apply`.
+
+## Run (locally)
 
 ```bash
 cd apps/eod-reapply
@@ -27,18 +36,79 @@ pip install -e .
 export DATABASE_URL='postgresql://...'
 export EMAILBISON_API_URL='https://spellcast.hirecharm.com/api'
 
-# Dry-run (default — no mutations)
+# 1. Pre-flight check (workspace-level only — no campaign-id needed)
+eod-reapply check --workspace "Charm"
+
+# 2. Pre-flight check including a specific campaign
+eod-reapply check --workspace "Charm" --campaign-id 123
+
+# 3. Dry-run reapply (default — no mutations, prints diff)
 eod-reapply reapply --workspace "Charm" --campaign-id 123
 
-# Apply
+# 4. Apply (mutates campaign sender list)
 eod-reapply reapply --workspace "Charm" --campaign-id 123 --apply
 
-# Bypass the EOD time gate (use with care)
+# 5. Bypass the EOD time gate (use with care; ops awareness required)
 eod-reapply reapply --workspace "Charm" --campaign-id 123 --apply --skip-time-check
+```
+
+## Run (Docker / Coolify)
+
+A multi-stage Dockerfile is included. Build once, run as one-shot per invocation.
+
+```bash
+# Build
+cd apps/eod-reapply
+docker build -t eod-reapply:latest .
+
+# Pre-flight check via Docker
+docker run --rm \
+  -e DATABASE_URL='postgresql://...' \
+  -e EMAILBISON_API_URL='https://spellcast.hirecharm.com/api' \
+  eod-reapply:latest check --workspace Sammy
+
+# Apply via Docker
+docker run --rm \
+  -e DATABASE_URL='postgresql://...' \
+  -e EMAILBISON_API_URL='https://spellcast.hirecharm.com/api' \
+  eod-reapply:latest reapply --workspace Sammy --campaign-id 123 --apply
+```
+
+### Coolify deployment (v1 — operator-invoked)
+
+For v1, the goal isn't a long-running service; it's having the binary available where the prod DB and EB credentials live. Two patterns:
+
+**Pattern A — sleeping container, exec on demand** (simplest):
+1. In Coolify, create a new service from this Dockerfile (build context: `apps/eod-reapply/`).
+2. Service type: "Dockerfile". No public URL.
+3. Set env vars: `DATABASE_URL`, `EMAILBISON_API_URL`.
+4. Override the CMD to `sleep infinity` so the container stays up.
+5. Operator runs commands via `coolify exec <service> eod-reapply check --workspace Sammy`.
+
+**Pattern B — Run as needed** (cleaner, no idle resource):
+1. Build the image and push to your registry (`docker build && docker push`).
+2. Operator runs `docker run --rm <image> reapply ...` from a host with prod DB access.
+
+For v2 (the scheduler), this becomes Pattern A with the CMD overridden to the scheduler entrypoint, deployed as a continuous worker.
+
+### Quick verification post-build
+
+```bash
+docker run --rm eod-reapply:latest --help                # shows command list
+docker run --rm eod-reapply:latest check --help          # shows check options
+docker run --rm eod-reapply:latest reapply --help        # shows reapply options
 ```
 
 ## Exit codes
 
+### `check`
+| Code | Meaning |
+|---|---|
+| 0 | All checks passed — safe to proceed |
+| 1 | At least one warning (e.g. campaign paused, live tag set undersized) — degraded but not broken |
+| 2 | At least one failure (e.g. DB unreachable, EB auth failed, live tag missing) — operator must fix before reapply |
+
+### `reapply`
 | Code | Meaning |
 |---|---|
 | 0 | Success or benign no-op (no-diff, not-active, time-gate-closed) |
@@ -162,6 +232,8 @@ apps/eod-reapply/
 ├── pyproject.toml
 ├── README.md
 ├── STAGING-RUNBOOK.md              ← L5 gate before production
+├── Dockerfile                      ← multi-stage build for Coolify / docker run
+├── .dockerignore
 ├── docs/
 │   └── eb-api-deep-dive.md         ← EB API reference distilled from live OpenAPI
 ├── src/eod_reapply/
@@ -169,8 +241,9 @@ apps/eod-reapply/
 │   ├── window.py                   ← pure tz-aware predicate (L1)
 │   ├── eb_client.py                ← workspace-scoped EB API subset (L2)
 │   ├── reapply.py                  ← orchestrator (L3)
+│   ├── check.py                    ← read-only pre-flight diagnostic
 │   ├── db.py                       ← workspace_api_keys lookup
-│   └── cli.py                      ← entrypoint (L4)
+│   └── cli.py                      ← entrypoint (L4) — exposes `reapply` and `check`
 └── tests/
     ├── test_window.py              ← 43 cases — TZ matrix, DST, Sammy-Sydney
     ├── test_window_properties.py   ← 7 Hypothesis property tests (~700 generated cases)
@@ -179,6 +252,7 @@ apps/eod-reapply/
     ├── test_reapply_cancellation.py ← 1 case — real asyncio.Task.cancel mid-attach proves finally fires
     ├── test_cli.py                 ← 27 cases — exit codes, arg parsing, output rendering
     ├── test_cli_e2e.py             ← 5 cases — full async pipeline against respx + mocked asyncpg
+    ├── test_check.py               ← 24 cases — pre-flight checks + render + CLI integration
     └── test_db.py                  ← 5 cases — fetch_workspace_context query shape + result mapping
 ```
 
@@ -186,7 +260,7 @@ apps/eod-reapply/
 
 ```bash
 cd apps/eod-reapply
-py -m pytest                                              # 185 tests, ~22s, 99% coverage
+py -m pytest                                              # 209 tests, ~29s, 99% coverage
 py -m pytest -v                                           # verbose
 py -m pytest --strict-markers --strict-config             # warnings as errors (filterwarnings = ["error"] in pyproject)
 py -m pytest --cov=src/eod_reapply --cov-report=term-missing   # coverage breakdown
@@ -200,7 +274,7 @@ Run all three before any commit. CI should run them too.
 ```bash
 py -m ruff check src tests          # lint: select E, F, W, B, UP, I
 py -m mypy --strict src/eod_reapply # type checking
-py -m pytest                        # 185 tests
+py -m pytest                        # 209 tests
 ```
 
 `pyproject.toml` configures all three. The dev-extras install everything: `pip install -e ".[dev]"`.

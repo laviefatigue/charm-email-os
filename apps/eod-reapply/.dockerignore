@@ -1,0 +1,22 @@
+# Test + development artifacts — don't ship in the image
+tests/
+docs/
+README.md
+STAGING-RUNBOOK.md
+.gitignore
+.dockerignore
+Dockerfile
+
+# Caches
+.coverage
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+
+# Editor
+.vscode/
+.idea/
+*.swp

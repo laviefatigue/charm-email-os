@@ -24,6 +24,12 @@ from datetime import UTC, datetime
 import asyncpg
 import click
 
+from .check import (
+    exit_code_for_check,
+    render_report_text,
+    report_to_dict,
+    run_checks,
+)
 from .db import fetch_workspace_context
 from .eb_client import EBClient
 from .reapply import ReapplyResult, ReapplyStatus, reapply_campaign
@@ -213,6 +219,67 @@ def reapply(
         click.echo(render_json(result))
 
     sys.exit(exit_code_for(result.status))
+
+
+@main.command()
+@click.option("--workspace", "workspace_name", required=True, help="Workspace name")
+@click.option("--campaign-id", type=int, required=False, default=None,
+              help="Optional. If given, also probes campaign + schedule + senders + diff.")
+@click.option("--live-tag", "live_tag_name", default="live", show_default=True)
+@click.option("--min-target-size", type=int, default=1, show_default=True)
+@click.option("--database-url", envvar="DATABASE_URL")
+@click.option("--eb-base-url", envvar="EMAILBISON_API_URL",
+              default="https://spellcast.hirecharm.com/api", show_default=True)
+@click.option("--json-only", is_flag=True, default=False)
+def check(
+    workspace_name: str,
+    campaign_id: int | None,
+    live_tag_name: str,
+    min_target_size: int,
+    database_url: str | None,
+    eb_base_url: str,
+    json_only: bool,
+) -> None:
+    """Read-only pre-flight: verify DB + EB auth + (optionally) campaign + tag.
+
+    Never makes a mutating EB call. Safe to run any time, against any
+    workspace, against any campaign — including paused ones.
+
+    Exit codes:
+      0 — all checks passed
+      1 — at least one warning (degraded but not broken state)
+      2 — at least one failure (operator must fix before reapply)
+    """
+    if not database_url:
+        click.echo("ERROR: --database-url or DATABASE_URL env var is required", err=True)
+        sys.exit(2)
+
+    click.echo(f"Pre-flight check for workspace={workspace_name!r}"
+               + (f" campaign={campaign_id}" if campaign_id is not None else "")
+               + " — read-only, no mutations.", err=True)
+
+    try:
+        report = asyncio.run(run_checks(
+            database_url=database_url,
+            eb_base_url=eb_base_url,
+            workspace_name=workspace_name,
+            campaign_id=campaign_id,
+            live_tag_name=live_tag_name,
+            min_target_size=min_target_size,
+        ))
+    except Exception as e:
+        click.echo(f"ERROR: unexpected exception during check: {type(e).__name__}: {e}", err=True)
+        sys.exit(2)
+
+    if json_only:
+        click.echo(json.dumps(report_to_dict(report), indent=2))
+    else:
+        click.echo(render_report_text(report))
+        click.echo("")
+        click.echo("JSON:")
+        click.echo(json.dumps(report_to_dict(report), indent=2))
+
+    sys.exit(exit_code_for_check(report))
 
 
 if __name__ == "__main__":

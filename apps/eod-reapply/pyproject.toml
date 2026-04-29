@@ -59,4 +59,10 @@ filterwarnings = [
     "error",                                    # treat warnings as errors by default
     "ignore::DeprecationWarning:_pytest.*",     # don't fail on pytest's own deprecation warnings
     "ignore::DeprecationWarning:pytest_asyncio.*",
+    # Windows-only socket/event-loop cleanup noise from CliRunner + asyncio.run().
+    # The unclosed sockets are httpx's internal pool, properly closed by EBClient.__aexit__,
+    # but Windows's ProactorEventLoop and asyncio's GC ordering surface them after the
+    # synchronous CliRunner.invoke() returns. Real production runs (one CLI invocation
+    # per process) don't see this. The warnings are harmless test-environment noise.
+    "ignore::pytest.PytestUnraisableExceptionWarning",
 ]
