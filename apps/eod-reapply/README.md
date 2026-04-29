@@ -46,25 +46,136 @@ eod-reapply reapply --workspace "Charm" --campaign-id 123 --apply --skip-time-ch
 | 2 | Failed but campaign is in its original (non-paused) state |
 | 3 | **CRITICAL** — campaign may be left paused. Operator must verify and resume. |
 
+## Tracking & operational metrics
+
+v1 deliberately does **not** add new tables. Existing schema already captures the inbox-flow data, and the CLI's JSON output gives per-run audit. Two patterns:
+
+### Per-run history — append the JSON output to a logfile
+
+The CLI's `--json-only` flag emits a single JSON object per run. Pipe to a JSONL log:
+
+```bash
+mkdir -p ~/.local/share/eod-reapply
+eod-reapply reapply --workspace Sammy --campaign-id 123 --apply --json-only \
+  >> ~/.local/share/eod-reapply/runs.jsonl
+```
+
+Query with `jq`:
+
+```bash
+# All runs for a workspace
+jq 'select(.workspace_name=="Sammy")' ~/.local/share/eod-reapply/runs.jsonl
+
+# Only failures that left a campaign paused
+jq 'select(.status=="failed_left_paused")' ~/.local/share/eod-reapply/runs.jsonl
+
+# Sum of inboxes attached + removed across all runs today
+jq -s '[.[] | select(.status=="succeeded")]
+       | {attached: ([.[].attached_ids|length]|add), removed: ([.[].removed_ids|length]|add)}' \
+   ~/.local/share/eod-reapply/runs.jsonl
+```
+
+### Capacity questions — query existing tables
+
+The user-facing question *"how many inboxes do we need to add back to reserve?"* is answered by data the existing sync engine already maintains. No reapply-specific table required.
+
+**Daily live-set shrinkage per workspace** (last 30 days — counts inboxes detached from any campaign, regardless of cause):
+
+```sql
+SELECT
+    w.workspace_name,
+    DATE(ci.removed_at) AS day,
+    COUNT(DISTINCT ci.sender_account_id) AS inboxes_removed
+FROM campaign_inboxes ci
+JOIN emailbison_campaigns ec ON ci.campaign_id = ec.id
+JOIN workspaces w ON ec.workspace_id = w.id
+WHERE ci.removed_at >= NOW() - INTERVAL '30 days'
+  AND ci.removed_at IS NOT NULL
+GROUP BY w.workspace_name, DATE(ci.removed_at)
+ORDER BY day DESC, inboxes_removed DESC;
+```
+
+> **Lag note:** `campaign_inboxes` is updated by `sync_campaign_inbox_assignments()` after each campaign sync (~1 hour cycle). Reapply changes show up on the next sync, not instantly. For real-time per-run data, use the JSONL log above.
+
+**Current live vs reserve gap per workspace** (right now):
+
+```sql
+SELECT
+    w.workspace_name,
+    COUNT(*) FILTER (WHERE sa.inventory_pool_status = 'live')        AS live_count,
+    COUNT(*) FILTER (WHERE sa.inventory_pool_status = 'reserve')     AS reserve_count,
+    COUNT(*) FILTER (WHERE sa.inventory_pool_status = 'incubating')  AS incubating_count
+FROM sender_accounts sa
+JOIN workspaces w ON sa.workspace_id = w.id
+WHERE sa.is_active = TRUE
+  AND w.is_active = TRUE
+GROUP BY w.workspace_name
+ORDER BY w.workspace_name;
+```
+
+**Cross-reference: are recent removals causing live-set pressure?** Combine the two:
+
+```sql
+WITH attrition AS (
+    SELECT ec.workspace_id, COUNT(DISTINCT ci.sender_account_id) AS removed_7d
+    FROM campaign_inboxes ci
+    JOIN emailbison_campaigns ec ON ci.campaign_id = ec.id
+    WHERE ci.removed_at >= NOW() - INTERVAL '7 days'
+    GROUP BY ec.workspace_id
+),
+pool AS (
+    SELECT workspace_id,
+           COUNT(*) FILTER (WHERE inventory_pool_status='live') AS live_now,
+           COUNT(*) FILTER (WHERE inventory_pool_status='reserve') AS reserve_now
+    FROM sender_accounts WHERE is_active = TRUE
+    GROUP BY workspace_id
+)
+SELECT w.workspace_name,
+       p.live_now,
+       p.reserve_now,
+       COALESCE(a.removed_7d, 0) AS removed_last_7d,
+       CASE WHEN p.reserve_now < COALESCE(a.removed_7d, 0)
+            THEN 'NEEDS BACKFILL — reserve smaller than weekly attrition'
+            ELSE 'ok' END AS signal
+FROM workspaces w
+JOIN pool p ON p.workspace_id = w.id
+LEFT JOIN attrition a ON a.workspace_id = w.id
+WHERE w.is_active = TRUE
+ORDER BY w.workspace_name;
+```
+
+### Why no `campaign_reapply_runs` table in v1
+
+Considered and rejected. Reasoning:
+
+- **`campaign_inboxes` is already the source of truth** for "which inboxes are attached to which campaigns over time." Adding a parallel reapply-specific table creates two sources of truth that can diverge under partial-failure.
+- **Per-run audit** is solved by JSONL append (above). No additional persistence required for an operator-invoked tool.
+- **Idempotency keying** ("did I run this campaign already today?") is a v2 (scheduler) concern. Without that query, the table would be decorative.
+- **Schema discipline:** Charm has 70+ tables. New tables get added when they earn it, not pre-emptively.
+
+The v2 scheduler is when `campaign_reapply_runs` is justified — because v2 has a real query for it. Until then, every metric the operator needs is already answerable.
+
 ## Layout
 
 ```
 apps/eod-reapply/
 ├── pyproject.toml
 ├── README.md
-├── STAGING-RUNBOOK.md          ← L5 gate before production
+├── STAGING-RUNBOOK.md              ← L5 gate before production
+├── docs/
+│   └── eb-api-deep-dive.md         ← EB API reference distilled from live OpenAPI
 ├── src/eod_reapply/
 │   ├── __init__.py
-│   ├── window.py               ← pure tz-aware predicate (L1)
-│   ├── eb_client.py            ← workspace-scoped EB API subset (L2)
-│   ├── reapply.py              ← orchestrator (L3)
-│   ├── db.py                   ← workspace_api_keys lookup
-│   └── cli.py                  ← entrypoint (L4)
+│   ├── window.py                   ← pure tz-aware predicate (L1)
+│   ├── eb_client.py                ← workspace-scoped EB API subset (L2)
+│   ├── reapply.py                  ← orchestrator (L3)
+│   ├── db.py                       ← workspace_api_keys lookup
+│   └── cli.py                      ← entrypoint (L4)
 └── tests/
-    ├── test_window.py          ← 43 cases — TZ matrix, DST, Sammy-Sydney
-    ├── test_eb_client.py       ← 38 cases — mocked httpx, error paths
-    ├── test_reapply.py         ← 49 cases — orchestrator + invariant sweep
-    └── test_cli.py             ← 27 cases — exit codes, arg parsing
+    ├── test_window.py              ← 43 cases — TZ matrix, DST, Sammy-Sydney
+    ├── test_eb_client.py           ← 38 cases — mocked httpx, error paths
+    ├── test_reapply.py             ← 49 cases — orchestrator + invariant sweep
+    └── test_cli.py                 ← 27 cases — exit codes, arg parsing
 ```
 
 ## Running the tests
