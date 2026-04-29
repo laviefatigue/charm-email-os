@@ -351,6 +351,25 @@ class AccountSyncModule:
                     THEN NOW()
                     ELSE sender_accounts.warmup_stopped_at
                 END,
+                -- Track send delta INSIDE the upsert. All SET expressions in
+                -- ON CONFLICT DO UPDATE are evaluated against the existing
+                -- row's values simultaneously, so `sender_accounts.X` here is
+                -- the OLD value even though we also reassign emails_sent_all_time
+                -- below. This replaces the broken post-upsert delta computation
+                -- (the previous code's RETURNING ... emails_sent_all_time AS
+                -- prev_sends returned the NEW value, making send_delta always 0).
+                --
+                -- Both 7d and 24h counters increment from the same delta. The 7d
+                -- counter feeds rate-based kill triggers; the 24h counter feeds
+                -- the count-based 20-send floor (KILL_THRESHOLD_MIN_SENDS_24H_FOR_COUNT_TRIGGER).
+                -- 24h is reset to 0 daily by health_checks.reset_daily_counters; 7d
+                -- decays 14% daily by health_checks.decay_weekly_counters.
+                total_sends_7d = COALESCE(sender_accounts.total_sends_7d, 0) +
+                                 GREATEST(0, EXCLUDED.emails_sent_all_time
+                                          - COALESCE(sender_accounts.emails_sent_all_time, 0)),
+                total_sends_24h = COALESCE(sender_accounts.total_sends_24h, 0) +
+                                  GREATEST(0, EXCLUDED.emails_sent_all_time
+                                           - COALESCE(sender_accounts.emails_sent_all_time, 0)),
                 emails_sent_all_time = EXCLUDED.emails_sent_all_time,
                 replies_all_time = EXCLUDED.replies_all_time,
                 bounces_all_time = EXCLUDED.bounces_all_time,
@@ -428,7 +447,7 @@ class AccountSyncModule:
                 warmup_spam_count = EXCLUDED.warmup_spam_count,
                 warmup_bounces_received = EXCLUDED.warmup_bounces_received,
                 warmup_bounces_caused = EXCLUDED.warmup_bounces_caused
-            RETURNING (xmax = 0) as created, emails_sent_all_time as prev_sends
+            RETURNING (xmax = 0) as created
         """,
             workspace_id,                              # $1
             email,                                     # $2
@@ -461,32 +480,13 @@ class AccountSyncModule:
 
         created = result['created']
 
-        # Track send delta to populate total_sends_7d AND total_sends_24h.
-        # Both feed kill-trigger floors:
-        #   total_sends_7d  → rate-based triggers (hard_bounce_rate_7d, bounce_rate_all_7d)
-        #   total_sends_24h → count-based trigger floor (hard_bounces_24h floor, migration 095)
-        #
-        # KEY DIFFERENCE FROM BOUNCES:
-        # - Bounces: We DON'T track delta here (warmup bounces shouldn't trigger kills)
-        # - Sends: We DO track delta (ALL sends matter for rate calculations)
-        #
-        # The 7d counter decays 14% daily in health_checks.decay_weekly_counters.
-        # The 24h counter resets to 0 at midnight in reset_daily_counters; the
-        # delta accumulated between midnight and the next sync is what
-        # health_checks.evaluate_inbox_health reads as "did this inbox send today?"
-        if not created and result['prev_sends'] is not None:
-            prev_sends = result['prev_sends'] or 0
-            send_delta = max(0, emails_sent_all_time - prev_sends)
-
-            if send_delta > 0:
-                await self.db.execute("""
-                    UPDATE sender_accounts
-                    SET
-                        total_sends_7d = COALESCE(total_sends_7d, 0) + $2,
-                        total_sends_24h = COALESCE(total_sends_24h, 0) + $2,
-                        updated_at = NOW()
-                    WHERE email_address = $1
-                """, email, send_delta)
+        # Send-delta accumulation now happens INSIDE the upsert above
+        # (total_sends_7d and total_sends_24h SET expressions). The previous
+        # post-upsert UPDATE was broken: RETURNING emails_sent_all_time AS
+        # prev_sends returned the NEW value (post-upsert), so the computed
+        # delta was always 0 — meaning total_sends_7d and total_sends_24h
+        # never incremented, which silently disabled all bounce-based kill
+        # triggers (count-based floor + rate-based min-sends gate).
 
         return created
 
