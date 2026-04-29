@@ -1,16 +1,20 @@
 # Warmup Lifecycle Tracking
 
+> **2026-04-27 OVERHAUL UPDATE:** Two new columns added by migration 094 (with 096 fix) for continuous-tracking warmup state — `warmup_enabled_since` and `warmup_disabled_at`. These are MAINTAINED BY TRIGGER on every `warmup_enabled` flip, so the values reflect actual TRUE/FALSE transitions in real time, not observation timestamps. The 14 BD graduation timer in `lifecycle_tag_sync._graduate_mature_inboxes` reads `warmup_enabled_since` (NOT `warmup_started_at`) — this means a paused-then-resumed warmup resets the graduation clock, matching operational intent.
+
 ## Overview
 
-Every inbox connected to EmailBison SHOULD be warming. The warmup lifecycle tracks this state through observation timestamps.
+Every inbox connected to EmailBison SHOULD be warming. The warmup lifecycle tracks this state through observation timestamps and (post-overhaul) trigger-maintained transition timestamps.
 
 ## Key Fields in sender_accounts
 
 | Field | Type | Source | Description |
 |-------|------|--------|-------------|
 | `warmup_enabled` | BOOLEAN | EmailBison API | Current warmup status |
-| `warmup_started_at` | TIMESTAMP | Local observation | When we first saw `warmup_enabled=TRUE` |
-| `warmup_stopped_at` | TIMESTAMP | Local observation | When `warmup_enabled` changed `TRUE→FALSE` |
+| `warmup_started_at` | TIMESTAMP | Local observation | When we first saw `warmup_enabled=TRUE` (observation-based) |
+| `warmup_stopped_at` | TIMESTAMP | Local observation | When `warmup_enabled` changed `TRUE→FALSE` (observation-based) |
+| `warmup_enabled_since` | TIMESTAMP | **Trigger-maintained (mig 094+096)** | NOW() when warmup_enabled transitions to TRUE; NULL when transitions to FALSE/NULL |
+| `warmup_disabled_at` | TIMESTAMP | **Trigger-maintained (mig 094+096)** | NOW() when warmup_enabled transitions to FALSE/NULL; NULL when transitions to TRUE |
 
 ## State Machine
 
@@ -69,6 +73,25 @@ warmup_progress = min(100, (days_warming / 30) * 100)
 ```
 
 Standard warmup period is 30 days. Progress reaches 100% after 30 days of warming.
+
+## Graduation Timer (post-overhaul)
+
+`lifecycle_tag_sync._graduate_mature_inboxes` uses `warmup_enabled_since` (NOT `warmup_started_at`) for the 14 business-day graduation gate:
+
+```sql
+SELECT COUNT(*)
+FROM generate_series(
+    warmup_enabled_since::date,
+    CURRENT_DATE - INTERVAL '1 day',
+    INTERVAL '1 day'
+) AS d
+WHERE EXTRACT(DOW FROM d) NOT IN (0, 6)  -- Mon-Fri only
+>= 14
+```
+
+The `warmup_enabled = TRUE` filter ensures paused inboxes don't graduate. If warmup is disabled mid-incubation, the trigger NULLs `warmup_enabled_since`, so the count returns 0 → not eligible until warmup is re-enabled (which re-stamps `warmup_enabled_since`, restarting the timer).
+
+This is the **continuous-enabled** rule: 14 BD must pass with no warmup interruption. Stricter than the old `warmup_started_at + 21 calendar days` rule, but more accurate for the ride-to-graduation contract.
 
 ## Database Constraint
 

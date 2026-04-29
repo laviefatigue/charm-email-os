@@ -1,13 +1,15 @@
 ---
 title: EmailBison Sync Worker
 created: 2026-04-13
-updated: 2026-04-13
-tags: [sync, emailbison, worker, architecture, queue]
+updated: 2026-04-28
+tags: [sync, emailbison, worker, architecture, queue, overhaul-2026-04-27]
 ---
 
 # EmailBison Sync Worker
 
 `emailbison_sync_worker.py` — background worker that keeps our database in sync with EmailBison and manages inbox lifecycle.
+
+> **2026-04-27 tagging-kill overhaul**: tag writes are now workspace-scoped and concurrent (was: serial via shared admin key). Per-inbox `inventory_pool_status` is the sole authority for set tag reconciliation (was: derived from domain.pool_status every cycle). See [[2026-04-27-tagging-kill-overhaul-plan]] for the full design + handoff doc, or the "Tag Write Orchestrator" section below for the operational summary.
 
 ## Two Responsibilities
 
@@ -15,16 +17,14 @@ The worker does two distinct things. They share the same process but are archite
 
 | Responsibility | Modules | Direction | Concurrency |
 |---------------|---------|-----------|-------------|
-| **Data pull** | sync_accounts, sync_campaigns, sync_events, sync_warmup, sync_engagement | EB → DB | 3 workspaces concurrent |
-| **Tag write** | lifecycle_tag_sync, set_tag_sync, kill_processor | DB → EB | Sequential (all workspaces per run) |
+| **Data pull** | sync_accounts, sync_campaigns, sync_events, sync_warmup, sync_engagement | EB → DB | 3 workspaces concurrent (semaphore) |
+| **Tag write** | workspace_writes (orchestrator) → lifecycle_tag_sync → set_tag_sync → kill_processor | DB → EB | 3 workspaces concurrent (semaphore); sequential within each workspace |
 
-### Why tag writes are still sequential
+### Tag writes — concurrent post-overhaul
 
-Tag write modules (lifecycle_tag_sync, set_tag_sync, kill_processor) use the shared **admin API key** (`EMAILBISON_API_KEY`). This key is not workspace-scoped — it can see all workspaces, but to make writes to a specific workspace it still calls `switch_workspace()`. Running two tag writes concurrently with the same key would race over the workspace context, causing writes to land on the wrong workspace.
+Pre-overhaul, tag writes were serial because they all used the shared admin API key and called `switch_workspace()` between workspaces. That race was eliminated by migration 089's `workspace_api_keys` table — every tag write now goes through a workspace-scoped client (no `switch_workspace()` needed), so multiple workspaces can run their tag writes in parallel without any shared state.
 
-Tag writes are also less time-critical than data pulls — they run every 30 minutes and each workspace typically takes seconds. Concurrent execution offers less benefit and more risk for this path.
-
-Data pull modules have no such constraint: each gets its own `EmailBisonClient` with a per-workspace key, so no shared state exists to race over.
+Within a single workspace, the orchestrator still runs lifecycle → set → kill **sequentially** because the three phases have hard ordering constraints (graduate must complete before set tag reconciliation; reconciliation must complete before kill processing). Cross-workspace concurrency is bounded by `SYNC_WORKSPACE_CONCURRENCY` (default 3) — same semaphore as data pulls.
 
 ---
 
@@ -158,11 +158,14 @@ Every 30s:
   2. schedule_overdue_syncs()   ← insert pending jobs for overdue workspaces
   3. process_pending_batch()    ← claim and execute next batch of 3
 
-Every 15 min:  run_health_checks()
-Every 30 min:  run_kill_processing() (currently DISABLED)
-               run_lifecycle_tag_sync()
-Daily:         retention cleanup, 24h counter reset, engagement sync (via queue)
+Every 15 min:  run_health_checks()           ← compute kill triggers, update kill_queue
+               run_workspace_writes()        ← lifecycle → threshold → set → kill per workspace
+Every 5 min:   run_workspace_discovery()     ← detect new EB workspaces, auto-provision
+Daily:         retention_cleanup, daily_counter_reset, daily_snapshot,
+               onboarding_monitor, run_overhaul_audit
 ```
+
+`run_workspace_writes()` replaces the old separate `run_lifecycle_tag_sync()` + `run_kill_processing()` path. Both feature flags still apply: `ENABLE_LIFECYCLE_TAGGING` gates lifecycle + set tagging; `ENABLE_KILL_PROCESSING` gates the kill queue branch. When both are false the orchestrator is skipped entirely.
 
 ---
 
@@ -171,18 +174,114 @@ Daily:         retention cleanup, 24h counter reset, engagement sync (via queue)
 ```
 sync_modules/
 ├── workspace_sync_queue.py    ← queue manager: schedule, claim, dispatch, status
+├── workspace_writes.py        ← NEW: tag-write orchestrator (lifecycle→threshold→set→kill, concurrent per workspace)
+├── pool_promotion.py          ← NEW: shared promotion picker (domain-aware, used by kill + threshold)
+├── overhaul_audit.py          ← NEW: daily drift detector (dual-tag, stuck-incubation, burned-in-campaigns, ...)
 ├── sync_accounts.py           ← data pull: inbox list from /sender-emails
 ├── sync_campaigns.py          ← data pull: campaigns + inbox assignments
 ├── sync_events.py             ← data pull: replies/bounces/spam per campaign
 ├── sync_warmup.py             ← data pull: warmup stats + auto-enable logic
 ├── sync_engagement.py         ← data pull: daily engagement snapshots
-├── lifecycle_tag_sync.py      ← tag write: incubating/live/flagged lifecycle
-├── set_tag_sync.py            ← tag write: A-Set/B-Set pool tags
-├── kill_processor.py          ← tag write: process kill queue
-├── emailbison_client.py       ← HTTP client wrapper for EB API
-├── audit_logger.py            ← sync_audit_log + sync_status writes
+├── lifecycle_tag_sync.py      ← tag write: graduate (incubating→reserve|live), tag new, untag dead, untag orphan incubating
+├── set_tag_sync.py            ← tag write: per-inbox `inventory_pool_status` reconciliation (live/reserve/none)
+├── kill_processor.py          ← tag write: process kill_queue, cross-domain promote, small-domain safety net
+├── health_checks.py           ← compute kill triggers (with 20-send floor)
+├── emailbison_client.py       ← HTTP client wrapper; supports `is_workspace_scoped` flag
+├── audit_logger.py            ← sync_audit_log + sync_status writes (metadata jsonb merge on complete)
 └── slack_alerter.py           ← Slack webhook notifications
 ```
+
+---
+
+## Tag Write Orchestrator (post-overhaul)
+
+`WorkspaceWriteOrchestrator` (in [sync_modules/workspace_writes.py](../../sync_modules/workspace_writes.py)) drives DB→EB writes per workspace, with concurrency bounded by the same semaphore that gates data pulls.
+
+### Per-workspace pipeline
+
+```
+for each workspace W (concurrency = SYNC_WORKSPACE_CONCURRENCY):
+    if W.pause_pool_transitions: skip
+    client = EmailBisonClient(api_key=W.workspace_api_key, is_workspace_scoped=True)
+
+    1. lifecycle_tag_sync.sync_workspace_tags(W, client)
+         a. _graduate_mature_inboxes        — incubating → reserve|live (ESP-aware) at 14 BD
+         b. _tag_new_warmup_inboxes         — NULL or 'incubating' → tag 'incubating' in EB (idempotent self-heal)
+         c. _remove_live_from_dead          — safety net for dead inboxes that still carry 'live'
+         d. _untag_incubating_from_active   — orphan-tag cleanup driven by inbox_rotation_history (last 24h)
+
+    2. orchestrator._maintain_pool_thresholds(W) [only if W.package_id IS NOT NULL]
+         — read workspace_effective_targets view, compute deficit, promote reserve → deployed
+           via pool_promotion.pick_promotion_candidates (domain-aware ordering)
+
+    3. set_tag_sync.sync_workspace_sets(W, client)
+         — per-inbox reconciliation: tag-first/untag-second discipline, MS pin, circuit breaker
+
+    4. kill_processor.process_workspace_queue(W.id, W.name)
+         — drain kill_queue rows for this workspace; cross-domain promote on each kill;
+           Google instant burn; MS skip cross-domain promote (legacy ride-to-death)
+```
+
+### Per-inbox pool authority (set_tag_sync)
+
+Pre-overhaul: `domain.pool_status` was authoritative — every cycle re-derived each inbox's tag from its domain's pool. This blocked cross-domain promotion (the next set_tag_sync cycle reverted it).
+
+Post-overhaul: `sender_accounts.inventory_pool_status` is the SOLE authority. Each inbox carries its own pool tag decision. `domain.pool_status` is now a default for new graduations and a scope marker for burn events — it does not drive tag reconciliation.
+
+Mapping:
+
+| `inventory_pool_status` | EB tags |
+|---|---|
+| `'deployed'` | `live` (and untag `reserve`) |
+| `'reserve'` | `reserve` (and untag `live`) |
+| `'warning'` | NEITHER (active circuit breaker; auto-clears when bounces subside) |
+| `'quarantined'` | NEITHER (active circuit breaker) |
+| `NULL` | NEITHER (unallocated, no pool) |
+
+### ESP differentiation
+
+- **Microsoft Entra (legacy)**: pinned to `live` in set_tag_sync regardless of pool. Per CEO Rule C2 ("ride to death"), Microsoft inboxes never go to reserve and never have their `live` tag stripped by the warning circuit breaker.
+- **Google**: full pool authority applies — reserve, live, warning all enforced.
+
+### Tag-first / untag-second ordering
+
+```
+for each inbox:
+    1. TAG TARGET FIRST   ← if target_tag_id is not None
+    2. UNTAG OPPOSITE     ← only after tag succeeded
+```
+
+Failure-mode reasoning: if untag-first, a transient tag failure leaves the inbox with NO pool tag (campaigns can't pick it). With tag-first, a failure on untag leaves a transient dual-tag that self-heals on the next 15-min cycle. Dual tags are operationally less harmful than orphans.
+
+### Reconciling untag every cycle
+
+set_tag_sync issues an idempotent untag of the OPPOSITE pool tag on every cycle, even when DB and EB already match. This fixes a historic skip-bug where mismatched stale tags persisted because the per-cycle "did anything change?" check was too eager to skip.
+
+### What "Connected" check gates
+
+set_tag_sync skips inboxes where EB `status != 'Connected'` at line 436. This means:
+
+- Disconnected inboxes that flipped to `pool='warning'` keep their stale `live`/`reserve` EB tags until either reconnection OR the 21-day `disconnected_timeout` kill path fires.
+- This is a conservative design — we accept some stale tags rather than risk a tag operation against an unstable inbox connection.
+
+---
+
+## Daily Overhaul Audit
+
+[sync_modules/overhaul_audit.py](../../sync_modules/overhaul_audit.py) runs once per UTC day from the worker's poll loop. Read-only; reports drift via Slack alert when any anomaly count is non-zero.
+
+| Metric | What it measures |
+|---|---|
+| `dual_tag_candidates` | DB heuristic — graduated reserve inboxes whose population pre-overhaul was at risk of stale `live` tags. Should trend to 0 post-deploy. (Note: this is a population count, not a real-time EB tag check — see scripts/audit_tags_fleet.py for the EB-side check.) |
+| `warmup_disabled_active_24h` | Live inboxes whose warmup_enabled flipped to FALSE more than 24h ago — they will not graduate. |
+| `orphan_inactive_live_count` | Inboxes with `is_active=FALSE` AND `inbox_state='live'` AND a real `emailbison_account_id`. Invisible to all sync paths but EB may still send through them. |
+| `stuck_incubation_14bd` | Inboxes still `lifecycle='incubating'` after 14 business days of warmup_enabled. Should be 0 post-deploy. |
+| `incubating_in_campaigns` | Bypass guard for the Stable Kernel ODSC pattern — inboxes still incubating but pushed to a real EB campaign. |
+| `burned_inboxes_in_campaigns` | Reputation risk — inboxes on burned/cancelled domains still in active campaigns. Currently manual cleanup; auto-cleanup function pending. |
+
+The audit's `complete()` writes the metric counts into `sync_audit_log.metadata` (jsonb merge), so the historical trend is queryable.
+
+For an EB-side validation (actual tag state, not DB-derived heuristics), use [scripts/audit_tags_fleet.py](../../scripts/audit_tags_fleet.py) — fleet-wide DB↔EB tag comparison via workspace-scoped API keys.
 
 ---
 
@@ -248,11 +347,12 @@ Set on the `emailbison-sync` Coolify service:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `SYNC_WORKSPACE_CONCURRENCY` | `3` | Workspaces processed in parallel |
+| `SYNC_WORKSPACE_CONCURRENCY` | `3` | Workspaces processed in parallel (data pulls AND tag writes) |
 | `SYNC_INTERVAL_PRIORITY` | `30` | Seconds between priority-queue polls |
-| `ENABLE_LIFECYCLE_TAGGING` | `true` | Enable lifecycle tag writes to EB |
-| `ENABLE_KILL_PROCESSING` | `false` | Enable kill queue processing |
-| `EMAILBISON_API_KEY` | — | Admin-level key for discovery + tagging |
+| `SYNC_INTERVAL_KILL` | `900` | Seconds between workspace_writes runs (15 min) — drives lifecycle + threshold + set + kill |
+| `ENABLE_LIFECYCLE_TAGGING` | `true` | Enable lifecycle + set tag writes to EB |
+| `ENABLE_KILL_PROCESSING` | `true` | Enable kill queue processing (was `false` pre-overhaul) |
+| `EMAILBISON_API_KEY` | — | Admin-level key — used ONLY for workspace discovery (legitimate cross-workspace path). NOT used for tag writes anymore. |
 | `POSTGRES_*` | — | Database connection |
 
 ---

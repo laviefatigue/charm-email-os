@@ -2,7 +2,7 @@
 
 **Document ID:** CORE-STATUS-001
 **Created:** 2026-02-26
-**Last Updated:** 2026-03-19
+**Last Updated:** 2026-04-28
 
 ---
 
@@ -12,6 +12,14 @@ This document defines all status states for domains and inboxes in Charm Email O
 - Accurate capacity calculations
 - Proper kill trigger evaluation
 - Dashboard reporting integrity
+
+> **2026-04-27 OVERHAUL UPDATES:**
+> - **`is_active` + `inbox_state` are dual-column "alive-ness" markers.** Asymmetric maintenance was the root of the 2,807 orphan population. Option 1 patch in `mark_stale_accounts` (commit shipping with overhaul) now properly sets `inbox_state='dead'` when EB stops returning the inbox — was only setting `is_active=FALSE`.
+> - **`inventory_pool_status='warning'` no longer fires for burned/cancelled domain inboxes.** Pre-overhaul, sync_accounts would flip pool to `'warning'` on bounce signal regardless of domain state, fighting the burned-domain handler. Post-overhaul, burned/cancelled domain inboxes always have `pool=NULL`.
+> - **Graduation timer is 14 business days** using `warmup_enabled_since` (continuous-tracking via migration 094 trigger), not 21 calendar days from `warmup_started_at`. The lifecycle CASE in sync_accounts.upsert still references warmup_started_at + 21d for compatibility but no longer overrides graduated states (commit `c866929`).
+> - **Connection-first decision rule (C7)** governs all new state classifications: never auto-classify a Connected inbox as dead unless a kill trigger fired.
+>
+> See [[../adr/adr-006-tagging-kill-overhaul-2026-04-27]] for the full architectural decision record.
 
 ---
 
@@ -42,21 +50,30 @@ inbox_state = "live"  +  status = "Not connected"
 → Has 0 operational capacity until reconnected
 ```
 
-### 1.3 Inventory Lifecycle: `inventory_lifecycle_status`
+### 1.3 Inventory Lifecycle: `inventory_lifecycle_status` (POST-OVERHAUL)
 
-| Status | Age | Meaning |
-|--------|-----|---------|
-| **incubating** | < 21 days | In warmup period, fresh inbox |
-| **active** | ≥ 21 days | Mature, ready for full deployment |
-| **dead** | Any | Killed by kill trigger |
+| Status | Trigger | Meaning |
+|--------|---------|---------|
+| **NULL** | Brand new inbox sync (briefly, before sync_accounts CASE assigns) | Never classified |
+| **incubating** | New inbox, warmup_started_at within 21 calendar days OR warmup_enabled_since within 14 BD | In warmup period, NOT ready for campaigns |
+| **active** | 14 business days of continuous `warmup_enabled=TRUE` (lifecycle_tag_sync graduates) | Mature, in active rotation. **STICKY** post-`c866929` — sync_accounts no longer reverts active → incubating |
+| **dead** | Kill trigger fired OR removed from EB (`mark_stale_accounts` Option 1 patch) | Permanent terminal state |
 
-### 1.4 Inventory Pool: `inventory_pool_status`
+### 1.4 Inventory Pool: `inventory_pool_status` (POST-OVERHAUL)
 
-| Status | Condition | Use |
-|--------|-----------|-----|
-| **reserve** | ≤0 hard bounces 24h, ≤2 in 7d | Ready for deployment |
-| **deployed** | Assigned to active campaign | Currently sending |
-| **warning** | ≥1 hard bounce 24h OR ≥3 in 7d | Needs cooldown |
+`inventory_pool_status` is the SOLE authority for set_tag_sync's per-inbox tag decision. See [[../decisions/POOL-ASSIGNMENT-AND-TAGGING-SYSTEM]] for full mapping. Summary:
+
+| Status | EB Tags | How Set | Reversibility |
+|--------|---------|---------|---------------|
+| **NULL** | NEITHER | sync_accounts on insert; kill; domain burn (burned/cancelled) | Forward-only post-kill |
+| **reserve** | `reserve` only | Graduation (Google); recovery from `'warning'` on reserve domain | Can promote → `'deployed'` |
+| **deployed** | `live` only | Graduation (Microsoft); cross-domain promotion (kill_processor); threshold-driven (orchestrator) | Can demote → `'warning'` on bounces |
+| **warning** | NEITHER (active circuit breaker) | sync_accounts on `hb_24h ≥ 1 OR hb_7d ≥ 3` | **Auto-clears** when bounces subside, restoring pool from domain default |
+| **quarantined** | NEITHER (active circuit breaker) | Reserved for severe future use | Same as warning |
+
+**Microsoft pin caveat**: Microsoft inboxes are pinned to `live` regardless of `inventory_pool_status` (Rule C2 — legacy ride-to-death). Even Microsoft inboxes with `pool='warning'` keep their `live` tag in EB. This is by design.
+
+**Burned/cancelled domain caveat (post-`13523ca`)**: sync_accounts NULLs pool for any inbox on a domain with `pool_status IN ('burned','cancelled')`, regardless of bounce signal. Prevents the `'warning'` flicker race with the burned-domain handler.
 
 ---
 

@@ -1,8 +1,10 @@
 # Domain & Inbox Lifecycle — Business Process Document
 
-**Date:** 2026-03-12
+**Date:** 2026-03-12 (initial), updated 2026-04-28
 **Status:** Reference — defines how the system SHOULD work
 **Purpose:** Canonical process definition for domain lifecycle, inbox lifecycle, pool assignment, and tagging
+
+> **2026-04-27 OVERHAUL:** Pool allocation is no longer strictly domain-level. Per-inbox `inventory_pool_status` is the SOLE authority for set tag reconciliation. Cross-domain promotion is now allowed for kill-driven and threshold-driven promotion paths. See [[../adr/adr-006-tagging-kill-overhaul-2026-04-27]] and [[POOL-ASSIGNMENT-AND-TAGGING-SYSTEM]] for the post-overhaul model. Sections below describing "domain-level pool assignment" remain useful as the **default** for new graduations but are no longer absolute.
 
 ---
 
@@ -10,7 +12,7 @@
 
 Our **PostgreSQL database** is the system of record for:
 - Domain lifecycle (generated → purchased → ready → deployed)
-- Pool allocation (live/reserve assignment at domain level)
+- Pool allocation (per-inbox post-overhaul; domain-level default for new graduations)
 - Inbox status tracking (lifecycle stage, pool assignment, kill state)
 
 **EmailBison** is the operational platform where infrastructure is deployed. It has:

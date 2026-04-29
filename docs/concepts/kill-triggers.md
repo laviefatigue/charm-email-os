@@ -1,13 +1,21 @@
 ---
 title: Kill Triggers
 created: 2026-02-12
-updated: 2026-03-19
-tags: [concept, health, kill-triggers, infrastructure]
+updated: 2026-04-28
+tags: [concept, health, kill-triggers, infrastructure, overhaul-2026-04-27]
 ---
 
 # Kill Triggers
 
 Automated inbox termination system that protects domain reputation by detecting and removing problematic inboxes.
+
+> **2026-04-27 OVERHAUL UPDATES:**
+> - **20-send floor on count-based triggers** (`KILL_THRESHOLD_MIN_SENDS_24H_FOR_COUNT_TRIGGER=20`) — count-based kill triggers (`hard_bounces_24h`, `hard_blocked_24h`, `hard_unknown_24h`) only fire when the inbox has ≥20 sends in the last 24h. Prevents kills from low-volume noise (Phase 0 audit found 65% of recent count-trigger kills were on inboxes with <20 sends). Falls back to `total_sends_7d ≥ 20` for rollout safety until the new `total_sends_24h` column populates.
+> - **Per-workspace processing** — `kill_processor.process_workspace_queue(workspace_id, name)` replaces the old global cross-workspace fanout. Each workspace processes its own kill_queue rows using its workspace-scoped EB API key.
+> - **Cross-domain promotion is now allowed** — when an inbox is killed, the next reserve inbox is promoted regardless of source domain (workspace-scoped). This relaxes the "domain-level pool" rule below.
+> - **Microsoft skip on promote** — kill_processor does not promote Microsoft inboxes via cross-domain logic (legacy ride-to-death; no MS goes from reserve to deployed via kill).
+> - **Google instant burn** — Google domains now skip the rate-gate and burn instantly on the first complaint trigger (3-inbox population is too small for rate evaluation to be meaningful).
+> - **Small-domain 2-kill safety net** — domains with `total ≤ 5 inboxes` AND `dead ≥ 2` are flagged dead. Catches small-fleet correlated kills that wouldn't trip the rate-based logic.
 
 ## Overview
 
@@ -17,9 +25,10 @@ Kill triggers are thresholds that, when breached, automatically queue an inbox f
 
 1. **Kill fast, swap fast, diagnose after** - Don't investigate while reputation degrades
 2. **100% backup capacity** - Always have warmed backups ready
-3. **1 spam complaint = inbox death** - The inbox is always killed immediately. The *domain* burn decision is rate-based: complaint rate evaluated against thresholds (<0.3% safe, 0.3-1.0% monitoring, >1.0% burn).
+3. **1 spam complaint = inbox death** - The inbox is always killed immediately. The *domain* burn decision is rate-based for Microsoft (≥1.0%) but instant for Google (small fleet).
 4. **Differentiated thresholds** - Spam blocks are worse than bad addresses
-5. **Proportional domain response** - Domain complaint rate determines action, not raw inbox count. A 3-inbox Gmail domain and a 50-inbox Microsoft domain are evaluated by the same rate thresholds.
+5. **Proportional domain response** - Domain complaint rate determines action for Microsoft. Google bypasses rate evaluation (3-inbox population is too small for rates to be meaningful).
+6. **Min-volume floor (post-overhaul)** - Count-based triggers require ≥20 sends in 24h to fire. Otherwise low-volume noise (1 bounce out of 2 sends) generates false kills.
 
 ## Kill Trigger Types
 
@@ -64,9 +73,13 @@ INBOX_KILLING_TRIGGERS = {
 
 > **History**: Prior to 2026-03-18, `spam_complaint` was an instant domain burn. Production audit found 32 domains incorrectly burned from single spam complaints (e.g., `fixselery.com` — 51/52 inboxes live, health 91, burned from 1 complaint). Changed to count-based (2+) on 2026-03-18, then to rate-based thresholds on 2026-03-19 for proportional response across domain sizes.
 
-### Domain Burn = Total Loss (Domain-Level Reserve Pool)
+### Domain Burn (POST-OVERHAUL: cross-domain promotion now allowed)
 
-**A domain burn condemns ALL inboxes on that domain**, not just the ones that triggered the kill. The reserve pool operates at the **domain level** — you cannot split inboxes from the same domain and selectively reserve some.
+**A domain burn condemns ALL inboxes on that domain.** The burn handler clears `inventory_pool_status` to NULL for every inbox on the burned domain — they no longer carry pool tags in EB.
+
+> **What changed in 2026-04-27 overhaul:** Reserve replacement is no longer strictly domain-level. Pre-overhaul: a burn promoted an entire reserve *domain* (with all its inboxes). Post-overhaul: when an inbox is killed (whether from a domain burn or an individual trigger), kill_processor promotes the **oldest reserve INBOX** workspace-wide, regardless of source domain. The promoted inbox gets `inventory_pool_status='deployed'` while its source domain stays `pool_status='reserve'`. This is the **cross-domain promotion** model — you CAN now split inboxes from the same domain across pools, mid-cycle.
+>
+> Domain-aware ordering still applies: `pool_promotion.pick_promotion_candidates` prefers partially-tapped reserve domains (fewest remaining reserves first) before opening a new untapped domain.
 
 When a domain burns:
 1. `burn_domain_and_promote()` SQL function sets `pool_status = 'burned'`

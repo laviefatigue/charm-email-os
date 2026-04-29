@@ -1,7 +1,7 @@
 ---
 title: Inbox Provisioning
 created: 2026-01-22
-updated: 2026-02-12
+updated: 2026-04-28
 tags: [concept, inbox, infrastructure, hypertide, slack]
 ---
 
@@ -9,11 +9,13 @@ tags: [concept, inbox, infrastructure, hypertide, slack]
 
 The process of creating email inboxes on purchased domains via HyperTide automation.
 
+> **2026-04-27 OVERHAUL — provider mix changed.** Per CEO directive, all NEW orders are Google Workspace (3 inboxes/domain). Microsoft Entra is legacy ride-to-death — no new Entra orders. The provisioning flow described below still applies to both, but the queue should only see Google going forward. See [[package-templates]] for the post-overhaul package model (`50k_google`, `100k_google`).
+
 ## Overview
 
 After domains are purchased, they need inboxes (email accounts) created. This is done through HyperTide, which:
 1. Uses browser automation (Playwright) to interact with email provider UIs
-2. Creates Microsoft Entra or Google Workspace accounts
+2. Creates Microsoft Entra or Google Workspace accounts (Google only for new orders)
 3. Uploads inboxes to EmailBison for campaign management
 
 ## Slack-First Workflow (Current)

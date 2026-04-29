@@ -1,13 +1,15 @@
 ---
 title: Domain Lifecycle
 created: 2026-01-22
-updated: 2026-01-30
+updated: 2026-04-28
 tags: [concept, domain, infrastructure]
 ---
 
 # Domain Lifecycle
 
 Domains transition through a defined status flow from generation to active use.
+
+> **2026-04-27 OVERHAUL — domain.pool_status no longer drives per-inbox tagging.** Domain-level `pool_status` retains two roles post-overhaul: (a) default destination for new graduations on the domain, (b) scope marker for burn events that NULL all inboxes' pool. Per-inbox `inventory_pool_status` is the cycle-to-cycle authority for set tag reconciliation. See [[../decisions/POOL-ASSIGNMENT-AND-TAGGING-SYSTEM]] for the full mapping.
 
 ## Status Values
 

@@ -1,8 +1,19 @@
 # Pool Assignment & Tagging System — Definitive Reference
 
-**Date:** 2026-03-12
+**Date:** 2026-03-12 (initial), updated 2026-04-28 for the post-overhaul model
 **Status:** Active
 **Supersedes:** Previous ad-hoc pool status logic in sync_accounts.py
+**See also:** [[2026-04-27-tagging-kill-overhaul-plan]] for the full design + handoff doc, [[../adr/adr-006-tagging-kill-overhaul-2026-04-27]] for the architectural decision record.
+
+> **2026-04-27 OVERHAUL — KEY CHANGES TO THIS DOC:**
+> 1. **Per-inbox pool authority** replaced domain-level. `sender_accounts.inventory_pool_status` is the SOLE authority for set tag reconciliation. `domain.pool_status` is now a default for new graduations + a scope marker for burn events — it does not drive per-inbox tagging cycle-to-cycle.
+> 2. **Cross-domain promotion is now allowed** for kill-driven and threshold-driven promotion. The "all inboxes on a domain share the same pool" invariant from §4 below is no longer absolute — a reserve-pool domain may have one inbox promoted to deployed (cross-domain mixing) when filling a kill.
+> 3. **Graduation timer is 14 business days** (not 21 calendar) — uses `warmup_enabled_since` (migration 094) for continuous-enabled tracking.
+> 4. **Google graduates to `reserve`**, not directly to `live`. Microsoft (legacy Entra) graduates to `deployed` per ride-to-death pin.
+> 5. **`live` (lifecycle) tag is no longer used.** Lifecycle phases use `incubating` only; the `live` tag in EB is now exclusively a pool tag.
+> 6. **Workspace-scoped API keys** (migration 089) replace the global `switch_workspace()` model — tag writes are concurrent across workspaces.
+>
+> Sections 4 and 5 below are marked with **(POST-OVERHAUL)** updates inline.
 
 ---
 
@@ -56,62 +67,101 @@ Deployment is inferred from inbox presence, not a separate status value.
 
 ---
 
-## 4. Pool Allocation (Domain Level)
+## 4. Pool Allocation (POST-OVERHAUL)
 
-**Core rule:** All inboxes on a domain share the same pool. Domain-level allocation.
+> **Pre-overhaul "domain-level allocation" rule no longer applies.** The 80/20 domain split is still useful as a domain-level *default* when allocating new graduations, but it does not constrain per-inbox tagging — see §5.2 below for the new authority model.
 
-| `pool_status` | Meaning | Target | EB Tag on Inboxes |
-|---------------|---------|--------|-------------------|
-| `live` | A-Set — team assigns these to campaigns | ~80% | `live` (a_set_tag_name) |
-| `reserve` | B-Set — warming only, promoted when live burns | ~20% | `reserve` (b_set_tag_name) |
-| `burned` | Compromised by confirmed domain-level trigger (complaint rate >1.0%), permanently retired | N/A | Kill trigger tags remain |
-| `unassigned` | Not yet allocated (pre-deployment) | N/A | None |
+### 4.1 Domain-level pool_status (default + burn scope)
 
-### When Pool Gets Assigned
-Only after:
-1. Domain is purchased/ready (`approval_status` = `active` or `legacy`)
-2. Inboxes detected in EmailBison
-3. Inboxes have completed 21-day warmup incubation
+`domains.pool_status` retains two roles post-overhaul:
 
-Pre-deployment domains stay `unassigned`.
+| `pool_status` | Meaning | Role |
+|---|---|---|
+| `live` | Default destination for graduations on this domain | Default-only — per-inbox `inventory_pool_status` overrides cycle-to-cycle. |
+| `reserve` | Default destination for graduations on this domain | Default-only — same as above. |
+| `burned` | Domain compromised (complaint rate > 1.0%), permanently retired | Triggers domain-burn handler — sets all inboxes on this domain to `inventory_pool_status = NULL`. |
+| `cancelled` | Domain not renewed, going away | Same effect as burned for tag/pool clearance. |
+| `unassigned` | Not yet allocated (pre-deployment) | No tag effect. |
 
-### 80/20 Split
-- ~80% of deployed domains allocated to `live`
-- ~20% allocated to `reserve`
-- Maintains sending capacity while ensuring backup availability
+### 4.2 Per-inbox `inventory_pool_status` is the authority
+
+The cycle-to-cycle tag decision is made per-inbox from `sender_accounts.inventory_pool_status`. See §5.2 for full mapping.
+
+This enables:
+- **Cross-domain promotion** — kill_processor promotes the oldest reserve inbox to fill a kill, regardless of source domain. The promoted inbox gets `inventory_pool_status='deployed'` while its source domain stays `pool_status='reserve'`. set_tag_sync respects the per-inbox value.
+- **Threshold-driven promotion** — when a workspace has a `package_id`, the orchestrator promotes reserve inboxes to fill the package's live target. Domain-aware ordering (partially-tapped domains finished before opening new ones).
+- **Active circuit breaker** — `inventory_pool_status='warning'` (set by sync_accounts on bounce signal) untags both `live` and `reserve` from EB without modifying the domain.
+
+### 4.3 When pool gets assigned
+
+| Path | When | Resulting `inventory_pool_status` |
+|---|---|---|
+| Graduation (Google) — domain `pool_status='live'` | After 14 BD warmup at `lifecycle_tag_sync` | `'reserve'` (post-overhaul: Google always graduates to reserve regardless of domain default) |
+| Graduation (Google) — domain `pool_status='reserve'` | Same | `'reserve'` |
+| Graduation (Microsoft) | Same | `'deployed'` (legacy Entra goes straight to live; never reserve) |
+| Cross-domain promotion (kill_processor) | On each kill — picks oldest reserve, workspace-scoped | `'deployed'` |
+| Threshold-driven promotion (orchestrator) | Per workspace, only when `workspaces.package_id IS NOT NULL` | `'deployed'` |
+| Bounce signal | sync_accounts upsert when `hb_24h ≥ 1 OR hb_7d ≥ 3` | `'warning'` (auto-clears when bounces subside) |
+| Kill | kill_processor on kill_queue drain | `NULL` |
+| Domain burn | Burn handler: all inboxes on domain | `NULL` |
+
+### 4.4 80/20 split — informal guideline
+
+The 80% live / 20% reserve split is a high-level capacity-planning heuristic, NOT enforced by code. The `workspace_packages` model (migration 097) replaces this with explicit per-package targets:
+
+- `50k_google` package: 150 live (10 orders × 3 inboxes/domain × 5 domains/order) + 30 reserve (2 orders bench)
+- `100k_google` package: 300 live + 60 reserve
+
+`target_live_count_override` on `workspaces` can lower the package target for ramp-up; can never raise above package.
 
 ---
 
-## 5. Inbox Lifecycle
+## 5. Inbox Lifecycle (POST-OVERHAUL)
 
-### 5.1 Lifecycle Stages (Maturity)
+### 5.1 Lifecycle Stages
 
 | `inventory_lifecycle_status` | Meaning | Duration |
 |------------------------------|---------|----------|
-| `incubating` | Warming up, NOT ready for campaigns | ~21 days |
+| `NULL` | Brand new, never classified | Briefly — sync_accounts upsert sets it on insert |
+| `incubating` | Warming up, NOT ready for campaigns | **14 business days** of continuous `warmup_enabled=TRUE` |
 | `active` | Graduated, ready for campaign assignment | Until killed |
 | `dead` | Kill trigger fired, removed permanently | Permanent |
 
-Graduation is **automatic** — after 21 days from `warmup_started_at`, `lifecycle_tag_sync` transitions to `active`.
+**Graduation is automatic** — `lifecycle_tag_sync._graduate_mature_inboxes` runs every 15 min per workspace and graduates inboxes whose `warmup_enabled_since` (migration 094) shows 14 business days of continuous warmup.
 
-### 5.2 Pool Status (Deployment)
+### 5.2 Pool Status (POST-OVERHAUL)
 
-| `inventory_pool_status` | Meaning | How Set |
-|------------------------|---------|---------|
-| `NULL` | Incubating or dead — not in any pool | sync_accounts on insert; kill_processor on death |
-| `reserve` | Graduated, in reserve pool | Graduation (21-day warmup complete) |
-| `deployed` | On a live domain, tagged for campaigns | set_tag_sync when domain.pool_status = 'live' |
-| `warning` | Temporary cooldown due to bounces | sync_accounts when bounce thresholds hit |
+`inventory_pool_status` is now the SOLE authority for set_tag_sync's per-inbox tag decision. The mapping below is enforced by `set_tag_sync._pool_to_tag_targets`:
 
-### 5.3 The Promotion Path
+| `inventory_pool_status` | EB Tag State | How Set |
+|---|---|---|
+| `NULL` | Neither `live` nor `reserve` | sync_accounts on insert (new inbox), kill, domain burn, or `mark_stale_accounts` (Option 1 patch) |
+| `'reserve'` | `reserve` tag, not `live` | Graduation (Google), or auto-clear from `'warning'` when bounces subside on a reserve-pool domain |
+| `'deployed'` | `live` tag, not `reserve` | Graduation (Microsoft), cross-domain promotion (kill_processor), threshold-driven promotion (orchestrator) |
+| `'warning'` | NEITHER (active circuit breaker) | sync_accounts when `hb_24h ≥ 1 OR hb_7d ≥ 3` — auto-clears |
+| `'quarantined'` | NEITHER | Reserved for severe future use; same circuit breaker behavior as warning |
 
-Every inbox follows this path:
+### 5.3 Graduation Path (POST-OVERHAUL)
 
 ```
-NULL (incubating) → reserve (graduated) → deployed (domain is live)
+NULL (new sync) → 'incubating' → 'active' (graduated)
+                                    │
+                                    ├─ Google → 'reserve' (cross-domain promotion later via kill or threshold)
+                                    └─ Microsoft → 'deployed' (legacy ride-to-death)
 ```
 
-**Inboxes always graduate to `reserve` first.** Promotion to `deployed` is driven by domain `pool_status`, not inbox-level logic. If the domain is `live`, its graduated inboxes are `deployed`. If the domain is `reserve`, they stay `reserve`.
+Post-graduation, the inbox stays at `lifecycle='active'` permanently until killed. `inventory_pool_status` may transition multiple times: reserve → deployed (promotion) → warning (bounces) → reserve (recovery) → NULL (kill). See §4.3 for transition triggers.
+
+### 5.4 Microsoft pin
+
+Microsoft Entra inboxes are special-cased in `set_tag_sync` per CEO Rule C2 ("legacy ride to death"):
+
+- **Always tagged `live`** in EB regardless of `inventory_pool_status` (pin behavior).
+- **Never tagged `reserve`** — reserve concept does not apply to MS.
+- **Warning circuit breaker is overridden** — even MS inboxes with `pool='warning'` get the `live` tag because the pin runs first.
+- Only `lifecycle='dead'` (kill trigger fired) removes the live tag.
+
+This makes the MS fleet a constant-state population that's never re-tagged in normal operation. Audit metric `pool_warning_should_have_no_pool_tag` flags MS warning inboxes — these are by-design and should not be cleaned up.
 
 ---
 
@@ -122,10 +172,10 @@ NULL (incubating) → reserve (graduated) → deployed (domain is live)
 | Tag | Applied When | Removed When | Team Action |
 |-----|-------------|--------------|-------------|
 | `incubating` | Inbox detected, warmup started | After 21 days | Do not assign to campaigns |
-| `live` (lifecycle) | 21-day warmup complete | Inbox killed | Eligible for campaigns |
-| `live` (pool/set) | Domain pool_status = 'live' | Domain burned or demoted | Assign to campaigns |
-| `reserve` (pool/set) | Domain pool_status = 'reserve' | Domain promoted to live | Do not assign — warming reserve |
-| `flagged_{trigger}` | Kill trigger fires | Never removed | Extract from campaigns |
+| ~~`live` (lifecycle)~~ | **REMOVED post-overhaul.** Lifecycle no longer uses a `live` tag — graduation goes straight to pool tag (`reserve` for Google, `live` for Microsoft via pin). | — | — |
+| `live` (pool tag) | Per-inbox `inventory_pool_status='deployed'` (or Microsoft pin) | Pool flips to reserve/warning/NULL OR pool tag drained by warning circuit breaker | Assign to campaigns |
+| `reserve` (pool tag) | Per-inbox `inventory_pool_status='reserve'` | Promoted to deployed (kill-driven or threshold-driven) | Do not assign — warming reserve |
+| `flagged_{trigger}` | Kill trigger fires (health_checks → kill_queue) | Never removed | Extract from campaigns |
 
 ### 6.2 Team Workflow
 
