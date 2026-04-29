@@ -400,13 +400,25 @@ class AccountSyncModule:
                 -- via health_checks rather than entering a soft-pause buffer.
                 -- Pool stays in {deployed, reserve, NULL} only.
                 --
+                -- Self-heal branch (added post-mig-098 stuck-state bug):
+                -- if an inbox is lifecycle='active' but pool=NULL on a
+                -- non-burned/cancelled domain, default it to 'reserve'.
+                -- This catches inboxes that fell through migration 098's
+                -- "restore from domain default" branch when their domain
+                -- pool was 'unassigned'. Without this branch they would
+                -- sit in indefinite limbo (no pool tag → not in campaigns
+                -- → no sends → can't trigger kill).
+                --
                 -- Order of branches matters:
                 --   1. Killed → NULL (terminal)
                 --   2. Dead inbox_state from EB → NULL
                 --   3. Burned/cancelled domain → NULL (domain-level decision)
                 --   4. Existing deployed/reserve → preserve (don't downgrade)
-                --   5. 21-day calendar fallback → reserve (legacy compat path)
-                --   6. ELSE NULL
+                --   5. Active lifecycle + NULL pool + healthy domain →
+                --      'reserve' (self-heal — graduations should always
+                --      land somewhere, not in indefinite NULL)
+                --   6. 21-day calendar fallback → reserve (legacy compat)
+                --   7. ELSE NULL (truly new / no signal)
                 inventory_pool_status = CASE
                     WHEN sender_accounts.killed_at IS NOT NULL THEN NULL
                     WHEN EXCLUDED.inbox_state = 'dead' THEN NULL
@@ -414,6 +426,9 @@ class AccountSyncModule:
                          IN ('burned', 'cancelled') THEN NULL
                     WHEN sender_accounts.inventory_pool_status IN ('deployed', 'reserve')
                          THEN sender_accounts.inventory_pool_status
+                    WHEN sender_accounts.inventory_lifecycle_status = 'active'
+                         AND sender_accounts.inventory_pool_status IS NULL
+                         THEN 'reserve'
                     WHEN sender_accounts.warmup_started_at IS NOT NULL
                          AND sender_accounts.warmup_started_at <= NOW() - INTERVAL '21 days'
                          AND COALESCE(EXCLUDED.warmup_enabled, TRUE) = TRUE THEN 'reserve'

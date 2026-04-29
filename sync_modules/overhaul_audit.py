@@ -36,6 +36,16 @@ Detected anomalies
      block legit new kills, but having any drift here means something
      reverted an inbox after kill_processor marked it dead. Investigate.
 
+2d. Stuck active + null pool
+     inboxes with `lifecycle='active'` AND `pool=NULL` AND on a
+     non-burned/cancelled domain. Should be 0 — graduations land in
+     reserve or deployed, kills land in dead, and the sync_accounts
+     self-heal branch (added post-mig-098 bug) defaults active+NULL
+     to 'reserve' on next upsert. Drift here means the self-heal
+     missed a path or someone manually set NULL on an active inbox
+     without a real reason. Surfaces inboxes in operational limbo
+     (alive but not deployable, not killable until 20-send floor met).
+
 3. Orphan `is_active=FALSE` graduated inboxes
      inboxes with `inbox_state='live'`, `is_active=FALSE`, and a real
      `emailbison_account_id`. These are invisible to all sync paths
@@ -121,6 +131,7 @@ class OverhaulAuditModule:
                 or metrics['burned_inboxes_in_campaigns'] > 0
                 or metrics['kill_queue_pending_over_2h'] > 0
                 or metrics['flagged_but_alive_count'] > 0
+                or metrics['stuck_active_null_pool'] > 0
             )
 
             if metrics['has_anomalies'] and self.alerter:
@@ -134,7 +145,8 @@ class OverhaulAuditModule:
                 f"incubating_in_campaigns={metrics['incubating_in_campaigns']} "
                 f"burned_in_campaigns={metrics['burned_inboxes_in_campaigns']} "
                 f"kill_pending_2h={metrics['kill_queue_pending_over_2h']} "
-                f"flagged_alive={metrics['flagged_but_alive_count']}"
+                f"flagged_alive={metrics['flagged_but_alive_count']} "
+                f"stuck_active_null={metrics['stuck_active_null_pool']}"
             )
             return await audit.complete(metadata=metrics)
         except Exception as e:
@@ -263,6 +275,27 @@ class OverhaulAuditModule:
               AND sa.killed_at IS NULL
         """) or 0
 
+        # 9. Stuck active + NULL pool — operational limbo: lifecycle says
+        # graduated (active) but no pool tag, on a non-burned/cancelled
+        # domain. Inbox can't be in campaigns (no live tag), can't be
+        # killed (no signal threshold met), can't auto-recover (warning
+        # path was removed by ADR-007). This was the bug class introduced
+        # by migration 098's "restore from domain default" branch on
+        # unassigned-pool domains. Self-healed by sync_accounts upsert
+        # (post 2026-04-29-late) — this metric should converge to 0
+        # within one sync_accounts cycle.
+        stuck_active_null = await self.db.fetchval("""
+            SELECT COUNT(*)
+            FROM sender_accounts sa
+            JOIN domains d ON d.id = sa.domain_id
+            WHERE sa.is_active = TRUE
+              AND sa.inbox_state = 'live'
+              AND sa.inventory_lifecycle_status = 'active'
+              AND sa.inventory_pool_status IS NULL
+              AND sa.killed_at IS NULL
+              AND (d.pool_status IS NULL OR d.pool_status NOT IN ('burned', 'cancelled'))
+        """) or 0
+
         return {
             'dual_tag_candidates': int(dual_tag),
             'warmup_disabled_active_24h': int(warmup_off),
@@ -272,6 +305,7 @@ class OverhaulAuditModule:
             'burned_inboxes_in_campaigns': int(burned_in_campaigns),
             'kill_queue_pending_over_2h': int(kill_queue_stuck),
             'flagged_but_alive_count': int(flagged_but_alive),
+            'stuck_active_null_pool': int(stuck_active_null),
         }
 
     async def _post_alert(self, metrics: Dict[str, int]) -> None:
@@ -322,6 +356,13 @@ class OverhaulAuditModule:
                 f"• *Flagged-but-alive:* {metrics['flagged_but_alive_count']} kill_queue rows with status='flagged' "
                 f"but inbox_state='live' AND killed_at IS NULL. Should be 0 (kill_processor is DB-first). "
                 f"Drift here means an inbox got resurrected post-kill, or a legacy partial-kill row exists."
+            )
+        if metrics['stuck_active_null_pool']:
+            lines.append(
+                f"• *Stuck active + NULL pool:* {metrics['stuck_active_null_pool']} inboxes with "
+                f"lifecycle='active' AND pool=NULL on healthy domains. Operational limbo — alive but "
+                f"not deployable. sync_accounts self-heals to 'reserve' on next upsert; if this stays "
+                f"non-zero across cycles the self-heal branch is missing a path."
             )
 
         # SlackAlerter.context expects a string; serialize the metrics dict.
