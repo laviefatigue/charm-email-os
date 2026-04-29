@@ -232,7 +232,7 @@ Mapping:
 
 | `inventory_pool_status` | EB tags |
 |---|---|
-| `'deployed'` | `live` (and untag `reserve`) |
+| `'live'` | `live` (and untag `reserve`) |
 | `'reserve'` | `reserve` (and untag `live`) |
 | `'warning'` | NEITHER (active circuit breaker; auto-clears when bounces subside) |
 | `'quarantined'` | NEITHER (active circuit breaker) |

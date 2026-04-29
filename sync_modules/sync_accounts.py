@@ -424,7 +424,7 @@ class AccountSyncModule:
                     WHEN EXCLUDED.inbox_state = 'dead' THEN NULL
                     WHEN (SELECT pool_status FROM domains WHERE id = sender_accounts.domain_id)
                          IN ('burned', 'cancelled') THEN NULL
-                    WHEN sender_accounts.inventory_pool_status IN ('deployed', 'reserve')
+                    WHEN sender_accounts.inventory_pool_status IN ('live', 'reserve')
                          THEN sender_accounts.inventory_pool_status
                     WHEN sender_accounts.inventory_lifecycle_status = 'active'
                          AND sender_accounts.inventory_pool_status IS NULL

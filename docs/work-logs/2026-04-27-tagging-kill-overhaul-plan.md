@@ -15,7 +15,7 @@ CEO confirmed four pivots that change the system's invariants:
 
 1. **100% Google Workspace infrastructure going forward** — 3 inboxes per domain, no Microsoft Entra in new builds.
 2. **Microsoft Entra is legacy.** Remaining Entra inboxes ride to death: tag `live`, kill on trigger, never re-tag.
-3. **Domain mixing is approved for cross-domain promotion only.** When kill_processor promotes a reserve inbox to fill a kill, the promoted inbox can have `inventory_pool_status='deployed'` while its source domain remains `pool_status='reserve'`.
+3. **Domain mixing is approved for cross-domain promotion only.** When kill_processor promotes a reserve inbox to fill a kill, the promoted inbox can have `inventory_pool_status='live'` while its source domain remains `pool_status='reserve'`.
 4. **Reserve is the bench, not a passive label.** Graduation lands in reserve. When a live inbox is killed, kill_processor promotes the oldest reserve inbox (workspace-scoped, cross-domain) to live so sending capacity never drops. Campaigns are reapplied by filtering on the `live` tag — that natural reapply cycle drains stale `campaign_inboxes` entries (dead/reserve inboxes that haven't been removed). Therefore campaign-membership enforcement is **out of scope** for this overhaul; tag correctness is sufficient because reapply does the cleanup.
 
 ### Concrete production bugs that triggered the overhaul
@@ -67,7 +67,7 @@ Sequential global serialization of tag/kill writes; workspace context drops mid-
 |---|---|---|
 | Per-inbox pool tag source | derived every cycle from `domain.pool_status` | `sender_accounts.inventory_pool_status` is sole authority |
 | `domain.pool_status` | authoritative for tag flow | default for new graduations + scope for burn events |
-| Cross-domain promotion | impossible (set_tag_sync overrides next cycle) | promoted inbox's `inventory_pool_status='deployed'` is preserved |
+| Cross-domain promotion | impossible (set_tag_sync overrides next cycle) | promoted inbox's `inventory_pool_status='live'` is preserved |
 | Mixed pool tags within a domain | invariant: never | allowed only when override produced by promotion |
 | Inbox alive-ness | dual columns (`is_active` + `inbox_state`) with asymmetric maintenance | same dual columns, but `mark_stale_accounts` now properly sets `inbox_state='dead'` when EB stops returning the inbox (Option 1 patch from 2026-04-28) |
 
@@ -77,17 +77,17 @@ Lifecycle of `inventory_pool_status`:
 
 ```
 graduation (Google):
-    domain.pool_status='live'    → inbox.inventory_pool_status='deployed'
+    domain.pool_status='live'    → inbox.inventory_pool_status='live'
     domain.pool_status='reserve' → inbox.inventory_pool_status='reserve'
 
 graduation (Microsoft, C2):
-    inbox.inventory_pool_status='deployed' (always; reserve concept does not apply)
+    inbox.inventory_pool_status='live' (always; reserve concept does not apply)
 
 cross-domain promotion (kill_processor):
-    promoted.inventory_pool_status='deployed' (override; source domain stays 'reserve')
+    promoted.inventory_pool_status='live' (override; source domain stays 'reserve')
 
 threshold-driven promotion (orchestrator, when packages assigned):
-    promoted.inventory_pool_status='deployed' (domain-aware selector picks oldest tapped/untapped)
+    promoted.inventory_pool_status='live' (domain-aware selector picks oldest tapped/untapped)
 
 kill:
     inbox.inventory_pool_status=NULL
@@ -154,8 +154,8 @@ Performed in response to the user directive: **"DB CLEAN UP FIRST. Accuracy then
 | Phase | Action | Rows affected | Result |
 |---|---|---|---|
 | **A+E** | Cancelled-domain inboxes mass-killed (combined Phase A "clear pool" + Phase E "kill zombies"). All 796 had been disconnected 60+ days OR removed from EB; per Rule C7 "extended disconnect = dead." `inbox_state='dead'`, `inventory_lifecycle_status='dead'`, `inventory_pool_status=NULL`, `kill_trigger='disconnected_timeout'`, `killed_at=NOW()`, `is_active=FALSE` | 796 | ✓ Verified 0 Connected inboxes were killed. Pre-state IDs saved to `scripts/backfill_snapshots/2026-04-28_cancelled_domain_kill_pre_state.txt` |
-| **B** | Microsoft inboxes wrongly tagged `inventory_pool_status='reserve'` on healthy domains corrected to `'deployed'`. CEO directive: MS = always deployed (never reserve). Pre-state IDs at `scripts/backfill_snapshots/2026-04-28_phase_B_ms_reserve_pre_state.txt` | 194 | ✓ Verified |
-| **C** | 3 Stable Kernel ODSC East 2026 inboxes (david.meeker, david@infer*, david@evolve*) updated `lifecycle='active'`, `pool='deployed'` because they had been assigned to a real EB campaign (created 2026-04-27, inboxes assigned 2026-04-28 06:09). User decision: clerical bypass of incubation, mark live to reflect operational reality | 3 | ✓ Verified |
+| **B** | Microsoft inboxes wrongly tagged `inventory_pool_status='reserve'` on healthy domains corrected to `'live'`. CEO directive: MS = always deployed (never reserve). Pre-state IDs at `scripts/backfill_snapshots/2026-04-28_phase_B_ms_reserve_pre_state.txt` | 194 | ✓ Verified |
+| **C** | 3 Stable Kernel ODSC East 2026 inboxes (david.meeker, david@infer*, david@evolve*) updated `lifecycle='active'`, `pool='live'` because they had been assigned to a real EB campaign (created 2026-04-27, inboxes assigned 2026-04-28 06:09). User decision: clerical bypass of incubation, mark live to reflect operational reality | 3 | ✓ Verified |
 | ~~D~~ | ~~Burned-domain Connected zombie cleanup~~ | 0 | **SKIPPED per Rule C7**: 982 burned-Connected inboxes still in EB; cannot auto-classify as dead. Team handles EB campaign cleanup manually. |
 | ~~F~~ | ~~Cross-workspace mismatches~~ | 0 | SKIPPED: 17 inboxes recorded under wrong workspace_id (e.g., Selery domain inboxes recorded under Sammy). Needs manual judgment. |
 
@@ -163,7 +163,7 @@ Performed in response to the user directive: **"DB CLEAN UP FIRST. Accuracy then
 
 ### Earlier in the session: prerequisite backfill
 
-Before the "accuracy first" cleanup, a `scripts/backfill_pool_status.py` run set 1,196 Microsoft NULL-pool inboxes to `'deployed'` to align them with CEO's "MS always live" directive before the new code deploy. **Design flaw**: the backfill SQL did not exclude burned/cancelled domains. Result: 909 of those 1,196 had their pool set to NULL again by the running OLD code's burned-domain handler (correct behavior — burned domain inboxes shouldn't have pool tags). Net effect was +212 correctly-deployed MS inboxes, not the 1,196 originally claimed. Lesson recorded under "Lessons learned" below.
+Before the "accuracy first" cleanup, a `scripts/backfill_pool_status.py` run set 1,196 Microsoft NULL-pool inboxes to `'live'` to align them with CEO's "MS always live" directive before the new code deploy. **Design flaw**: the backfill SQL did not exclude burned/cancelled domains. Result: 909 of those 1,196 had their pool set to NULL again by the running OLD code's burned-domain handler (correct behavior — burned domain inboxes shouldn't have pool tags). Net effect was +212 correctly-deployed MS inboxes, not the 1,196 originally claimed. Lesson recorded under "Lessons learned" below.
 
 ---
 
@@ -350,7 +350,7 @@ The post-deploy audit caught 9 latent bugs across two sessions. Each was fixed a
 
 | Action | Rows | Note |
 |---|---|---|
-| Phase G — clerical bypass UPDATE for 10 NEW Stable Kernel ODSC inboxes (assigned 2026-04-28 after Phase C original 3) → `lifecycle='active'`, `pool='deployed'` | 10 | Same pattern as Phase C; user authorized "may need to set them live" while flagging team-discipline issue. Pre-state at `scripts/backfill_snapshots/2026-04-28_odsc_clerical_bypass_pre_state.txt`. |
+| Phase G — clerical bypass UPDATE for 10 NEW Stable Kernel ODSC inboxes (assigned 2026-04-28 after Phase C original 3) → `lifecycle='active'`, `pool='live'` | 10 | Same pattern as Phase C; user authorized "may need to set them live" while flagging team-discipline issue. Pre-state at `scripts/backfill_snapshots/2026-04-28_odsc_clerical_bypass_pre_state.txt`. |
 | Phase H — `inbox_rotation_history` rows added for ODSC clerical bypass (rotation_type='clerical_bypass') so the new `_untag_incubating_from_active` phase 4 picks them up and untags 'incubating' from EB | 10 | Rotation type is free-text in DB; chose 'clerical_bypass' as the canonical label. |
 
 ### Fleet tag audit (session-2)
@@ -412,7 +412,7 @@ Fleet pool state model post-ADR-007: `{deployed, reserve, NULL}` only.
 
 ### 1. Backfill design flaw — overly broad WHERE clause
 
-The first `scripts/backfill_pool_status.py` run set ALL Microsoft NULL-pool inboxes to `'deployed'`, including ~909 on burned domains. The OLD code's burned-domain handler then reset those to NULL (correctly). Net outcome was +212 correctly deployed, not the 1,196 claimed.
+The first `scripts/backfill_pool_status.py` run set ALL Microsoft NULL-pool inboxes to `'live'`, including ~909 on burned domains. The OLD code's burned-domain handler then reset those to NULL (correctly). Net outcome was +212 correctly deployed, not the 1,196 claimed.
 
 **Lesson**: Backfill SQL must account for self-correcting handlers in the running code. Always include domain pool filters (`AND domain.pool_status NOT IN ('burned','cancelled')`) when backfilling pool status.
 

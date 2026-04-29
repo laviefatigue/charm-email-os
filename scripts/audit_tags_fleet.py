@@ -102,7 +102,7 @@ def categorize(db_row, eb_tags_list):
     has_incubating = "incubating" in tags
 
     # Pool-tag invariants
-    if pool == "deployed":
+    if pool == "live":
         if not has_live:
             issues.append("missing_live_tag")
         if has_reserve:

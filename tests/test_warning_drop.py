@@ -75,7 +75,7 @@ async def _make_inbox(
     esp: str = "gmail",
     inbox_state: str = "live",
     inventory_lifecycle_status: str = "active",
-    inventory_pool_status="deployed",
+    inventory_pool_status="live",
     hard_bounces_24h: int = 0,
     hard_bounces_7d: int = 0,
     hard_blocked_24h: int = 0,
@@ -324,7 +324,7 @@ async def test_w7_upsert_pool_never_warning(
     Direct test of the sync_accounts upsert CASE: verify pool stays in
     {deployed, reserve, NULL} regardless of bounce counter values.
 
-    We simulate the upsert flow by inserting an inbox at pool='deployed',
+    We simulate the upsert flow by inserting an inbox at pool='live',
     then doing a direct UPDATE that mimics the upsert's CASE evaluation
     (but executed as a real UPDATE so we can check behavior). The real
     code path is exercised in W10 via running migration + sync_accounts.
@@ -338,11 +338,11 @@ async def test_w7_upsert_pool_never_warning(
         esp="gmail",
         hard_bounces_24h=5,  # would have flipped to warning pre-ADR-007
         hard_bounces_7d=10,
-        inventory_pool_status="deployed",
+        inventory_pool_status="live",
     )
 
     # Run the new code's CASE logic by issuing an UPDATE that mirrors
-    # what the upsert does. Pool MUST stay 'deployed' (preserved branch).
+    # what the upsert does. Pool MUST stay 'live' (preserved branch).
     new_pool = await db_pool.fetchval(
         """
         SELECT CASE
@@ -350,7 +350,7 @@ async def test_w7_upsert_pool_never_warning(
             WHEN 'live' = 'dead' THEN NULL  -- placeholder for EXCLUDED.inbox_state
             WHEN (SELECT pool_status FROM domains WHERE id = sa.domain_id)
                  IN ('burned', 'cancelled') THEN NULL
-            WHEN sa.inventory_pool_status IN ('deployed', 'reserve')
+            WHEN sa.inventory_pool_status IN ('live', 'reserve')
                  THEN sa.inventory_pool_status
             WHEN sa.warmup_started_at IS NOT NULL
                  AND sa.warmup_started_at <= NOW() - INTERVAL '21 days'
@@ -361,7 +361,7 @@ async def test_w7_upsert_pool_never_warning(
         """,
         inbox_id,
     )
-    assert new_pool == "deployed"
+    assert new_pool == "live"
     assert new_pool != "warning"
 
 
@@ -454,7 +454,7 @@ async def test_w9_migration_098_idempotent(
 
 
 # ──────────────────────────────────────────────────────────────────────────
-# W10: Existing pool='warning' Microsoft inbox post-migration → 'deployed'
+# W10: Existing pool='warning' Microsoft inbox post-migration → 'live'
 # ──────────────────────────────────────────────────────────────────────────
 async def test_w10_migration_restores_microsoft_to_deployed(
     db_pool, fake_client, workspace_factory
@@ -478,7 +478,7 @@ async def test_w10_migration_restores_microsoft_to_deployed(
     pool = await db_pool.fetchval(
         "SELECT inventory_pool_status FROM sender_accounts WHERE id = $1", inbox_id
     )
-    assert pool == "deployed", "Microsoft warning inboxes should be restored to 'deployed' (pin)"
+    assert pool == "live", "Microsoft warning inboxes should be restored to 'live' (pin)"
 
     # No kill queued (MS isn't subject to the migration's hb_24h>=1 path).
     rows = await _kill_queue_rows_for(db_pool, inbox_id)

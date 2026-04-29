@@ -28,7 +28,7 @@ CEO directives at the start of the overhaul:
 
 1. **100% Google Workspace going forward** — 3 inboxes per domain. No new Microsoft Entra orders.
 2. **Microsoft Entra is legacy.** Existing Entra inboxes ride to death: tag `live` once, kill on trigger, never re-tag.
-3. **Domain mixing is approved for cross-domain promotion only.** When kill_processor promotes a reserve inbox to fill a kill, the promoted inbox can have `inventory_pool_status='deployed'` while its source domain stays `pool_status='reserve'`.
+3. **Domain mixing is approved for cross-domain promotion only.** When kill_processor promotes a reserve inbox to fill a kill, the promoted inbox can have `inventory_pool_status='live'` while its source domain stays `pool_status='reserve'`.
 4. **Reserve is the bench, not a passive label.** Graduation lands in reserve. Kills trigger workspace-scoped, cross-domain promotion.
 
 A fifth directive emerged during execution:
@@ -45,7 +45,7 @@ We rewrote the tagging/kill stack with these load-bearing decisions:
 
 | `inventory_pool_status` | EB tags |
 |---|---|
-| `'deployed'` | `live` (and untag `reserve`) |
+| `'live'` | `live` (and untag `reserve`) |
 | `'reserve'` | `reserve` (and untag `live`) |
 | `'warning'` | NEITHER (active circuit breaker) |
 | `'quarantined'` | NEITHER (active circuit breaker) |
@@ -82,8 +82,8 @@ The per-inbox loop in `set_tag_sync` now:
 
 ### 5. ESP-aware graduation paths
 
-- **Google** graduates to `'reserve'` (cross-domain promotion fills `'deployed'` from there).
-- **Microsoft** graduates directly to `'deployed'` (CEO Rule C2 — legacy ride-to-death).
+- **Google** graduates to `'reserve'` (cross-domain promotion fills `'live'` from there).
+- **Microsoft** graduates directly to `'live'` (CEO Rule C2 — legacy ride-to-death).
 
 Microsoft is also pinned in `set_tag_sync`: always tagged `live`, never tagged `reserve`, warning circuit breaker is overridden. This makes the MS fleet a constant-state population that's never re-tagged in normal operation.
 

@@ -102,7 +102,7 @@ INBOX_KILLING_TRIGGERS = {
 
 **A domain burn condemns ALL inboxes on that domain.** The burn handler clears `inventory_pool_status` to NULL for every inbox on the burned domain — they no longer carry pool tags in EB.
 
-> **What changed in 2026-04-27 overhaul:** Reserve replacement is no longer strictly domain-level. Pre-overhaul: a burn promoted an entire reserve *domain* (with all its inboxes). Post-overhaul: when an inbox is killed (whether from a domain burn or an individual trigger), kill_processor promotes the **oldest reserve INBOX** workspace-wide, regardless of source domain. The promoted inbox gets `inventory_pool_status='deployed'` while its source domain stays `pool_status='reserve'`. This is the **cross-domain promotion** model — you CAN now split inboxes from the same domain across pools, mid-cycle.
+> **What changed in 2026-04-27 overhaul:** Reserve replacement is no longer strictly domain-level. Pre-overhaul: a burn promoted an entire reserve *domain* (with all its inboxes). Post-overhaul: when an inbox is killed (whether from a domain burn or an individual trigger), kill_processor promotes the **oldest reserve INBOX** workspace-wide, regardless of source domain. The promoted inbox gets `inventory_pool_status='live'` while its source domain stays `pool_status='reserve'`. This is the **cross-domain promotion** model — you CAN now split inboxes from the same domain across pools, mid-cycle.
 >
 > Domain-aware ordering still applies: `pool_promotion.pick_promotion_candidates` prefers partially-tapped reserve domains (fewest remaining reserves first) before opening a new untapped domain.
 

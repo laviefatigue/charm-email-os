@@ -43,14 +43,14 @@ A user question framed the decision: *"can you explain warning then if google in
 ### Pool state model — before vs after
 
 **Before (4 states):**
-- `'deployed'` — in active campaigns
+- `'live'` — in active campaigns
 - `'reserve'` — bench
 - `'warning'` — soft-pause (active circuit breaker)
 - `'quarantined'` — reserved for future severe use (never used in practice)
 - `NULL` — unallocated
 
 **After (3 states):**
-- `'deployed'` — in active campaigns
+- `'live'` — in active campaigns
 - `'reserve'` — bench
 - `NULL` — unallocated
 

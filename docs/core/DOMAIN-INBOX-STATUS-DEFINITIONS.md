@@ -66,7 +66,7 @@ inbox_state = "live"  +  status = "Not connected"
 | Status | EB Tags | How Set | Reversibility |
 |--------|---------|---------|---------------|
 | **NULL** | NEITHER | sync_accounts on insert; kill; domain burn (burned/cancelled); migration 098 (former Gmail warning with no domain default) | Forward-only post-kill |
-| **reserve** | `reserve` only | Graduation (Google); migration 098 restoring former warning Gmail on reserve domains | Can promote → `'deployed'` |
+| **reserve** | `reserve` only | Graduation (Google); migration 098 restoring former warning Gmail on reserve domains | Can promote → `'live'` |
 | **deployed** | `live` only | Graduation (Microsoft); cross-domain promotion (kill_processor); threshold-driven (orchestrator); migration 098 restoring former warning MS or Gmail on live domains | No demotion path (kill is terminal) |
 
 **Removed states (per ADR-007, 2026-04-29):**

@@ -935,7 +935,7 @@ class KillProcessor:
             domain mixing is approved for promotion. We pull the longest-
             sitting healthy reserve inbox from anywhere in the workspace,
             not just the same domain. Source domain stays in its pool;
-            only the promoted inbox transitions to `inventory_pool_status='deployed'`.
+            only the promoted inbox transitions to `inventory_pool_status='live'`.
             set_tag_sync's per-inbox authority then propagates the EB tags.
 
         Trigger severity:
@@ -1108,7 +1108,7 @@ class KillProcessor:
         # Only promote if the killed inbox was deployed (live).
         # Reserve and warning inboxes don't get replaced — we just lose
         # one bench position; allocation will refill on next graduation.
-        if killed_pool != 'deployed':
+        if killed_pool != 'live':
             return
 
         # ==========================================
@@ -1121,7 +1121,7 @@ class KillProcessor:
         # promotion, killing the third inbox on a 3-inbox Google domain
         # leaves the live pool short with no replacement on hand.
         #
-        # The promoted inbox's `inventory_pool_status` becomes 'deployed';
+        # The promoted inbox's `inventory_pool_status` becomes 'live';
         # its source domain's `pool_status` stays 'reserve'. set_tag_sync
         # reads the per-inbox status as authority on the next cycle and
         # tags 'live' on the promoted inbox while keeping its siblings on
@@ -1209,7 +1209,7 @@ class KillProcessor:
                 WHERE domain_id = $1
                 AND inbox_state = 'live'
                 AND status = 'Connected'
-                AND inventory_pool_status = 'deployed'
+                AND inventory_pool_status = 'live'
             """, domain_id)
 
             if domain_a_set_count == 0:
@@ -1292,7 +1292,7 @@ class KillProcessor:
         # 2. Count remaining live inboxes that will be affected
         remaining = await self.db.fetchrow("""
             SELECT
-                COUNT(*) FILTER (WHERE inventory_pool_status = 'deployed') as a_set_count,
+                COUNT(*) FILTER (WHERE inventory_pool_status = 'live') as a_set_count,
                 COUNT(*) FILTER (WHERE inventory_pool_status = 'reserve') as b_set_count,
                 COUNT(*) as total_live
             FROM sender_accounts

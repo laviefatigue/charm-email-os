@@ -15,7 +15,7 @@ ESP-aware graduation:
   Cross-domain promotion to live happens via kill_processor when a live
   inbox dies.
 - Microsoft Entra (legacy): graduate directly to LIVE (tag 'live',
-  inventory_pool_status='deployed'). No reserve concept for Entra — the
+  inventory_pool_status='live'). No reserve concept for Entra — the
   legacy fleet rides to death.
 
 Tag transitions handled here:
@@ -225,7 +225,7 @@ class LifecycleTagSyncModule:
         Graduate inboxes that have completed warmup.
 
         ESP-aware destination (post-overhaul):
-        - Microsoft Entra inboxes  → live (inventory_pool_status='deployed')
+        - Microsoft Entra inboxes  → live (inventory_pool_status='live')
           Legacy fleet rides to death; reserve concept does not apply.
         - Google / unknown ESP     → reserve (inventory_pool_status='reserve')
           Bench position; kill_processor promotes to live when capacity drops.
@@ -291,7 +291,7 @@ class LifecycleTagSyncModule:
             # Google / unknown → reserve (bench, awaits promotion).
             if esp == ESP_MICROSOFT:
                 target_tag_id = live_tag_id
-                target_pool_status = 'deployed'
+                target_pool_status = 'live'
                 target_tag_label = 'live'
             else:
                 target_tag_id = reserve_tag_id

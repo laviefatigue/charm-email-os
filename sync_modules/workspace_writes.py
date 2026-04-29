@@ -280,7 +280,7 @@ class WorkspaceWriteOrchestrator:
           2. current_live = count of Google deployed Connected inboxes
           3. deficit = effective_live_target - current_live
           4. If deficit > 0: pick `deficit` candidates via the domain-aware
-             selector and promote them (sets inventory_pool_status='deployed'
+             selector and promote them (sets inventory_pool_status='live'
              plus an inbox_rotation_history row each).
           5. Reserve runway alert: if current_reserve < package.target_reserve_count,
              post a Slack note. We do NOT freeze promotion to protect reserve —
@@ -305,7 +305,7 @@ class WorkspaceWriteOrchestrator:
         effective_live_target = override if override is not None else package_live
 
         current_live = await count_pool_state(
-            self.db, workspace_id, 'deployed', esp='gmail'
+            self.db, workspace_id, 'live', esp='gmail'
         )
         current_reserve = await count_pool_state(
             self.db, workspace_id, 'reserve', esp='gmail'

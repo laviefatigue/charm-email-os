@@ -71,7 +71,7 @@ async def pick_promotion_candidates(
                 d.domain_name,
                 d.pool_status                  AS domain_pool_status,
                 COUNT(*) FILTER (
-                    WHERE sa.inventory_pool_status = 'deployed'
+                    WHERE sa.inventory_pool_status = 'live'
                 )                              AS deployed_count,
                 COUNT(*) FILTER (
                     WHERE sa.inventory_pool_status = 'reserve'
@@ -131,7 +131,7 @@ async def promote_inbox_to_deployed(
     metadata: Optional[Dict[str, Any]] = None,
 ) -> bool:
     """
-    Promote a single inbox: set inventory_pool_status='deployed' AND log to
+    Promote a single inbox: set inventory_pool_status='live' AND log to
     inbox_rotation_history. Returns True if the row was promoted, False if
     it was already deployed (no-op) or the inbox doesn't exist.
 
@@ -161,7 +161,7 @@ async def promote_inbox_to_deployed(
                 logger.warning("[pool_promotion] inbox %s not found", inbox_id)
                 return False
 
-            if row['inventory_pool_status'] == 'deployed':
+            if row['inventory_pool_status'] == 'live':
                 logger.debug(
                     "[pool_promotion] inbox %s (%s) already deployed; skipping",
                     inbox_id, row['email_address'],
@@ -172,7 +172,7 @@ async def promote_inbox_to_deployed(
 
             await conn.execute("""
                 UPDATE sender_accounts
-                SET inventory_pool_status = 'deployed',
+                SET inventory_pool_status = 'live',
                     updated_at = NOW()
                 WHERE id = $1
             """, inbox_id)
@@ -187,7 +187,7 @@ async def promote_inbox_to_deployed(
                 ) VALUES (
                     $1, $2,
                     $3, $4,
-                    $5, 'deployed',
+                    $5, 'live',
                     $6, $7,
                     TRUE, NOW(), $8::jsonb
                 )

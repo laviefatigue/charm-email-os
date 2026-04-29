@@ -93,7 +93,7 @@ Deployment is inferred from inbox presence, not a separate status value.
 The cycle-to-cycle tag decision is made per-inbox from `sender_accounts.inventory_pool_status`. See §5.2 for full mapping.
 
 This enables:
-- **Cross-domain promotion** — kill_processor promotes the oldest reserve inbox to fill a kill, regardless of source domain. The promoted inbox gets `inventory_pool_status='deployed'` while its source domain stays `pool_status='reserve'`. set_tag_sync respects the per-inbox value.
+- **Cross-domain promotion** — kill_processor promotes the oldest reserve inbox to fill a kill, regardless of source domain. The promoted inbox gets `inventory_pool_status='live'` while its source domain stays `pool_status='reserve'`. set_tag_sync respects the per-inbox value.
 - **Threshold-driven promotion** — when a workspace has a `package_id`, the orchestrator promotes reserve inboxes to fill the package's live target. Domain-aware ordering (partially-tapped domains finished before opening new ones).
 - **Active circuit breaker** — `inventory_pool_status='warning'` (set by sync_accounts on bounce signal) untags both `live` and `reserve` from EB without modifying the domain.
 
@@ -103,9 +103,9 @@ This enables:
 |---|---|---|
 | Graduation (Google) — domain `pool_status='live'` | After 14 BD warmup at `lifecycle_tag_sync` | `'reserve'` (post-overhaul: Google always graduates to reserve regardless of domain default) |
 | Graduation (Google) — domain `pool_status='reserve'` | Same | `'reserve'` |
-| Graduation (Microsoft) | Same | `'deployed'` (legacy Entra goes straight to live; never reserve) |
-| Cross-domain promotion (kill_processor) | On each kill — picks oldest reserve, workspace-scoped | `'deployed'` |
-| Threshold-driven promotion (orchestrator) | Per workspace, only when `workspaces.package_id IS NOT NULL` | `'deployed'` |
+| Graduation (Microsoft) | Same | `'live'` (legacy Entra goes straight to live; never reserve) |
+| Cross-domain promotion (kill_processor) | On each kill — picks oldest reserve, workspace-scoped | `'live'` |
+| Threshold-driven promotion (orchestrator) | Per workspace, only when `workspaces.package_id IS NOT NULL` | `'live'` |
 | Bounce signal | sync_accounts upsert when `hb_24h ≥ 1 OR hb_7d ≥ 3` | `'warning'` (auto-clears when bounces subside) |
 | Kill | kill_processor on kill_queue drain | `NULL` |
 | Domain burn | Burn handler: all inboxes on domain | `NULL` |
@@ -142,7 +142,7 @@ The 80% live / 20% reserve split is a high-level capacity-planning heuristic, NO
 |---|---|---|
 | `NULL` | Neither `live` nor `reserve` | sync_accounts on insert (new inbox), kill, domain burn, `mark_stale_accounts`, or migration 098 (former warning Google with no domain default) |
 | `'reserve'` | `reserve` tag, not `live` | Graduation (Google), migration 098 restoring former warning Gmail on reserve-pool domains |
-| `'deployed'` | `live` tag, not `reserve` | Graduation (Microsoft), cross-domain promotion (kill_processor), threshold-driven promotion (orchestrator), migration 098 restoring former warning MS (pin) or Gmail on live domains |
+| `'live'` | `live` tag, not `reserve` | Graduation (Microsoft), cross-domain promotion (kill_processor), threshold-driven promotion (orchestrator), migration 098 restoring former warning MS (pin) or Gmail on live domains |
 
 **Removed states (per ADR-007):**
 
@@ -157,7 +157,7 @@ The 80% live / 20% reserve split is a high-level capacity-planning heuristic, NO
 NULL (new sync) → 'incubating' → 'active' (graduated)
                                     │
                                     ├─ Google → 'reserve' (cross-domain promotion later via kill or threshold)
-                                    └─ Microsoft → 'deployed' (legacy ride-to-death)
+                                    └─ Microsoft → 'live' (legacy ride-to-death)
 ```
 
 Post-graduation, the inbox stays at `lifecycle='active'` permanently until killed. `inventory_pool_status` may transition multiple times: reserve → deployed (promotion) → warning (bounces) → reserve (recovery) → NULL (kill). See §4.3 for transition triggers.
@@ -183,7 +183,7 @@ This makes the MS fleet a constant-state population that's never re-tagged in no
 |-----|-------------|--------------|-------------|
 | `incubating` | Inbox detected, warmup started | After 21 days | Do not assign to campaigns |
 | ~~`live` (lifecycle)~~ | **REMOVED post-overhaul.** Lifecycle no longer uses a `live` tag — graduation goes straight to pool tag (`reserve` for Google, `live` for Microsoft via pin). | — | — |
-| `live` (pool tag) | Per-inbox `inventory_pool_status='deployed'` (or Microsoft pin) | Pool flips to reserve/warning/NULL OR pool tag drained by warning circuit breaker | Assign to campaigns |
+| `live` (pool tag) | Per-inbox `inventory_pool_status='live'` (or Microsoft pin) | Pool flips to reserve/warning/NULL OR pool tag drained by warning circuit breaker | Assign to campaigns |
 | `reserve` (pool tag) | Per-inbox `inventory_pool_status='reserve'` | Promoted to deployed (kill-driven or threshold-driven) | Do not assign — warming reserve |
 | `flagged_{trigger}` | Kill trigger fires (health_checks → kill_queue) | Never removed | Extract from campaigns |
 

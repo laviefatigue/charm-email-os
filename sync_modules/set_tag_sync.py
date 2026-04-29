@@ -15,7 +15,7 @@ Per-inbox state → EB tag:
 
     inventory_pool_status     EB pool tag(s)
     ─────────────────────────────────────────
-    'deployed'                live (and untag reserve)
+    'live'                live (and untag reserve)
     'reserve'                 reserve (and untag live)
     NULL                      NEITHER — unallocated, no pool
 
@@ -37,10 +37,10 @@ previous graduation.
 ESP differentiation
 ───────────────────
 - Microsoft Entra inboxes are managed by lifecycle_tag_sync directly: they
-  graduate to 'deployed' permanently and ride to death. set_tag_sync still
+  graduate to 'live' permanently and ride to death. set_tag_sync still
   enforces that 'live' is set and 'reserve' is absent for them — but never
   changes their pool status.
-- Google inboxes graduate to 'reserve'. Cross-domain promotion to 'deployed'
+- Google inboxes graduate to 'reserve'. Cross-domain promotion to 'live'
   is performed by kill_processor and reflected here on the next cycle.
 
 Standard tag names (only)
@@ -367,7 +367,7 @@ class SetTagSyncModule:
         Reconcile EB pool tags with each inbox's `inventory_pool_status`.
 
         Per-inbox authority (post-2026-04-27 overhaul, updated ADR-007 2026-04-29):
-        - 'deployed'    → ensure 'live' tag, untag 'reserve'
+        - 'live'    → ensure 'live' tag, untag 'reserve'
         - 'reserve'     → ensure 'reserve' tag, untag 'live'
         - NULL          → untag both (unallocated; was also 'warning'/'quarantined' pre-ADR-007)
 
@@ -381,7 +381,7 @@ class SetTagSyncModule:
         the previous skip-bug, without requiring a separate cleanup pass.
 
         Microsoft Entra inboxes are NEVER re-pooled here — lifecycle_tag_sync
-        sets them to 'deployed' permanently and they ride to death. We still
+        sets them to 'live' permanently and they ride to death. We still
         emit the reconciling untag of 'reserve' on them in case a stale tag
         slipped in.
         """
@@ -566,11 +566,11 @@ class SetTagSyncModule:
 
         Returns:
             (target_tag_id, opposite_tag_id, label):
-                - 'deployed'    → (live, reserve, 'live')
+                - 'live'    → (live, reserve, 'live')
                 - 'reserve'     → (reserve, live, 'reserve')
                 - else (NULL/unknown) → (None, None, None)
         """
-        if pool_status == 'deployed':
+        if pool_status == 'live':
             return a_set_tag_id, b_set_tag_id, 'live'
         if pool_status == 'reserve':
             return b_set_tag_id, a_set_tag_id, 'reserve'
@@ -612,7 +612,7 @@ class SetTagSyncModule:
                 )
             )
             ORDER BY
-                CASE WHEN inventory_pool_status = 'deployed' THEN 0 ELSE 1 END,
+                CASE WHEN inventory_pool_status = 'live' THEN 0 ELSE 1 END,
                 warmup_started_at ASC NULLS LAST,
                 health_score DESC NULLS LAST
         """, domain_id)
@@ -632,8 +632,8 @@ class SetTagSyncModule:
                 COALESCE(d.infrastructure_type,
                     CASE WHEN sa.esp = 'microsoft' THEN 'entra' ELSE 'google' END
                 ) as provider,
-                COUNT(*) FILTER (WHERE sa.inventory_pool_status = 'deployed' AND sa.status = 'Connected') as a_set_connected,
-                COUNT(*) FILTER (WHERE sa.inventory_pool_status = 'deployed' AND sa.status != 'Connected') as a_set_disconnected,
+                COUNT(*) FILTER (WHERE sa.inventory_pool_status = 'live' AND sa.status = 'Connected') as a_set_connected,
+                COUNT(*) FILTER (WHERE sa.inventory_pool_status = 'live' AND sa.status != 'Connected') as a_set_disconnected,
                 COUNT(*) FILTER (WHERE sa.inventory_pool_status = 'reserve') as b_set,
                 COUNT(*) FILTER (WHERE sa.inventory_lifecycle_status = 'incubating') as incubating,
                 COUNT(*) as total

@@ -200,7 +200,7 @@ async def test_t2_microsoft_graduates_to_live(
         inbox_id,
     )
     assert row["inventory_lifecycle_status"] == "active"
-    assert row["inventory_pool_status"] == "deployed"
+    assert row["inventory_pool_status"] == "live"
     assert fake_client.tags_on(10002) == {"live"}
 
 
@@ -290,7 +290,7 @@ async def test_t7_cross_domain_promotion(
         email="killed@t7-live.example", eb_account_id=10070,
         esp="gmail",
         inventory_lifecycle_status="active",
-        inventory_pool_status="deployed",
+        inventory_pool_status="live",
     )
     # Bench candidate: oldest reserve inbox, on a different (reserve) domain.
     candidate_id = await _make_inbox(
@@ -335,7 +335,7 @@ async def test_t7_cross_domain_promotion(
     decoy = await db_pool.fetchrow(
         "SELECT inventory_pool_status FROM sender_accounts WHERE id = $1", decoy_id
     )
-    assert candidate["inventory_pool_status"] == "deployed"
+    assert candidate["inventory_pool_status"] == "live"
     assert decoy["inventory_pool_status"] == "reserve"
 
     # CRITICAL: source domain (t7-reserve.example) STAYS pool_status='reserve'
@@ -401,7 +401,7 @@ async def test_t12_min_sends_floor_blocks_low_volume_kill(
         email="quiet@t12-quiet.example", eb_account_id=10120,
         esp="gmail",
         inventory_lifecycle_status="active",
-        inventory_pool_status="deployed",
+        inventory_pool_status="live",
         hard_bounces_24h=2,        # would normally trigger
         total_sends_24h=3,         # but volume is too low — floor is 20
         warmup_started_at_days_ago=60,
@@ -471,7 +471,7 @@ async def _make_deployed_inbox(db_pool, workspace_id, domain_id, *,
         db_pool, workspace_id, domain_id,
         email=email, eb_account_id=eb_account_id, esp='gmail',
         inventory_lifecycle_status='active',
-        inventory_pool_status='deployed',
+        inventory_pool_status='live',
         warmup_started_at_days_ago=60,
     )
 
@@ -523,7 +523,7 @@ async def test_t13_threshold_promotes_deficit(
     # Should have promoted exactly 2 (target=3, current=1, deficit=2)
     deployed_count = await db_pool.fetchval("""
         SELECT COUNT(*) FROM sender_accounts
-        WHERE workspace_id = $1 AND inventory_pool_status = 'deployed'
+        WHERE workspace_id = $1 AND inventory_pool_status = 'live'
     """, ws_id)
     assert deployed_count == 3, f"expected 3 deployed, got {deployed_count}"
 
@@ -564,7 +564,7 @@ async def test_t14_override_caps_live_target(
 
     deployed_count = await db_pool.fetchval("""
         SELECT COUNT(*) FROM sender_accounts
-        WHERE workspace_id = $1 AND inventory_pool_status = 'deployed'
+        WHERE workspace_id = $1 AND inventory_pool_status = 'live'
     """, ws_id)
     assert deployed_count == 2, f"override=2 should hold; got {deployed_count}"
 
@@ -725,15 +725,15 @@ async def test_t8_two_kill_safety_net_retires_small_domain(
     # 3-inbox Google domain.
     a = await _make_inbox(
         db_pool, ws_id, domain_id, email="a@t8-google3.example", eb_account_id=10080,
-        inventory_lifecycle_status="active", inventory_pool_status="deployed",
+        inventory_lifecycle_status="active", inventory_pool_status="live",
     )
     b = await _make_inbox(
         db_pool, ws_id, domain_id, email="b@t8-google3.example", eb_account_id=10081,
-        inventory_lifecycle_status="active", inventory_pool_status="deployed",
+        inventory_lifecycle_status="active", inventory_pool_status="live",
     )
     await _make_inbox(
         db_pool, ws_id, domain_id, email="c@t8-google3.example", eb_account_id=10082,
-        inventory_lifecycle_status="active", inventory_pool_status="deployed",
+        inventory_lifecycle_status="active", inventory_pool_status="live",
     )
 
     # Mark two inboxes dead.
