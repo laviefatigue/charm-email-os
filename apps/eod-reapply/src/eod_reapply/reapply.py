@@ -273,13 +273,21 @@ async def reapply_campaign(
     paused_status = (pause_resp.get("status") or "").lower()
     if paused_status != "paused":
         # EB returned 200 but did not transition to Paused. Try to resume defensively
-        # (it might still be Active and acked the call as a no-op), then bail.
+        # (it might still be Active and acked the call as a no-op).
+        # If the defensive resume ALSO fails, escalate to FAILED_LEFT_PAUSED — the
+        # campaign may genuinely be paused and we have no signal otherwise.
+        defensive_resume_error: Optional[str] = None
         try:
             await eb.resume_campaign(campaign_id)
-        except EmailBisonAPIError:
-            pass
+        except EmailBisonAPIError as resume_e:
+            defensive_resume_error = str(resume_e)
+
         result.error_message = f"pause returned status={paused_status!r}, expected 'paused'"
         result.error_step = "pause_verify"
+        if defensive_resume_error is not None:
+            # Treat as left-paused — operator must verify
+            result.status = ReapplyStatus.FAILED_LEFT_PAUSED
+            result.error_message += f" | defensive resume also failed: {defensive_resume_error}"
         return result
 
     # ----- From here, resume MUST be attempted in finally -----

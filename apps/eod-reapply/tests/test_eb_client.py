@@ -359,6 +359,20 @@ class TestListSendersWithTag:
             result = await c.list_senders_with_tag(7)
         assert result == []
 
+    @respx.mock
+    async def test_pagination_safety_limit_breach_raises(self, client_factory, monkeypatch):
+        # Patch the safety limit DOWN so we can trigger it without 1000 real calls.
+        # Each response says last_page=99999 so the loop never sees a natural exit.
+        from eod_reapply import eb_client as eb_client_mod
+        monkeypatch.setattr(eb_client_mod, "_PAGINATION_SAFETY_LIMIT", 3)
+
+        respx.get(f"{BASE_URL}/api/sender-emails").mock(
+            return_value=_resp(200, {"data": [{"id": 1}], "meta": {"last_page": 99999, "current_page": 1}})
+        )
+        async with client_factory() as c:
+            with pytest.raises(EmailBisonAPIError, match="Pagination safety limit"):
+                await c.list_senders_with_tag(7)
+
 
 # =============================================================================
 # Tags
@@ -419,6 +433,60 @@ class TestTags:
 # =============================================================================
 # Transport-level errors
 # =============================================================================
+
+class TestDefensiveResponseHandling:
+    """Cover the defensive branches that handle unusual EB response shapes.
+
+    These shouldn't fire in normal operation, but are no-silent-error guards
+    if EB ever returns something unexpected.
+    """
+
+    @respx.mock
+    async def test_get_campaign_with_204_no_content(self, client_factory):
+        # 204 → resp.content is empty → _request returns None → _unwrap returns None
+        # → get_campaign returns {} (no AttributeError on dict access downstream)
+        respx.get(f"{BASE_URL}/api/campaigns/1").mock(return_value=httpx.Response(204))
+        async with client_factory() as c:
+            result = await c.get_campaign(1)
+        assert result == {}
+
+    @respx.mock
+    async def test_get_campaign_senders_with_none_response(self, client_factory):
+        # 204 → returns []
+        respx.get(f"{BASE_URL}/api/campaigns/1/sender-emails").mock(
+            return_value=httpx.Response(204)
+        )
+        async with client_factory() as c:
+            result = await c.get_campaign_senders(1)
+        assert result == []
+
+    @respx.mock
+    async def test_get_workspace_tags_with_none_response(self, client_factory):
+        respx.get(f"{BASE_URL}/api/tags").mock(return_value=httpx.Response(204))
+        async with client_factory() as c:
+            result = await c.get_workspace_tags()
+        assert result == []
+
+    @respx.mock
+    async def test_get_workspace_tags_unexpected_shape_raises(self, client_factory):
+        # Defensive: if EB ever returns an object instead of a list, fail loud
+        respx.get(f"{BASE_URL}/api/tags").mock(
+            return_value=_resp(200, {"data": {"unexpected": "shape"}})
+        )
+        async with client_factory() as c:
+            with pytest.raises(EmailBisonAPIError, match="Expected list"):
+                await c.get_workspace_tags()
+
+    @respx.mock
+    async def test_list_senders_unexpected_top_level_shape_raises(self, client_factory):
+        # Defensive: if EB returns a string or number at top level (highly unusual)
+        respx.get(f"{BASE_URL}/api/sender-emails").mock(
+            return_value=httpx.Response(200, json="not-a-dict-or-list")
+        )
+        async with client_factory() as c:
+            with pytest.raises(EmailBisonAPIError, match="Unexpected sender-emails response shape"):
+                await c.list_senders_with_tag(1)
+
 
 class TestTransportErrors:
     @respx.mock

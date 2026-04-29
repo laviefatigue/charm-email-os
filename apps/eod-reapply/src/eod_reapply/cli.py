@@ -179,18 +179,33 @@ def reapply(
     else:
         click.echo("MODE: DRY-RUN (no mutations; pass --apply to execute)", err=True)
 
-    result = asyncio.run(_async_run(
-        database_url=database_url,
-        eb_base_url=eb_base_url,
-        workspace_name=workspace_name,
-        campaign_id=campaign_id,
-        live_tag_name=live_tag_name,
-        apply_changes=apply_changes,
-        skip_time_check=skip_time_check,
-        buffer_minutes=buffer_minutes,
-        min_target_size=min_target_size,
-        max_removal_pct=max_removal_pct,
-    ))
+    try:
+        result = asyncio.run(_async_run(
+            database_url=database_url,
+            eb_base_url=eb_base_url,
+            workspace_name=workspace_name,
+            campaign_id=campaign_id,
+            live_tag_name=live_tag_name,
+            apply_changes=apply_changes,
+            skip_time_check=skip_time_check,
+            buffer_minutes=buffer_minutes,
+            min_target_size=min_target_size,
+            max_removal_pct=max_removal_pct,
+        ))
+    except Exception as e:
+        # Catch-all: any unhandled exception (asyncpg connect failure, EBClient
+        # construction error, etc.) should exit through our exit-code mapping
+        # rather than letting Click's default handler print a traceback and exit 1.
+        # This preserves "no silent errors" — operator sees the cause.
+        click.echo(f"ERROR: unexpected exception in async pipeline: {type(e).__name__}: {e}", err=True)
+        result = ReapplyResult(
+            status=ReapplyStatus.FAILED_PRE_PAUSE,
+            campaign_id=campaign_id,
+            workspace_name=workspace_name,
+            is_dry_run=not apply_changes,
+            error_step="cli_async_run",
+            error_message=f"{type(e).__name__}: {e}",
+        )
 
     if json_only:
         click.echo(render_json(result))

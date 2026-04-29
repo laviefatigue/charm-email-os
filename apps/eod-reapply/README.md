@@ -173,18 +173,22 @@ apps/eod-reapply/
 │   └── cli.py                      ← entrypoint (L4)
 └── tests/
     ├── test_window.py              ← 43 cases — TZ matrix, DST, Sammy-Sydney
-    ├── test_eb_client.py           ← 38 cases — mocked httpx, error paths
-    ├── test_reapply.py             ← 49 cases — orchestrator + invariant sweep
-    └── test_cli.py                 ← 27 cases — exit codes, arg parsing
+    ├── test_eb_client.py           ← 44 cases — mocked httpx, errors, defensive shapes, pagination safety
+    ├── test_reapply.py             ← 53 cases — orchestrator + invariant sweep + defensive resume
+    ├── test_cli.py                 ← 27 cases — exit codes, arg parsing, output rendering
+    ├── test_cli_e2e.py             ← 5 cases — full async pipeline against respx + mocked asyncpg
+    └── test_db.py                  ← 5 cases — fetch_workspace_context query shape + result mapping
 ```
 
 ## Running the tests
 
 ```bash
 cd apps/eod-reapply
-py -m pytest          # 157 tests, ~9s
-py -m pytest -v       # verbose
-py -m pytest tests/test_window.py -v   # one suite
+py -m pytest                                              # 177 tests, ~21s, 99% coverage
+py -m pytest -v                                           # verbose
+py -m pytest --strict-markers --strict-config             # warnings as errors (filterwarnings = ["error"] in pyproject)
+py -m pytest --cov=src/eod_reapply --cov-report=term-missing   # coverage breakdown
+py -m pytest tests/test_window.py -v                      # single suite
 ```
 
 ## Roadmap (v2)

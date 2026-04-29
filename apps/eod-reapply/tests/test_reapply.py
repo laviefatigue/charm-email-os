@@ -467,6 +467,33 @@ class TestFailureInjection:
         assert result.error_step == "pause_verify"
         # Defensive resume should have been attempted
         assert "resume_campaign" in eb.methods_called()
+
+    async def test_pause_verify_with_defensive_resume_also_failing(self):
+        # EB returns 200 but status != Paused, AND the defensive resume call also fails.
+        # This is a real silent-error case: campaign may genuinely be paused.
+        # We must escalate to FAILED_LEFT_PAUSED so the operator sees it.
+        eb = FakeEBClient()
+        eb.pause_response = {"id": 1, "status": "Active"}  # triggers defensive path
+
+        # Make resume_campaign fail
+        original_resume = eb.resume_campaign
+        async def failing_resume(*args):
+            eb.calls.append(("resume_campaign", args))
+            raise EmailBisonAPIError(500, "resume failed in defensive path")
+        eb.resume_campaign = failing_resume
+
+        result, eb = await _run(eb=eb)
+
+        # Critical: must NOT be FAILED_PRE_PAUSE (which implied "campaign untouched")
+        assert result.status == ReapplyStatus.FAILED_LEFT_PAUSED, (
+            f"silent-error escalation: defensive resume failure must surface as "
+            f"FAILED_LEFT_PAUSED, got {result.status.value}"
+        )
+        assert result.operator_action_required is True
+        # Error message must capture both the pause-verify problem AND the resume failure
+        assert "expected 'paused'" in result.error_message
+        assert "defensive resume also failed" in result.error_message
+        assert "resume failed in defensive path" in result.error_message
         # No mutation should have happened
         assert "attach_senders" not in eb.methods_called()
         assert "remove_senders" not in eb.methods_called()
@@ -595,6 +622,29 @@ class TestSchedulePayloadParsing:
         eb = FakeEBClient()
         eb.schedule_response = {**SAMMY_SCHEDULE_RESPONSE, "start_time": "08:00:00", "end_time": "17:00:00"}
         result, _ = await _run(eb=eb)
+        assert result.status == ReapplyStatus.SUCCEEDED
+
+    async def test_unparseable_time_format_raises_parse_error(self):
+        eb = FakeEBClient()
+        eb.schedule_response = {**SAMMY_SCHEDULE_RESPONSE, "start_time": "8am"}
+        result, eb = await _run(eb=eb)
+        assert result.status == ReapplyStatus.FAILED_PRE_PAUSE
+        assert result.error_step == "parse_schedule"
+        assert "unrecognized time format" in result.error_message
+        _assert_no_mutation(eb)
+
+    async def test_default_now_utc_is_used_when_not_passed(self):
+        # Cover the `now_utc = datetime.now(timezone.utc)` default branch.
+        # We use --skip-time-check to avoid clock-dependent flakes.
+        eb = FakeEBClient()
+        result = await reapply_campaign(
+            eb=eb,
+            workspace_name="Charm",
+            campaign_id=1,
+            apply=True,
+            skip_time_check=True,
+            # Deliberately omit now_utc to exercise the default
+        )
         assert result.status == ReapplyStatus.SUCCEEDED
 
 

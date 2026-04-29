@@ -29,3 +29,9 @@ where = ["src"]
 testpaths = ["tests"]
 pythonpath = ["src"]
 asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+filterwarnings = [
+    "error",                                    # treat warnings as errors by default
+    "ignore::DeprecationWarning:_pytest.*",     # don't fail on pytest's own deprecation warnings
+    "ignore::DeprecationWarning:pytest_asyncio.*",
+]
