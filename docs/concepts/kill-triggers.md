@@ -13,6 +13,7 @@ Automated inbox termination system that protects domain reputation by detecting 
 > - **`inventory_pool_status='warning'` is REMOVED.** No more soft-pause buffer. Inboxes that hit thresholds queue for kill directly. See [[../adr/adr-007-drop-warning-state-2026-04-29]].
 > - **Google kill thresholds tightened to 1/1/1** (was 2/3/2): single hard bounce on a Google inbox queues a kill (with the 20-send floor still gating). Microsoft kept at 2/3/2 (legacy ride-to-death).
 > - **State model**: `inventory_pool_status` is now `deployed` / `reserve` / `NULL` only.
+> - **kill_queue dedup index narrowed (mig 099)**: from `WHERE status IN ('pending','flagged')` to `WHERE status = 'pending'`. Fixes a silent-blocking bug where legacy `flagged-but-alive` rows (from pre-overhaul kill_processor partial failures) prevented new kills from queueing. New audit metric `flagged_but_alive_count` surfaces drift if this state ever reappears.
 >
 > **2026-04-27 OVERHAUL UPDATES (still in effect):**
 > - **20-send floor on count-based triggers** (`KILL_THRESHOLD_MIN_SENDS_24H_FOR_COUNT_TRIGGER=20`) — count-based kill triggers only fire when the inbox has ≥20 sends in the last 24h. Prevents kills from low-volume noise (Phase 0 audit found 65% of recent count-trigger kills were on inboxes with <20 sends). Falls back to `total_sends_7d ≥ 20` for rollout safety until the new `total_sends_24h` column populates.

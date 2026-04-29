@@ -330,9 +330,9 @@ Min-sends floor (20 sends/24h with 7d fallback). Cross-domain promotion. Small-d
 | 8. Reconciliation pass | ✓ in progress — first-cycle catch-up reconciled +319 Hello Hero live tags etc. |
 | 9. Hold kill triggers in alert-only for 48h before allowing real kills | pending (per C5 paranoia) |
 
-### Post-deploy fixes shipped (2026-04-28 session-2)
+### Post-deploy fixes shipped (2026-04-28/29 sessions)
 
-The post-deploy audit caught 4 latent bugs that the overhaul didn't surface in code review. Each was fixed and redeployed within the session:
+The post-deploy audit caught 9 latent bugs across two sessions. Each was fixed and redeployed within hours:
 
 | # | Commit | Fix | Caught by |
 |---|---|---|---|
@@ -340,7 +340,11 @@ The post-deploy audit caught 4 latent bugs that the overhaul didn't surface in c
 | 2 | `9e1c43f` | (a) New audit metric `burned_inboxes_in_campaigns` (baseline 1019). (b) `AuditContext.complete(metadata=)` now persists end-of-run metric counts to `sync_audit_log.metadata` (jsonb merge with start metadata). | First audit row post-deploy showed only `{"scope":"fleet"}` start metadata — metric counts were lost. |
 | 3 | `45ed164` | `daily_snapshot.capacity_utilization_pct` clamped to 999.99 to fit `NUMERIC(5,2)` column. | 10 of 11 workspaces' `daily_snapshot` ran with `partial` status due to numeric overflow. |
 | 4 | `13523ca` | `sync_accounts` upsert now NULLs `inventory_pool_status` for burned/cancelled domain inboxes. Was flipping to `'warning'` every cycle when bounces present. | 1,031 burned-domain inboxes oscillating pool='warning' ↔ NULL between sync_accounts and set_tag_sync passes. |
-| 5 | `c866929` | `sync_accounts` upsert preserves `'active'`/`'dead'` lifecycle through merges (same revert-bug class as #1, different code path). Without the guard, recently-graduated inboxes (warmup_started_at < 21d) and clerical-bypass UPDATEs got reverted hourly. | `incubating_in_campaigns` jumped 1 → 11 within 30 min after Phase C-style UPDATE for the 10 new ODSC inboxes. |
+| 5 | `c866929` | `sync_accounts` upsert preserves `'active'`/`'dead'` lifecycle through merges (same revert-bug class as #1, different code path). | `incubating_in_campaigns` jumped 1 → 11 within 30 min after Phase C-style UPDATE for the 10 new ODSC inboxes. |
+| 6 | `7089acb` | `lifecycle_tag_sync` (a) broadened `_tag_new_warmup_inboxes` filter to `IS NULL OR = 'incubating'` (self-heals 266 missing tags); (b) new phase 4 `_untag_incubating_from_active` driven by `inbox_rotation_history` (untags orphan incubating from active inboxes). | Fleet tag audit found 266 incubating-without-tag (Charm 251) + 3 active-with-incubating-tag (ODSC). |
+| 7 | `bd4a25a` | **CRITICAL: `sync_accounts` upsert was returning `emails_sent_all_time` AS `prev_sends` AFTER assigning it, making `send_delta = 0` on every cycle. Result: `total_sends_24h` and `total_sends_7d` never incremented fleet-wide. The 20-send floor on count-based kill triggers AND the 100-send min on rate-based triggers were both silently disabled.** Fix: compute delta INSIDE `ON CONFLICT DO UPDATE` using `sender_accounts.X` (OLD value). | Manual delta-plant test: subtracted 5 from `emails_sent_all_time` for one inbox; the next sync_accounts cycle correctly incremented total_sends by 10. |
+| 8 | `8917db8` | **ADR-007** ([adr-007](../adr/adr-007-drop-warning-state-2026-04-29.md)): drop `inventory_pool_status='warning'` fleet-wide + ESP-aware kill thresholds (Google 1/1/1, MS 2/3/2 unchanged). Migration 098 drained 299 existing warning rows. | Rule C7 + v3-spec audit showed `warning` was a charm-specific addition not in v3 (which says "kill fast, swap fast"); inboxes were sitting in indefinite warning purgatory because rate-based kills required 100 sends. |
+| 9 | `09925b1` | Same-day ADR-007 followup: kill_queue partial unique index narrowed from `WHERE status IN ('pending','flagged')` to `WHERE status = 'pending'` (migration 099). Pre-overhaul kill_processor (EB-tag-first ordering) had left 76 inboxes flagged-but-alive — silently blocking new spam_complaint kills via the index. New `flagged_but_alive_count` audit metric catches this drift class going forward. | Investigation found 4 inboxes with current bounce/complaint signals not in kill_queue; 3 of them had March-era flagged rows from the now-deprecated `provider_block_*` triggers blocking new INSERTs. |
 
 ### Additional cleanup in session-2
 
@@ -380,18 +384,27 @@ After the 6 code fixes shipped in session-2, ran [scripts/audit_tags_fleet.py](.
 
 The DB-authority enforcement is solid post-overhaul. Remaining issues are tag-cleanup paths, not authority violations.
 
-### Note on `inventory_pool_status='warning'` (session-2 user question)
+### Note on `inventory_pool_status='warning'` — REMOVED 2026-04-29 (ADR-007)
 
-`'warning'` is a DB-driven soft pause, distinct from kill triggers:
+> **Historical context kept for the record. Current state: `warning` no longer exists.**
+>
+> See [[../adr/adr-007-drop-warning-state-2026-04-29]] for the architectural decision. The user picked option (b) from the alternatives at the bottom of this section — deprecate `warning`, rely solely on kill triggers, with Google thresholds tightened to 1/1/1.
 
-- **Set by**: `sync_accounts.upsert` CASE — fires on `hard_bounces_24h ≥ 1 OR hard_bounces_7d ≥ 3`.
-- **Effect**: `set_tag_sync` untags both `live` and `reserve` (active circuit breaker). Inbox stops being eligible for new campaign assignments without being killed.
-- **Reversibility**: Auto-clears when bounces subside — sync_accounts CASE restores pool from `domain.pool_status`.
-- **Vs. kill triggers**: separate, parallel paths. Kill triggers (`health_checks` → `kill_queue`) fire on stricter signals (≥5 hb_24h, consecutive bounces, complaint rate, etc.) and are **permanent** (`inbox_state='dead'`). `warning` is the soft first line; kill is the hard escalation.
-- **Microsoft caveat**: Microsoft pin overrides `warning` — those inboxes always get `live` tag regardless. So `warning` is a dead signal for the legacy MS fleet (211 inboxes affected; design choice per Rule C2).
-- **Gmail disconnected caveat**: set_tag_sync skips disconnected inboxes, so Gmail inboxes that flip to `warning` AND lose connection retain stale pool tags until the 21-day disconnected_timeout kill.
+Pre-ADR-007 design (2026-04-27 to 2026-04-29):
 
-If we wanted tighter kill integration, options would be: (a) have `kill_processor` read `warning` state as input ("stuck in warning > 7 days → escalate to kill"), or (b) deprecate `warning` and rely solely on kill triggers (simpler, loses soft-pause auto-recovery).
+- **Set by**: `sync_accounts.upsert` CASE — fired on `hard_bounces_24h ≥ 1 OR hard_bounces_7d ≥ 3`.
+- **Effect**: `set_tag_sync` untagged both `live` and `reserve` (active circuit breaker). Inbox stopped being eligible for new campaign assignments without being killed.
+- **Reversibility**: Auto-cleared when bounces subsided — sync_accounts CASE restored pool from `domain.pool_status`.
+- **Vs. kill triggers**: separate, parallel paths. Kill triggers (`health_checks` → `kill_queue`) fired on stricter signals and are **permanent** (`inbox_state='dead'`). `warning` was the soft first line; kill was the hard escalation.
+- **Microsoft caveat**: Microsoft pin overrode `warning` — those inboxes always got `live` tag regardless. So `warning` was a dead signal for the legacy MS fleet (211 inboxes affected; by design per Rule C2).
+- **Gmail disconnected caveat**: set_tag_sync skipped disconnected inboxes, so Gmail inboxes that flipped to `warning` AND lost connection retained stale pool tags until the 21-day disconnected_timeout kill.
+
+**Why removed (per v3 spec audit + 100% Google going forward):**
+1. v3 spec doesn't include a warning intermediate state — only healthy → kill transitions.
+2. Inboxes could sit in warning indefinitely (auto-clear required hb_24h<1 AND hb_7d<3, decays only ~14%/day).
+3. With 3 inboxes per Google domain, ONE dead inbox = 33% capacity loss — already at v3's "replace domain" threshold. A 1-bounce buffer made less sense.
+
+Fleet pool state model post-ADR-007: `{deployed, reserve, NULL}` only.
 
 ---
 

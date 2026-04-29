@@ -278,6 +278,8 @@ set_tag_sync skips inboxes where EB `status != 'Connected'` at line 436. This me
 | `stuck_incubation_14bd` | Inboxes still `lifecycle='incubating'` after 14 business days of warmup_enabled. Should be 0 post-deploy. |
 | `incubating_in_campaigns` | Bypass guard for the Stable Kernel ODSC pattern — inboxes still incubating but pushed to a real EB campaign. |
 | `burned_inboxes_in_campaigns` | Reputation risk — inboxes on burned/cancelled domains still in active campaigns. Currently manual cleanup; auto-cleanup function pending. |
+| `kill_queue_pending_over_2h` | (added ADR-007 — replaces deprecated `pool_warning_should_have_no_pool_tag`) Pending kills older than 2h. kill_processor runs every 15 min, so this should be 0 in steady state. Non-zero indicates stuck queue, worker health issue, or workspace API key invalid. |
+| `flagged_but_alive_count` | (added migration 099) kill_queue rows with `status='flagged'` for inboxes still at `inbox_state='live' AND killed_at IS NULL`. Should be 0 — current kill_processor is DB-first inside a single try block so flagged → dead is atomic. Drift indicates resurrection or legacy partial-kill state. |
 
 The audit's `complete()` writes the metric counts into `sync_audit_log.metadata` (jsonb merge), so the historical trend is queryable.
 
