@@ -1,1 +1,0 @@
-# Strategy MCP Server Package

@@ -1,1 +1,0 @@
-# Spintax MCP Server
