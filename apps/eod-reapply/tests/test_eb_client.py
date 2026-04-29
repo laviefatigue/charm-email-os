@@ -207,11 +207,12 @@ class TestPauseResume:
 
 class TestGetCampaignSenders:
     @respx.mock
-    async def test_returns_list(self, client_factory):
-        body = {"data": [
-            {"id": 1, "email": "a@example.com"},
-            {"id": 2, "email": "b@example.com"},
-        ]}
+    async def test_returns_list_single_page_with_meta(self, client_factory):
+        # Mirrors actual production response shape (Laravel paginated wrapper)
+        body = {
+            "data": [{"id": 1, "email": "a@example.com"}, {"id": 2, "email": "b@example.com"}],
+            "meta": {"current_page": 1, "last_page": 1, "per_page": 15, "total": 2},
+        }
         respx.get(f"{BASE_URL}/api/campaigns/9/sender-emails").mock(return_value=_resp(200, body))
         async with client_factory() as c:
             result = await c.get_campaign_senders(9)
@@ -219,20 +220,90 @@ class TestGetCampaignSenders:
         assert result[0]["id"] == 1
 
     @respx.mock
+    async def test_paginates_through_multiple_pages(self, client_factory):
+        # Real-world regression: Sammy campaign #63 has 634 senders across 43 pages.
+        # Without pagination, we'd only see page 1 — leading to wildly wrong diffs.
+        # Simulate 3 pages of 5 senders each.
+        respx.get(f"{BASE_URL}/api/campaigns/9/sender-emails").mock(
+            side_effect=[
+                _resp(200, {
+                    "data": [{"id": 1}, {"id": 2}, {"id": 3}, {"id": 4}, {"id": 5}],
+                    "meta": {"current_page": 1, "last_page": 3, "per_page": 5, "total": 13},
+                }),
+                _resp(200, {
+                    "data": [{"id": 6}, {"id": 7}, {"id": 8}, {"id": 9}, {"id": 10}],
+                    "meta": {"current_page": 2, "last_page": 3, "per_page": 5, "total": 13},
+                }),
+                _resp(200, {
+                    "data": [{"id": 11}, {"id": 12}, {"id": 13}],
+                    "meta": {"current_page": 3, "last_page": 3, "per_page": 5, "total": 13},
+                }),
+            ]
+        )
+        async with client_factory() as c:
+            result = await c.get_campaign_senders(9)
+        assert [s["id"] for s in result] == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
+
+    @respx.mock
+    async def test_bare_list_response_terminates(self, client_factory):
+        # If EB ever returns a bare list (older endpoint shape), single-page semantics
+        respx.get(f"{BASE_URL}/api/campaigns/9/sender-emails").mock(
+            return_value=_resp(200, [{"id": 1}, {"id": 2}])
+        )
+        async with client_factory() as c:
+            result = await c.get_campaign_senders(9)
+        assert len(result) == 2
+
+    @respx.mock
+    async def test_missing_meta_terminates_after_one_page(self, client_factory):
+        # Defense: don't loop forever if meta is missing
+        respx.get(f"{BASE_URL}/api/campaigns/9/sender-emails").mock(
+            return_value=_resp(200, {"data": [{"id": 1}]})
+        )
+        async with client_factory() as c:
+            result = await c.get_campaign_senders(9)
+        assert len(result) == 1
+
+    @respx.mock
     async def test_empty_returns_empty_list(self, client_factory):
-        respx.get(f"{BASE_URL}/api/campaigns/9/sender-emails").mock(return_value=_resp(200, {"data": []}))
+        respx.get(f"{BASE_URL}/api/campaigns/9/sender-emails").mock(
+            return_value=_resp(200, {"data": [], "meta": {"last_page": 1, "current_page": 1, "total": 0}})
+        )
         async with client_factory() as c:
             result = await c.get_campaign_senders(9)
         assert result == []
 
     @respx.mock
-    async def test_unexpected_shape_raises(self, client_factory):
+    async def test_unexpected_data_shape_raises(self, client_factory):
         # Defensive: if EB ever returns an object instead of a list under data, fail loud
         respx.get(f"{BASE_URL}/api/campaigns/9/sender-emails").mock(
             return_value=_resp(200, {"data": {"unexpected": "shape"}})
         )
         async with client_factory() as c:
             with pytest.raises(EmailBisonAPIError, match="Expected list"):
+                await c.get_campaign_senders(9)
+
+    @respx.mock
+    async def test_unexpected_top_level_shape_raises(self, client_factory):
+        respx.get(f"{BASE_URL}/api/campaigns/9/sender-emails").mock(
+            return_value=httpx.Response(200, json="not-a-dict-or-list")
+        )
+        async with client_factory() as c:
+            with pytest.raises(EmailBisonAPIError, match="Unexpected campaign senders response shape"):
+                await c.get_campaign_senders(9)
+
+    @respx.mock
+    async def test_pagination_safety_limit_breach_raises(self, client_factory, monkeypatch):
+        from eod_reapply import eb_client as eb_client_mod
+        monkeypatch.setattr(eb_client_mod, "_PAGINATION_SAFETY_LIMIT", 3)
+        respx.get(f"{BASE_URL}/api/campaigns/9/sender-emails").mock(
+            return_value=_resp(200, {
+                "data": [{"id": 1}],
+                "meta": {"current_page": 1, "last_page": 99999, "per_page": 1, "total": 99999},
+            })
+        )
+        async with client_factory() as c:
+            with pytest.raises(EmailBisonAPIError, match="safety limit"):
                 await c.get_campaign_senders(9)
 
 

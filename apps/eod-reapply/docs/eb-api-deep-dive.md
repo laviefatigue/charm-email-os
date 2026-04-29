@@ -372,20 +372,82 @@ Returns the EB-side authoritative list. Cross-reference with our `emailbison_cam
 
 ---
 
-## 7. Open questions (answerable only via L5 staging)
+## 7. L5 staging findings (2026-04-29 against production)
 
-1. **Pagination on `/api/campaigns/{id}/sender-emails`** — does it paginate, or always return all? If paginate, what's the convention?
-2. **Pagination on `/api/sender-emails?tag_ids[]=N`** — does the response include `meta.last_page` despite the spec example omitting it?
-3. **Eventual consistency on attach/remove** — is the verify-fetch reliable immediately, or do we need a poll-with-timeout?
-4. **Idempotent attach** — does posting an already-attached `sender_email_id` silently dedup, error, or produce a duplicate?
-5. **Idempotent remove** — does a remove call for a non-attached id silently no-op, error, or what?
-6. **Pause synchronicity** — does `PATCH /pause` return 200 only after status flips, or is it eventually consistent?
-7. **Campaign status `"Sending"`** — does this string appear in real responses, or is it always `"Active"`?
-8. **`launching` status** — should we treat this as in our active set, or skip?
-9. **`skip_webhooks` request-level missing on /attach-sender-emails** — confirm with EB whether the option simply isn't supported, or if undocumented support exists.
-10. **Sender object `status` values** — spec lists `connected | not_connected | pending_move | pending_deletion` for the query filter, but the response example shows `"Connected"` capitalized. Are response values lowercase too, or capitalized?
+Direct API probes against the Charm and Sammy workspaces using their workspace-scoped Sanctum tokens. Read-only probes; no mutations. Findings against the open questions originally listed below:
 
-Each of these is a row in [STAGING-RUNBOOK.md](../STAGING-RUNBOOK.md). Don't promote past L5 until each has a documented answer.
+### 🔴 Critical bug found (now fixed)
+
+**`GET /api/campaigns/{id}/sender-emails` paginates** with the same Laravel meta wrapper as `/api/sender-emails`. Sammy campaign #63 returned `meta.total=634, last_page=43, per_page=15` — but our `EBClient.get_campaign_senders()` was only fetching page 1.
+
+**Production impact if we'd run `--apply` on Sammy #63 without this fix:**
+- We'd see 15 prior senders (page 1 only) instead of the real 634.
+- We'd compute diff vs target_set (22 live-tagged) → attach 22, remove 15.
+- After mutation: campaign has 619 untouched senders + 22 newly-attached = 641.
+- Verify-set-equality compares re-fetch (still page 1, ~15 random senders) against target {22} → mismatch → `FAILED_POST_RESUME`.
+- Net: we silently delete 15 random senders, attach 22 new, and leave 619 unintended attachments. Impossible to predict which 15 we'd remove.
+
+Fix: `get_campaign_senders` now paginates exactly like `list_senders_with_tag`. Two new L2 tests pin the behavior; one L3 test (`test_sammy_production_shape_trips_oversized_removal_guard`) regression-pins the end-to-end Sammy shape.
+
+### 🟢 Other contract findings answered
+
+| Question | Answer |
+|---|---|
+| Pagination metadata shape | `{"data": [...], "meta": {"current_page", "last_page", "per_page", "total", "from", "to", "links": [...]}, "links": [...]}` — same Laravel paginated shape across `/api/sender-emails` AND `/api/campaigns/{id}/sender-emails`. Server-side per_page default observed = 15 regardless of request. |
+| Sender object `status` casing | **Capitalized**: `"Connected"`, `"Not connected"`. (Spec query enum was lowercase — those don't match the response values.) |
+| Campaign object `status` casing | **Lowercase**: `'active'`, `'paused'`, `'draft'`, `'archived'`, `'completed'`. Contradicts the OpenAPI's capitalized examples. Our `.lower()` defensive call was correct. |
+| Statuses observed in real workspaces | `draft, archived, completed, paused, active`. **`sending`, `launching`, `queued`, `failed` not observed in 23 campaigns across Charm + Sammy.** Our `_ACTIVE_STATUSES` handles `active`, `queued`, `sending`. We deliberately skip `launching` (campaign is preparing, not stable). |
+| Schedule shape extras | Real schedule response has `id`, `type: "Campaign Schedule"`, **`status: "Not Started"`** (status field separate from campaign status). Our `_build_schedule_from_eb` ignores unknown fields. ✓ |
+| Schedule time format | `HH:MM:SS` (Sammy #63) — not the `HH:MM` shown in OpenAPI examples. Our `_parse_eb_time` already accepts both. ✓ |
+| Sammy/Australia case live | Sammy #63 schedule confirmed M-F 09:00:00–18:00:00 `Australia/Sydney`. Exact case our test suite was built around. |
+| EB API URL | `https://spellcast.hirecharm.com` (no `/api` suffix in env var). Our default `EMAILBISON_API_URL=https://spellcast.hirecharm.com/api` adds the suffix at the client. |
+
+### Sammy #63 — canonical staging target snapshot (2026-04-29)
+
+```
+campaign #63 'Remodelers - Retargeting'  status='active'  3333/3339 contacted (≈99.8%)
+schedule:                                 M-F 09:00:00-18:00:00 Australia/Sydney
+prior_set (currently attached):           634 senders  ALL 'Not connected'
+target_set ('live' tagged in workspace):  22 senders   ALL 'Connected'
+overlap:                                  0
+diff:                                     attach 22, remove 634 → 100% removal
+expected reapply outcome:                 SKIPPED_OVERSIZED_REMOVAL (default 50% guard)
+operator action:                          investigate why 634 attached are disconnected,
+                                          then re-run with --max-removal-pct 100 if intentional
+```
+
+**This is the platonic case for the tool.** The campaign is sending from a pool of 634 dead inboxes while 22 healthy `live`-tagged senders sit unused. `eod-reapply` won't make this swap automatically (because 100% removal is suspicious by default), but `eod-reapply check` will report exactly this state, and the operator can override with `--max-removal-pct 100` to fix it.
+
+### Things still untested (would require --apply)
+
+These are the original open questions that L5 read-only probes can't answer. Marked for the actual --apply staging run (with operator at the EB UI):
+
+3. Eventual consistency on attach/remove — does verify-fetch see the change immediately?
+4. Idempotent attach (silent dedup vs error vs duplicate)
+5. Idempotent remove (silent no-op vs error)
+6. Pause synchronicity (200 returned only after status flip?)
+9. Whether `skip_webhooks` is silently accepted on `/attach-sender-emails`
+
+---
+
+## 8. Remaining open questions (require --apply for definitive answers)
+
+The L5 read-only probes (section 7) closed 5 of the original 10 open questions. These 5 remain — they can only be observed by actually mutating state:
+
+1. **Eventual consistency on attach/remove** — is the verify-fetch reliable immediately, or do we need a poll-with-timeout?
+2. **Idempotent attach** — does posting an already-attached `sender_email_id` silently dedup, error, or produce a duplicate?
+3. **Idempotent remove** — does a remove call for a non-attached id silently no-op, error, or what?
+4. **Pause synchronicity** — does `PATCH /pause` return 200 only after status flips, or is it eventually consistent?
+5. **`skip_webhooks` on /attach-sender-emails** — confirm whether the option is silently accepted or rejected.
+
+Closed by L5 read-only probes:
+- ✅ Pagination on `/api/campaigns/{id}/sender-emails` — paginates with same Laravel meta wrapper. Critical bug found and fixed.
+- ✅ Pagination on `/api/sender-emails?tag_ids[]=N` — has `meta` block with `last_page`, `total`, etc.
+- ✅ Sender object status casing — Capitalized (`"Connected"`, `"Not connected"`).
+- ✅ Campaign object status casing — Lowercase (`'active'`, `'paused'`, etc., contradicting spec).
+- ✅ `Sending` and `launching` statuses — not observed in 23 production campaigns. Defensive set covers them anyway.
+
+Don't promote past L5 until the 5 remaining are resolved by an actual --apply run with operator on EB UI.
 
 ---
 

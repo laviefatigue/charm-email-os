@@ -140,19 +140,83 @@ class EBClient:
         result = await self._request("PATCH", f"/api/campaigns/{campaign_id}/resume")
         return self._unwrap(result) or {}
 
-    async def get_campaign_senders(self, campaign_id: int) -> list[dict[str, Any]]:
-        """GET /api/campaigns/{id}/sender-emails — currently attached senders."""
-        result = await self._request("GET", f"/api/campaigns/{campaign_id}/sender-emails")
-        unwrapped = self._unwrap(result)
-        if unwrapped is None:
-            return []
-        if not isinstance(unwrapped, list):
+    async def get_campaign_senders(
+        self,
+        campaign_id: int,
+        *,
+        per_page: int = 100,
+    ) -> list[dict[str, Any]]:
+        """GET /api/campaigns/{id}/sender-emails — currently attached senders.
+
+        Paginated. Real production observation (verified against Sammy #63):
+        a single campaign can have hundreds of attached senders (634 in 43 pages
+        of 15 each). The OpenAPI spec doesn't document the pagination shape for
+        this endpoint, but the real response is the same Laravel paginated
+        wrapper as /api/sender-emails: {"data": [...], "meta": {"last_page": N,
+        "current_page": M, "total": T, "per_page": P}}.
+
+        Server may cap per_page (observed default ~15). Our request asks for 100
+        but we still loop pages until last_page is reached.
+
+        Pagination terminates when:
+          - response is a bare list (single page, no meta)
+          - meta.last_page is reached
+          - meta.last_page is missing (defensive — assume single page)
+          - safety limit reached → raises
+        """
+        all_attached: list[dict[str, Any]] = []
+        for page in range(1, _PAGINATION_SAFETY_LIMIT + 1):
+            params: dict[str, Any] = {"page": page, "per_page": per_page}
+            result = await self._request(
+                "GET",
+                f"/api/campaigns/{campaign_id}/sender-emails",
+                params=params,
+            )
+
+            if result is None:
+                # 204 No Content or empty body — treat as empty single-page response
+                break
+
+            if isinstance(result, list):
+                all_attached.extend(result)
+                break
+
+            if not isinstance(result, dict):
+                raise EmailBisonAPIError(
+                    0,
+                    f"Unexpected campaign senders response shape: {type(result).__name__}",
+                    result,
+                )
+
+            data = result.get("data")
+            if data is None:
+                # _unwrap fallback: maybe the whole thing is the data
+                unwrapped = self._unwrap(result)
+                if isinstance(unwrapped, list):
+                    all_attached.extend(unwrapped)
+                break
+
+            if not isinstance(data, list):
+                raise EmailBisonAPIError(
+                    0,
+                    f"Expected list under 'data' from get_campaign_senders, got {type(data).__name__}",
+                    data,
+                )
+            all_attached.extend(data)
+
+            meta = result.get("meta") or {}
+            last_page = meta.get("last_page")
+            if last_page is None:
+                break
+            if page >= int(last_page):
+                break
+        else:
             raise EmailBisonAPIError(
                 0,
-                f"Expected list from get_campaign_senders, got {type(unwrapped).__name__}",
-                unwrapped,
+                f"Pagination safety limit ({_PAGINATION_SAFETY_LIMIT}) exceeded for campaign {campaign_id} senders",
             )
-        return unwrapped
+
+        return all_attached
 
     async def attach_senders(self, campaign_id: int, sender_email_ids: list[int]) -> dict[str, Any]:
         """POST /api/campaigns/{id}/attach-sender-emails."""

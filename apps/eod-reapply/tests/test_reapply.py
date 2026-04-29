@@ -396,6 +396,58 @@ class TestSkipCases:
         assert "75.0%" in result.error_message
         _assert_no_mutation(eb)
 
+    async def test_sammy_production_shape_trips_oversized_removal_guard(self):
+        """Regression test for the L5 staging discovery on Sammy campaign #63.
+
+        Real production state observed 2026-04-29:
+          - 634 senders attached (across 43 paginated pages)
+          - 22 senders tagged 'live' (zero overlap with currently-attached)
+          - All 634 attached are 'Not connected'; all 22 live are 'Connected'
+
+        With our oversized-removal guard at default 50%, this MUST be refused —
+        we'd be removing 100% of attached senders, which is suspicious enough to
+        require operator override.
+
+        This test pins that behavior so future refactors can't regress it.
+        """
+        eb = FakeEBClient()
+        # Simulate 634 prior senders (real Sammy #63 count)
+        prior_senders = [{"id": 10000 + i} for i in range(634)]
+        # 22 target (live-tagged) senders, completely disjoint from prior
+        target_senders = [{"id": 20000 + i} for i in range(22)]
+
+        eb.target_senders = target_senders
+        eb.prior_senders_history = [prior_senders, prior_senders]  # verify call returns same
+
+        result, eb = await _run(eb=eb)
+        assert result.status == ReapplyStatus.SKIPPED_OVERSIZED_REMOVAL
+        assert "100.0%" in result.error_message
+        # The diff details must be captured in the result for operator review
+        assert len(result.target_set) == 22
+        assert len(result.prior_set) == 634
+        assert len(result.attached_ids) == 22  # all 22 would be added
+        assert len(result.removed_ids) == 634  # all 634 would be removed
+        # Guard prevents mutation
+        _assert_no_mutation(eb)
+
+    async def test_sammy_production_shape_with_override_proceeds(self):
+        """Operator override path: --max-removal-pct 100 lets the 634→22 swap proceed."""
+        eb = FakeEBClient()
+        prior_senders = [{"id": 10000 + i} for i in range(634)]
+        target_senders = [{"id": 20000 + i} for i in range(22)]
+
+        eb.target_senders = target_senders
+        eb.prior_senders_history = [
+            prior_senders,
+            target_senders,  # verify: post-mutation set matches target
+        ]
+
+        result, _ = await _run(eb=eb, max_removal_pct=100.0)
+        assert result.status == ReapplyStatus.SUCCEEDED
+        assert len(result.attached_ids) == 22
+        assert len(result.removed_ids) == 634
+        assert result.verify_passed is True
+
     async def test_oversized_removal_override(self):
         eb = FakeEBClient()
         eb.target_senders = [{"id": 10}]
