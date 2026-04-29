@@ -46,6 +46,7 @@ Notable recent migrations:
 | `095_total_sends_24h.sql` | **Overhaul:** `total_sends_24h INTEGER` column + index. Used by health_checks for the 20-send floor on count-based kill triggers |
 | `096_warmup_trigger_handles_insert.sql` | **Overhaul:** Bug fix to migration 094 — original trigger fired on UPDATE only, missing INSERT. Without this, newly-synced inboxes never got `warmup_enabled_since` stamped → graduation eligibility broken for new fleet |
 | `097_workspace_packages.sql` | **Overhaul:** `workspace_packages` reference table (seeded with `50k_google` and `100k_google`) + `workspaces.package_id`, `target_live_count_override`, `pause_pool_transitions`, `package_assigned_at` columns + validation trigger + `workspace_effective_targets` view |
+| `098_drop_warning_pool.sql` | **ADR-007:** Drains the 299 existing `inventory_pool_status='warning'` rows (75 Gmail + 224 Microsoft as of 2026-04-29). Gmail inboxes meeting the new `hb_24h ≥ 1` threshold WITH ≥20 sends are queued for kill; the rest get pool restored to domain default. Microsoft inboxes restored to `'deployed'` (pin behavior). Idempotent. |
 
 ---
 

@@ -18,6 +18,13 @@ Detected anomalies
      flip in `warmup_disabled_at`; this audit alerts on inboxes that
      have been silently un-warmed for over 24h.
 
+2b. Kill queue stuck pending
+     kill_queue rows that have been in `pending` status for over 2h.
+     The kill_processor runs every 15 min so this should normally be 0.
+     Replaces the pre-ADR-007 `pool_warning` metric — that flagged
+     inboxes in the indefinite warning soft-pause state, which no longer
+     exists. Stuck-pending kills are the new "watch this" signal.
+
 3. Orphan `is_active=FALSE` graduated inboxes
      inboxes with `inbox_state='live'`, `is_active=FALSE`, and a real
      `emailbison_account_id`. These are invisible to all sync paths
@@ -101,6 +108,7 @@ class OverhaulAuditModule:
                 or metrics['stuck_incubation_14bd'] > 0
                 or metrics['incubating_in_campaigns'] > 0
                 or metrics['burned_inboxes_in_campaigns'] > 0
+                or metrics['kill_queue_pending_over_2h'] > 0
             )
 
             if metrics['has_anomalies'] and self.alerter:
@@ -112,7 +120,8 @@ class OverhaulAuditModule:
                 f"orphans={metrics['orphan_inactive_live_count']} "
                 f"stuck_incubation={metrics['stuck_incubation_14bd']} "
                 f"incubating_in_campaigns={metrics['incubating_in_campaigns']} "
-                f"burned_in_campaigns={metrics['burned_inboxes_in_campaigns']}"
+                f"burned_in_campaigns={metrics['burned_inboxes_in_campaigns']} "
+                f"kill_pending_2h={metrics['kill_queue_pending_over_2h']}"
             )
             return await audit.complete(metadata=metrics)
         except Exception as e:
@@ -213,6 +222,17 @@ class OverhaulAuditModule:
               AND d.pool_status IN ('burned', 'cancelled')
         """) or 0
 
+        # 7. Kill queue stuck pending — replaces the pre-ADR-007 pool_warning
+        # metric. kill_processor runs every 15 min, so a pending kill older
+        # than 2h indicates the queue isn't draining (worker stuck, EB API
+        # auth broken, workspace API key invalid, etc).
+        kill_queue_stuck = await self.db.fetchval("""
+            SELECT COUNT(*)
+            FROM kill_queue
+            WHERE status = 'pending'
+              AND created_at < NOW() - INTERVAL '2 hours'
+        """) or 0
+
         return {
             'dual_tag_candidates': int(dual_tag),
             'warmup_disabled_active_24h': int(warmup_off),
@@ -220,6 +240,7 @@ class OverhaulAuditModule:
             'stuck_incubation_14bd': int(stuck),
             'incubating_in_campaigns': int(incubating_in_campaigns),
             'burned_inboxes_in_campaigns': int(burned_in_campaigns),
+            'kill_queue_pending_over_2h': int(kill_queue_stuck),
         }
 
     async def _post_alert(self, metrics: Dict[str, int]) -> None:
@@ -258,6 +279,12 @@ class OverhaulAuditModule:
                 f"• *Burned-domain inboxes in active campaigns:* {metrics['burned_inboxes_in_campaigns']}. "
                 f"Reputation risk — these domains are flagged but their inboxes are still in EB campaigns. "
                 f"Team must remove from campaigns manually until auto-cleanup is built."
+            )
+        if metrics['kill_queue_pending_over_2h']:
+            lines.append(
+                f"• *Kill queue stuck:* {metrics['kill_queue_pending_over_2h']} kill_queue rows pending >2h. "
+                f"kill_processor runs every 15 min — investigate worker health, "
+                f"workspace API key validity, EB API errors."
             )
 
         # SlackAlerter.context expects a string; serialize the metrics dict.

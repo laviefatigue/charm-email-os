@@ -15,12 +15,46 @@ from .audit_logger import AuditLogger, SyncResult
 from .slack_alerter import SlackAlerter
 
 
-# Configurable kill trigger thresholds (env vars with v3 spec defaults)
+# Configurable kill trigger thresholds (env vars with v3 spec defaults).
+#
+# Microsoft thresholds — pre-overhaul defaults retained. Microsoft Entra is
+# legacy ride-to-death (CEO Rule C2): existing fleet only, no new orders. We
+# don't tighten kill thresholds on the legacy population.
 KILL_THRESHOLD_SPAM = int(os.getenv('KILL_THRESHOLD_SPAM', 1))
-# Differentiated bounce thresholds (blocked>=2, unknown>=3, combined>=2)
 KILL_THRESHOLD_HARD_BLOCKED_24H = int(os.getenv('KILL_THRESHOLD_HARD_BLOCKED_24H', 2))
 KILL_THRESHOLD_HARD_UNKNOWN_24H = int(os.getenv('KILL_THRESHOLD_HARD_UNKNOWN_24H', 3))
 KILL_THRESHOLD_HARD_BOUNCES_24H = int(os.getenv('KILL_THRESHOLD_HARD_BOUNCES_24H', 2))
+
+# Google thresholds — tighter post-2026-04-29 (ADR-007). 100% Google going
+# forward + 3 inboxes/domain means a single hard bounce is meaningful signal:
+# - 1 dead inbox = 33% capacity loss on the domain (already at v3's "replace
+#   domain" threshold)
+# - The pre-overhaul `warning` soft-pause buffer was a charm-specific addition
+#   not in the v3 spec; v3 says "kill fast, swap fast, diagnose after"
+# - With the 20-send floor still in effect, this won't kill on warmup-network
+#   bounce noise — only on inboxes that have actually started sending volume
+GOOGLE_KILL_THRESHOLD_HARD_BLOCKED_24H = int(os.getenv('GOOGLE_KILL_THRESHOLD_HARD_BLOCKED_24H', 1))
+GOOGLE_KILL_THRESHOLD_HARD_UNKNOWN_24H = int(os.getenv('GOOGLE_KILL_THRESHOLD_HARD_UNKNOWN_24H', 1))
+GOOGLE_KILL_THRESHOLD_HARD_BOUNCES_24H = int(os.getenv('GOOGLE_KILL_THRESHOLD_HARD_BOUNCES_24H', 1))
+
+
+def get_count_threshold(esp: Optional[str], trigger: str) -> int:
+    """Return the count threshold for a trigger, ESP-aware.
+
+    Google uses tightened thresholds (1/1/1) per ADR-007. Microsoft and
+    unknown-ESP retain the pre-overhaul defaults (2/3/2).
+    """
+    if esp == 'gmail':
+        return {
+            'hard_blocked_24h': GOOGLE_KILL_THRESHOLD_HARD_BLOCKED_24H,
+            'hard_unknown_24h': GOOGLE_KILL_THRESHOLD_HARD_UNKNOWN_24H,
+            'hard_bounces_24h': GOOGLE_KILL_THRESHOLD_HARD_BOUNCES_24H,
+        }[trigger]
+    return {
+        'hard_blocked_24h': KILL_THRESHOLD_HARD_BLOCKED_24H,
+        'hard_unknown_24h': KILL_THRESHOLD_HARD_UNKNOWN_24H,
+        'hard_bounces_24h': KILL_THRESHOLD_HARD_BOUNCES_24H,
+    }[trigger]
 KILL_THRESHOLD_HARD_BOUNCE_RATE = float(os.getenv('KILL_THRESHOLD_HARD_BOUNCE_RATE', 0.02))
 KILL_THRESHOLD_TOTAL_BOUNCE_RATE = float(os.getenv('KILL_THRESHOLD_TOTAL_BOUNCE_RATE', 0.05))
 KILL_THRESHOLD_MIN_SENDS = int(os.getenv('KILL_THRESHOLD_MIN_SENDS', 100))  # Industry standard: min 100 sends before rate triggers
@@ -411,36 +445,38 @@ class HealthCheckModule:
             or total_sends_7d >= KILL_THRESHOLD_MIN_SENDS_7D_FALLBACK
         )
 
+        # ESP-aware count thresholds. Google: 1/1/1 (post-ADR-007).
+        # Microsoft and unknown-ESP: 2/3/2 (pre-overhaul defaults retained).
+        esp = inbox.get('esp')
+
         # 1. Hard blocked (spam/policy rejection) - HIGHEST PRIORITY after spam
-        # These indicate sender reputation damage - threshold: >=2
-        threshold = KILL_THRESHOLDS['hard_blocked_24h']
-        if hard_blocked_24h >= threshold['value'] and has_min_send_volume:
+        # These indicate sender reputation damage.
+        blocked_threshold = get_count_threshold(esp, 'hard_blocked_24h')
+        if hard_blocked_24h >= blocked_threshold and has_min_send_volume:
             triggers.append({
                 'trigger_type': 'hard_blocked_24h',
                 'value': hard_blocked_24h,
-                'threshold': threshold['value']
+                'threshold': blocked_threshold
             })
 
-        # 2. Hard unknown (bad email addresses) - threshold: >=3
-        # These indicate list quality issues, less urgent than blocked
-        threshold = KILL_THRESHOLDS['hard_unknown_24h']
-        if hard_unknown_24h >= threshold['value'] and has_min_send_volume:
+        # 2. Hard unknown (bad email addresses) - list quality, less urgent.
+        unknown_threshold = get_count_threshold(esp, 'hard_unknown_24h')
+        if hard_unknown_24h >= unknown_threshold and has_min_send_volume:
             triggers.append({
                 'trigger_type': 'hard_unknown_24h',
                 'value': hard_unknown_24h,
-                'threshold': threshold['value']
+                'threshold': unknown_threshold
             })
 
-        # 3. Combined hard bounces - FALLBACK (threshold: >=2)
-        # Only triggers if neither specific trigger fired (catches edge cases)
-        threshold = KILL_THRESHOLDS['hard_bounces_24h']
-        if hard_bounces_24h >= threshold['value'] and has_min_send_volume:
-            # Only add if no specific trigger already added
+        # 3. Combined hard bounces - FALLBACK.
+        # Only adds if neither specific trigger fired (catches edge cases).
+        bounces_threshold = get_count_threshold(esp, 'hard_bounces_24h')
+        if hard_bounces_24h >= bounces_threshold and has_min_send_volume:
             if not any(t['trigger_type'] in ['hard_blocked_24h', 'hard_unknown_24h'] for t in triggers):
                 triggers.append({
                     'trigger_type': 'hard_bounces_24h',
                     'value': hard_bounces_24h,
-                    'threshold': threshold['value']
+                    'threshold': bounces_threshold
                 })
 
         # 2. Hard bounce rate 7d
@@ -484,11 +520,12 @@ class HealthCheckModule:
                     'threshold': threshold['value']
                 })
 
-        # Determine health state
+        # Determine health state. Post-2026-04-29 (ADR-007), the 'warning'
+        # intermediate state is removed — inboxes are either healthy or
+        # in critical/kill state. The pre-overhaul soft-pause buffer was a
+        # charm-specific addition; v3 spec only has healthy → kill paths.
         if triggers:
             health_state = 'critical'
-        elif hard_bounces_24h >= 1 or hard_bounces_7d >= 3:
-            health_state = 'warning'
         else:
             health_state = 'healthy'
 

@@ -17,9 +17,14 @@ Per-inbox state → EB tag:
     ─────────────────────────────────────────
     'deployed'                live (and untag reserve)
     'reserve'                 reserve (and untag live)
-    'warning'                 NEITHER — active circuit breaker
-    'quarantined'             NEITHER — active circuit breaker
     NULL                      NEITHER — unallocated, no pool
+
+Note: pre-2026-04-29 the table also included 'warning' and 'quarantined'
+intermediate states (active circuit breaker — untag both). Those were
+removed per ADR-007 because v3 spec doesn't include a warning soft-pause:
+inboxes that hit bounce thresholds queue for kill via health_checks
+rather than entering an indefinite paused state. Existing 'warning'
+rows are drained by migration 098.
 
 Reconciliation discipline
 ─────────────────────────
@@ -361,12 +366,10 @@ class SetTagSyncModule:
         """
         Reconcile EB pool tags with each inbox's `inventory_pool_status`.
 
-        Per-inbox authority (post-2026-04-27 overhaul):
+        Per-inbox authority (post-2026-04-27 overhaul, updated ADR-007 2026-04-29):
         - 'deployed'    → ensure 'live' tag, untag 'reserve'
         - 'reserve'     → ensure 'reserve' tag, untag 'live'
-        - 'warning'     → untag both (active circuit breaker)
-        - 'quarantined' → untag both (active circuit breaker)
-        - NULL          → untag both (unallocated)
+        - NULL          → untag both (unallocated; was also 'warning'/'quarantined' pre-ADR-007)
 
         Domain-scope actions still apply:
         - domain.pool_status = 'burned'    → clear all inbox pool tags + DB
@@ -484,9 +487,12 @@ class SetTagSyncModule:
             # with no pool tag, causing campaigns to drop it from the live pool.
             try:
                 if target_tag_id is None:
-                    # No target — circuit breaker (warning/quarantined) or
-                    # unallocated (NULL). Untag both. Order doesn't matter
-                    # because we're not adding anything.
+                    # No target — unallocated (NULL pool). Untag both. Order
+                    # doesn't matter because we're not adding anything.
+                    # Note: pre-2026-04-29 this branch also handled the
+                    # 'warning' and 'quarantined' soft-pause states; those
+                    # were removed per ADR-007 (no more circuit-breaker
+                    # intermediate state — bounce thresholds queue kills).
                     try:
                         await self.client.untag_inbox(eb_account_id, a_set_tag_id)
                     except EmailBisonAPIError:
@@ -495,8 +501,6 @@ class SetTagSyncModule:
                         await self.client.untag_inbox(eb_account_id, b_set_tag_id)
                     except EmailBisonAPIError:
                         pass
-                    if current_pool in ('warning', 'quarantined'):
-                        result['cleared'] += 1
                     continue
 
                 # TAG TARGET FIRST.
@@ -551,15 +555,20 @@ class SetTagSyncModule:
         """
         Map an inbox's `inventory_pool_status` to (target_tag_id, opposite_tag_id, label).
 
-        target_tag_id is None when no pool tag should be present (warning,
-        quarantined, NULL, or unknown). In that case opposite_tag_id is also
-        None and the caller untags BOTH pool tags.
+        target_tag_id is None when no pool tag should be present (NULL or
+        unknown). In that case opposite_tag_id is also None and the caller
+        untags BOTH pool tags.
+
+        Note: pre-2026-04-29 (ADR-007), 'warning' and 'quarantined' returned
+        (None, None, None) too — they were intermediate active-circuit-breaker
+        states. They are no longer set by sync_accounts; existing rows are
+        drained by migration 098.
 
         Returns:
             (target_tag_id, opposite_tag_id, label):
                 - 'deployed'    → (live, reserve, 'live')
                 - 'reserve'     → (reserve, live, 'reserve')
-                - else          → (None, None, None)
+                - else (NULL/unknown) → (None, None, None)
         """
         if pool_status == 'deployed':
             return a_set_tag_id, b_set_tag_id, 'live'

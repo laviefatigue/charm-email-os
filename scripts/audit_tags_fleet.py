@@ -6,18 +6,20 @@ active workspaces.
 Read-only. Reports tag mismatches by category, per workspace and rolled
 up across the fleet.
 
-Invariants checked (per the post-2026-04-27 overhaul):
+Invariants checked (post-2026-04-27 overhaul, updated ADR-007 2026-04-29):
 
     DB inventory_pool_status='deployed'   →  EB has 'live', no 'reserve'
     DB inventory_pool_status='reserve'    →  EB has 'reserve', no 'live'
-    DB inventory_pool_status='warning'    →  EB has neither (active circuit breaker)
-    DB inventory_pool_status='quarantined'→  EB has neither (active circuit breaker)
     DB inventory_pool_status=NULL         →  EB has neither
     DB inventory_lifecycle_status='active'→  EB has no 'incubating'
     DB inventory_lifecycle_status='incubating' → EB has 'incubating'
 
 ESP-specific:
     Microsoft → always 'live' (per CEO pin), never 'reserve'
+
+Note: 'warning' and 'quarantined' pool states were removed per ADR-007.
+Migration 098 drains existing rows; if this audit finds any, the
+migration didn't fully apply.
 """
 import json
 import os
@@ -111,6 +113,9 @@ def categorize(db_row, eb_tags_list):
         if has_live:
             issues.append("dual_pool_tag_reserve_plus_live")
     elif pool in ("warning", "quarantined"):
+        # Pre-ADR-007 states; migration 098 should have drained these.
+        # If we still see them, flag as state drift.
+        issues.append(f"legacy_pool_state_{pool}_after_migration_098")
         if has_live or has_reserve:
             issues.append(f"pool_{pool}_should_have_no_pool_tag")
     elif pool is None:

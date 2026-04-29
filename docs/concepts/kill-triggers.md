@@ -9,8 +9,13 @@ tags: [concept, health, kill-triggers, infrastructure, overhaul-2026-04-27]
 
 Automated inbox termination system that protects domain reputation by detecting and removing problematic inboxes.
 
-> **2026-04-27 OVERHAUL UPDATES:**
-> - **20-send floor on count-based triggers** (`KILL_THRESHOLD_MIN_SENDS_24H_FOR_COUNT_TRIGGER=20`) — count-based kill triggers (`hard_bounces_24h`, `hard_blocked_24h`, `hard_unknown_24h`) only fire when the inbox has ≥20 sends in the last 24h. Prevents kills from low-volume noise (Phase 0 audit found 65% of recent count-trigger kills were on inboxes with <20 sends). Falls back to `total_sends_7d ≥ 20` for rollout safety until the new `total_sends_24h` column populates.
+> **2026-04-29 ADR-007 — drop `warning` + ESP-aware kill thresholds:**
+> - **`inventory_pool_status='warning'` is REMOVED.** No more soft-pause buffer. Inboxes that hit thresholds queue for kill directly. See [[../adr/adr-007-drop-warning-state-2026-04-29]].
+> - **Google kill thresholds tightened to 1/1/1** (was 2/3/2): single hard bounce on a Google inbox queues a kill (with the 20-send floor still gating). Microsoft kept at 2/3/2 (legacy ride-to-death).
+> - **State model**: `inventory_pool_status` is now `deployed` / `reserve` / `NULL` only.
+>
+> **2026-04-27 OVERHAUL UPDATES (still in effect):**
+> - **20-send floor on count-based triggers** (`KILL_THRESHOLD_MIN_SENDS_24H_FOR_COUNT_TRIGGER=20`) — count-based kill triggers only fire when the inbox has ≥20 sends in the last 24h. Prevents kills from low-volume noise (Phase 0 audit found 65% of recent count-trigger kills were on inboxes with <20 sends). Falls back to `total_sends_7d ≥ 20` for rollout safety until the new `total_sends_24h` column populates.
 > - **Per-workspace processing** — `kill_processor.process_workspace_queue(workspace_id, name)` replaces the old global cross-workspace fanout. Each workspace processes its own kill_queue rows using its workspace-scoped EB API key.
 > - **Cross-domain promotion is now allowed** — when an inbox is killed, the next reserve inbox is promoted regardless of source domain (workspace-scoped). This relaxes the "domain-level pool" rule below.
 > - **Microsoft skip on promote** — kill_processor does not promote Microsoft inboxes via cross-domain logic (legacy ride-to-death; no MS goes from reserve to deployed via kill).
@@ -32,18 +37,37 @@ Kill triggers are thresholds that, when breached, automatically queue an inbox f
 
 ## Kill Trigger Types
 
-### Inbox Kill Triggers
+### Inbox Kill Triggers (ESP-aware as of ADR-007)
 
-All triggers kill the **inbox** immediately when breached:
+All triggers kill the **inbox** immediately when breached. Count-based thresholds vary by ESP; rate-based and spam_complaint apply equally to both.
+
+**Microsoft (legacy ride-to-death):**
 
 | Trigger | Threshold | Priority | Rationale |
 |---------|-----------|----------|-----------|
-| `spam_complaint` | **>=1** | 0 (Highest) | User reported spam — inbox killed instantly |
-| `hard_blocked_24h` | **>=2** | 1 | Spam/policy rejection = active reputation damage |
-| `hard_unknown_24h` | **>=3** | 2 | Bad addresses = list quality issue |
-| `hard_bounces_24h` | **>=2** | 3 | Combined fallback for unclassified bounces |
+| `spam_complaint` | **≥1** | 0 (Highest) | User reported spam — inbox killed instantly |
+| `hard_blocked_24h` | **≥2** | 1 | Spam/policy rejection = active reputation damage |
+| `hard_unknown_24h` | **≥3** | 2 | Bad addresses = list quality issue |
+| `hard_bounces_24h` | **≥2** | 3 | Combined fallback for unclassified bounces |
 | `hard_bounce_rate_7d` | **>2.0%** | 4 | Sustained hard bounce rate (min 100 sends) |
-| `bounce_rate_all_7d` | **>5%** | 5 | Total bounce rate threshold |
+| `bounce_rate_all_7d` | **>5%** | 5 | Total bounce rate threshold (min 100 sends) |
+| `disconnected_timeout` | **≥21 days** | 6 | OAuth lost connection, presumed abandoned |
+
+**Google (post-ADR-007):**
+
+| Trigger | Threshold | Priority | Rationale |
+|---------|-----------|----------|-----------|
+| `spam_complaint` | **≥1** | 0 (Highest) | Same as MS |
+| `hard_blocked_24h` | **≥1** ⬇ | 1 | 1 bounce = 33% domain capacity loss (3 inboxes/domain) |
+| `hard_unknown_24h` | **≥1** ⬇ | 2 | Same logic — small fleet can't tolerate bad addresses |
+| `hard_bounces_24h` | **≥1** ⬇ | 3 | Combined fallback at 1 |
+| `hard_bounce_rate_7d` | **>2.0%** | 4 | Same as MS |
+| `bounce_rate_all_7d` | **>5%** | 5 | Same as MS |
+| `disconnected_timeout` | **≥21 days** | 6 | Same as MS |
+
+⬇ = lowered from Microsoft thresholds per ADR-007 (Google small-fleet logic).
+
+**All count-based triggers require the 20-send floor** (`total_sends_24h ≥ 20 OR total_sends_7d ≥ 20`) to fire. This protects warmup-phase and low-volume inboxes from noise. Spam_complaint and rate-based triggers have their own min-volume gates.
 
 ### Domain Burn Classification
 

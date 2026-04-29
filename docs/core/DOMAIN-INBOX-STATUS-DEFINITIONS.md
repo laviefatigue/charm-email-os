@@ -59,21 +59,25 @@ inbox_state = "live"  +  status = "Not connected"
 | **active** | 14 business days of continuous `warmup_enabled=TRUE` (lifecycle_tag_sync graduates) | Mature, in active rotation. **STICKY** post-`c866929` — sync_accounts no longer reverts active → incubating |
 | **dead** | Kill trigger fired OR removed from EB (`mark_stale_accounts` Option 1 patch) | Permanent terminal state |
 
-### 1.4 Inventory Pool: `inventory_pool_status` (POST-OVERHAUL)
+### 1.4 Inventory Pool: `inventory_pool_status` (POST-ADR-007, 2026-04-29)
 
 `inventory_pool_status` is the SOLE authority for set_tag_sync's per-inbox tag decision. See [[../decisions/POOL-ASSIGNMENT-AND-TAGGING-SYSTEM]] for full mapping. Summary:
 
 | Status | EB Tags | How Set | Reversibility |
 |--------|---------|---------|---------------|
-| **NULL** | NEITHER | sync_accounts on insert; kill; domain burn (burned/cancelled) | Forward-only post-kill |
-| **reserve** | `reserve` only | Graduation (Google); recovery from `'warning'` on reserve domain | Can promote → `'deployed'` |
-| **deployed** | `live` only | Graduation (Microsoft); cross-domain promotion (kill_processor); threshold-driven (orchestrator) | Can demote → `'warning'` on bounces |
-| **warning** | NEITHER (active circuit breaker) | sync_accounts on `hb_24h ≥ 1 OR hb_7d ≥ 3` | **Auto-clears** when bounces subside, restoring pool from domain default |
-| **quarantined** | NEITHER (active circuit breaker) | Reserved for severe future use | Same as warning |
+| **NULL** | NEITHER | sync_accounts on insert; kill; domain burn (burned/cancelled); migration 098 (former Gmail warning with no domain default) | Forward-only post-kill |
+| **reserve** | `reserve` only | Graduation (Google); migration 098 restoring former warning Gmail on reserve domains | Can promote → `'deployed'` |
+| **deployed** | `live` only | Graduation (Microsoft); cross-domain promotion (kill_processor); threshold-driven (orchestrator); migration 098 restoring former warning MS or Gmail on live domains | No demotion path (kill is terminal) |
 
-**Microsoft pin caveat**: Microsoft inboxes are pinned to `live` regardless of `inventory_pool_status` (Rule C2 — legacy ride-to-death). Even Microsoft inboxes with `pool='warning'` keep their `live` tag in EB. This is by design.
+**Removed states (per ADR-007, 2026-04-29):**
+- ~~`'warning'`~~ — pre-overhaul soft-pause buffer; not in v3 spec. Bounce thresholds now route directly to kill_queue.
+- ~~`'quarantined'`~~ — never operationalized; removed with warning.
 
-**Burned/cancelled domain caveat (post-`13523ca`)**: sync_accounts NULLs pool for any inbox on a domain with `pool_status IN ('burned','cancelled')`, regardless of bounce signal. Prevents the `'warning'` flicker race with the burned-domain handler.
+Existing rows in these states were drained by migration 098 (75 Gmail + 224 Microsoft as of 2026-04-29). New code stops writing them.
+
+**Microsoft pin caveat**: Microsoft inboxes are pinned to `live` regardless of `inventory_pool_status` (Rule C2 — legacy ride-to-death). Even Microsoft inboxes with `NULL` pool keep their `live` tag in EB. This is by design.
+
+**Burned/cancelled domain caveat (post-`13523ca`)**: sync_accounts NULLs pool for any inbox on a domain with `pool_status IN ('burned','cancelled')`, regardless of other signals. Prevents pool-tag races with the burned-domain handler.
 
 ---
 

@@ -5,6 +5,11 @@
 **Supersedes:** Previous ad-hoc pool status logic in sync_accounts.py
 **See also:** [[2026-04-27-tagging-kill-overhaul-plan]] for the full design + handoff doc, [[../adr/adr-006-tagging-kill-overhaul-2026-04-27]] for the architectural decision record.
 
+> **2026-04-29 ADR-007 — DROP `warning` STATE:**
+> - `inventory_pool_status='warning'` is REMOVED from the state model. Pool is now `deployed` / `reserve` / `NULL` only.
+> - Google kill thresholds tightened to 1/1/1 (Microsoft kept at 2/3/2 — legacy ride-to-death).
+> - Migration 098 drains existing warning rows. See [[../adr/adr-007-drop-warning-state-2026-04-29]] for the architectural decision record.
+>
 > **2026-04-27 OVERHAUL — KEY CHANGES TO THIS DOC:**
 > 1. **Per-inbox pool authority** replaced domain-level. `sender_accounts.inventory_pool_status` is the SOLE authority for set tag reconciliation. `domain.pool_status` is now a default for new graduations + a scope marker for burn events — it does not drive per-inbox tagging cycle-to-cycle.
 > 2. **Cross-domain promotion is now allowed** for kill-driven and threshold-driven promotion. The "all inboxes on a domain share the same pool" invariant from §4 below is no longer absolute — a reserve-pool domain may have one inbox promoted to deployed (cross-domain mixing) when filling a kill.
@@ -129,17 +134,22 @@ The 80% live / 20% reserve split is a high-level capacity-planning heuristic, NO
 
 **Graduation is automatic** — `lifecycle_tag_sync._graduate_mature_inboxes` runs every 15 min per workspace and graduates inboxes whose `warmup_enabled_since` (migration 094) shows 14 business days of continuous warmup.
 
-### 5.2 Pool Status (POST-OVERHAUL)
+### 5.2 Pool Status (POST-ADR-007, 2026-04-29)
 
 `inventory_pool_status` is now the SOLE authority for set_tag_sync's per-inbox tag decision. The mapping below is enforced by `set_tag_sync._pool_to_tag_targets`:
 
 | `inventory_pool_status` | EB Tag State | How Set |
 |---|---|---|
-| `NULL` | Neither `live` nor `reserve` | sync_accounts on insert (new inbox), kill, domain burn, or `mark_stale_accounts` (Option 1 patch) |
-| `'reserve'` | `reserve` tag, not `live` | Graduation (Google), or auto-clear from `'warning'` when bounces subside on a reserve-pool domain |
-| `'deployed'` | `live` tag, not `reserve` | Graduation (Microsoft), cross-domain promotion (kill_processor), threshold-driven promotion (orchestrator) |
-| `'warning'` | NEITHER (active circuit breaker) | sync_accounts when `hb_24h ≥ 1 OR hb_7d ≥ 3` — auto-clears |
-| `'quarantined'` | NEITHER | Reserved for severe future use; same circuit breaker behavior as warning |
+| `NULL` | Neither `live` nor `reserve` | sync_accounts on insert (new inbox), kill, domain burn, `mark_stale_accounts`, or migration 098 (former warning Google with no domain default) |
+| `'reserve'` | `reserve` tag, not `live` | Graduation (Google), migration 098 restoring former warning Gmail on reserve-pool domains |
+| `'deployed'` | `live` tag, not `reserve` | Graduation (Microsoft), cross-domain promotion (kill_processor), threshold-driven promotion (orchestrator), migration 098 restoring former warning MS (pin) or Gmail on live domains |
+
+**Removed states (per ADR-007):**
+
+| Former state | Removal reason |
+|---|---|
+| ~~`'warning'`~~ | Pre-overhaul soft-pause buffer; not in v3 spec; allowed indefinite stuck-state. Inboxes that hit bounce thresholds now queue for kill directly via health_checks. |
+| ~~`'quarantined'`~~ | Reserved for future use but never operationalized. Same circuit-breaker behavior as warning; removed alongside it. |
 
 ### 5.3 Graduation Path (POST-OVERHAUL)
 
