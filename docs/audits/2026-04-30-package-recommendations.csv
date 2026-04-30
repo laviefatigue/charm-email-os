@@ -1,0 +1,12 @@
+workspace_name,workspace_id,current_package,active_inboxes,live_count,reserve_count,incubating_count,sends_24h,projected_monthly_sends,recommended_package,rationale,pause_pool_transitions,target_live_count_override,operator_decision,operator_notes
+Spout,65f28f00-6ae8-4bfd-b47f-0bb1cd410a5b,,575,77,0,1,1091,32730,50k_google,"Projected monthly ~32730, live=77 — fits 50k_google (target_live=150)",False,,,
+Search Atlas,cadea9e1-c133-4ec6-90d8-7fe67be81a3e,,660,339,1,0,565,16950,review_oversized,live_count=339 exceeds 100k_google target (300) — investigate over-provisioning,False,,,
+Selery,3fabfb3c-80d1-4991-8834-70cfbe0c97b9,,729,338,23,0,326,9780,review_oversized,live_count=338 exceeds 100k_google target (300) — investigate over-provisioning,False,,,
+Stable Kernel Market Research,fc30a1d0-0c1d-4275-8278-1553f699e954,50k_google,105,91,0,14,283,8490,keep_current,Already assigned to 50k_google,False,,,
+Barrena,7a45d858-049b-4d9d-89c9-9177481a48a6,,39,0,0,0,186,5580,50k_google,"Projected monthly ~5580, live=0 — fits 50k_google (target_live=150)",False,,,
+SPUI,0e268517-2ae4-4f85-b5c1-f512ca12f35d,,95,83,0,0,109,3270,50k_google,"Projected monthly ~3270, live=83 — fits 50k_google (target_live=150)",False,,,
+Stable Kernel,1e57b7dd-4678-4c97-916b-8b79b748d735,,175,10,9,0,63,1890,50k_google,"Projected monthly ~1890, live=10 — fits 50k_google (target_live=150)",False,,,
+Linkgraph,ea6e8d86-5d32-40dd-9db5-02c17c310a82,,238,76,0,0,57,1710,50k_google,"Projected monthly ~1710, live=76 — fits 50k_google (target_live=150)",False,,,
+Charm,b9abd34a-f16a-4b92-bda0-5af10f8c44bd,,437,15,3,251,0,0,review_paused,Has 15 live inboxes but 0 sends in 24h — possibly paused or pre-launch,False,,,
+Hello Hero,b84d20d0-7f2d-40a5-800d-a494652f1844,,520,320,0,0,0,0,review_paused,Has 320 live inboxes but 0 sends in 24h — possibly paused or pre-launch,False,,,
+Sammy,bbfee135-bff8-4b02-9270-e7946725ab14,,634,0,0,0,0,0,review_volume,No live inboxes and no recent sends — dormant or never activated; needs operator context,False,,,

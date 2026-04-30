@@ -1,13 +1,78 @@
 ---
 title: V3 Compliance Gap Analysis
 created: 2026-02-21
-updated: 2026-02-21
+updated: 2026-04-30
 tags: [health, v3, compliance, gaps, implementation]
 ---
 
 # Inbox & Domain Health System V3 - Compliance Gap Analysis
 
 Comprehensive analysis of V3 specification coverage in the charm-email-os implementation.
+
+## 2026-04-30 STATUS UPDATE
+
+Below the original Feb-2026 analysis (overall ~78%), several ADR-driven
+shifts have changed the picture. Current state per workstream:
+
+### Kill Trigger compliance — POST-OVERHAUL (ADR-006 + ADR-007 + ADR-009)
+
+| Trigger | Feb-2026 status | 2026-04-30 status | Source of truth |
+|---------|----------------|-------------------|-----------------|
+| `spam_complaint` ≥ 1 | DONE | **DONE — Google instant-burns domain too (ADR-007)** | [docs/concepts/kill-triggers.md](../concepts/kill-triggers.md) |
+| `hard_bounces_24h` ≥ 2 (MS) / ≥ 1 (Google) | uniform 2 | **ESP-AWARE per ADR-007** | health_checks.py KILL_THRESHOLDS_BY_ESP |
+| `hard_blocked_24h` ≥ 2 (MS) / ≥ 1 (Google) | uniform 2 | **ESP-AWARE per ADR-007** | health_checks.py |
+| `hard_unknown_24h` ≥ 3 (MS) / ≥ 1 (Google) | uniform 3 | **ESP-AWARE per ADR-007** | health_checks.py |
+| `hard_bounce_rate_7d` > 2.0% | > 0.5% (Feb) | **TIGHTENED to 2.0%** (overhaul) | health_checks.py |
+| `bounce_rate_all_7d` > 5% | > 5% | DONE | health_checks.py |
+| `fresh_inbox_bounce` ≥ 1 | DONE | DONE | health_checks.py |
+| `provider_block` (per-ESP) | MISSING (Feb) | **DONE — `flagged_provider_block_microsoft` / `_gmail`** | health_checks.py + kill_processor.py |
+| `disconnected_timeout` ≥ 21 days | TODO | **REMOVED 2026-04-30 (ADR-009)** — connection-only conditions never produce a kill | [docs/adr/adr-009-...md](../adr/adr-009-connection-state-separated-from-kill-state-2026-04-30.md) |
+
+### Operational discipline added since Feb
+
+| Discipline | Source | Effect |
+|------------|--------|--------|
+| 20-send floor on count-based triggers | ADR-006 §"20-send floor" | Count-based kills only fire when `total_sends_24h ≥ 20` (or `7d ≥ 20` fallback). Prevents kills from low-volume noise (Phase 0 audit found 65% of count-trigger kills were on inboxes with <20 sends). |
+| Per-workspace processing | ADR-006 + migration 089 | `kill_processor.process_workspace_queue(workspace_id, name)` replaces global cross-workspace fanout. Each workspace uses its scoped EB API key. |
+| Cross-domain promotion allowed (within workspace) | ADR-006 | Killed inbox → next reserve in workspace promoted, regardless of source domain. Microsoft skipped (ride-to-death). |
+| `flagged_but_alive` audit metric | mig-099 + overhaul_audit | Surfaces drift if a row was tagged in EB but DB wasn't updated to dead. Should be 0 in steady state. |
+| `stuck_active_null_pool` audit metric | overhaul_audit + sync_accounts self-heal | Catches inboxes at lifecycle='active' AND pool=NULL on non-burned domains. Should be 0. |
+| `kill_queue_pending_over_2h` audit metric | overhaul_audit | Surfaces stuck-pending kills (kill_processor runs every 15 min). |
+| Connection state separated from kill state (ADR-009) | this session | Disconnect duration drives notifications, never kills. ~1,200 fleet-wide zombies were the symptom that prompted this change. |
+| Silent-failure hardening | this session (commits 94fd0fa, e7bbd59) | `lifecycle_tag_sync.tag_inbox` and `kill_processor` pool-tag strip both distinguish 404 (intended) from transient failures (re-raise to retry). Stops new EB↔DB drift. |
+
+### What remains MISSING vs V3 spec
+
+Same as Feb-2026 in these areas — the work hasn't been picked up:
+
+| Feature | Status |
+|---------|--------|
+| Confirming kill triggers (placement-based, multi-day trend) | TODO — requires placement testing service |
+| Bounce source / segment quarantine analysis | TODO — list_segment_tracker partial |
+| Postmaster/SNDS API integration | TODO — requires Hypertide integration |
+| Domain rotation enforcement at 240+ days | PARTIAL — phase calculated, no enforcement |
+
+### Net 2026-04-30 compliance estimate
+
+- **Section 3 (Inbox Kill Triggers)**: 95% (was 95%; provider_block done, disconnected_timeout removed as out-of-scope-for-kill, confirming kills still TODO)
+- **Section 5 (Domain Rules)**: 95% (was 95%; ESP-aware Google small-fleet logic added)
+- **Section 6 (Portfolio Structure)**: 90% (cross-domain promotion + per-workspace package targets via mig-097)
+- Overall: **~80%** (modest gain — most progress was on operational discipline, not feature surface)
+
+### Cross-reference to current docs
+
+For the AUTHORITATIVE current behavior, read these instead of the original Feb analysis below:
+
+- [docs/concepts/kill-triggers.md](../concepts/kill-triggers.md) — current trigger tables, ESP-aware
+- [docs/adr/adr-006-tagging-kill-overhaul-2026-04-27.md](../adr/adr-006-tagging-kill-overhaul-2026-04-27.md)
+- [docs/adr/adr-007-drop-warning-state-2026-04-29.md](../adr/adr-007-drop-warning-state-2026-04-29.md)
+- [docs/adr/adr-009-connection-state-separated-from-kill-state-2026-04-30.md](../adr/adr-009-connection-state-separated-from-kill-state-2026-04-30.md)
+- [docs/plans/INBOX-INTEGRITY-PROGRAM.md](../plans/INBOX-INTEGRITY-PROGRAM.md) — master tracker
+
+---
+
+# (Original Feb-2026 analysis below — preserved for reference; some details superseded by 2026-04 ADRs)
+
 
 ## Critical Architectural Decision: Tag-Only, Never Delete
 
