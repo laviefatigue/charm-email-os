@@ -218,6 +218,99 @@ Beyond the plan docs and work log written earlier this session:
 | [production/coolify/services.md](../../production/coolify/services.md) | Updated `emailbison-sync` service section: ENABLE_KILL_PROCESSING flipped to `true` (since 2026-04-13). Added Connection State section (ADR-009 reference). Added Silent-Failure Hardening section. Added Accuracy Audits section pointing to the new scripts. |
 | [docs/adr/adr-009-connection-state-separated-from-kill-state-2026-04-30.md](../adr/adr-009-connection-state-separated-from-kill-state-2026-04-30.md) | NEW — formalizes the connection ≠ kill decision. Lists alternatives considered, consequences, implementation status. |
 
+## Workstream D investigation — Spout 641 reclassified (END-OF-SESSION CORRECTION)
+
+I owe a correction. Earlier in this session I described Spout as having
+"641 disconnected_timeout zombies." That was wrong — the per-trigger
+breakdown reveals the actual pattern.
+
+### The accuracy audit's `dead_but_connected` metric is broader than zombie
+
+| Term | Meaning |
+|------|---------|
+| `dead_but_connected` (audit metric) | Any row where `inbox_state='dead' AND status='Connected'` regardless of why it was killed |
+| `disconnected_timeout zombie` | A specific subset: `kill_trigger='disconnected_timeout' AND status='Connected'` (these are the wrongly-killed-by-removed-rule cases) |
+
+I conflated the two. The accuracy audit reported 641 dead+Connected for
+Spout. Of those, **0 are disconnected_timeout zombies.** They're
+reputation kills that happen to still have working OAuth.
+
+### Spout's actual kill trigger distribution (641 dead+Connected)
+
+| trigger | count | killed range |
+|---------|------:|--------------|
+| spam_complaint | 183 | 2026-02-14 → 2026-04-30 |
+| hard_bounces_24h | 162 | 2026-02-14 → 2026-04-28 |
+| fresh_inbox_unknown | 146 | 2026-02-14 (single day) |
+| fresh_inbox_blocked | 121 | 2026-02-14 (single day) |
+| hard_blocked_24h | 30 | 2026-02-16 → 2026-04-30 |
+| hard_unknown_24h | 3 | 2026-04-30 (today) |
+
+### The 2026-02-14 catastrophic event — 550 kills in ONE DAY
+
+| trigger | count |
+|---------|------:|
+| hard_bounces_24h | 160 |
+| fresh_inbox_unknown | 146 |
+| spam_complaint | 123 |
+| fresh_inbox_blocked | 121 |
+| **Total 2026-02-14** | **550** |
+
+Domain distribution (top 10):
+
+| domain | kills |
+|--------|------:|
+| enjoyspoutwater.com | 44 |
+| gospoutwater.com | 37 |
+| tryspoutwater.com | 37 |
+| experiencespoutwater.com | 37 |
+| pickspoutwater.com | 37 |
+| discoverspoutwater.com | 35 |
+| dewspoutwater.com | 35 |
+| sipspoutwater.com | 33 |
+| joinspoutwater.com | 30 |
+| getspoutwater.com | 30 |
+
+Roughly even distribution across 10+ domains. **This isn't a single-domain reputation crisis — it's a fleet-wide provisioning event.** Almost certainly a Hypertide bad batch where:
+
+- 267 inboxes (146 fresh_inbox_unknown + 121 fresh_inbox_blocked) hit fresh-inbox bounce thresholds immediately upon first send → bad list quality on the warmup or first-send cohort
+- 160 hard_bounces_24h additional from the same batch over the next ~24h
+- 123 spam_complaint events also that day — recipients flagged the messages as spam quickly
+
+This is the kind of thing the inbox_audit Slack reports were supposed to surface (audit_id 11 / 12 around 2026-02-14 would have shown spike). Per §inbox_audits findings, the audit is unread.
+
+### Recent Spout kill activity (last 14 days, normal attrition)
+
+| date | trigger | count |
+|------|---------|------:|
+| 2026-04-30 | hard_blocked_24h | 12 |
+| 2026-04-30 | hard_unknown_24h | 3 |
+| 2026-04-30 | disconnected_timeout | 1 |
+| 2026-04-30 | spam_complaint | 1 |
+| 2026-04-29 | spam_complaint | 3 |
+| 2026-04-29 | hard_blocked_24h | 1 |
+| 2026-04-29 | disconnected_timeout | 1 |
+| 2026-04-28 | hard_bounces_24h | 2 |
+| ...steady state ~5-10/day... | | |
+
+Note: 2 disconnected_timeout kills as recently as 2026-04-29 → 2026-04-30
+— these would NOT have happened post-Phase-1 patch (commit `94fd0fa`).
+They came from the OLD path before today's deploy of the patch. Once
+deployed, that source of new zombies is closed.
+
+### Spout — corrected disposition
+
+| Issue | Action |
+|-------|--------|
+| 641 dead+Connected (correctly reputation-killed) | NO ACTION — they're correctly dead |
+| 10 pool-tag drift rows (DB dead, EB still has pool tag) | Operator-driven EB cleanup; new drift prevented by today's kill_processor patch |
+| 287 DB-only on retired domains (`*spoutwater.com`) | Cosmetic residue from Feb-14 + ongoing kills; no action |
+| 2026-02-14 mass provisioning failure (550 fresh-batch fails) | **Worth investigating Hypertide for that date** to understand if this is recurring |
+
+### Updated tracker section
+
+In INBOX-INTEGRITY-PROGRAM.md §3.6, "Investigate Spout's 641 disconnected_timeout zombies" → reclassified to "Investigate the 2026-02-14 mass provisioning failure (Hypertide root-cause)." That's the real question. Spout doesn't have 641 zombies; it had 550 fresh-inbox failures in one day in February that nobody investigated.
+
 ## Next session
 
 In priority order:

@@ -1,0 +1,3 @@
+email,eb_id,workspace,killed_at,days_since_killed,current_eb_status,current_eb_tags,has_recent_spam,has_recent_bounces,has_recent_blocks,reputation_clean_heuristic,emails_sent_eb,total_replied_eb,db_inbox_state,db_pool_status,db_lifecycle_status,db_is_active,operator_decision,operator_notes
+reuben@ripplespoutwater.com,8920,Spout,2026-04-30,0,Not connected,"Google,flagged_provider_block_gmail,flagged_disconnected_timeout",no,no,no,no,645,13,dead,,dead,TRUE,,
+reuben.vollmer@hellospoutwater.com,8914,Spout,2026-04-29,1,Not connected,"Google,flagged_provider_block_gmail,flagged_disconnected_timeout",no,no,no,no,646,18,dead,,dead,TRUE,,

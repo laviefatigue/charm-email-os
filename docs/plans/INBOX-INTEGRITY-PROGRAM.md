@@ -121,7 +121,7 @@ Status keys: ✅ done · 🚧 in progress · ⏳ pending · 🔒 blocked · 👤
 | Deploy commits `94fd0fa` + `6d5f2a3` to charm-api + emailbison-sync | 👤 | Coolify deploys: app-uuids `nckgggwww8sggg0kc4wo00o8` (api) + `l4g44o00s4cccg804osswgcc` (sync) |
 | Charm zombie CSV review (142 rows, 127 currently Connected) | 👤 | [docs/audits/2026-04-30-zombie-review-charm.csv](../audits/2026-04-30-zombie-review-charm.csv) — fill `operator_decision` column, run SQL by hand |
 | Re-run accuracy audit weekly | 👤 | `py scripts/audit_system_accuracy.py` |
-| Investigate Spout's 641 disconnected_timeout zombies — root cause before bulk action | 👤 | Generate `--workspace Spout` CSV, examine `killed_at` distribution, check for fleet-wide OAuth wipe events |
+| ~~Investigate Spout's 641 disconnected_timeout zombies~~ — RECLASSIFIED 2026-04-30 end of session: Spout has 0 disconnected_timeout zombies. The 641 dead+Connected are CORRECTLY reputation-killed (183 spam, 162 hard_bounces, 267 fresh-inbox failures). 553 of 641 came from a single 2026-02-14 mass provisioning event (550 inboxes killed across 10 *spoutwater.com domains). New investigation: **Hypertide root-cause for the 2026-02-14 batch failure.** | 👤 | See work-log §"Workstream D investigation — Spout 641 reclassified" |
 | Cleanup the 10 Spout pool-tag drift rows (operator EB-side untag) | 👤 | Patch shipped to prevent recurrence; existing 10 need manual tag strip via EB UI or scripted untag with operator approval |
 | Strip flagged_disconnected_timeout from EB during zombie restoration | 👤 | Per-row, alongside operator restoration in §3.4 Phase 5 |
 
