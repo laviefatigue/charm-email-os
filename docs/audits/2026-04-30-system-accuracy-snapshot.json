@@ -1,0 +1,717 @@
+{
+  "audit_date": "2026-04-30T18:22:15.561969+00:00",
+  "acceptance_thresholds": {
+    "connection_status_match_pct": 99.0,
+    "disconnect_timestamp_match_pct": 95.0,
+    "membership_match_pct": 98.0,
+    "pool_tag_drift_pct_max": 1.0
+  },
+  "workspaces": [
+    {
+      "workspace_name": "Barrena",
+      "eb_count": 39,
+      "db_count": 39,
+      "db_active_count": 39,
+      "in_both": 39,
+      "eb_only_count": 0,
+      "db_only_count": 0,
+      "eb_only_sample": [],
+      "db_only_sample": [],
+      "connection_status_match_pct": 100.0,
+      "connection_status_mismatch_count": 0,
+      "connection_status_mismatch_samples": [],
+      "eb_disconnected_count": 0,
+      "db_has_disconnect_timestamp_count": 0,
+      "disconnect_timestamp_match_pct": 100.0,
+      "pool_tag_match_count": 39,
+      "pool_tag_drift_count": 0,
+      "pool_tag_drift_pct": 0.0,
+      "pool_tag_drift_samples": []
+    },
+    {
+      "workspace_name": "Charm",
+      "eb_count": 437,
+      "db_count": 438,
+      "db_active_count": 437,
+      "in_both": 437,
+      "eb_only_count": 0,
+      "db_only_count": 1,
+      "eb_only_sample": [],
+      "db_only_sample": [
+        {
+          "eb_id": 6291,
+          "email": "robert@inspi-cure-eu.com",
+          "is_active": false,
+          "inbox_state": "dead"
+        }
+      ],
+      "connection_status_match_pct": 100.0,
+      "connection_status_mismatch_count": 0,
+      "connection_status_mismatch_samples": [],
+      "eb_disconnected_count": 23,
+      "db_has_disconnect_timestamp_count": 23,
+      "disconnect_timestamp_match_pct": 100.0,
+      "pool_tag_match_count": 434,
+      "pool_tag_drift_count": 3,
+      "pool_tag_drift_pct": 0.7,
+      "pool_tag_drift_samples": [
+        {
+          "eb_id": 6298,
+          "email": "luke@growthgroupusa.com",
+          "db_pool": "reserve",
+          "db_lifecycle": "active",
+          "eb_pool": null,
+          "eb_tags": [
+            "google",
+            "generic-inboxes"
+          ]
+        },
+        {
+          "eb_id": 6300,
+          "email": "andrew@growthgroupusa.com",
+          "db_pool": "reserve",
+          "db_lifecycle": "active",
+          "eb_pool": null,
+          "eb_tags": [
+            "google",
+            "generic-inboxes"
+          ]
+        },
+        {
+          "eb_id": 6301,
+          "email": "mason@growthgroupusa.com",
+          "db_pool": "reserve",
+          "db_lifecycle": "active",
+          "eb_pool": null,
+          "eb_tags": [
+            "google",
+            "generic-inboxes"
+          ]
+        }
+      ]
+    },
+    {
+      "workspace_name": "Hello Hero",
+      "eb_count": 520,
+      "db_count": 520,
+      "db_active_count": 520,
+      "in_both": 520,
+      "eb_only_count": 0,
+      "db_only_count": 0,
+      "eb_only_sample": [],
+      "db_only_sample": [],
+      "connection_status_match_pct": 100.0,
+      "connection_status_mismatch_count": 0,
+      "connection_status_mismatch_samples": [],
+      "eb_disconnected_count": 2,
+      "db_has_disconnect_timestamp_count": 2,
+      "disconnect_timestamp_match_pct": 100.0,
+      "pool_tag_match_count": 517,
+      "pool_tag_drift_count": 3,
+      "pool_tag_drift_pct": 0.6,
+      "pool_tag_drift_samples": [
+        {
+          "eb_id": 5741,
+          "email": "j-jordan@lovehellohero.com",
+          "db_pool": null,
+          "db_lifecycle": "dead",
+          "eb_pool": "live",
+          "eb_tags": [
+            "outlook",
+            "flagged_provider_block_microsoft",
+            "live"
+          ]
+        },
+        {
+          "eb_id": 5906,
+          "email": "jessicajordan.jj@helloheroamerica.com",
+          "db_pool": null,
+          "db_lifecycle": "dead",
+          "eb_pool": "live",
+          "eb_tags": [
+            "outlook",
+            "flagged_provider_block_microsoft",
+            "live"
+          ]
+        },
+        {
+          "eb_id": 5912,
+          "email": "jessica_jj@usahellohero.com",
+          "db_pool": null,
+          "db_lifecycle": "dead",
+          "eb_pool": "reserve",
+          "eb_tags": [
+            "outlook",
+            "flagged_provider_block_microsoft",
+            "reserve"
+          ]
+        }
+      ]
+    },
+    {
+      "workspace_name": "Linkgraph",
+      "eb_count": 238,
+      "db_count": 245,
+      "db_active_count": 238,
+      "in_both": 238,
+      "eb_only_count": 0,
+      "db_only_count": 7,
+      "eb_only_sample": [],
+      "db_only_sample": [
+        {
+          "eb_id": 7998,
+          "email": "bm@scalesearchatlas.com",
+          "is_active": false,
+          "inbox_state": "live"
+        },
+        {
+          "eb_id": 7999,
+          "email": "b_m@scalesearchatlas.com",
+          "is_active": false,
+          "inbox_state": "live"
+        },
+        {
+          "eb_id": 8000,
+          "email": "b-m@scalesearchatlas.com",
+          "is_active": false,
+          "inbox_state": "live"
+        },
+        {
+          "eb_id": 8001,
+          "email": "manick.m@scalesearchatlas.com",
+          "is_active": false,
+          "inbox_state": "live"
+        },
+        {
+          "eb_id": 8032,
+          "email": "manick-b@fuelsearchatlas.com",
+          "is_active": false,
+          "inbox_state": "live"
+        },
+        {
+          "eb_id": 8033,
+          "email": "m.b@fuelsearchatlas.com",
+          "is_active": false,
+          "inbox_state": "live"
+        },
+        {
+          "eb_id": 8145,
+          "email": "mbhan-m@ignitesearchatlas.com",
+          "is_active": false,
+          "inbox_state": "live"
+        }
+      ],
+      "connection_status_match_pct": 100.0,
+      "connection_status_mismatch_count": 0,
+      "connection_status_mismatch_samples": [],
+      "eb_disconnected_count": 0,
+      "db_has_disconnect_timestamp_count": 0,
+      "disconnect_timestamp_match_pct": 100.0,
+      "pool_tag_match_count": 238,
+      "pool_tag_drift_count": 0,
+      "pool_tag_drift_pct": 0.0,
+      "pool_tag_drift_samples": []
+    },
+    {
+      "workspace_name": "SPUI",
+      "eb_count": 117,
+      "db_count": 199,
+      "db_active_count": 95,
+      "in_both": 95,
+      "eb_only_count": 22,
+      "db_only_count": 104,
+      "eb_only_sample": [
+        9866,
+        9867,
+        9868,
+        9869,
+        9870,
+        9871,
+        9872,
+        9873,
+        9874,
+        9875
+      ],
+      "db_only_sample": [
+        {
+          "eb_id": 5275,
+          "email": "bb@tryspui.com",
+          "is_active": false,
+          "inbox_state": "dead"
+        },
+        {
+          "eb_id": 5276,
+          "email": "b-ss@tryspui.com",
+          "is_active": false,
+          "inbox_state": "live"
+        },
+        {
+          "eb_id": 5277,
+          "email": "b-b@tryspui.com",
+          "is_active": false,
+          "inbox_state": "live"
+        },
+        {
+          "eb_id": 5278,
+          "email": "bb.sheth@tryspui.com",
+          "is_active": false,
+          "inbox_state": "live"
+        },
+        {
+          "eb_id": 5279,
+          "email": "bb.sheths@tryspui.com",
+          "is_active": false,
+          "inbox_state": "live"
+        },
+        {
+          "eb_id": 5280,
+          "email": "b.b@tryspui.com",
+          "is_active": false,
+          "inbox_state": "live"
+        },
+        {
+          "eb_id": 5281,
+          "email": "bb_sheths@tryspui.com",
+          "is_active": false,
+          "inbox_state": "live"
+        },
+        {
+          "eb_id": 5282,
+          "email": "b-s@tryspui.com",
+          "is_active": false,
+          "inbox_state": "live"
+        },
+        {
+          "eb_id": 5283,
+          "email": "bb-sheths@tryspui.com",
+          "is_active": false,
+          "inbox_state": "live"
+        },
+        {
+          "eb_id": 5284,
+          "email": "bb_sheth@tryspui.com",
+          "is_active": false,
+          "inbox_state": "live"
+        }
+      ],
+      "connection_status_match_pct": 100.0,
+      "connection_status_mismatch_count": 0,
+      "connection_status_mismatch_samples": [],
+      "eb_disconnected_count": 0,
+      "db_has_disconnect_timestamp_count": 0,
+      "disconnect_timestamp_match_pct": 100.0,
+      "pool_tag_match_count": 95,
+      "pool_tag_drift_count": 0,
+      "pool_tag_drift_pct": 0.0,
+      "pool_tag_drift_samples": []
+    },
+    {
+      "workspace_name": "Sammy",
+      "eb_count": 634,
+      "db_count": 756,
+      "db_active_count": 634,
+      "in_both": 634,
+      "eb_only_count": 0,
+      "db_only_count": 122,
+      "eb_only_sample": [],
+      "db_only_sample": [
+        {
+          "eb_id": 5508,
+          "email": "jared.korinko@grabsammy.com",
+          "is_active": false,
+          "inbox_state": "live"
+        },
+        {
+          "eb_id": 6201,
+          "email": "jared@discoversammy.com",
+          "is_active": false,
+          "inbox_state": "dead"
+        },
+        {
+          "eb_id": 6202,
+          "email": "jared.korinko@discoversammy.com",
+          "is_active": false,
+          "inbox_state": "dead"
+        },
+        {
+          "eb_id": 6203,
+          "email": "jaredk@discoversammy.com",
+          "is_active": false,
+          "inbox_state": "live"
+        },
+        {
+          "eb_id": 6204,
+          "email": "jared@buildsammyai.com",
+          "is_active": false,
+          "inbox_state": "live"
+        },
+        {
+          "eb_id": 6205,
+          "email": "jared.korinko@buildsammyai.com",
+          "is_active": false,
+          "inbox_state": "dead"
+        },
+        {
+          "eb_id": 6206,
+          "email": "jaredk@buildsammyai.com",
+          "is_active": false,
+          "inbox_state": "dead"
+        },
+        {
+          "eb_id": 6207,
+          "email": "jared@slideintosammy.com",
+          "is_active": false,
+          "inbox_state": "live"
+        },
+        {
+          "eb_id": 6208,
+          "email": "jared.korinko@slideintosammy.com",
+          "is_active": false,
+          "inbox_state": "dead"
+        },
+        {
+          "eb_id": 6209,
+          "email": "jaredk@slideintosammy.com",
+          "is_active": false,
+          "inbox_state": "dead"
+        }
+      ],
+      "connection_status_match_pct": 100.0,
+      "connection_status_mismatch_count": 0,
+      "connection_status_mismatch_samples": [],
+      "eb_disconnected_count": 634,
+      "db_has_disconnect_timestamp_count": 634,
+      "disconnect_timestamp_match_pct": 100.0,
+      "pool_tag_match_count": 634,
+      "pool_tag_drift_count": 0,
+      "pool_tag_drift_pct": 0.0,
+      "pool_tag_drift_samples": []
+    },
+    {
+      "workspace_name": "Search Atlas",
+      "eb_count": 667,
+      "db_count": 660,
+      "db_active_count": 660,
+      "in_both": 660,
+      "eb_only_count": 7,
+      "db_only_count": 0,
+      "eb_only_sample": [
+        9469,
+        9470,
+        9471,
+        9472,
+        9473,
+        9474,
+        9475
+      ],
+      "db_only_sample": [],
+      "connection_status_match_pct": 100.0,
+      "connection_status_mismatch_count": 0,
+      "connection_status_mismatch_samples": [],
+      "eb_disconnected_count": 0,
+      "db_has_disconnect_timestamp_count": 0,
+      "disconnect_timestamp_match_pct": 100.0,
+      "pool_tag_match_count": 660,
+      "pool_tag_drift_count": 0,
+      "pool_tag_drift_pct": 0.0,
+      "pool_tag_drift_samples": []
+    },
+    {
+      "workspace_name": "Selery",
+      "eb_count": 732,
+      "db_count": 729,
+      "db_active_count": 729,
+      "in_both": 729,
+      "eb_only_count": 3,
+      "db_only_count": 0,
+      "eb_only_sample": [
+        9343,
+        9344,
+        9357
+      ],
+      "db_only_sample": [],
+      "connection_status_match_pct": 100.0,
+      "connection_status_mismatch_count": 0,
+      "connection_status_mismatch_samples": [],
+      "eb_disconnected_count": 39,
+      "db_has_disconnect_timestamp_count": 39,
+      "disconnect_timestamp_match_pct": 100.0,
+      "pool_tag_match_count": 729,
+      "pool_tag_drift_count": 0,
+      "pool_tag_drift_pct": 0.0,
+      "pool_tag_drift_samples": []
+    },
+    {
+      "workspace_name": "Spout",
+      "eb_count": 578,
+      "db_count": 862,
+      "db_active_count": 575,
+      "in_both": 575,
+      "eb_only_count": 3,
+      "db_only_count": 287,
+      "eb_only_sample": [
+        8859,
+        8860,
+        9089
+      ],
+      "db_only_sample": [
+        {
+          "eb_id": 2640,
+          "email": "reuben.vollmer@usespoutwater.com",
+          "is_active": false,
+          "inbox_state": "dead"
+        },
+        {
+          "eb_id": 2642,
+          "email": "reuben@choosespoutwater.com",
+          "is_active": false,
+          "inbox_state": "dead"
+        },
+        {
+          "eb_id": 2648,
+          "email": "r.vollmer@usespoutwater.com",
+          "is_active": false,
+          "inbox_state": "dead"
+        },
+        {
+          "eb_id": 2651,
+          "email": "reuben.v@choosespoutwater.com",
+          "is_active": false,
+          "inbox_state": "dead"
+        },
+        {
+          "eb_id": 2652,
+          "email": "reuben.v@usespoutwater.com",
+          "is_active": false,
+          "inbox_state": "dead"
+        },
+        {
+          "eb_id": 2661,
+          "email": "vollmerr@usespoutwater.com",
+          "is_active": false,
+          "inbox_state": "dead"
+        },
+        {
+          "eb_id": 2662,
+          "email": "reuben_vollmer@choosespoutwater.com",
+          "is_active": false,
+          "inbox_state": "dead"
+        },
+        {
+          "eb_id": 2671,
+          "email": "reuben_v@choosespoutwater.com",
+          "is_active": false,
+          "inbox_state": "dead"
+        },
+        {
+          "eb_id": 2673,
+          "email": "reuben_v@usespoutwater.com",
+          "is_active": false,
+          "inbox_state": "dead"
+        },
+        {
+          "eb_id": 2679,
+          "email": "reuben-vollmer@choosespoutwater.com",
+          "is_active": false,
+          "inbox_state": "dead"
+        }
+      ],
+      "connection_status_match_pct": 100.0,
+      "connection_status_mismatch_count": 0,
+      "connection_status_mismatch_samples": [],
+      "eb_disconnected_count": 15,
+      "db_has_disconnect_timestamp_count": 15,
+      "disconnect_timestamp_match_pct": 100.0,
+      "pool_tag_match_count": 565,
+      "pool_tag_drift_count": 10,
+      "pool_tag_drift_pct": 1.7,
+      "pool_tag_drift_samples": [
+        {
+          "eb_id": 2620,
+          "email": "reuben@trustspoutwater.com",
+          "db_pool": null,
+          "db_lifecycle": "dead",
+          "eb_pool": "live",
+          "eb_tags": [
+            "google",
+            "google ht set b - 9.10.25",
+            "azure set c - 13.10.25",
+            "g",
+            "bset",
+            "flagged_provider_block_gmail",
+            "live"
+          ]
+        },
+        {
+          "eb_id": 2657,
+          "email": "vollmer.r@usespoutwater.com",
+          "db_pool": null,
+          "db_lifecycle": "dead",
+          "eb_pool": "reserve",
+          "eb_tags": [
+            "outlook",
+            "azure ht set a - 09.10.25",
+            "g",
+            "reserve",
+            "flagged_spam_complaint"
+          ]
+        },
+        {
+          "eb_id": 2695,
+          "email": "reubenv@choosespoutwater.com",
+          "db_pool": null,
+          "db_lifecycle": "dead",
+          "eb_pool": "reserve",
+          "eb_tags": [
+            "outlook",
+            "azure ht set a - 09.10.25",
+            "g",
+            "reserve",
+            "flagged_spam_complaint"
+          ]
+        },
+        {
+          "eb_id": 2705,
+          "email": "r_v@usespoutwater.com",
+          "db_pool": null,
+          "db_lifecycle": "dead",
+          "eb_pool": "live",
+          "eb_tags": [
+            "outlook",
+            "azure ht set a - 09.10.25",
+            "dnu",
+            "flagged_provider_block_microsoft",
+            "live",
+            "reserve"
+          ]
+        },
+        {
+          "eb_id": 2975,
+          "email": "rvollmer-r@mistspoutwater.com",
+          "db_pool": null,
+          "db_lifecycle": "dead",
+          "eb_pool": "live",
+          "eb_tags": [
+            "outlook",
+            "azure ht set a - 09.10.25",
+            "g",
+            "flagged_provider_block_microsoft",
+            "live"
+          ]
+        },
+        {
+          "eb_id": 3087,
+          "email": "vollmer_r@joinspoutwater.com",
+          "db_pool": null,
+          "db_lifecycle": "dead",
+          "eb_pool": "reserve",
+          "eb_tags": [
+            "outlook",
+            "azure set b - 10.10.25",
+            "g",
+            "reserve",
+            "flagged_spam_complaint"
+          ]
+        },
+        {
+          "eb_id": 3165,
+          "email": "rvollmer-v@experiencespoutwater.com",
+          "db_pool": null,
+          "db_lifecycle": "dead",
+          "eb_pool": "reserve",
+          "eb_tags": [
+            "outlook",
+            "azure set b - 10.10.25",
+            "g",
+            "flagged_provider_block_microsoft",
+            "reserve"
+          ]
+        },
+        {
+          "eb_id": 3239,
+          "email": "reubenv-v@joinspoutwater.com",
+          "db_pool": null,
+          "db_lifecycle": "dead",
+          "eb_pool": "live",
+          "eb_tags": [
+            "outlook",
+            "azure set b - 10.10.25",
+            "g",
+            "flagged_provider_block_microsoft",
+            "live"
+          ]
+        },
+        {
+          "eb_id": 3271,
+          "email": "r_r@dewspoutwater.com",
+          "db_pool": null,
+          "db_lifecycle": "dead",
+          "eb_pool": "reserve",
+          "eb_tags": [
+            "outlook",
+            "azure set b - 10.10.25",
+            "g",
+            "flagged_provider_block_microsoft",
+            "reserve"
+          ]
+        },
+        {
+          "eb_id": 2748,
+          "email": "rvollmerr@getspoutwater.com",
+          "db_pool": null,
+          "db_lifecycle": "dead",
+          "eb_pool": "reserve",
+          "eb_tags": [
+            "outlook",
+            "azure ht set a - 09.10.25",
+            "g",
+            "reserve",
+            "flagged_spam_complaint"
+          ]
+        }
+      ]
+    },
+    {
+      "workspace_name": "Stable Kernel",
+      "eb_count": 175,
+      "db_count": 175,
+      "db_active_count": 175,
+      "in_both": 175,
+      "eb_only_count": 0,
+      "db_only_count": 0,
+      "eb_only_sample": [],
+      "db_only_sample": [],
+      "connection_status_match_pct": 100.0,
+      "connection_status_mismatch_count": 0,
+      "connection_status_mismatch_samples": [],
+      "eb_disconnected_count": 0,
+      "db_has_disconnect_timestamp_count": 0,
+      "disconnect_timestamp_match_pct": 100.0,
+      "pool_tag_match_count": 175,
+      "pool_tag_drift_count": 0,
+      "pool_tag_drift_pct": 0.0,
+      "pool_tag_drift_samples": []
+    },
+    {
+      "workspace_name": "Stable Kernel Market Research",
+      "eb_count": 105,
+      "db_count": 105,
+      "db_active_count": 105,
+      "in_both": 105,
+      "eb_only_count": 0,
+      "db_only_count": 0,
+      "eb_only_sample": [],
+      "db_only_sample": [],
+      "connection_status_match_pct": 100.0,
+      "connection_status_mismatch_count": 0,
+      "connection_status_mismatch_samples": [],
+      "eb_disconnected_count": 0,
+      "db_has_disconnect_timestamp_count": 0,
+      "disconnect_timestamp_match_pct": 100.0,
+      "pool_tag_match_count": 105,
+      "pool_tag_drift_count": 0,
+      "pool_tag_drift_pct": 0.0,
+      "pool_tag_drift_samples": []
+    }
+  ]
+}

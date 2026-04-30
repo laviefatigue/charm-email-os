@@ -126,11 +126,12 @@ KILL_THRESHOLDS = {
         'severity': 'instant',
         'description': f'Total bounce rate >{KILL_THRESHOLD_TOTAL_BOUNCE_RATE*100}%'
     },
-    'disconnected_timeout': {
-        'value': KILL_THRESHOLD_DISCONNECTED_DAYS,
-        'severity': 'instant',
-        'description': f'Inbox disconnected for {KILL_THRESHOLD_DISCONNECTED_DAYS}+ days = presumed dead'
-    }
+    # 'disconnected_timeout' was removed 2026-04-30 per docs/plans/connection-state-machine.md.
+    # The 21-day-disconnect-equals-dead rule produced ~1,200 fleet-wide zombies (rows
+    # marked dead in DB while currently Connected and sending in EB). Connection state
+    # is now monitoring-only; quality state (live/dead) is driven only by the 5
+    # reputation triggers above. The disconnected_timeout enum value is preserved for
+    # historical kill_trigger entries but no new code path writes it.
 }
 
 # Domain health thresholds — rate-based + capacity safety net
@@ -506,19 +507,21 @@ class HealthCheckModule:
         # They had identical thresholds to hard_blocked_24h (>=2) and hard_unknown_24h (>=3),
         # making them redundant. The regular triggers already catch these cases regardless of inbox age.
 
-        # 4. Disconnected timeout (inbox disconnected for 21+ days = presumed dead)
-        # This catches inboxes that lost OAuth connection and were never reconnected
-        # After 21 days disconnected, we can safely assume the inbox is abandoned
-        threshold = KILL_THRESHOLDS['disconnected_timeout']
-        disconnected_at = inbox.get('disconnected_at')
-        if disconnected_at:
-            disconnected_days = (datetime.now(timezone.utc) - disconnected_at.replace(tzinfo=timezone.utc)).days
-            if disconnected_days >= threshold['value']:
-                triggers.append({
-                    'trigger_type': 'disconnected_timeout',
-                    'value': disconnected_days,
-                    'threshold': threshold['value']
-                })
+        # 4. Disconnected timeout — REMOVED 2026-04-30
+        # The 21-day-disconnect-equals-dead rule was wrong. It treated operational
+        # disconnects (OAuth/IMAP needing reconnect) as terminal reputation kills,
+        # producing ~1,200 fleet-wide zombies — rows marked dead in DB while their
+        # actual EB inboxes were connected and actively sending after late reconnect.
+        #
+        # Per docs/plans/connection-state-machine.md, connection state is now
+        # monitoring-only: notification ladder at 24h/3d/7d/20d, but no kill driven
+        # by disconnect duration. Quality state (live/dead) is driven only by the
+        # five reputation triggers above (spam, hard bounces, hard blocked, hard
+        # unknown, fresh-inbox bounce). A disconnected inbox is not a damaged inbox.
+        #
+        # Existing rows with kill_trigger='disconnected_timeout' are subject to a
+        # separate operator-driven review per docs/plans/connection-state-machine.md
+        # §8 — restoration is gated on reputation re-validation and is NOT auto-run.
 
         # Determine health state. Post-2026-04-29 (ADR-007), the 'warning'
         # intermediate state is removed — inboxes are either healthy or

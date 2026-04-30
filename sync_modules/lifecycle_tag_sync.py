@@ -306,7 +306,18 @@ class LifecycleTagSyncModule:
                     print(f"    [WARN] Failed to remove 'incubating' tag from inbox {eb_account_id} ({inbox['email_address']}): {e}")
 
                 # Add destination tag (live for Microsoft, reserve for Google).
-                await self.client.tag_inbox(eb_account_id, target_tag_id)
+                # 404 from this call means the EB sender no longer lives in this workspace
+                # (Hypertide moved it, manual delete, etc). Don't keep retrying — surface
+                # the orphan loudly and skip; sync_accounts.mark_stale_accounts will set
+                # is_active=FALSE on its next cycle (≤1h) and the row drops out naturally.
+                try:
+                    await self.client.tag_inbox(eb_account_id, target_tag_id)
+                except EmailBisonAPIError as e:
+                    if getattr(e, 'status_code', None) == 404:
+                        print(f"    [ORPHAN] inbox {eb_account_id} ({inbox['email_address']}) not in workspace EB — skipping graduation, sync_accounts will reconcile")
+                        audit.add_error(record_id=inbox['email_address'], error=f"workspace_orphan: EB 404 on tag_inbox (not in this workspace)")
+                        continue  # break out of this inbox; no DB update, no re-try this cycle
+                    raise  # other errors fall through to outer except (transient — retry next cycle)
 
                 # EB succeeded — update DB to match. inventory_pool_status is the
                 # authority for set_tag_sync going forward (post-overhaul model).
