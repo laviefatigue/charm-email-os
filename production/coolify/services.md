@@ -11,6 +11,7 @@
 | hypertide-worker | Worker | Domain provisioning | N/A (background) |
 | price-checker | Worker | Domain price checks | N/A (background) |
 | domain-worker | Worker | Domain management | N/A (background) |
+| incubation-watcher | App (PROPOSED — not yet deployed) | Per-workspace incubation graduation, extracted from emailbison-sync's lifecycle_tag_sync. v1 operator-invoked CLI; v2 daemon. | N/A |
 | eod-reapply | CLI / on-demand | EOD campaign sender-tag reapply (operator-invoked) | N/A (no service) |
 
 ## Service Details
