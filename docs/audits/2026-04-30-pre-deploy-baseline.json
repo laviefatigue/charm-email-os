@@ -1,0 +1,157 @@
+{
+  "captured_at": "2026-04-30T21:18:05.980509+00:00",
+  "lifecycle_tags_per_workspace": [],
+  "kill_queue_24h": [
+    {
+      "status": "flagged",
+      "trigger_type": "hard_blocked_24h",
+      "c": 22
+    },
+    {
+      "status": "flagged",
+      "trigger_type": "hard_unknown_24h",
+      "c": 4
+    },
+    {
+      "status": "flagged",
+      "trigger_type": "spam_complaint",
+      "c": 4
+    },
+    {
+      "status": "flagged",
+      "trigger_type": "disconnected_timeout",
+      "c": 1
+    }
+  ],
+  "disconnected_timeout_writes_1h_pre": 0,
+  "graduations_24h": [],
+  "sync_errors_1h": [
+    {
+      "sync_type": "campaigns",
+      "runs": 8,
+      "partial_runs": 2,
+      "total_failures": 10
+    },
+    {
+      "sync_type": "accounts",
+      "runs": 10,
+      "partial_runs": 0,
+      "total_failures": 0
+    },
+    {
+      "sync_type": "warmup",
+      "runs": 18,
+      "partial_runs": 0,
+      "total_failures": 0
+    },
+    {
+      "sync_type": "lifecycle_tags",
+      "runs": 22,
+      "partial_runs": 0,
+      "total_failures": 0
+    },
+    {
+      "sync_type": "set_tags",
+      "runs": 22,
+      "partial_runs": 0,
+      "total_failures": 0
+    },
+    {
+      "sync_type": "kill_queue",
+      "runs": 22,
+      "partial_runs": 0,
+      "total_failures": 0
+    },
+    {
+      "sync_type": "events",
+      "runs": 36,
+      "partial_runs": 0,
+      "total_failures": 0
+    },
+    {
+      "sync_type": "health",
+      "runs": 4,
+      "partial_runs": 0,
+      "total_failures": 0
+    }
+  ],
+  "incubating_cohort": [
+    {
+      "workspace_name": "Charm",
+      "incub_active": 251,
+      "eligible_now": 0
+    },
+    {
+      "workspace_name": "Stable Kernel Market Research",
+      "incub_active": 14,
+      "eligible_now": 0
+    },
+    {
+      "workspace_name": "Spout",
+      "incub_active": 1,
+      "eligible_now": 0
+    },
+    {
+      "workspace_name": "Sammy",
+      "incub_active": 0,
+      "eligible_now": 0
+    }
+  ],
+  "lifecycle_tags_per_workspace_corrected": [
+    {
+      "workspace_name": "Stable Kernel Market Research",
+      "last_completed": "2026-04-30T21:10:51.311151",
+      "runs_1h": 2
+    },
+    {
+      "workspace_name": "Stable Kernel",
+      "last_completed": "2026-04-30T21:08:58.797608",
+      "runs_1h": 2
+    },
+    {
+      "workspace_name": "Spout",
+      "last_completed": "2026-04-30T21:07:18.121407",
+      "runs_1h": 2
+    },
+    {
+      "workspace_name": "Selery",
+      "last_completed": "2026-04-30T21:05:52.103302",
+      "runs_1h": 2
+    },
+    {
+      "workspace_name": "Search Atlas",
+      "last_completed": "2026-04-30T21:05:51.522413",
+      "runs_1h": 2
+    },
+    {
+      "workspace_name": "Sammy",
+      "last_completed": "2026-04-30T21:05:50.806368",
+      "runs_1h": 2
+    },
+    {
+      "workspace_name": "SPUI",
+      "last_completed": "2026-04-30T21:05:09.104761",
+      "runs_1h": 2
+    },
+    {
+      "workspace_name": "Charm",
+      "last_completed": "2026-04-30T21:05:01.783721",
+      "runs_1h": 2
+    },
+    {
+      "workspace_name": "Linkgraph",
+      "last_completed": "2026-04-30T21:04:00.105544",
+      "runs_1h": 2
+    },
+    {
+      "workspace_name": "Hello Hero",
+      "last_completed": "2026-04-30T21:03:58.804515",
+      "runs_1h": 2
+    },
+    {
+      "workspace_name": "Barrena",
+      "last_completed": "2026-04-30T21:03:58.786093",
+      "runs_1h": 2
+    }
+  ]
+}

@@ -41,20 +41,39 @@ Should list 8 active services. If anything errors here, **STOP** — fix Coolify
 
 ## 1. Deploy order — RATIONALE
 
-Three deploys + one provision, in this order:
+Two deploys + one provision (charm-api SKIPPED — see §1.1):
 
 | # | Action | Service | Risk | Why this order |
 |--:|--------|---------|------|----------------|
 | 1 | **Provision** | incubation-watcher (NEW) | ZERO — sleep-infinity container | Time-sensitive; needs to be ready before tomorrow morning. Doesn't run any production behavior. |
-| 2 | **Snapshot** | DB rotation_history baseline | ZERO — read-only | "Before patch" reference for post-deploy comparison. |
+| 2 | **Snapshot** | Pre-deploy baseline JSON | ZERO — read-only | "Before patch" reference numbers (already captured to `docs/audits/2026-04-30-pre-deploy-baseline.json` — see §3 for use). |
 | 3 | **Deploy** | emailbison-sync | HIGHEST — 4 production modules patched | Picks up all today's behavior changes. Watch logs closely first cycle. |
-| 4 | **Deploy** | charm-api | LOW — no behavior change | Version-alignment only. |
-| 5 | **Verify** | Post-deploy queries | ZERO — read-only | Confirm 9 of 11 workspaces still pass accuracy gates. |
+| ~~4~~ | ~~Deploy charm-api~~ | ~~charm-api~~ | **SKIP** — no impact today | charm-api's Dockerfile does NOT copy `sync_modules/`. None of today's patches reach this service. Skipping saves the build cycle. See §1.1. |
+| 5 | **Verify** | Post-deploy queries | ZERO — read-only | Confirm baseline numbers + accuracy gates within tolerance. |
 
 **Critical**: do NOT deploy emailbison-sync before incubation-watcher is provisioned. If
 emailbison-sync deploy fails and needs rollback, you want incubation-watcher
 already in place to capture the May 1 event. Reverse order means you might miss
 the validation window if emailbison-sync deploy needs investigation.
+
+### 1.1 Why charm-api is skipped today
+
+Dockerfile review at the manager level:
+
+```
+charm-api Dockerfile copies: api/, migrations/, Hypertide/automation/...
+                       NOT: sync_modules/, scripts/, docs/
+```
+
+Verified via `grep -rn "from sync_modules\|import sync_modules" api/` → **zero matches**. The only reference is one comment in `api/routes/health.py:568`. Therefore today's patches to `lifecycle_tag_sync.py`, `health_checks.py`, `kill_processor.py`, `set_tag_sync.py` have ZERO behavior impact in charm-api.
+
+Deploying charm-api today would:
+- Pull commit `5e82618`
+- Build image (3-5 min)
+- Run identical api/ code as before
+- No log signals, no test signals, no behavior change
+
+If you want version alignment for trace-ability, deploy at end of week with a non-rushed cycle. Today, skip.
 
 ---
 
@@ -119,37 +138,39 @@ The service is now sitting idle. It does not poll, does not write. It only acts 
 
 ---
 
-## 3. Phase 2 — Snapshot baseline state (read-only)
+## 3. Phase 2 — Pre-deploy baseline (already captured)
 
-Before deploying emailbison-sync, capture a "before" reference for post-deploy comparison.
+The baseline JSON is committed at `docs/audits/2026-04-30-pre-deploy-baseline.json`. It captures 6 dimensions:
 
-### 3.1 Pre-deploy DB state
+1. lifecycle_tags last successful run per workspace
+2. kill_queue state (status × trigger_type)
+3. New disconnected_timeout writes in last 1h (PRE-deploy: should be 0)
+4. Graduations in last 24h per workspace
+5. sync_audit_log error/failure counts last 1h per sync_type
+6. Incubating cohort fleet-wide
+
+### 3.1 Reference numbers (PRE-deploy, captured 2026-04-30 ~21:11 UTC)
+
+| Metric | Pre-deploy value | Post-deploy expectation | Tolerance |
+|--------|-----------------|------------------------|-----------|
+| All 11 workspaces have lifecycle_tags running every ~30min | ✓ all 11 healthy | Same (all 11 should still run) | **MUST match** — if any workspace stops, immediate investigate |
+| disconnected_timeout writes last 1h | 0 | **0** | ZERO tolerance |
+| Graduations last 24h | 0 fleet-wide | Likely still 0 today (next big event is May 1 morning) | Any number ≥ 0 fine |
+| lifecycle_tags failures last 1h | 0 | 0 ± 5 per workspace | >5 = investigate |
+| set_tags failures last 1h | 0 | 0 ± 5 per workspace | >5 = investigate |
+| kill_queue failures last 1h | 0 | 0 | >0 = investigate |
+| campaigns failures last 1h | 10 (pre-existing, NOT caused by deploy) | ~same | Document as pre-existing baseline |
+| Incubating cohort | 251 Charm + 14 SKMR + 1 Spout = 266 | Same (no row-level changes today) | Diff > ±5 = investigate |
+
+### 3.2 Re-snapshot before deploy (deploy-window drift check)
 
 ```bash
 py scripts/audit_system_accuracy.py > docs/audits/2026-04-30-pre-deploy-accuracy.txt 2>&1
 ```
 
-This writes JSON to `docs/audits/2026-04-30-system-accuracy-snapshot.json` and human summary to stdout.
+Compare to morning's snapshot (`docs/audits/2026-04-30-system-accuracy-snapshot.json`). Should show 9 of 11 workspaces passing. SPUI / Spout failure is pre-existing (membership / pool drift) — confirmed in the baseline as known-bad.
 
-Expected: 9 of 11 workspaces pass all gates. Note any deviation from the morning's snapshot — that's drift in the last few hours and worth investigating before deploy.
-
-### 3.2 Pre-deploy graduation history
-
-```bash
-py -c "
-import requests, json
-r = requests.post('https://api.wizardgrimoire.cloud/api/admin/run-sql',
-  params={'key':'098c0ee5901b50d93b251d29e57bdd979f5aee899a3dd5d0b39c7935119e60aa',
-          'sql':'''SELECT w.workspace_name, COUNT(*) AS recent_grads
-                   FROM inbox_rotation_history irh JOIN workspaces w ON w.id = irh.workspace_id
-                   WHERE rotation_type = 'graduate' AND executed_at > NOW() - INTERVAL '7 days'
-                   GROUP BY w.workspace_name ORDER BY recent_grads DESC'''},
-  headers={'User-Agent':'curl/8.0.0'})
-print(json.dumps(r.json().get('result', []), default=str, indent=2))
-" > docs/audits/2026-04-30-pre-deploy-grads.txt
-```
-
-Save the file. Post-deploy you'll compare new graduations against this baseline to verify the existing module is still graduating correctly.
+If a workspace that was passing this morning is NOW failing, that's drift in the deploy window — investigate before pushing the button.
 
 ---
 
@@ -230,32 +251,124 @@ print(r.json())
 
 Expected: 0. Phase 1 of the connection-state-machine plan has removed this trigger. If non-zero, the patch didn't deploy — re-verify Coolify pulled latest.
 
-### 4.5 Watch for 30 minutes
+### 4.5 Module-specific verification (5 explicit checks per patch)
 
-After first cycle confirmed clean, walk away for 30 min. The next sync cycle should fire. Re-run §4.3 and §4.4 — staleness should reset, no new disconnected_timeout kills.
+These checks tie EACH commit to an observable signal. Run all 5 within 30 min of deploy. Each maps to a specific patch.
+
+#### Check 1: lifecycle_tag_sync ORPHAN handling (commit `94fd0fa`)
+
+```bash
+py scripts/coolify.py logs emailbison-sync --tail 500 | grep "ORPHAN"
+```
+
+| Result | Action |
+|--------|--------|
+| 0 lines | Normal (no orphans currently — everything in DB still in EB) |
+| 1-5 lines | Expected — patch is surfacing previously-silent workspace-orphans |
+| >10 lines from same workspace | Investigate that workspace specifically — Hypertide may have moved many at once |
+
+#### Check 2: lifecycle_tag_sync race-check (commit `d775761`)
+
+```bash
+py scripts/coolify.py logs emailbison-sync --tail 500 | grep "RACE"
+```
+
+| Result | Action |
+|--------|--------|
+| 0 lines | Normal — eligibility flips during sync are rare |
+| 1-2 lines | Acceptable transient |
+| ≥3 lines | Investigate — operator may be toggling warmup_enabled while sync runs |
+
+#### Check 3: per-row exception isolation (commit `d775761`, `3ef8400`)
+
+```bash
+py scripts/coolify.py logs emailbison-sync --tail 500 | grep -E "ERROR.*graduating|ERROR.*tagging|ERROR.*cleaning|ERROR.*tag reconcile"
+```
+
+| Result | Action |
+|--------|--------|
+| 0 lines | Patch is dormant — no unexpected exceptions caught |
+| 1-3 lines from different inboxes | Acceptable — broad-except surfacing real edge cases |
+| **≥10 lines, especially same exception type** | **ROLLBACK** — likely real code bug being eaten by broad-except |
+
+Look at the `e!r` repr in each line — same exception class repeating across many inboxes is the bug signature.
+
+#### Check 4: disconnected_timeout no longer written (commit `94fd0fa`)
+
+```bash
+py -c "
+import requests
+r = requests.post('https://api.wizardgrimoire.cloud/api/admin/run-sql',
+  params={'key':'098c0ee5901b50d93b251d29e57bdd979f5aee899a3dd5d0b39c7935119e60aa',
+          'sql':'''SELECT COUNT(*) AS new_disc_kills
+                   FROM kill_queue
+                   WHERE created_at > NOW() - INTERVAL '30 minutes'
+                     AND trigger_type = 'disconnected_timeout' '''},
+  headers={'User-Agent':'curl/8.0.0'})
+print(r.json())
+"
+```
+
+| Result | Action |
+|--------|--------|
+| count = 0 | ✓ patch deployed correctly |
+| count > 0 | **ROLLBACK** — patch did not deploy. Coolify pulled wrong commit. |
+
+Note: existing `flagged` rows from before the patch are FINE — only new entries should be 0.
+
+#### Check 5: kill_processor pool-tag strip retry (commit `e7bbd59`)
+
+```bash
+py -c "
+import requests
+r = requests.post('https://api.wizardgrimoire.cloud/api/admin/run-sql',
+  params={'key':'098c0ee5901b50d93b251d29e57bdd979f5aee899a3dd5d0b39c7935119e60aa',
+          'sql':'''SELECT COUNT(*) AS eb_pending_count, MIN(updated_at)::timestamp AS oldest_pending
+                   FROM kill_queue WHERE status = 'eb_pending' '''},
+  headers={'User-Agent':'curl/8.0.0'})
+print(r.json())
+"
+```
+
+| Result | Action |
+|--------|--------|
+| count = 0 | Steady state |
+| count > 0, oldest < 30 min | Expected during deploy window — kills retrying |
+| count > 0, oldest > 2h | Investigate — retry path stuck somehow |
+
+#### Check 6: set_tag_sync per-domain isolation (commit `3ef8400`)
+
+```bash
+py -c "
+import requests
+r = requests.post('https://api.wizardgrimoire.cloud/api/admin/run-sql',
+  params={'key':'098c0ee5901b50d93b251d29e57bdd979f5aee899a3dd5d0b39c7935119e60aa',
+          'sql':'''SELECT w.workspace_name, COUNT(*) AS recent_runs,
+                          SUM(s.records_failed) AS errors_30min
+                   FROM sync_audit_log s JOIN workspaces w ON w.id = s.workspace_id
+                   WHERE s.sync_type = 'set_tags'
+                     AND s.started_at > NOW() - INTERVAL '30 minutes'
+                   GROUP BY w.workspace_name ORDER BY errors_30min DESC LIMIT 5'''},
+  headers={'User-Agent':'curl/8.0.0'})
+print(r.json())
+"
+```
+
+| Result | Action |
+|--------|--------|
+| All workspaces errors_30min ≤ 5 | Normal |
+| Single workspace errors > 10 | Investigate that workspace |
+| Multiple workspaces errors > 5 | Investigate — broad systemic issue |
+
+### 4.6 Walk-away monitor (30 min)
+
+After Checks 1-6 done, walk away for 30 min. The next sync cycle should fire. Re-run Check 4 — should still be 0. Re-run Check 1 — log line count should not be growing rapidly.
 
 ---
 
-## 5. Phase 4 — Deploy `charm-api` (low risk)
+## 5. Phase 4 — `charm-api` deploy SKIPPED (see §1.1 for why)
 
-```bash
-py scripts/coolify.py deploy nckgggwww8sggg0kc4wo00o8
-```
-
-UUID: `nckgggwww8sggg0kc4wo00o8` (charm-api). Build takes 3-5 min.
-
-This deploy ships:
-- The same 4 sync_modules patches (charm-api imports some of these)
-- Updated kill-triggers.md, services.md, ADR-009 (just docs, no behavior)
-
-Verify:
-
-```bash
-curl https://api.wizardgrimoire.cloud/health
-# Expect: {"status": "ok", ...}
-```
-
-No specific log signals to watch — charm-api doesn't run sync loops.
+Net behavior change today from deploying charm-api: **zero**. Skip it. If you want trace-time version alignment, deploy at end of week with a non-rushed cycle.
 
 ---
 
