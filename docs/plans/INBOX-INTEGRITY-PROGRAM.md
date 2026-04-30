@@ -61,6 +61,7 @@ Status keys: ✅ done · 🚧 in progress · ⏳ pending · 🔒 blocked · 👤
 | Workstream | Status | Owner | Commit | Notes |
 |------------|:------:|-------|--------|-------|
 | [lifecycle_tag_sync silent-failure patch (workspace orphan on EB 404)](../../sync_modules/lifecycle_tag_sync.py) | ✅ | system | `94fd0fa` | Skips ORPHAN inboxes loudly instead of retrying forever |
+| [lifecycle_tag_sync race-condition + loop-kill hardening (4 functions)](../../sync_modules/lifecycle_tag_sync.py) | ✅ | system | `d775761` | (1) Race re-check inside DB transaction. (2) Per-row except Exception in 4 loops. (3) 404 vs transient distinction in _remove_live_from_dead. |
 | [Phase 1: remove disconnected_timeout from kill triggers](../../sync_modules/health_checks.py) | ✅ | system | `94fd0fa` | Stops new disconnect-zombies from being created |
 | [kill_processor pool-tag strip silent-failure patch](../../sync_modules/kill_processor.py) | ✅ | system | (this session) | Distinguishes 404 from transient errors; transient errors raise to outer except for retry |
 | [scripts/audit_system_accuracy.py](../../scripts/audit_system_accuracy.py) | ✅ | system | `94fd0fa` | Read-only DB↔EB drift gate |
