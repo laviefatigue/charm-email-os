@@ -132,7 +132,7 @@ Status keys: ✅ done · 🚧 in progress · ⏳ pending · 🔒 blocked · 👤
 | ADR-008 step 2 — collapse inventory_lifecycle_status + inventory_pool_status into single inbox_status | system | Firewall (Plan A) shipped first |
 | Workspace package assignments | operator | Decide which packages each workspace gets (SKMR likely 50k_google) |
 | v3-vs-ours kill-trigger comparison on a sending workspace | system | Pick a sending workspace (Hello Hero / Spout / Selery / Search Atlas) |
-| inbox_audits overhaul (per-workspace, integrity sections, SLA on corrections) | deferred | User confirmed: deferred — focus on state machine first |
+| inbox_audits overhaul ([requirements catalog](inbox-audit-overhaul.md)) | deferred | User confirmed: deferred — focus on state machine first. Captured requirements: per-workspace audit, snapshot inbox sets, integrity sections (I-1..I-9), **subscription-cancel signal for domains where all inboxes are dead** (added 2026-04-30), SLA on corrections workflow. |
 
 ---
 
