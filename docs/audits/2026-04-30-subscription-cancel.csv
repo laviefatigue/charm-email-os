@@ -1,0 +1,286 @@
+workspace_name,domain_name,domain_pool_status,total_inboxes,dead_count,alive_count,alive_connected,alive_disconnected,dead_connected,dead_disconnected,last_killed_date,last_alive_date,subscription_cancel_eligible
+Barrena,seeguardare.com,unassigned,3,3,0,0,0,3,0,2026-04-14,,True
+Barrena,theguardare.com,unassigned,3,3,0,0,0,3,0,2026-04-14,,True
+Barrena,launchguardare.com,unassigned,3,3,0,0,0,3,0,2026-04-14,,True
+Barrena,getguardare.com,unassigned,3,3,0,0,0,3,0,2026-04-14,,True
+Barrena,streamguardare.com,unassigned,3,3,0,0,0,3,0,2026-04-14,,True
+Barrena,goguardare.com,unassigned,3,3,0,0,0,3,0,2026-04-14,,True
+Barrena,joinguardare.com,unassigned,3,3,0,0,0,3,0,2026-04-14,,True
+Barrena,useguardare.com,unassigned,3,3,0,0,0,3,0,2026-04-14,,True
+Barrena,tryguardare.com,unassigned,3,3,0,0,0,3,0,2026-04-14,,True
+Barrena,meetguardare.com,unassigned,3,3,0,0,0,3,0,2026-04-14,,True
+Barrena,fixguardare.com,unassigned,3,3,0,0,0,3,0,2026-04-14,,True
+Barrena,discoverguardare.com,unassigned,3,3,0,0,0,3,0,2026-04-14,,True
+Barrena,exploreguardare.com,unassigned,3,3,0,0,0,3,0,2026-04-14,,True
+Charm,usehirecharm.com,burned,52,52,0,0,0,52,0,2026-03-21,,True
+Charm,eudalie-bio.com,live,3,3,0,0,0,0,3,2026-03-20,,True
+Charm,urosaf-bio.com,live,3,3,0,0,0,0,3,2026-03-21,,True
+Charm,stylepad24.com,live,3,3,0,0,0,0,3,2026-04-29,,True
+Charm,globaloutreachclub.com,live,3,3,0,0,0,0,3,2026-03-20,,True
+Charm,inspi-cure-eu.com,live,2,2,0,0,0,0,2,2026-03-31,,True
+Charm,lovecharmgtm.com,live,52,51,1,1,0,50,1,2026-03-21,2026-04-30,False
+Charm,usecharmgtm.com,live,52,51,1,1,0,51,0,2026-03-21,2026-04-30,False
+Charm,illuminatecharm.com,unassigned,51,0,51,50,1,0,0,,2026-04-30,False
+Charm,rechargecharm.com,unassigned,50,0,50,50,0,0,0,,2026-04-30,False
+Charm,indulgecharm.com,unassigned,3,0,3,3,0,0,0,,2026-04-30,False
+Charm,createcharm.com,unassigned,3,0,3,3,0,0,0,,2026-04-30,False
+Charm,pushcharm.com,unassigned,3,0,3,3,0,0,0,,2026-04-30,False
+Charm,brightencharm.com,unassigned,3,0,3,3,0,0,0,,2026-04-30,False
+Charm,restorecharm.com,unassigned,3,0,3,3,0,0,0,,2026-04-30,False
+Charm,refreshcharm.com,unassigned,3,0,3,3,0,0,0,,2026-04-30,False
+Charm,unlockcharm.com,unassigned,3,0,3,3,0,0,0,,2026-04-30,False
+Charm,awakencharm.com,unassigned,3,0,3,3,0,0,0,,2026-04-30,False
+Charm,alldealsgroup.com,live,3,0,3,0,3,0,0,,2026-04-30,False
+Charm,charmclay.com,live,3,0,3,3,0,0,0,,2026-04-30,False
+Charm,enhancecharm.com,unassigned,51,0,51,50,1,0,0,,2026-04-30,False
+Charm,usecharmrevops.com,live,3,0,3,3,0,0,0,,2026-04-30,False
+Charm,fuelcharm.com,unassigned,3,0,3,3,0,0,0,,2026-04-30,False
+Charm,focuscharm.com,unassigned,3,0,3,3,0,0,0,,2026-04-30,False
+Charm,strengthencharm.com,unassigned,52,0,52,52,0,0,0,,2026-04-30,False
+Charm,healcharm.com,unassigned,3,0,3,3,0,0,0,,2026-04-30,False
+Charm,launchcharm.com,unassigned,3,0,3,3,0,0,0,,2026-04-30,False
+Charm,goglowcharm.com,unassigned,3,0,3,3,0,0,0,,2026-04-30,False
+Charm,revopswithcharm.com,live,3,0,3,3,0,0,0,,2026-04-30,False
+Charm,savorcharm.com,unassigned,3,0,3,3,0,0,0,,2026-04-30,False
+Charm,mydealslift.com,live,3,0,3,3,0,0,0,,2026-04-30,False
+Charm,revivecharm.com,unassigned,3,0,3,3,0,0,0,,2026-04-30,False
+Charm,growthgroupusa.com,reserve,3,0,3,0,3,0,0,,2026-04-30,False
+Hello Hero,myhelloheroes.com,burned,52,18,34,34,0,18,0,2026-04-28,2026-04-30,False
+Hello Hero,usahellohero.com,live,52,16,36,36,0,15,1,2026-04-28,2026-04-30,False
+Hello Hero,gethellohero.com,live,52,15,37,37,0,15,0,2026-04-28,2026-04-30,False
+Hello Hero,helloheroamerica.com,live,52,14,38,38,0,14,0,2026-04-28,2026-04-30,False
+Hello Hero,usehellohero.com,live,52,13,39,39,0,12,1,2026-04-28,2026-04-30,False
+Hello Hero,gohellohero.com,burned,52,12,40,40,0,12,0,2026-04-28,2026-04-30,False
+Hello Hero,ourhellohero.com,live,52,12,40,40,0,12,0,2026-04-28,2026-04-30,False
+Hello Hero,starthellohero.com,live,52,11,41,41,0,11,0,2026-04-28,2026-04-30,False
+Hello Hero,lovehellohero.com,live,52,8,44,44,0,8,0,2026-04-28,2026-04-30,False
+Hello Hero,tryhellohero.com,live,52,7,45,45,0,7,0,2026-04-28,2026-04-30,False
+Linkgraph,tracklinkgraph.com,live,3,3,0,0,0,3,0,2026-04-15,,True
+Linkgraph,growlinkgraph.com,burned,52,6,46,46,0,6,0,2026-04-21,2026-04-30,False
+Linkgraph,launchlinkgraph.com,burned,52,4,48,48,0,4,0,2026-04-28,2026-04-30,False
+Linkgraph,boostlinkgraph.com,burned,52,4,48,48,0,4,0,2026-04-28,2026-04-30,False
+Linkgraph,ignitelinkgraph.com,live,3,2,1,1,0,2,0,2026-04-21,2026-04-30,False
+Linkgraph,fuellinkgraph.com,live,3,1,2,2,0,1,0,2026-04-22,2026-04-30,False
+Linkgraph,elevatelinkgraph.com,live,3,0,3,3,0,0,0,,2026-04-30,False
+Linkgraph,scalelinkgraph.com,live,3,0,3,3,0,0,0,,2026-04-30,False
+Linkgraph,explorelinkgraph.com,live,3,0,3,3,0,0,0,,2026-04-30,False
+Linkgraph,optimizelinkgraph.com,live,3,0,3,3,0,0,0,,2026-04-30,False
+Linkgraph,maplinkgraph.com,live,3,0,3,3,0,0,0,,2026-04-30,False
+Linkgraph,analyzelinkgraph.com,live,52,0,52,52,0,0,0,,2026-04-30,False
+Linkgraph,amplifylinkgraph.com,live,3,0,3,3,0,0,0,,2026-04-30,False
+Linkgraph,discoverlinkgraph.com,live,3,0,3,3,0,0,0,,2026-04-30,False
+SPUI,stylespui.com,live,3,3,0,0,0,3,0,2026-02-14,,True
+SPUI,gridspui.com,live,3,3,0,0,0,3,0,2026-03-19,,True
+SPUI,setspui.com,reserve,1,1,0,0,0,1,0,2026-02-14,,True
+SPUI,fitspui.com,live,3,2,1,1,0,2,0,2026-02-14,2026-04-30,False
+SPUI,buildspui.com,live,3,2,1,1,0,2,0,2026-04-30,2026-04-30,False
+SPUI,getspui.com,unassigned,52,1,51,51,0,1,0,2026-04-17,2026-04-30,False
+SPUI,growspui.com,unassigned,30,0,30,30,0,0,0,,2026-04-30,False
+Sammy,usesammyai.com,cancelled,52,52,0,0,0,0,52,2026-04-28,,True
+Sammy,runsammyai.com,cancelled,52,52,0,0,0,0,52,2026-04-28,,True
+Sammy,tapsammy.com,cancelled,52,52,0,0,0,0,52,2026-04-28,,True
+Sammy,joinsammy.com,reserve,52,52,0,0,0,0,52,2026-03-21,,True
+Sammy,reachsammy.com,burned,52,52,0,0,0,0,52,2026-03-21,,True
+Sammy,buildsammy.com,reserve,52,52,0,0,0,0,52,2026-03-21,,True
+Sammy,opensammy.com,cancelled,52,52,0,0,0,0,52,2026-04-28,,True
+Sammy,exploresammy.com,cancelled,52,52,0,0,0,0,52,2026-04-28,,True
+Sammy,getsammyai.com,cancelled,52,52,0,0,0,0,52,2026-04-28,,True
+Sammy,runsammy.com,cancelled,52,52,0,0,0,0,52,2026-04-28,,True
+Sammy,startsammy.com,cancelled,51,51,0,0,0,0,51,2026-04-28,,True
+Sammy,trysammyai.com,live,51,51,0,0,0,0,51,2026-03-21,,True
+Sammy,catchsammy.com,cancelled,3,3,0,0,0,0,3,2026-04-28,,True
+Sammy,pingsammy.com,cancelled,3,3,0,0,0,0,3,2026-04-28,,True
+Sammy,accesssammy.com,cancelled,3,3,0,0,0,0,3,2026-04-28,,True
+Sammy,followsammy.com,cancelled,3,3,0,0,0,0,3,2026-04-28,,True
+Search Atlas,revealsearchatlas.com,live,3,3,0,0,0,3,0,2026-04-30,,True
+Search Atlas,createsearchatlas.com,live,3,3,0,0,0,3,0,2026-04-30,,True
+Search Atlas,boostsearchatlas.com,burned,45,5,40,40,0,5,0,2026-04-23,2026-04-30,False
+Search Atlas,scalesearchatlas.com,burned,47,4,43,43,0,4,0,2026-04-22,2026-04-30,False
+Search Atlas,attractsearchatlas.com,burned,51,4,47,47,0,3,1,2026-04-21,2026-04-30,False
+Search Atlas,growsearchatlas.com,burned,52,4,48,48,0,4,0,2026-03-12,2026-04-30,False
+Search Atlas,ignitesearchatlas.com,burned,51,3,48,48,0,3,0,2026-04-27,2026-04-30,False
+Search Atlas,advancesearchatlas.com,live,51,3,48,48,0,3,0,2026-04-30,2026-04-30,False
+Search Atlas,launchsearchatlas.com,burned,51,2,49,49,0,2,0,2026-04-27,2026-04-30,False
+Search Atlas,climbsearchatlas.com,live,3,2,1,1,0,2,0,2026-04-30,2026-04-30,False
+Search Atlas,capturesearchatlas.com,live,50,2,48,48,0,2,0,2026-04-29,2026-04-30,False
+Search Atlas,improvesearchatlas.com,live,3,2,1,1,0,2,0,2026-04-30,2026-04-30,False
+Search Atlas,guidesearchatlas.com,live,3,2,1,1,0,2,0,2026-04-30,2026-04-30,False
+Search Atlas,cultivatesearchatlas.com,reserve,3,2,1,1,0,2,0,2026-04-24,2026-04-30,False
+Search Atlas,alignsearchatlas.com,live,51,1,50,50,0,1,0,2026-04-23,2026-04-30,False
+Search Atlas,commandsearchatlas.com,live,3,1,2,2,0,1,0,2026-04-22,2026-04-30,False
+Search Atlas,fuelsearchatlas.com,live,50,1,49,49,0,1,0,2026-03-17,2026-04-30,False
+Search Atlas,generatesearchatlas.com,live,3,1,2,2,0,1,0,2026-04-24,2026-04-30,False
+Search Atlas,directsearchatlas.com,live,3,1,2,2,0,1,0,2026-04-30,2026-04-30,False
+Search Atlas,optimizesearchatlas.com,live,3,1,2,2,0,1,0,2026-04-30,2026-04-30,False
+Search Atlas,exploresearchatlas.com,live,3,1,2,2,0,1,0,2026-04-27,2026-04-30,False
+Search Atlas,scansearchatlas.com,live,3,1,2,2,0,1,0,2026-04-24,2026-04-30,False
+Search Atlas,refinesearchatlas.com,live,3,0,3,3,0,0,0,,2026-04-30,False
+Search Atlas,acceleratesearchatlas.com,live,51,0,51,51,0,0,0,,2026-04-30,False
+Search Atlas,enhancesearchatlas.com,live,3,0,3,3,0,0,0,,2026-04-30,False
+Search Atlas,expandsearchatlas.com,live,3,0,3,3,0,0,0,,2026-04-30,False
+Search Atlas,developsearchatlas.com,live,3,0,3,3,0,0,0,,2026-04-30,False
+Search Atlas,discoversearchatlas.com,live,3,0,3,3,0,0,0,,2026-04-30,False
+Search Atlas,tunesearchatlas.com,live,3,0,3,3,0,0,0,,2026-04-30,False
+Search Atlas,activatesearchatlas.com,live,50,0,50,50,0,0,0,,2026-04-30,False
+Search Atlas,monitorsearchatlas.com,live,3,0,3,3,0,0,0,,2026-04-30,False
+Search Atlas,conquersearchatlas.com,live,3,0,3,3,0,0,0,,2026-04-30,False
+Selery,alignselery.com,live,3,3,0,0,0,3,0,2026-04-24,,True
+Selery,launchselery.com,live,3,3,0,0,0,0,3,2026-03-17,,True
+Selery,doselery.com,burned,51,11,40,40,0,11,0,2026-04-28,2026-04-30,False
+Selery,steerselery.com,burned,51,10,41,41,0,10,0,2026-04-22,2026-04-30,False
+Selery,beginselery.com,burned,52,8,44,44,0,8,0,2026-04-21,2026-04-30,False
+Selery,unifyselery.com,live,51,6,45,45,0,6,0,2026-04-29,2026-04-30,False
+Selery,startselery.com,live,52,6,46,46,0,6,0,2026-04-17,2026-04-30,False
+Selery,fixselery.com,live,52,6,46,46,0,6,0,2026-04-22,2026-04-30,False
+Selery,loveselery.com,live,52,6,46,46,0,6,0,2026-04-22,2026-04-30,False
+Selery,swiftselery.com,burned,51,6,45,45,0,6,0,2026-04-21,2026-04-30,False
+Selery,getselery.com,burned,51,5,46,46,0,5,0,2026-04-17,2026-04-30,False
+Selery,enableselery.com,live,52,5,47,47,0,5,0,2026-04-21,2026-04-30,False
+Selery,chooseselery.com,live,52,5,47,47,0,5,0,2026-04-22,2026-04-30,False
+Selery,nextselery.com,burned,51,3,48,48,0,3,0,2026-04-17,2026-04-30,False
+Selery,boostselery.com,live,3,2,1,0,1,0,2,2026-03-12,2026-04-30,False
+Selery,fulfillselery.com,live,3,2,1,0,1,0,2,2026-03-12,2026-04-30,False
+Selery,growselery.com,live,3,2,1,0,1,0,2,2026-04-20,2026-04-30,False
+Selery,shipselery.com,live,3,1,2,0,2,0,1,2026-03-17,2026-04-30,False
+Selery,syncselery.com,reserve,3,1,2,2,0,1,0,2026-04-20,2026-04-30,False
+Selery,convertselery.com,reserve,3,1,2,2,0,1,0,2026-04-19,2026-04-30,False
+Selery,carrieselery.com,reserve,3,1,2,2,0,1,0,2026-04-23,2026-04-30,False
+Selery,useselery.com,live,3,1,2,0,2,0,1,2026-03-09,2026-04-30,False
+Selery,stackselery.com,live,3,1,2,0,2,0,1,2026-03-09,2026-04-30,False
+Selery,primeselery.com,live,3,1,2,2,0,1,0,2026-04-22,2026-04-30,False
+Selery,eliteselery.com,live,3,1,2,0,2,0,1,2026-03-09,2026-04-30,False
+Selery,sendselery.com,live,3,1,2,0,2,0,1,2026-03-13,2026-04-30,False
+Selery,flowselery.com,live,3,1,2,0,2,0,1,2026-03-12,2026-04-30,False
+Selery,routeselery.com,live,3,1,2,0,2,0,1,2026-03-09,2026-04-30,False
+Selery,deliverselery.com,live,3,1,2,2,0,1,0,2026-04-17,2026-04-30,False
+Selery,moveselery.com,live,3,1,2,0,2,0,1,2026-03-12,2026-04-30,False
+Selery,accelerateselery.com,reserve,2,1,1,1,0,1,0,2026-04-19,2026-04-30,False
+Selery,dispatchselery.com,live,3,1,2,0,2,0,1,2026-03-11,2026-04-30,False
+Selery,distributeselery.com,reserve,3,0,3,3,0,0,0,,2026-04-30,False
+Selery,maxselery.com,live,3,0,3,3,0,0,0,,2026-04-30,False
+Selery,operateselery.com,live,3,0,3,3,0,0,0,,2026-04-30,False
+Selery,coreselery.com,live,3,0,3,3,0,0,0,,2026-04-30,False
+Selery,runselery.com,live,3,0,3,3,0,0,0,,2026-04-30,False
+Selery,scaleselery.com,live,3,0,3,3,0,0,0,,2026-04-30,False
+Selery,buildselery.com,live,3,0,3,3,0,0,0,,2026-04-30,False
+Selery,directselery.com,reserve,3,0,3,3,0,0,0,,2026-04-30,False
+Selery,tryselery.com,live,3,0,3,3,0,0,0,,2026-04-30,False
+Selery,chaseselery.com,reserve,3,0,3,3,0,0,0,,2026-04-30,False
+Selery,powerselery.com,live,3,0,3,3,0,0,0,,2026-04-30,False
+Selery,amplifyselery.com,reserve,1,0,1,1,0,0,0,,2026-04-30,False
+Selery,proselery.com,live,3,0,3,3,0,0,0,,2026-04-30,False
+Selery,goselery.com,live,3,0,3,3,0,0,0,,2026-04-30,False
+Selery,analyzeselery.com,reserve,3,0,3,3,0,0,0,,2026-04-30,False
+Selery,winselery.com,live,3,0,3,3,0,0,0,,2026-04-30,False
+Selery,automateselery.com,reserve,3,0,3,3,0,0,0,,2026-04-30,False
+Selery,packselery.com,live,3,0,3,3,0,0,0,,2026-04-30,False
+Spout,ecospoutwater.com,live,3,3,0,0,0,3,0,2026-02-14,,True
+Spout,savespoutwater.com,live,3,3,0,0,0,3,0,2026-04-30,,True
+Spout,risespoutwater.com,live,3,3,0,0,0,0,3,2026-02-14,,True
+Spout,chillspoutwater.com,live,3,3,0,0,0,3,0,2026-04-30,,True
+Spout,surgespoutwater.com,live,3,3,0,0,0,3,0,2026-04-30,,True
+Spout,evolvespoutwater.com,live,3,3,0,0,0,3,0,2026-02-14,,True
+Spout,buildspoutwater.com,live,3,3,0,0,0,3,0,2026-02-14,,True
+Spout,reusespoutwater.com,live,3,3,0,0,0,3,0,2026-02-14,,True
+Spout,flowspoutwater.com,live,3,3,0,0,0,3,0,2026-02-22,,True
+Spout,beginspoutwater.com,burned,3,3,0,0,0,3,0,2026-04-29,,True
+Spout,recyclespoutwater.com,live,3,3,0,0,0,3,0,2026-02-14,,True
+Spout,divespoutwater.com,live,3,3,0,0,0,0,3,2026-02-14,,True
+Spout,myspoutwater.com,live,3,3,0,0,0,0,3,2026-03-19,,True
+Spout,preservespoutwater.com,live,3,3,0,0,0,3,0,2026-03-31,,True
+Spout,healspoutwater.com,live,3,3,0,0,0,3,0,2026-02-14,,True
+Spout,movespoutwater.com,live,3,3,0,0,0,3,0,2026-04-30,,True
+Spout,peakspoutwater.com,live,3,3,0,0,0,3,0,2026-02-25,,True
+Spout,hellospoutwater.com,live,3,3,0,0,0,0,3,2026-04-29,,True
+Spout,feelspoutwater.com,live,3,3,0,0,0,3,0,2026-04-30,,True
+Spout,restorespoutwater.com,live,3,3,0,0,0,3,0,2026-04-30,,True
+Spout,conservespoutwater.com,live,3,3,0,0,0,3,0,2026-02-14,,True
+Spout,splashspoutwater.com,live,3,3,0,0,0,3,0,2026-04-30,,True
+Spout,swirlspoutwater.com,live,3,3,0,0,0,3,0,2026-02-14,,True
+Spout,simplespoutwater.com,live,3,3,0,0,0,3,0,2026-04-30,,True
+Spout,refreshspoutwater.com,live,3,3,0,0,0,3,0,2026-04-30,,True
+Spout,carespoutwater.com,live,3,3,0,0,0,3,0,2026-02-14,,True
+Spout,growspoutwater.com,live,3,3,0,0,0,3,0,2026-02-14,,True
+Spout,lovespoutwater.com,live,3,3,0,0,0,3,0,2026-04-30,,True
+Spout,livespoutwater.com,live,3,3,0,0,0,3,0,2026-02-14,,True
+Spout,freshspoutwater.com,live,3,3,0,0,0,3,0,2026-02-14,,True
+Spout,focusspoutwater.com,live,3,3,0,0,0,3,0,2026-02-14,,True
+Spout,createspoutwater.com,live,3,3,0,0,0,3,0,2026-02-14,,True
+Spout,clearspoutwater.com,burned,3,3,0,0,0,3,0,2026-04-30,,True
+Spout,cleansespoutwater.com,live,3,3,0,0,0,3,0,2026-04-30,,True
+Spout,ripplespoutwater.com,live,3,3,0,0,0,0,3,2026-04-30,,True
+Spout,refillspoutwater.com,live,3,3,0,0,0,3,0,2026-04-30,,True
+Spout,wavespoutwater.com,live,3,3,0,0,0,3,0,2026-02-14,,True
+Spout,revivespoutwater.com,live,3,3,0,0,0,3,0,2026-02-14,,True
+Spout,freshenspoutwater.com,live,3,3,0,0,0,3,0,2026-02-14,,True
+Spout,dripspoutwater.com,live,3,3,0,0,0,3,0,2026-03-01,,True
+Spout,activatespoutwater.com,live,3,3,0,0,0,3,0,2026-04-30,,True
+Spout,glowspoutwater.com,live,3,3,0,0,0,3,0,2026-03-20,,True
+Spout,blissspoutwater.com,live,3,3,0,0,0,3,0,2026-03-25,,True
+Spout,excelspoutwater.com,live,3,3,0,0,0,3,0,2026-02-14,,True
+Spout,runspoutwater.com,live,3,3,0,0,0,3,0,2026-04-17,,True
+Spout,streamspoutwater.com,live,3,3,0,0,0,3,0,2026-02-14,,True
+Spout,boostspoutwater.com,live,3,3,0,0,0,3,0,2026-02-14,,True
+Spout,pourspoutwater.com,live,3,3,0,0,0,3,0,2026-04-29,,True
+Spout,discoverspoutwater.com,live,51,38,13,13,0,38,0,2026-04-21,2026-04-30,False
+Spout,getspoutwater.com,burned,51,37,14,14,0,37,0,2026-04-29,2026-04-30,False
+Spout,sipspoutwater.com,live,50,36,14,14,0,36,0,2026-03-18,2026-04-30,False
+Spout,joinspoutwater.com,burned,50,35,15,15,0,35,0,2026-04-15,2026-04-30,False
+Spout,drinkspoutwater.com,burned,51,23,28,28,0,23,0,2026-04-28,2026-04-30,False
+Spout,mistspoutwater.com,burned,50,23,27,27,0,23,0,2026-04-29,2026-04-30,False
+Spout,choosespoutwater.com,burned,23,6,17,17,0,6,0,2026-04-15,2026-04-30,False
+Spout,usespoutwater.com,live,23,5,18,18,0,5,0,2026-04-17,2026-04-30,False
+Spout,pickspoutwater.com,live,14,5,9,9,0,5,0,2026-04-27,2026-04-30,False
+Spout,dewspoutwater.com,live,15,5,10,10,0,5,0,2026-04-14,2026-04-30,False
+Spout,gospoutwater.com,burned,14,4,10,10,0,4,0,2026-04-14,2026-04-30,False
+Spout,experiencespoutwater.com,burned,13,3,10,10,0,3,0,2026-04-16,2026-04-30,False
+Spout,tryspoutwater.com,live,14,3,11,11,0,3,0,2026-04-14,2026-04-30,False
+Spout,enjoyspoutwater.com,burned,6,3,3,3,0,3,0,2026-03-13,2026-04-30,False
+Spout,thrivespoutwater.com,live,3,2,1,1,0,2,0,2026-04-30,2026-04-30,False
+Spout,trustspoutwater.com,live,3,2,1,1,0,2,0,2026-03-13,2026-04-30,False
+Stable Kernel,hellostablekernel.com,burned,52,2,50,50,0,2,0,2026-04-28,2026-04-30,False
+Stable Kernel,growwithkernel.com,burned,52,2,50,50,0,2,0,2026-04-24,2026-04-30,False
+Stable Kernel,gostablekernel.com,burned,52,2,50,50,0,2,0,2026-04-14,2026-04-30,False
+Stable Kernel,stablekernelnow.com,unassigned,3,0,3,3,0,0,0,,2026-04-30,False
+Stable Kernel,tunestablekernel.com,unassigned,2,0,2,2,0,0,0,,2026-04-30,False
+Stable Kernel,optimizekernel.com,unassigned,2,0,2,2,0,0,0,,2026-04-30,False
+Stable Kernel,stablekerneltech.com,unassigned,3,0,3,3,0,0,0,,2026-04-30,False
+Stable Kernel,enjoystablekernel.com,unassigned,3,0,3,3,0,0,0,,2026-04-30,False
+Stable Kernel,trainstablekernel.com,unassigned,2,0,2,2,0,0,0,,2026-04-30,False
+Stable Kernel,evolvestablekernel.com,unassigned,2,0,2,2,0,0,0,,2026-04-30,False
+Stable Kernel,inferstablekernel.com,unassigned,2,0,2,2,0,0,0,,2026-04-30,False
+Stable Kernel Market Research,extractstablekernel.com,unassigned,3,0,3,3,0,0,0,,2026-04-30,False
+Stable Kernel Market Research,computestablekernel.com,unassigned,3,0,3,3,0,0,0,,2026-04-30,False
+Stable Kernel Market Research,securestablekernel.com,unassigned,3,0,3,3,0,0,0,,2026-04-30,False
+Stable Kernel Market Research,decodestablekernel.com,unassigned,3,0,3,3,0,0,0,,2026-04-30,False
+Stable Kernel Market Research,processstablekernel.com,unassigned,3,0,3,3,0,0,0,,2026-04-30,False
+Stable Kernel Market Research,forecaststablekernel.com,unassigned,3,0,3,3,0,0,0,,2026-04-30,False
+Stable Kernel Market Research,interpretstablekernel.com,unassigned,3,0,3,3,0,0,0,,2026-04-30,False
+Stable Kernel Market Research,guidestablekernel.com,unassigned,3,0,3,3,0,0,0,,2026-04-30,False
+Stable Kernel Market Research,informstablekernel.com,unassigned,3,0,3,3,0,0,0,,2026-04-30,False
+Stable Kernel Market Research,trackstablekernel.com,unassigned,3,0,3,3,0,0,0,,2026-04-30,False
+Stable Kernel Market Research,uncoverstablekernel.com,unassigned,3,0,3,3,0,0,0,,2026-04-30,False
+Stable Kernel Market Research,booststablekernel.com,unassigned,3,0,3,3,0,0,0,,2026-04-30,False
+Stable Kernel Market Research,discoverstablekernel.com,unassigned,3,0,3,3,0,0,0,,2026-04-30,False
+Stable Kernel Market Research,optimizestablekernel.com,unassigned,3,0,3,3,0,0,0,,2026-04-30,False
+Stable Kernel Market Research,quantifystablekernel.com,unassigned,3,0,3,3,0,0,0,,2026-04-30,False
+Stable Kernel Market Research,explorestablekernel.com,unassigned,3,0,3,3,0,0,0,,2026-04-30,False
+Stable Kernel Market Research,scalestablekernel.com,unassigned,3,0,3,3,0,0,0,,2026-04-30,False
+Stable Kernel Market Research,understandstablekernel.com,unassigned,3,0,3,3,0,0,0,,2026-04-30,False
+Stable Kernel Market Research,powerstablekernel.com,unassigned,3,0,3,3,0,0,0,,2026-04-30,False
+Stable Kernel Market Research,acceleratestablekernel.com,unassigned,3,0,3,3,0,0,0,,2026-04-30,False
+Stable Kernel Market Research,managestablekernel.com,unassigned,3,0,3,3,0,0,0,,2026-04-30,False
+Stable Kernel Market Research,modelstablekernel.com,unassigned,3,0,3,3,0,0,0,,2026-04-30,False
+Stable Kernel Market Research,studystablekernel.com,unassigned,3,0,3,3,0,0,0,,2026-04-30,False
+Stable Kernel Market Research,investigatestablekernel.com,unassigned,3,0,3,3,0,0,0,,2026-04-30,False
+Stable Kernel Market Research,revealstablekernel.com,unassigned,3,0,3,3,0,0,0,,2026-04-30,False
+Stable Kernel Market Research,examinestablekernel.com,unassigned,3,0,3,3,0,0,0,,2026-04-30,False
+Stable Kernel Market Research,enhancestablekernel.com,unassigned,3,0,3,3,0,0,0,,2026-04-30,False
+Stable Kernel Market Research,measurestablekernel.com,unassigned,3,0,3,3,0,0,0,,2026-04-30,False
+Stable Kernel Market Research,insightstablekernel.com,unassigned,3,0,3,3,0,0,0,,2026-04-30,False
+Stable Kernel Market Research,evaluatestablekernel.com,unassigned,3,0,3,3,0,0,0,,2026-04-30,False
+Stable Kernel Market Research,minestablekernel.com,unassigned,3,0,3,3,0,0,0,,2026-04-30,False
+Stable Kernel Market Research,researchstablekernel.com,unassigned,3,0,3,3,0,0,0,,2026-04-30,False
+Stable Kernel Market Research,drivestablekernel.com,unassigned,3,0,3,3,0,0,0,,2026-04-30,False
+Stable Kernel Market Research,analyzestablekernel.com,unassigned,3,0,3,3,0,0,0,,2026-04-30,False
+Stable Kernel Market Research,runstablekernel.com,unassigned,3,0,3,3,0,0,0,,2026-04-30,False
