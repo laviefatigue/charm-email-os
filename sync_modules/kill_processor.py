@@ -441,6 +441,23 @@ class KillProcessor:
                     # set_tag_sync._resolve_tag_names enforces this).
                     # Strip both pool tags from the dead inbox so it cannot
                     # be re-included in a campaign reapply by tag filter.
+                    #
+                    # Error handling discipline (2026-04-30 fix — see
+                    # docs/work-logs/2026-04-30-systems-accuracy-and-cleanup.md
+                    # SPUI/Spout investigation §): a bare `except: pass` here
+                    # conflated two distinct outcomes —
+                    #   (1) HTTP 404: tag was not present — intended state, fine
+                    #       to swallow. The "Tag may not be present" goal IS this
+                    #       case.
+                    #   (2) HTTP 5xx / network / other: transient EB failure —
+                    #       silently swallowing this leaves the pool tag still
+                    #       applied in EB while DB is already dead+pool=NULL.
+                    #       Result: zombie pool tags in EB on dead inboxes, e.g.
+                    #       Spout has 10 such rows where 'live'/'reserve' tag
+                    #       remained on inboxes killed in March alongside their
+                    #       flagged_* tag.
+                    # Re-raise non-404 errors so the outer except marks the kill
+                    # row eb_pending for retry next cycle.
                     for pool_tag_name in ('live', 'reserve'):
                         pool_tag_id = tag_cache.get(pool_tag_name)
                         if not pool_tag_id:
@@ -455,8 +472,14 @@ class KillProcessor:
                                     account_id=eb_account_id,
                                     tag_id=pool_tag_id,
                                 )
-                            except EmailBisonAPIError:
-                                pass  # Tag may not be present — that's the goal.
+                            except EmailBisonAPIError as untag_err:
+                                if getattr(untag_err, 'status_code', None) == 404:
+                                    pass  # Tag was not present — intended outcome.
+                                else:
+                                    # Transient or unexpected — surface to outer
+                                    # except for retry, do not silently produce
+                                    # a zombie pool tag.
+                                    raise
 
                     # EB succeeded — finalize status
                     if is_eb_retry:
