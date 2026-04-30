@@ -63,9 +63,12 @@ Status keys: ✅ done · 🚧 in progress · ⏳ pending · 🔒 blocked · 👤
 | [lifecycle_tag_sync silent-failure patch (workspace orphan on EB 404)](../../sync_modules/lifecycle_tag_sync.py) | ✅ | system | `94fd0fa` | Skips ORPHAN inboxes loudly instead of retrying forever |
 | [lifecycle_tag_sync race-condition + loop-kill hardening (4 functions)](../../sync_modules/lifecycle_tag_sync.py) | ✅ | system | `d775761` | (1) Race re-check inside DB transaction. (2) Per-row except Exception in 4 loops. (3) 404 vs transient distinction in _remove_live_from_dead. |
 | [Phase 1: remove disconnected_timeout from kill triggers](../../sync_modules/health_checks.py) | ✅ | system | `94fd0fa` | Stops new disconnect-zombies from being created |
-| [kill_processor pool-tag strip silent-failure patch](../../sync_modules/kill_processor.py) | ✅ | system | (this session) | Distinguishes 404 from transient errors; transient errors raise to outer except for retry |
+| [kill_processor pool-tag strip silent-failure patch](../../sync_modules/kill_processor.py) | ✅ | system | `e7bbd59` | Distinguishes 404 from transient errors; transient errors raise to outer except for retry |
+| [set_tag_sync silent-failure hardening (3 bugs in per-domain + per-inbox loops)](../../sync_modules/set_tag_sync.py) | ✅ | system | `3ef8400` | Per-domain Exception isolation, MS branch broad-except, general branch broad-except |
 | [scripts/audit_system_accuracy.py](../../scripts/audit_system_accuracy.py) | ✅ | system | `94fd0fa` | Read-only DB↔EB drift gate |
 | [scripts/generate_zombie_review_csv.py](../../scripts/generate_zombie_review_csv.py) | ✅ | system | `94fd0fa` | Read-only operator review queue per workspace |
+| [scripts/audit_disconnect_milestones.py](../../scripts/audit_disconnect_milestones.py) | ✅ | system | `6a6bd68` | Read-only disconnect ladder + subscription-cancel signal |
+| [scripts/audit_package_assignments.py](../../scripts/audit_package_assignments.py) | ✅ | system | `f33d355` | Read-only workspace package recommendation CSV |
 
 ### 3.2 Documentation (today's session)
 
@@ -78,6 +81,9 @@ Status keys: ✅ done · 🚧 in progress · ⏳ pending · 🔒 blocked · 👤
 | [docs/work-logs/2026-04-30-...md](../work-logs/2026-04-30-systems-accuracy-and-cleanup.md) | ✅ written | `94fd0fa` + `6d5f2a3` |
 | [docs/concepts/kill-triggers.md](../concepts/kill-triggers.md) | ✅ updated (disconnected_timeout removed from tables) | `6d5f2a3` |
 | [production/coolify/services.md](../../production/coolify/services.md) | ✅ updated (connection state, silent-failure hardening, audits) | `6d5f2a3` |
+| [docs/plans/inbox-audit-overhaul.md](inbox-audit-overhaul.md) | ✅ requirements catalog (deferred) | `765cd3d` |
+| [apps/incubation-watcher/HANDOFF.md](../../apps/incubation-watcher/HANDOFF.md) | ✅ self-contained handoff | `72b901d` |
+| **[docs/operations/2026-04-30-deploy-runbook.md](../operations/2026-04-30-deploy-runbook.md)** | ✅ **METHODIC DEPLOY RUNBOOK — operator's primary doc for landing today's 13 commits** | `675d3aa` |
 | **THIS DOC** (`INBOX-INTEGRITY-PROGRAM.md`) | 🚧 writing | — |
 
 ### 3.3 Cross-workspace integrity firewall (Plan A)
