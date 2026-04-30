@@ -58,5 +58,10 @@ ENV PATH="/opt/venv/bin:$PATH" \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1
 
-ENTRYPOINT ["incubation-watcher"]
-CMD ["--help"]
+# v1 operator-invoked mode: default to `sleep infinity`. Operator runs commands via
+#   docker exec <container> incubation-watcher check --workspace Charm
+# (incubation-watcher binary is on PATH via /opt/venv/bin). This avoids the
+# Coolify-compose pitfall where `start_command` only overrides CMD, which on a
+# fixed ENTRYPOINT produces a malformed invocation. v2 (daemon mode) will set
+# CMD = ["incubation-watcher", "daemon"].
+CMD ["sleep", "infinity"]

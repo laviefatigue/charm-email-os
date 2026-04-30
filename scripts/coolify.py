@@ -34,6 +34,7 @@ APP_UUIDS = {
     "hypertide-worker": "e0go4ocg8cggw08kowocok4g",
     "domain-worker": "u4oo8o0wocsgss8o4cs4g4oc",
     "price-checker": "rcckg8k84os8c400kwk4ck04",
+    "incubation-watcher": "pssgc0c8w4sooos8gs0scsos",
 }
 
 # Shortcuts
@@ -46,6 +47,8 @@ ALIASES = {
     "hypertide": "hypertide-worker",
     "domain": "domain-worker",
     "price": "price-checker",
+    "watcher": "incubation-watcher",
+    "incubation": "incubation-watcher",
 }
 
 
