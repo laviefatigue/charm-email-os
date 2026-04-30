@@ -1,7 +1,7 @@
 ---
 title: Kill Triggers
 created: 2026-02-12
-updated: 2026-04-28
+updated: 2026-04-30
 tags: [concept, health, kill-triggers, infrastructure, overhaul-2026-04-27]
 ---
 
@@ -9,6 +9,8 @@ tags: [concept, health, kill-triggers, infrastructure, overhaul-2026-04-27]
 
 Automated inbox termination system that protects domain reputation by detecting and removing problematic inboxes.
 
+> **2026-04-30 — `disconnected_timeout` REMOVED as kill trigger.** Connection state and kill state are now two independent tracks. Disconnect duration drives a notification ladder (24h → 3d → 7d → 20d), never a kill. Quality state (`inbox_state='dead'`) is driven only by reputation triggers (spam, hard bounces, hard blocked, hard unknown, fresh-inbox bounce). See [[../plans/connection-state-machine]] for the full design and the ~1,200 fleet-wide zombies (rows marked dead by the old rule but currently Connected and sending in EB) that motivated the change.
+>
 > **2026-04-29 ADR-007 — drop `warning` + ESP-aware kill thresholds:**
 > - **`inventory_pool_status='warning'` is REMOVED.** No more soft-pause buffer. Inboxes that hit thresholds queue for kill directly. See [[../adr/adr-007-drop-warning-state-2026-04-29]].
 > - **Google kill thresholds tightened to 1/1/1** (was 2/3/2): single hard bounce on a Google inbox queues a kill (with the 20-send floor still gating). Microsoft kept at 2/3/2 (legacy ride-to-death).
@@ -52,7 +54,6 @@ All triggers kill the **inbox** immediately when breached. Count-based threshold
 | `hard_bounces_24h` | **≥2** | 3 | Combined fallback for unclassified bounces |
 | `hard_bounce_rate_7d` | **>2.0%** | 4 | Sustained hard bounce rate (min 100 sends) |
 | `bounce_rate_all_7d` | **>5%** | 5 | Total bounce rate threshold (min 100 sends) |
-| `disconnected_timeout` | **≥21 days** | 6 | OAuth lost connection, presumed abandoned |
 
 **Google (post-ADR-007):**
 
@@ -64,9 +65,11 @@ All triggers kill the **inbox** immediately when breached. Count-based threshold
 | `hard_bounces_24h` | **≥1** ⬇ | 3 | Combined fallback at 1 |
 | `hard_bounce_rate_7d` | **>2.0%** | 4 | Same as MS |
 | `bounce_rate_all_7d` | **>5%** | 5 | Same as MS |
-| `disconnected_timeout` | **≥21 days** | 6 | Same as MS |
 
 ⬇ = lowered from Microsoft thresholds per ADR-007 (Google small-fleet logic).
+
+**Removed kill triggers**:
+- `disconnected_timeout` (was ≥21 days, removed 2026-04-30) — connection-only state should not produce a kill. The trigger produced ~1,200 fleet-wide zombies (rows marked dead in DB while currently Connected and sending in EB) when inboxes reconnected after the kill window. Connection state now drives a notification ladder, not kills. See [[../plans/connection-state-machine]] §3.
 
 **All count-based triggers require the 20-send floor** (`total_sends_24h ≥ 20 OR total_sends_7d ≥ 20`) to fire. This protects warmup-phase and low-volume inboxes from noise. Spam_complaint and rate-based triggers have their own min-volume gates.
 

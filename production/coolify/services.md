@@ -71,11 +71,26 @@ SYNC_WORKSPACE_CONCURRENCY=3   # workspaces processed in parallel
 SYNC_INTERVAL_PRIORITY=30      # seconds between priority-queue checks
 ```
 
-#### Tagging & Kill Processing (as of 2026-04-13)
+#### Tagging & Kill Processing (as of 2026-04-30)
 - `ENABLE_LIFECYCLE_TAGGING=true` — lifecycle tags (`live`, `reserve`, `incubating`, `flagged_*`) synced to EB
-- `ENABLE_KILL_PROCESSING=false` — kill queue processing still paused pending 24h monitoring
-- **Tag system**: Tags are domain-level — all inboxes on a domain share the same pool tag. Burned domains have all tags removed.
-- **ESP-aware burns**: Google domains burn from 1 spam complaint, Entra domains require 3+ spam kills or >5% hard bounce rate. Circuit breakers prevent cascading burns.
+- `ENABLE_KILL_PROCESSING=true` — kill queue processing active (since 2026-04-13 stabilization)
+- **Tag system**: Tags are per-inbox per ADR-006 — `inventory_pool_status` is the per-inbox authority. Cross-domain promotion allowed within a workspace.
+- **ESP-aware burns**: Google domains burn from 1 spam complaint (small-fleet). Microsoft Entra requires rate-based threshold or 3+ kill-equivalents.
+
+#### Connection State (as of 2026-04-30 — ADR-009)
+Connection state and kill state are independent tracks. Disconnect duration drives notifications, not kills.
+
+- `disconnected_timeout` REMOVED as kill trigger. Connection-only conditions never produce `inbox_state='dead'`.
+- Notification ladder (planned, Phase 2 of [docs/plans/connection-state-machine.md](../../docs/plans/connection-state-machine.md)): 24h → 3d → 7d → 20d Slack alerts + EB tags.
+- The system NEVER auto-removes inboxes from EB or auto-cancels Hypertide subscriptions. Operator handles all destructive cleanup.
+- ~1,200 fleet-wide rows currently flagged `kill_trigger='disconnected_timeout'` while EB-side Connected — operator-driven restoration via [scripts/generate_zombie_review_csv.py](../../scripts/generate_zombie_review_csv.py).
+
+#### Silent-Failure Hardening (as of 2026-04-30)
+- `lifecycle_tag_sync._graduate_mature_inboxes` now detects EB 404 from `tag_inbox` and skips with `[ORPHAN]` log + audit error rather than retrying forever. The DB row falls out via `sync_accounts.mark_stale_accounts` on its next cycle.
+
+#### Accuracy Audits (READ-ONLY, on-demand)
+- [scripts/audit_system_accuracy.py](../../scripts/audit_system_accuracy.py) — fleet DB↔EB drift gate (CONN ≥99%, DISC ≥95%, MEMBERSHIP ≥98%, POOL DRIFT ≤1%). Exit code 1 if any workspace fails. Output: `docs/audits/<date>-system-accuracy-snapshot.json`.
+- [scripts/generate_zombie_review_csv.py](../../scripts/generate_zombie_review_csv.py) — per-workspace operator review CSV for the disconnected_timeout zombies. `operator_decision` column blank for fill-in.
 
 #### Workspace API Keys
 Each active workspace has a scoped EB API token stored in the `workspace_api_keys` DB table (migration 089). Keys are context-bound — no `switch_workspace()` calls needed. All 10 active workspaces are provisioned. New workspaces discovered via daily workspace discovery task are auto-provisioned.

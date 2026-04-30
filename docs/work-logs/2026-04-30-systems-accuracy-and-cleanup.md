@@ -145,6 +145,79 @@ Three honest concerns about what shipped:
 
 3. **Three plan docs total ~1,600 lines for work that hasn't shipped**. Risk of plan-paralysis. The mitigation: each plan has an explicit "minimum viable scope" — for connection-state it's Phase 1 only (already shipped); for decomposition it's incubation-watcher only; for firewall it's the schema + populate + manual operator backfill. The full plans are aspirational; the MVPs are concrete.
 
+## SPUI and Spout investigation (added end-of-session)
+
+### SPUI — minor sync timing gap, mostly cosmetic residue
+
+| Symptom | Detail | Severity |
+|---------|--------|----------|
+| 22 EB-only senders not in DB | Recent IDs 9866-9875+ (consecutive — single Hypertide batch) | Sync timing — accounts ran 21× in last 24h, last at 18:26 UTC. Likely caught up after audit ran. Verify by re-running audit. |
+| 104 DB-only on `tryspui.com` | All `is_active=FALSE`, mostly state=live but inactive | Historical — `tryspui.com` is a retired domain. EB-side already cleaned by operator. DB rows are residue. Cosmetic only. |
+
+**No urgent action.** Re-running the accuracy audit should show fewer EB-only senders as sync catches up.
+
+### Spout — two distinct issues
+
+#### Issue A: 287 DB-only rows (historical kill batch, NOT a current bug)
+
+286 dead rows on retired domains (`usespoutwater`, `choosespoutwater`, `mistspoutwater`, etc.) — single 5-day kill event 2026-02-14 → 2026-02-18. Distribution:
+
+| kill_trigger | Count |
+|--------------|------:|
+| `fresh_inbox_unknown` | 105 |
+| `fresh_inbox_blocked` | 87 |
+| `spam_complaint` | 59 |
+| `hard_bounces_24h` | 35 |
+
+These are LEGITIMATE reputation kills that fired correctly. Operator removed them from EB workspace. DB rows are residue. **Cosmetic only.**
+
+#### Issue B: 10 pool-tag drift rows (NEW BUG SURFACED — kill_processor silent failure)
+
+Pattern: DB says `inbox_state='dead', pool=NULL, kill_trigger=hard_blocked_24h|spam_complaint`. EB has the **pool tag still applied** (`live` or `reserve`) PLUS the `flagged_*` tag. Killed in March (Mar 1 / 13 / 18 / 26).
+
+Sample:
+```
+reuben@trustspoutwater.com
+  DB: dead, pool=NULL, kill_trigger=hard_blocked_24h, killed=2026-03-13
+  EB tags: ['google', 'flagged_provider_block_gmail', 'live']    ← 'live' is the bug
+```
+
+**Root cause**: `kill_processor.py:444-459` strips pool tags but catches `EmailBisonAPIError` with bare `pass`:
+
+```python
+for pool_tag_name in ('live', 'reserve'):
+    ...
+    if pool_tag_id:
+        try:
+            await self.client.untag_inbox(account_id=eb_account_id, tag_id=pool_tag_id)
+        except EmailBisonAPIError:
+            pass  # Tag may not be present — that's the goal.
+```
+
+This conflates two outcomes:
+- **404** — tag wasn't applied, untag returns "not found" — intended behavior, fine to swallow
+- **5xx / transient** — EB had a hiccup, untag actually failed — should retry
+
+Result: 10 rows where pool tag stayed applied because the strip failed transiently and was silently ignored. No retry path exists; `kill_queue.status` is set to `flagged` (success) regardless of pool-strip outcome.
+
+**Same bug class as the Sammy `lifecycle_tag_sync` patch shipped earlier today** (commit `94fd0fa`). The fix is analogous — distinguish 404 from transient errors in the untag call, and either retry or surface as audit error.
+
+#### Spout's 641 disconnected_timeout zombies (separate, not investigated this session)
+
+Per accuracy audit, 641 rows where `inbox_state='dead' AND kill_trigger='disconnected_timeout' AND status='Connected'`. These are the zombie pattern that motivated the entire connection-state-machine plan today. Spout's ratio (98% of dead pool) is the highest in the fleet.
+
+**Recommendation**: investigate WHY Spout had a fleet-wide disconnect-then-reconnect pattern (mass OAuth wipe? sync regression?) before any restoration. Block bulk operator restoration on Spout until cause is understood. Generate `scripts/generate_zombie_review_csv.py --workspace Spout` first, then root-cause from the killed_at distribution before any DB action.
+
+## Documentation updated
+
+Beyond the plan docs and work log written earlier this session:
+
+| File | Change |
+|------|--------|
+| [docs/concepts/kill-triggers.md](../concepts/kill-triggers.md) | Added 2026-04-30 banner. Removed `disconnected_timeout` row from both ESP-trigger tables. Added "Removed kill triggers" section linking to the connection-state-machine plan. |
+| [production/coolify/services.md](../../production/coolify/services.md) | Updated `emailbison-sync` service section: ENABLE_KILL_PROCESSING flipped to `true` (since 2026-04-13). Added Connection State section (ADR-009 reference). Added Silent-Failure Hardening section. Added Accuracy Audits section pointing to the new scripts. |
+| [docs/adr/adr-009-connection-state-separated-from-kill-state-2026-04-30.md](../adr/adr-009-connection-state-separated-from-kill-state-2026-04-30.md) | NEW — formalizes the connection ≠ kill decision. Lists alternatives considered, consequences, implementation status. |
+
 ## Next session
 
 In priority order:
