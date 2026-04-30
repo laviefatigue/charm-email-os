@@ -302,17 +302,7 @@ The existing `inbox_audits` Slack still fires twice daily at 6am/1pm Pacific. If
 
 Tomorrow morning, before the existing module's first sync cycle (~03:00 UTC), capture incubation-watcher's proposed graduation set:
 
-### 7.1 Capture watcher's view
-
-```bash
-py scripts/coolify.py exec incubation-watcher \
-  incubation-watcher run --workspace Charm \
-  > docs/audits/2026-05-01-watcher-charm-proposed.txt 2>&1
-```
-
-This is dry-run (no `--apply`), so it just lists candidates. Save the output.
-
-### 7.2 Wait for existing module's graduation cycle
+### 7.1 Wait for existing module's first cycle
 
 The existing `lifecycle_tag_sync` runs every 30 min. After the first run post-midnight UTC, the Charm Apr-13 cohort should graduate. Watch:
 
@@ -320,30 +310,54 @@ The existing `lifecycle_tag_sync` runs every 30 min. After the first run post-mi
 py scripts/coolify.py logs emailbison-sync --tail 200 | grep "Charm.*GRADUATE"
 ```
 
-### 7.3 Capture actual graduations
+### 7.2 Run shadow-compare via the watcher's CLI subcommand
+
+Once existing module has run at least once after the cutoff, invoke the comparison directly. The subcommand queries DB for both candidate set AND actual graduations and emits the diff in one shot — no manual file shuffling.
 
 ```bash
-py -c "
-import requests, json
-from datetime import datetime
-r = requests.post('https://api.wizardgrimoire.cloud/api/admin/run-sql',
-  params={'key':'098c0ee5901b50d93b251d29e57bdd979f5aee899a3dd5d0b39c7935119e60aa',
-          'sql':'''SELECT target_inbox_email, target_pool, executed_at::timestamp AS executed
-                   FROM inbox_rotation_history irh JOIN workspaces w ON w.id = irh.workspace_id
-                   WHERE w.workspace_name = 'Charm'
-                     AND rotation_type = 'graduate'
-                     AND executed_at > '2026-05-01T00:00:00Z'
-                   ORDER BY executed_at'''},
-  headers={'User-Agent':'curl/8.0.0'})
-for r in r.json().get('result', []): print(r)
-" > docs/audits/2026-05-01-actual-charm-grads.txt
+py scripts/coolify.py exec incubation-watcher \
+  incubation-watcher shadow-compare \
+    --workspace Charm \
+    --since 2026-05-01T00:00:00Z \
+  > docs/audits/2026-05-01-shadow-compare-charm.txt 2>&1
 ```
 
-### 7.4 Compare proposed vs actual
+Exit code:
+- `0` = zero divergence (proposed == actual)
+- `1` = divergence detected (operator MUST investigate before cutover)
+- `2` = config / connection error
 
-The two lists (watcher proposed vs actual graduated) should match for the same set of inboxes. Discrepancies are shadow-validation failures and warrant investigation BEFORE any cutover.
+### 7.3 Read the output
 
-Acceptance criterion: 7 consecutive days of zero discrepancy → ready to discuss watcher cutover.
+Expected for first run:
+```
+workspace=Charm
+since=2026-05-01T00:00:00+00:00
+
+proposed (by watcher, RIGHT NOW):    0     ← all just graduated, no longer in 'incubating'
+actual   (by existing module):       ~75   ← Charm Apr-13 cohort
+matched  (both proposed AND actual): 0
+
+DIVERGENCE: 75 inbox(es) graduated by existing module but NOT proposed by watcher:
+  - actual_only: m.elzey@<domain>...
+  ...
+
+RESULT: divergence detected. Investigate BEFORE any cutover.
+```
+
+This **exit-1 on first run is expected and correct** — by the time you run shadow-compare, the existing module has already graduated the cohort, so they're no longer eligible (`lifecycle='active'` instead of 'incubating'). The "watcher would propose 0" is the correct state.
+
+The validation point is: did the watcher's pre-graduation candidate list (captured BEFORE existing module's cycle) match the actual_only set? Use a separate `incubation-watcher check --workspace Charm` BEFORE existing module fires to capture the predicted list.
+
+### 7.4 Acceptance criterion
+
+Run shadow-compare daily during the validation window. The robust pattern:
+
+1. **At ~02:50 UTC** (10 min before existing module's first cycle): `incubation-watcher check --workspace Charm` → save candidate list to file
+2. **At ~03:30 UTC** (after first cycle): query `inbox_rotation_history` for actual graduations since `2026-05-01T00:00:00Z`
+3. Diff manually OR run `shadow-compare --since 2026-05-01T00:00:00Z` to verify subsequent cycles have parity (later runs of the watcher reflect "what's eligible now, not what was eligible before")
+
+After 7 consecutive days of zero divergence (in the §1 capture comparison), ready to discuss watcher cutover.
 
 ---
 
