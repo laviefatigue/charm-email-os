@@ -29,6 +29,7 @@ import logging
 import os
 import sys
 from collections import Counter
+from datetime import UTC, datetime
 from typing import Any
 
 import asyncpg
@@ -47,6 +48,11 @@ from .graduator import (
     RESERVE_TAG,
     GraduationResult,
     graduate_one,
+)
+from .shadow import (
+    ShadowComparison,
+    fetch_actual_graduations,
+    render_comparison,
 )
 
 DEFAULT_EB_BASE = "https://spellcast.hirecharm.com/api"
@@ -81,6 +87,26 @@ def check(workspace: str) -> None:
 def run(workspace: str, apply: bool) -> None:
     """Process WORKSPACE: graduate eligible inboxes (dry-run by default)."""
     sys.exit(asyncio.run(_run_workspace(workspace, apply=apply)))
+
+
+@main.command("shadow-compare")
+@click.option("--workspace", required=True, help="Workspace name (case-sensitive)")
+@click.option(
+    "--since",
+    required=True,
+    help="ISO-8601 cutoff (e.g. 2026-05-01T00:00:00Z) — only count graduations after this",
+)
+def shadow_compare(workspace: str, since: str) -> None:
+    """Compare watcher's CURRENT proposed graduations to actual graduations
+    from the existing lifecycle_tag_sync module since the cutoff. Used during
+    shadow-validation window (per HANDOFF.md §6) to verify parity before cutover.
+
+    Exit codes:
+      0 = zero divergence (proposed == actual)
+      1 = divergence detected (operator must investigate)
+      2 = config / connection error
+    """
+    sys.exit(asyncio.run(_run_shadow_compare(workspace, since)))
 
 
 async def _connect_db() -> asyncpg.Pool:
@@ -201,6 +227,44 @@ async def _run_workspace(workspace: str, *, apply: bool) -> int:
         if outcomes.get("orphan_skipped", 0) > 0 or outcomes.get("race_skipped", 0) > 0:
             return 2
         return 0
+    finally:
+        await pool.close()
+
+
+async def _run_shadow_compare(workspace: str, since_iso: str) -> int:
+    """Compare watcher's current candidate set vs actual graduations since cutoff."""
+    try:
+        # Strip trailing Z (datetime.fromisoformat in 3.11+ accepts it on 3.13;
+        # but be defensive for cross-version usage).
+        since = datetime.fromisoformat(since_iso.replace("Z", "+00:00"))
+        if since.tzinfo is None:
+            since = since.replace(tzinfo=UTC)
+    except ValueError as e:
+        click.echo(f"[FAIL] invalid --since value: {since_iso!r} ({e})", err=True)
+        return 2
+
+    pool = await _connect_db()
+    try:
+        async with pool.acquire() as conn:
+            ctx = await fetch_workspace_context(conn, workspace)
+            if ctx is None:
+                click.echo(f"[FAIL] workspace {workspace!r} not found, inactive, or has no API key", err=True)
+                return 2
+
+            candidates = await fetch_graduation_candidates(conn, ctx.workspace_id)
+            actual = await fetch_actual_graduations(conn, ctx.workspace_id, since)
+
+        comp = ShadowComparison(
+            workspace_name=ctx.workspace_name,
+            since=since,
+            proposed_emails=frozenset(c.email_address for c in candidates),
+            actual_emails=actual,
+        )
+
+        for line in render_comparison(comp):
+            click.echo(line)
+
+        return 1 if comp.has_divergence else 0
     finally:
         await pool.close()
 
