@@ -218,16 +218,31 @@ class SetTagSyncModule:
             cleared = 0
 
             for domain in domains:
-                domain_result = await self._sync_domain_sets(
-                    domain=domain,
-                    a_set_tag_id=a_set_tag_id,
-                    b_set_tag_id=b_set_tag_id,
-                    audit=audit
-                )
-                tagged_a += domain_result['tagged_a']
-                tagged_b += domain_result['tagged_b']
-                promoted += domain_result['promoted']
-                cleared += domain_result.get('cleared', 0)
+                # Per-domain exception isolation (added 2026-04-30): without
+                # this, one domain's failure (DB connection drop, asyncpg
+                # InterfaceError, unexpected schema mismatch, etc) propagates
+                # out of the loop and silently drops the remainder of the
+                # workspace's domains. They appear nowhere in audit.
+                try:
+                    domain_result = await self._sync_domain_sets(
+                        domain=domain,
+                        a_set_tag_id=a_set_tag_id,
+                        b_set_tag_id=b_set_tag_id,
+                        audit=audit
+                    )
+                    tagged_a += domain_result['tagged_a']
+                    tagged_b += domain_result['tagged_b']
+                    promoted += domain_result['promoted']
+                    cleared += domain_result.get('cleared', 0)
+                except Exception as e:
+                    print(
+                        f"    [ERROR] {workspace_name} domain "
+                        f"{domain.get('domain_name', '?')}: {e!r}"
+                    )
+                    audit.add_error(
+                        record_id=domain.get('domain_name', '?'),
+                        error=f"Unexpected error in _sync_domain_sets: {e!r}"
+                    )
 
             if tagged_a > 0 or tagged_b > 0 or promoted > 0 or cleared > 0:
                 print(f"  [{workspace_name}] live: +{tagged_a}, reserve: +{tagged_b}, promoted: {promoted}, cleared: {cleared}")
@@ -464,10 +479,23 @@ class SetTagSyncModule:
                         error=f"MS live-tag enforcement failed: {e}",
                     )
                     continue  # don't proceed to untag if tag failed
+                except Exception as e:
+                    # Per-row safety net (added 2026-04-30): catches non-EB
+                    # exceptions (asyncpg, ValueError, etc.) so one row
+                    # doesn't kill the rest of the loop.
+                    audit.add_error(
+                        record_id=inbox['email_address'],
+                        error=f"Unexpected error in MS tag enforcement: {e!r}",
+                    )
+                    print(f"    [ERROR] MS tag {inbox['email_address']}: {e!r}")
+                    continue
                 try:
                     await self.client.untag_inbox(eb_account_id, b_set_tag_id)
                 except EmailBisonAPIError:
                     pass  # transient dual tag, heals next cycle
+                except Exception as e:
+                    # Untag is best-effort; broad except logs but doesn't abort.
+                    print(f"    [WARN] MS untag-reserve {inbox['email_address']}: {e!r}")
                 continue
 
             # Decide target tag and which other tag to remove.
@@ -543,6 +571,17 @@ class SetTagSyncModule:
                     record_id=inbox['email_address'],
                     error=f"Tag reconciliation failed: {e}"
                 )
+            except Exception as e:
+                # Per-row safety net (added 2026-04-30): catches non-EB
+                # exceptions in the general reconciliation branch
+                # (asyncpg.InterfaceError on a DB read, ValueError, etc).
+                # Without this, one row's unexpected exception silently
+                # drops the rest of the domain's inbox reconciliation.
+                audit.add_error(
+                    record_id=inbox['email_address'],
+                    error=f"Unexpected error in tag reconciliation: {e!r}"
+                )
+                print(f"    [ERROR] tag reconcile {inbox['email_address']}: {e!r}")
 
         return result
 
