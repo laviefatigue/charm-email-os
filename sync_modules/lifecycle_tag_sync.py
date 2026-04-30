@@ -324,16 +324,49 @@ class LifecycleTagSyncModule:
                 # The graduation is logged to inbox_rotation_history so the
                 # transition from incubating → reserve/deployed has an audit
                 # row alongside other pool transitions.
+                #
+                # Race-condition discipline (added 2026-04-30): the UPDATE
+                # re-checks all eligibility predicates inside the transaction.
+                # Without this, an inbox whose state flipped between
+                # ready_to_graduate's SELECT and this transaction (operator
+                # disabled warmup, kill_processor flipped to dead, etc) would
+                # still get its DB lifecycle flipped to 'active'. The re-check
+                # makes the UPDATE match 0 rows in that case; we then refuse
+                # to insert rotation_history for an event that didn't happen.
+                # EB tags were already applied — set_tag_sync's drift
+                # reconciler removes them on next cycle when it sees DB still
+                # at lifecycle='incubating'.
                 async with self.db.acquire() as conn:
                     async with conn.transaction():
-                        await conn.execute("""
-                            UPDATE sender_accounts
-                            SET
-                                inventory_lifecycle_status = 'active',
-                                inventory_pool_status = $2,
-                                updated_at = NOW()
-                            WHERE id = $1
+                        rows_updated = await conn.fetchval("""
+                            WITH updated AS (
+                                UPDATE sender_accounts
+                                SET
+                                    inventory_lifecycle_status = 'active',
+                                    inventory_pool_status = $2,
+                                    updated_at = NOW()
+                                WHERE id = $1
+                                  AND inbox_state = 'live'
+                                  AND is_active = TRUE
+                                  AND warmup_enabled = TRUE
+                                  AND warmup_enabled_since IS NOT NULL
+                                  AND inventory_lifecycle_status = 'incubating'
+                                RETURNING 1
+                            )
+                            SELECT COUNT(*)::int FROM updated
                         """, inbox['id'], target_pool_status)
+
+                        if rows_updated == 0:
+                            print(
+                                f"    [RACE] {inbox['email_address']} (eb={eb_account_id}) "
+                                f"eligibility flipped between fetch and DB transaction — "
+                                f"EB has '{target_tag_label}' tag applied; set_tag_sync will reconcile next cycle."
+                            )
+                            audit.add_error(
+                                record_id=inbox['email_address'],
+                                error="race_skipped: eligibility flipped during graduation"
+                            )
+                            continue  # skip rotation_history INSERT
 
                         await conn.execute("""
                             INSERT INTO inbox_rotation_history (
@@ -366,6 +399,19 @@ class LifecycleTagSyncModule:
                     record_id=inbox['email_address'],
                     error=f"Failed to graduate: {e}"
                 )
+            except Exception as e:
+                # Per-row safety net (added 2026-04-30): without this, ANY
+                # non-EmailBisonAPIError exception (asyncpg.InterfaceError on
+                # DB connection drop, ValueError, KeyError, network error not
+                # wrapped by the EB client, etc) propagates out of the for
+                # loop and silently kills processing for the rest of the
+                # workspace's candidates. They appear nowhere in audit. With
+                # this clause, we record the failure and continue.
+                audit.add_error(
+                    record_id=inbox['email_address'],
+                    error=f"Unexpected error during graduation: {e!r}"
+                )
+                print(f"    [ERROR] Unexpected exception graduating {inbox['email_address']}: {e!r}")
 
         return graduated_count
 
@@ -461,6 +507,16 @@ class LifecycleTagSyncModule:
                     record_id=inbox['email_address'],
                     error=f"Failed to tag: {e}"
                 )
+            except Exception as e:
+                # Per-row safety net (added 2026-04-30): same loop-kill
+                # discipline as _graduate_mature_inboxes. Catch unexpected
+                # exceptions per-inbox so one row's failure doesn't drop
+                # the rest of the workspace's tagging silently.
+                audit.add_error(
+                    record_id=inbox['email_address'],
+                    error=f"Unexpected error during tagging: {e!r}"
+                )
+                print(f"    [ERROR] Unexpected exception tagging {inbox['email_address']}: {e!r}")
 
         return tagged_count
 
@@ -582,9 +638,28 @@ class LifecycleTagSyncModule:
 
                 print(f"    [CLEAN] {inbox['email_address']} - removed 'live' tag (dead inbox)")
 
-            except EmailBisonAPIError:
-                # Tag may not exist, that's fine
-                pass
+            except EmailBisonAPIError as e:
+                # Distinguish 404 (tag wasn't there — intended outcome) from
+                # transient EB errors that should be visible. Bare `pass` here
+                # was the same silent-failure pattern as kill_processor's
+                # pool-tag strip (fixed 2026-04-30 commit e7bbd59) — 5xx
+                # errors disappeared into the void, leaving 'live' tag still
+                # applied on dead inboxes in EB.
+                if getattr(e, 'status_code', None) == 404:
+                    pass  # Tag wasn't applied — intended outcome.
+                else:
+                    audit.add_error(
+                        record_id=inbox['email_address'],
+                        error=f"transient: untag 'live' failed (will retry next cycle): {e}"
+                    )
+                    print(f"    [WARN] {inbox['email_address']} - transient EB error removing 'live' tag: {e}")
+            except Exception as e:
+                # Per-row safety net.
+                audit.add_error(
+                    record_id=inbox['email_address'],
+                    error=f"Unexpected error during clean: {e!r}"
+                )
+                print(f"    [ERROR] Unexpected exception cleaning {inbox['email_address']}: {e!r}")
 
         return cleaned_count
 
