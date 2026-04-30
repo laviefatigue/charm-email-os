@@ -90,14 +90,19 @@ async def run_checks(
     report.add("db_connection", CheckStatus.OK, "asyncpg.connect succeeded")
 
     # ----- 2. Workspace lookup -----
+    # `finally` is the single close site so we can't accidentally double-close
+    # and mask one error with another from a second close call.
+    workspace_lookup_failed = False
     try:
-        ctx = await fetch_workspace_context(conn, workspace_name)
-    except Exception as e:
-        report.add("workspace_lookup", CheckStatus.FAIL, f"{type(e).__name__}: {e}")
-        await conn.close()
-        return report
+        try:
+            ctx = await fetch_workspace_context(conn, workspace_name)
+        except Exception as e:
+            report.add("workspace_lookup", CheckStatus.FAIL, f"{type(e).__name__}: {e}")
+            workspace_lookup_failed = True
     finally:
         await conn.close()
+    if workspace_lookup_failed:
+        return report
 
     if ctx is None:
         report.add(

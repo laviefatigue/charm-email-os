@@ -306,6 +306,57 @@ class TestGetCampaignSenders:
             with pytest.raises(EmailBisonAPIError, match="safety limit"):
                 await c.get_campaign_senders(9)
 
+    @respx.mock
+    async def test_total_mismatch_raises(self, client_factory):
+        # Server says total=20 but we only collected 10 across the pages — fail loud
+        respx.get(f"{BASE_URL}/api/campaigns/9/sender-emails").mock(
+            side_effect=[
+                _resp(200, {
+                    "data": [{"id": i} for i in range(1, 6)],
+                    "meta": {"current_page": 1, "last_page": 2, "per_page": 5, "total": 20},
+                }),
+                _resp(200, {
+                    "data": [{"id": i} for i in range(6, 11)],
+                    "meta": {"current_page": 2, "last_page": 2, "per_page": 5, "total": 20},
+                }),
+            ]
+        )
+        async with client_factory() as c:
+            with pytest.raises(EmailBisonAPIError, match=r"collected 10 senders but meta\.total=20"):
+                await c.get_campaign_senders(9)
+
+    @respx.mock
+    async def test_shape_changes_mid_pagination_raises(self, client_factory):
+        # Page 1 paginated; page 2 returns 204 (eventual consistency / server hiccup)
+        respx.get(f"{BASE_URL}/api/campaigns/9/sender-emails").mock(
+            side_effect=[
+                _resp(200, {
+                    "data": [{"id": 1}, {"id": 2}],
+                    "meta": {"current_page": 1, "last_page": 2, "per_page": 2, "total": 4},
+                }),
+                httpx.Response(204),  # empty body mid-pagination
+            ]
+        )
+        async with client_factory() as c:
+            with pytest.raises(EmailBisonAPIError, match="silent truncation"):
+                await c.get_campaign_senders(9)
+
+    @respx.mock
+    async def test_meta_lost_mid_pagination_raises(self, client_factory):
+        # Page 1 has meta; page 2 mysteriously doesn't
+        respx.get(f"{BASE_URL}/api/campaigns/9/sender-emails").mock(
+            side_effect=[
+                _resp(200, {
+                    "data": [{"id": 1}, {"id": 2}],
+                    "meta": {"current_page": 1, "last_page": 2, "per_page": 2, "total": 4},
+                }),
+                _resp(200, {"data": [{"id": 3}, {"id": 4}]}),  # no meta
+            ]
+        )
+        async with client_factory() as c:
+            with pytest.raises(EmailBisonAPIError, match="missing meta.last_page but earlier pages had it"):
+                await c.get_campaign_senders(9)
+
 
 class TestAttachSenders:
     @respx.mock
@@ -412,13 +463,61 @@ class TestListSendersWithTag:
         assert len(result) == 1
 
     @respx.mock
-    async def test_empty_data_terminates(self, client_factory):
+    async def test_empty_data_on_page_1_with_last_page_1_terminates(self, client_factory):
+        # Empty data is a natural terminator ONLY when last_page is reached
+        # (or last_page is missing — single-page response).
         respx.get(f"{BASE_URL}/api/sender-emails").mock(
-            return_value=_resp(200, {"data": [], "meta": {"last_page": 5}})
+            return_value=_resp(200, {"data": [], "meta": {"last_page": 1, "current_page": 1, "total": 0}})
         )
         async with client_factory() as c:
             result = await c.list_senders_with_tag(7)
         assert result == []
+
+    @respx.mock
+    async def test_empty_data_before_last_page_raises(self, client_factory):
+        # Defensive: if last_page=5 but page 1 returns empty data, that's silent truncation
+        # (the exact bug class that hid Sammy #63's 634 attached senders).
+        respx.get(f"{BASE_URL}/api/sender-emails").mock(
+            return_value=_resp(200, {"data": [], "meta": {"last_page": 5, "current_page": 1, "total": 25}})
+        )
+        async with client_factory() as c:
+            with pytest.raises(EmailBisonAPIError, match="silent truncation"):
+                await c.list_senders_with_tag(7)
+
+    @respx.mock
+    async def test_pagination_total_mismatch_raises(self, client_factory):
+        # If meta.total disagrees with what we collected, fail loud rather than return wrong data
+        respx.get(f"{BASE_URL}/api/sender-emails").mock(
+            side_effect=[
+                _resp(200, {
+                    "data": [{"id": 1}, {"id": 2}],
+                    "meta": {"current_page": 1, "last_page": 2, "per_page": 2, "total": 10},
+                }),
+                _resp(200, {
+                    "data": [{"id": 3}],
+                    "meta": {"current_page": 2, "last_page": 2, "per_page": 2, "total": 10},
+                }),
+            ]
+        )
+        async with client_factory() as c:
+            with pytest.raises(EmailBisonAPIError, match=r"collected 3 senders but meta\.total=10"):
+                await c.list_senders_with_tag(7)
+
+    @respx.mock
+    async def test_pagination_shape_changes_mid_stream_raises(self, client_factory):
+        # Page 1 paginated, page 2 returns bare list — silent truncation territory
+        respx.get(f"{BASE_URL}/api/sender-emails").mock(
+            side_effect=[
+                _resp(200, {
+                    "data": [{"id": 1}],
+                    "meta": {"current_page": 1, "last_page": 2, "per_page": 1, "total": 2},
+                }),
+                _resp(200, [{"id": 2}]),  # bare list — shape changed
+            ]
+        )
+        async with client_factory() as c:
+            with pytest.raises(EmailBisonAPIError, match="shape changed"):
+                await c.list_senders_with_tag(7)
 
     @respx.mock
     async def test_no_results_returns_empty_list(self, client_factory):

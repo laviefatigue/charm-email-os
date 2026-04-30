@@ -165,6 +165,14 @@ class EBClient:
           - safety limit reached → raises
         """
         all_attached: list[dict[str, Any]] = []
+        # Captured from page 1's meta. If set, we'll verify len(all_attached) == expected_total
+        # at the end to guard against silent mid-pagination truncation (the exact class of bug
+        # that hid /api/campaigns/{id}/sender-emails pagination from us in the first place).
+        expected_total: int | None = None
+        # If the first page is a bare list (no meta), we have no way to validate count — but
+        # we also know the endpoint isn't paginating, so a single page is the whole thing.
+        is_paginated = False
+
         for page in range(1, _PAGINATION_SAFETY_LIMIT + 1):
             params: dict[str, Any] = {"page": page, "per_page": per_page}
             result = await self._request(
@@ -174,23 +182,50 @@ class EBClient:
             )
 
             if result is None:
-                # 204 No Content or empty body — treat as empty single-page response
+                # 204 / empty body. Acceptable on page 1 (truly empty campaign).
+                # Acceptable on page > 1 ONLY if we already saw page N-1 (i.e. we're about
+                # to break naturally). If we expected more pages and got 204, that's silent
+                # truncation — fail loud.
+                if page == 1:
+                    break
+                if expected_total is not None and len(all_attached) < expected_total:
+                    raise EmailBisonAPIError(
+                        0,
+                        f"page {page} returned empty body but expected_total={expected_total} "
+                        f"and only {len(all_attached)} collected; possible silent truncation",
+                    )
                 break
 
             if isinstance(result, list):
+                # Bare list — no pagination metadata. Only valid on page 1.
+                if page > 1:
+                    raise EmailBisonAPIError(
+                        0,
+                        f"page {page} returned bare list but earlier pages were paginated; "
+                        f"response shape changed mid-pagination",
+                    )
                 all_attached.extend(result)
                 break
 
             if not isinstance(result, dict):
                 raise EmailBisonAPIError(
                     0,
-                    f"Unexpected campaign senders response shape: {type(result).__name__}",
+                    f"Unexpected campaign senders response shape on page {page}: {type(result).__name__}",
                     result,
                 )
 
             data = result.get("data")
             if data is None:
-                # _unwrap fallback: maybe the whole thing is the data
+                # data missing. Acceptable on page 1 with bare-list-shaped result; otherwise
+                # silent truncation territory. If we already started paginating and lose data,
+                # fail loud.
+                if is_paginated:
+                    raise EmailBisonAPIError(
+                        0,
+                        f"page {page} response has no 'data' field but earlier pages did; "
+                        f"shape changed mid-pagination",
+                    )
+                # First page, _unwrap-fallback path — accept and finish
                 unwrapped = self._unwrap(result)
                 if isinstance(unwrapped, list):
                     all_attached.extend(unwrapped)
@@ -199,14 +234,30 @@ class EBClient:
             if not isinstance(data, list):
                 raise EmailBisonAPIError(
                     0,
-                    f"Expected list under 'data' from get_campaign_senders, got {type(data).__name__}",
+                    f"Expected list under 'data' from get_campaign_senders page {page}, got {type(data).__name__}",
                     data,
                 )
             all_attached.extend(data)
 
             meta = result.get("meta") or {}
             last_page = meta.get("last_page")
+            total = meta.get("total")
+
+            if page == 1 and last_page is not None:
+                is_paginated = True
+                if total is not None:
+                    expected_total = int(total)
+
             if last_page is None:
+                # No pagination metadata: should only happen on a single-page response.
+                # If we're already paginating (saw last_page on page 1), losing it mid-stream
+                # is silent truncation.
+                if is_paginated:
+                    raise EmailBisonAPIError(
+                        0,
+                        f"page {page} response missing meta.last_page but earlier pages had it; "
+                        f"shape changed mid-pagination",
+                    )
                 break
             if page >= int(last_page):
                 break
@@ -214,6 +265,17 @@ class EBClient:
             raise EmailBisonAPIError(
                 0,
                 f"Pagination safety limit ({_PAGINATION_SAFETY_LIMIT}) exceeded for campaign {campaign_id} senders",
+            )
+
+        # Final consistency check: if the server told us a total, verify we collected it all.
+        # Mid-fetch concurrent changes are extremely rare for campaign sender lists; a mismatch
+        # is far more likely to be a server bug or pagination-shape inconsistency than benign
+        # drift. Fail loud rather than return wrong data.
+        if expected_total is not None and len(all_attached) != expected_total:
+            raise EmailBisonAPIError(
+                0,
+                f"pagination collected {len(all_attached)} senders but meta.total={expected_total} "
+                f"on campaign {campaign_id}; data may be incomplete or inconsistent",
             )
 
         return all_attached
@@ -255,14 +317,23 @@ class EBClient:
         Returns the full list of senders that have the given tag. The orchestrator
         uses this to compute the target attachment set (the 'live' tag).
 
+        Pagination contract (matches Laravel paginator shape on EB):
+          {"data": [...], "meta": {"current_page", "last_page", "per_page", "total", ...}}
+          We track meta.total from page 1 and verify len(collected) == total at the end.
+          Mid-pagination shape changes (data missing, meta.last_page lost, response becomes
+          a bare list) raise — silent truncation is the bug class that hid Sammy #63's 634
+          attached senders behind a single 15-row page response.
+
         Pagination terminates when:
-          - response is a bare list (single page)
+          - First response is a bare list (single page, no meta)
           - meta.last_page is reached
-          - meta.last_page is missing (defensive — assume single page)
-          - empty data array
+          - meta.last_page is missing AND we never started paginating (single-page response)
           - safety limit (_PAGINATION_SAFETY_LIMIT) reached → raises
         """
         all_senders: list[dict[str, Any]] = []
+        expected_total: int | None = None
+        is_paginated = False
+
         for page in range(1, _PAGINATION_SAFETY_LIMIT + 1):
             params: dict[str, Any] = {
                 "tag_ids[0]": tag_id,
@@ -271,27 +342,71 @@ class EBClient:
             }
             result = await self._request("GET", "/api/sender-emails", params=params)
 
+            if result is None:
+                if page == 1:
+                    break
+                if expected_total is not None and len(all_senders) < expected_total:
+                    raise EmailBisonAPIError(
+                        0,
+                        f"page {page} returned empty body but expected_total={expected_total} "
+                        f"and only {len(all_senders)} collected; possible silent truncation",
+                    )
+                break
+
             if isinstance(result, list):
-                # Bare-list response — no pagination metadata available.
+                if page > 1:
+                    raise EmailBisonAPIError(
+                        0,
+                        f"page {page} returned bare list but earlier pages were paginated; "
+                        f"shape changed mid-pagination",
+                    )
                 all_senders.extend(result)
                 break
 
             if not isinstance(result, dict):
                 raise EmailBisonAPIError(
                     0,
-                    f"Unexpected sender-emails response shape: {type(result).__name__}",
+                    f"Unexpected sender-emails response shape on page {page}: {type(result).__name__}",
                     result,
                 )
 
             data = result.get("data", [])
-            if not data:
-                break
+            if not isinstance(data, list):
+                raise EmailBisonAPIError(
+                    0,
+                    f"Expected list under 'data' on page {page}, got {type(data).__name__}",
+                    data,
+                )
             all_senders.extend(data)
+            # Empty data array is a natural terminator — but only after we've recorded the meta
+            # check below. So don't early-break here.
 
             meta = result.get("meta") or {}
             last_page = meta.get("last_page")
+            total = meta.get("total")
+
+            if page == 1 and last_page is not None:
+                is_paginated = True
+                if total is not None:
+                    expected_total = int(total)
+
             if last_page is None:
-                # Defensive: no pagination metadata, stop after one page rather than risk a loop.
+                if is_paginated:
+                    raise EmailBisonAPIError(
+                        0,
+                        f"page {page} response missing meta.last_page but earlier pages had it; "
+                        f"shape changed mid-pagination",
+                    )
+                break
+            if not data:
+                # Empty data array on a paginated response — only valid if we've reached or
+                # passed last_page. Otherwise it's silent truncation.
+                if page < int(last_page):
+                    raise EmailBisonAPIError(
+                        0,
+                        f"page {page} returned empty data but last_page={last_page}; "
+                        f"possible silent truncation",
+                    )
                 break
             if page >= int(last_page):
                 break
@@ -299,6 +414,13 @@ class EBClient:
             raise EmailBisonAPIError(
                 0,
                 f"Pagination safety limit ({_PAGINATION_SAFETY_LIMIT}) exceeded for /api/sender-emails",
+            )
+
+        if expected_total is not None and len(all_senders) != expected_total:
+            raise EmailBisonAPIError(
+                0,
+                f"pagination collected {len(all_senders)} senders but meta.total={expected_total} "
+                f"for tag_id={tag_id}; data may be incomplete or inconsistent",
             )
 
         return all_senders
