@@ -153,20 +153,51 @@ async def update_graduation(
     conn: asyncpg.Connection,
     sender_id: UUID,
     target_pool: str,  # 'live' or 'reserve'
-) -> None:
+) -> int:
     """Apply the graduation transition in DB, atomically with the rotation log.
+
+    Returns rows affected. The UPDATE includes a re-check of eligibility
+    columns inside the transaction — if the row's state changed between
+    candidate-selection and now (e.g., warmup_enabled flipped to FALSE,
+    inbox_state went 'dead', operator manually flipped lifecycle), the
+    UPDATE matches 0 rows and the caller decides whether to roll back the
+    rotation history insert.
+
+    This closes the race-condition silent failure where:
+      1. fetch_graduation_candidates returns row X
+      2. operator disables warmup_enabled on X
+      3. EB tags get applied (we already untagged incubating + tagged live)
+      4. UPDATE without re-check would still flip DB → 'active' even though
+         warmup is now off — graduating an inbox that should NOT graduate.
+
+    With re-check, step 4 matches 0 rows; caller raises to roll back.
+    Net effect: EB has the new tag (briefly), DB stays at incubating, next
+    cycle's set_tag_sync drift reconciler removes the orphan tag from EB.
+    Acceptable transient state, no permanently-wrong DB.
 
     Caller must wrap in a transaction with the EB tag operations so that we
     never have a DB transition without a matching EB tag, or vice versa.
     """
-    await conn.execute(
+    return await conn.fetchval(
         """
-        UPDATE sender_accounts
-        SET
-            inventory_lifecycle_status = 'active',
-            inventory_pool_status = $2,
-            updated_at = NOW()
-        WHERE id = $1
+        WITH updated AS (
+            UPDATE sender_accounts
+            SET
+                inventory_lifecycle_status = 'active',
+                inventory_pool_status = $2,
+                updated_at = NOW()
+            WHERE id = $1
+              -- Re-check eligibility predicates inside the transaction.
+              -- If any of these flipped since fetch_graduation_candidates,
+              -- the UPDATE matches 0 rows.
+              AND inbox_state = 'live'
+              AND is_active = TRUE
+              AND warmup_enabled = TRUE
+              AND warmup_enabled_since IS NOT NULL
+              AND inventory_lifecycle_status = 'incubating'
+            RETURNING 1
+        )
+        SELECT COUNT(*)::int FROM updated
         """,
         sender_id,
         target_pool,

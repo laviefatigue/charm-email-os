@@ -147,16 +147,38 @@ async def _run_workspace(workspace: str, *, apply: bool) -> int:
 
             async with pool.acquire() as conn:
                 for c in candidates:
-                    res = await graduate_one(
-                        db_conn=conn,
-                        eb=eb,
-                        workspace_id=ctx.workspace_id,
-                        candidate=c,
-                        incubating_tag_id=incubating_tag_id,
-                        live_tag_id=live_tag_id,
-                        reserve_tag_id=reserve_tag_id,
-                        apply=apply,
-                    )
+                    # Wrap each candidate independently. If graduate_one raises
+                    # (DB connection drop, 401 from token-revoked, asyncpg
+                    # InterfaceError, etc.), record as transient_failed and
+                    # continue with the rest. Without this wrapper, one row's
+                    # exception kills the whole workspace's processing — a
+                    # silent partial-failure mode where the unprocessed
+                    # candidates appear nowhere in `results`.
+                    try:
+                        res = await graduate_one(
+                            db_conn=conn,
+                            eb=eb,
+                            workspace_id=ctx.workspace_id,
+                            candidate=c,
+                            incubating_tag_id=incubating_tag_id,
+                            live_tag_id=live_tag_id,
+                            reserve_tag_id=reserve_tag_id,
+                            apply=apply,
+                        )
+                    except Exception as graduate_err:
+                        # Per-row safety net. Loud log; row stays at
+                        # lifecycle='incubating' for next cycle.
+                        from .graduator import GraduationResult
+                        logging.getLogger(__name__).exception(
+                            "[%s] graduate_one raised unexpectedly — recording transient_failed",
+                            c.email_address,
+                        )
+                        res = GraduationResult(
+                            candidate=c,
+                            target_pool="(unknown — pre-flight error)",
+                            outcome="transient_failed",
+                            error=f"unhandled: {graduate_err!r}",
+                        )
                     results.append(res)
 
         # Summary
@@ -168,6 +190,7 @@ async def _run_workspace(workspace: str, *, apply: bool) -> int:
                 "dry_run": "[DRY]",
                 "orphan_skipped": "[ORPHAN]",
                 "transient_failed": "[FAIL]",
+                "race_skipped": "[RACE]",
             }.get(r.outcome, "[?]")
             extra = f" reason={r.error}" if r.error else ""
             click.echo(f"  {marker:<10} {r.candidate.email_address:<55} -> {r.target_pool}{extra}")
@@ -175,7 +198,7 @@ async def _run_workspace(workspace: str, *, apply: bool) -> int:
         # Exit code mapping
         if outcomes.get("transient_failed", 0) > 0:
             return 1
-        if outcomes.get("orphan_skipped", 0) > 0:
+        if outcomes.get("orphan_skipped", 0) > 0 or outcomes.get("race_skipped", 0) > 0:
             return 2
         return 0
     finally:

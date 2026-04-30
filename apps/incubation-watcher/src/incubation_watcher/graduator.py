@@ -120,10 +120,35 @@ async def graduate_one(
         )
 
     # Steps 3+4: DB transition + audit row, atomic.
+    # update_graduation re-checks eligibility inside the transaction. If the
+    # row's eligibility flipped between candidate-selection and here (e.g.,
+    # operator disabled warmup_enabled, or kill_processor flipped state to
+    # dead), it matches 0 rows. We surface that as 'race_skipped' — EB tags
+    # were already applied, set_tag_sync's drift reconciler will untag on
+    # next cycle when it sees DB still at lifecycle='incubating'.
     async with db_conn.transaction():
-        await update_graduation(
+        rows_updated = await update_graduation(
             conn=db_conn, sender_id=candidate.sender_id, target_pool=target_pool,
         )
+        if rows_updated == 0:
+            # Eligibility flipped during EB writes; do NOT insert rotation_history
+            # for a row whose DB state contradicts the rotation event. Outer
+            # transaction rolls back the (no-op) UPDATE. The duplicated UPDATE
+            # is technically safe (it didn't fire) but we keep the pattern of
+            # "if anything in this block fails, raise to roll back."
+            logger.warning(
+                "[RACE] %s (eb=%d) eligibility flipped between fetch and DB transaction — "
+                "EB has %s tag applied; set_tag_sync will reconcile next cycle.",
+                candidate.email_address,
+                candidate.emailbison_account_id,
+                target_pool,
+            )
+            return GraduationResult(
+                candidate=candidate,
+                target_pool=target_pool,
+                outcome="race_skipped",
+                error="eligibility flipped between candidate selection and DB transaction",
+            )
         await record_rotation_history(
             conn=db_conn,
             workspace_id=workspace_id,
