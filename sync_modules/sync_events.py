@@ -96,24 +96,30 @@ class EventSyncModule:
                 audit.increment_processed()
 
                 try:
-                    # Sync all three folders — no workspace switch needed, client is pre-scoped
+                    # Sync all three folders — no workspace switch needed, client is pre-scoped.
+                    # `audit` is passed down so per-reply errors increment records_failed
+                    # and surface in error_log instead of being printed and forgotten.
+                    # Plan D Pass 4 silent-error fix (2026-05-01).
                     inbox_count = await self.sync_campaign_replies(
                         local_campaign_id=campaign['local_id'],
                         eb_campaign_id=int(campaign['emailbison_campaign_id']),
                         workspace_id=campaign['workspace_id'],
-                        folder='inbox'
+                        folder='inbox',
+                        audit=audit,
                     )
                     bounce_count = await self.sync_campaign_replies(
                         local_campaign_id=campaign['local_id'],
                         eb_campaign_id=int(campaign['emailbison_campaign_id']),
                         workspace_id=campaign['workspace_id'],
-                        folder='bounced'
+                        folder='bounced',
+                        audit=audit,
                     )
                     spam_count = await self.sync_campaign_replies(
                         local_campaign_id=campaign['local_id'],
                         eb_campaign_id=int(campaign['emailbison_campaign_id']),
                         workspace_id=campaign['workspace_id'],
-                        folder='spam'
+                        folder='spam',
+                        audit=audit,
                     )
 
                     if inbox_count > 0 or bounce_count > 0 or spam_count > 0:
@@ -238,7 +244,8 @@ class EventSyncModule:
         local_campaign_id: UUID,
         eb_campaign_id: int,
         workspace_id: UUID,
-        folder: str
+        folder: str,
+        audit: Optional['AuditContext'] = None,
     ) -> int:
         """
         Sync replies for a specific campaign folder.
@@ -247,7 +254,14 @@ class EventSyncModule:
             local_campaign_id: Our campaign UUID
             eb_campaign_id: EmailBison campaign ID
             workspace_id: Workspace UUID
-            folder: 'inbox' or 'bounced'
+            folder: 'inbox' or 'bounced' or 'spam'
+            audit: Optional AuditContext from the caller's sync_workspace audit.
+                   When provided, per-reply and per-folder errors are recorded
+                   to records_failed + error_log via add_error() instead of
+                   being printed and forgotten. Pre-2026-05-01 callers may not
+                   pass audit; in that case errors fall back to print() with
+                   a `[silent-error-fallback]` marker so they're greppable.
+                   Plan D Pass 4 silent-error fix.
 
         Returns:
             Number of new events synced
@@ -272,10 +286,35 @@ class EventSyncModule:
                         new_count += 1
 
                 except Exception as e:
-                    print(f"      Error processing reply {reply.get('id')}: {e}")
+                    # Per-reply error: record to audit so records_failed reflects
+                    # reality and error_log preserves the per-row detail. Without
+                    # this, a malformed bounce body that breaks INSERT would be
+                    # silently lost and the workspace audit would still report OK.
+                    if audit is not None:
+                        audit.add_error(
+                            record_id=str(reply.get('id') or 'unknown'),
+                            error=f"process_reply failed: {e!r}",
+                            details={
+                                'campaign_id': eb_campaign_id,
+                                'folder': folder,
+                                'eb_reply_id': reply.get('id'),
+                            },
+                        )
+                    else:
+                        print(f"      [silent-error-fallback] reply {reply.get('id')} folder={folder} campaign={eb_campaign_id}: {e!r}")
 
         except Exception as e:
-            print(f"    Error fetching {folder} for campaign {eb_campaign_id}: {e}")
+            # Per-folder fetch error: same treatment. If get_all_campaign_replies
+            # raises (e.g. EB API timeout, malformed response), the entire
+            # campaign+folder pair is lost — record the loss explicitly.
+            if audit is not None:
+                audit.add_error(
+                    record_id=f'campaign={eb_campaign_id} folder={folder}',
+                    error=f"fetch_replies failed: {e!r}",
+                    details={'campaign_id': eb_campaign_id, 'folder': folder},
+                )
+            else:
+                print(f"    [silent-error-fallback] fetch {folder} for campaign {eb_campaign_id}: {e!r}")
 
         return new_count
 
@@ -376,17 +415,23 @@ class EventSyncModule:
         # Determine event type for campaign_events
         event_type = self.get_event_type(folder, is_interested, is_automated)
 
-        # Storage strategy:
-        # - BOUNCES: Keep truncated body for diagnostic analysis of misclassified bounces
-        # - REAL REPLIES: Keep full body for copy analysis and lead quality
-        if folder == 'bounced':
-            # Bounce: Store preview for diagnostic analysis, skip full body
-            store_body_preview = body[:500] if body else None
-            store_body_full = None
-        else:
-            # Real reply: Keep full body for analysis
-            store_body_preview = body[:500] if body else None
-            store_body_full = body
+        # Storage strategy (Plan D Pass 4 — 2026-05-01):
+        #   BOUNCES: Keep BOTH preview AND full body for forensic analysis.
+        #   Pre-Pass-4, body_full was set to None for bounces. That made
+        #   post-hoc verification of spam_complaint kills impossible — we
+        #   could not re-run is_spam_complaint() against the full content
+        #   the heuristic actually saw at processing time, only the first
+        #   500 chars. The forensic gap motivated this change.
+        #
+        #   Storage cost: ~30KB avg per bounce × 8336 bounces/30d × 90-day
+        #   retention (cleanup_bounce_messages in retention.py deletes the
+        #   whole row at 90d — body_full goes with it) ≈ 60MB peak.
+        #   Negligible vs. the ability to re-analyze any future kill.
+        #
+        #   REAL REPLIES: Keep full body for copy analysis and lead quality.
+        #   Indefinite retention.
+        store_body_preview = body[:500] if body else None
+        store_body_full = body
 
         # Insert response message
         response_id = await self.db.fetchval("""
