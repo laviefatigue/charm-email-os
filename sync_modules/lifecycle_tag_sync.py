@@ -269,6 +269,15 @@ class LifecycleTagSyncModule:
             AND warmup_enabled_since IS NOT NULL
             AND inventory_lifecycle_status = 'incubating'
             AND emailbison_account_id IS NOT NULL
+            -- Plan A Phase 5b firewall guard: never graduate a quarantined inbox.
+            -- Quarantine = "doesn't belong in this workspace per
+            -- clients.domain_pattern". Graduating one would tag it 'live' or
+            -- 'reserve' in EB and credit it as a pooled inbox in a workspace
+            -- it doesn't belong to — exactly the cross-tenant leak we're
+            -- defending against. Phase 5a (sync_accounts.upsert) prevents
+            -- pool tagging at upsert time; this filter prevents lifecycle
+            -- transition from incubating→active for quarantined rows.
+            AND NOT is_quarantined
             AND (
                 SELECT COUNT(*)
                 FROM generate_series(
@@ -351,6 +360,10 @@ class LifecycleTagSyncModule:
                                   AND warmup_enabled = TRUE
                                   AND warmup_enabled_since IS NOT NULL
                                   AND inventory_lifecycle_status = 'incubating'
+                                  -- Plan A Phase 5b: race-check guard against quarantine
+                                  -- toggling between SELECT and UPDATE. Without this, a
+                                  -- newly-quarantined row could still slip through.
+                                  AND NOT is_quarantined
                                 RETURNING 1
                             )
                             SELECT COUNT(*)::int FROM updated
@@ -466,6 +479,11 @@ class LifecycleTagSyncModule:
             AND emailbison_account_id IS NOT NULL
             AND (inventory_lifecycle_status IS NULL
                  OR inventory_lifecycle_status = 'incubating')
+            -- Plan A Phase 5b firewall guard: never apply 'incubating' EB tag to a
+            -- quarantined inbox. The 'incubating' tag signals workspace
+            -- membership; quarantined rows shouldn't appear in this workspace's
+            -- pool flow at all.
+            AND NOT is_quarantined
         """, workspace_id, cutoff)
 
         tagged_count = 0
