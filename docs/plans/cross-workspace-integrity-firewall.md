@@ -338,14 +338,15 @@ RETURNING sa.email_address;
 
 Companion: EB-side tag strip script `scripts/strip_quarantined_tags_from_eb.py` — reads the just-quarantined rows, removes their `live`/`reserve` tags from each workspace via per-workspace API key. Read-then-write, full pre-state JSON capture, single confirmation prompt before each workspace.
 
-### Phase 4: Add CHECK constraint
+### Phase 4: Add CHECK constraint — ✅ SHIPPED 2026-05-01
+Applied to production. Pre-check confirmed 0 violating rows. Real violation test against production rejected: `violates check constraint "chk_quarantined_no_pool"`. HR-1 enforced structurally.
+
 ```sql
--- migrations/103_quarantine_pool_constraint.sql
+-- migrations/103_quarantine_no_pool_check.sql
 ALTER TABLE sender_accounts
     ADD CONSTRAINT chk_quarantined_no_pool
     CHECK (NOT is_quarantined OR inventory_pool_status IS NULL);
 ```
-Now safe — no existing row violates.
 
 ### Phase 5: Code changes — gate + filters
 - `sync_modules/sync_accounts.py`: gate at top of `upsert`

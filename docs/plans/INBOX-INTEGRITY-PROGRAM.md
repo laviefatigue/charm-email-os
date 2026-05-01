@@ -99,7 +99,8 @@ Status keys: ✅ done · 🚧 in progress · ⏳ pending · 🔒 blocked · 👤
 | 0b | **Cleanup 2026-05-01: soft-deleted 143 unpurchased candidate domains + forward prevention** | ✅ | — | Charm 86 + Selery 57 unpurchased rows had `is_active=TRUE` despite never being purchased. Soft-deleted. Forward prevention: 4 code changes (commit `ba39fe5`). Active count now: Charm 40, Selery 50, others unchanged. |
 | 0c | Audit 2026-05-01: data-driven domain pattern extraction per workspace | ✅ | — | Pulled all owned domains, extracted brand keywords. 0 inbox-level cross-pollution detected across all 11 workspaces / 4,207 active inboxes. 4 new Charm sub-brands (eudalie-bio, inspi-cure-eu, mydealslift, stylepad24) confirmed legitimate per D-F. |
 | 0d | Fleet-wide EB tenant audit + Sammy zombie cleanup | ✅ | — | Pulled all 11 workspaces' EB tenants via API. Found Sammy EB clean (historical "22 SPUI in Sammy" issue resolved). Found 2 setspui rows in Spout EB tenant (cross-tenant duplicates with eb_ids 8860/8859 — Phase 5a dedup prevented DB pollution). 22 SPUI-domain DB rows still labeled `workspace_id=Sammy` (cosmetic — already dead/inactive, EB confirmed in SPUI tenant since 2026-04-30 17:34 kill). Cleanup SQL: moved 22 to `workspace_id=SPUI`, annotated 2 setspui rows. SPUI now: 82 active+live / 13 active+dead / 81 inactive+live / 45 inactive+dead (was 23 dead, +22 zombies = 45). Operator action remaining: clean 2 cross-tenant duplicates from EB Spout via EB UI. |
-| 1 | **Migration 101: schema (is_quarantined columns, no CHECK yet)** | ✅ | — | Shipped 2026-05-01 evening. Adds `is_quarantined BOOLEAN NOT NULL DEFAULT FALSE`, `quarantine_reason VARCHAR`, `quarantine_detected_at TIMESTAMPTZ` + partial index on `is_quarantined=TRUE`. Verified: 0/4786 active rows quarantined (default value). CHECK constraint `chk_quarantined_no_pool` deferred to Phase 4 / migration 103 (must come after Phase 3 backfill). |
+| 1 | **Migration 101: schema (is_quarantined columns, no CHECK yet)** | ✅ | — | Shipped 2026-05-01 evening. Adds `is_quarantined BOOLEAN NOT NULL DEFAULT FALSE`, `quarantine_reason VARCHAR`, `quarantine_detected_at TIMESTAMPTZ` + partial index on `is_quarantined=TRUE`. Verified: 0/4786 active rows quarantined (default value). CHECK constraint `chk_quarantined_no_pool` deferred to Phase 4 / migration 103. |
+| 4 | **Migration 103: chk_quarantined_no_pool CHECK constraint (HR-1 structural)** | ✅ | — | Shipped 2026-05-01 evening. Pre-check verified 0 violating rows. Constraint refuses any write where `is_quarantined=TRUE AND inventory_pool_status IS NOT NULL`. Real violation attempt against production confirmed enforcement: write rejected with `violates check constraint "chk_quarantined_no_pool"`, no row state changed. Procedural CASE branch in sync_accounts.upsert (Phase 5a) becomes belt-and-suspenders; this constraint is now load-bearing. |
 | 2 | **Populate clients.domain_pattern with seed** | ✅ | — | Shipped 2026-05-01 evening. All 11 workspaces have correct domain_pattern. Verified: 0 outliers across 4,207 active inboxes when running the firewall SQL predicate against live data. |
 | 3 | Backfill: quarantine existing pollution + null pool tags | ⏳ | accuracy gates passing | EB-side companion strip script needs operator approval per workspace |
 | 4 | Migration 103: add CHECK constraint | ⏳ | Phase 3 done | Cannot ship before backfill nulls existing pollution |
@@ -268,9 +269,11 @@ THIS WEEK (operator-driven)
    ⏳ Kill-trigger accuracy Pass 3 — sender-ban code detection (5.7.501-511 family)
    ⏳ Kill-trigger accuracy Pass 6 — apply silent-error pattern to sync_campaigns + sync_engagement
    ✅ Firewall Phase 1 — migration 101 shipped (is_quarantined columns + partial index)
-   ⏳ Firewall Phase 5 — gate at sync_accounts.upsert + filters in pool/lifecycle/set_tag/health
-   ⏳ Firewall Phase 3 — backfill quarantine state on existing rows (after Phase 5)
-   ⏳ Firewall Phase 4 — migration 103 add CHECK constraint chk_quarantined_no_pool
+   ✅ Firewall Phase 5a — gate at sync_accounts.upsert (commit f43b7b4)
+   ✅ Firewall Phase 5b — lifecycle_tag_sync downstream guards (commit c9a437c)
+   ✅ Firewall Phase 4 — migration 103 chk_quarantined_no_pool CHECK constraint (HR-1 structural)
+   ✅ Firewall Phase 0d — fleet EB audit + Sammy zombie cleanup (22 reattributed)
+   ⏳ Firewall Phase 3 — backfill quarantine state on existing rows (currently no-op since 0 outliers)
 
 NEXT WEEK (gated on this-week's outcomes)
 ───────────────────────────────────────────
