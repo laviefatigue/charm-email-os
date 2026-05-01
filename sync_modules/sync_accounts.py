@@ -44,6 +44,38 @@ ESP_MAP = {
 }
 
 
+def matches_workspace_pattern(email: str, domain_pattern: Optional[str]) -> bool:
+    """
+    Cross-workspace integrity firewall — substring match.
+
+    Used by Plan A Phase 5a (sync_accounts.upsert) to determine whether an
+    inbox's email domain belongs to its assigned workspace.
+
+    Match logic (intentionally simple — see firewall plan HR-4):
+      - NULL or empty pattern  → False  (HR-5: fail-closed)
+      - Pattern is comma-separated list; any keyword as substring of the
+        email's domain (case-insensitive) → True
+      - Email without `@` is treated as the whole string
+
+    Examples:
+      matches_workspace_pattern("a@illuminatecharm.com", "charm")            -> True
+      matches_workspace_pattern("a@spoutwater.com", "spoutwater")           -> True
+      matches_workspace_pattern("a@randomdomain.com", "charm,growthgroupusa") -> False
+      matches_workspace_pattern("a@x.com", None)                            -> False  (NULL pattern fails closed)
+      matches_workspace_pattern("a@x.com", "")                              -> False  (empty pattern fails closed)
+
+    Pure function — no I/O, no DB. See tests/test_firewall.py for full coverage.
+    """
+    if not domain_pattern:
+        return False
+    if '@' in email:
+        domain = email.split('@', 1)[1].lower()
+    else:
+        domain = email.lower()
+    keywords = [k.strip().lower() for k in domain_pattern.split(',') if k.strip()]
+    return any(k in domain for k in keywords)
+
+
 def calculate_health_score(account: Dict) -> int:
     """
     Calculate a 0-100 health score for an inbox.
@@ -166,6 +198,20 @@ class AccountSyncModule:
             accounts = await self.client.get_all_sender_accounts()
             print(f"  [{workspace_name}] Found {len(accounts)} accounts in EmailBison")
 
+            # Plan A Phase 5a — cross-workspace integrity firewall.
+            # Fetch the workspace's domain_pattern ONCE per sync (not per inbox).
+            # Pattern is a comma-separated list of brand keywords matched as
+            # case-insensitive substrings against the email's domain. NULL or
+            # empty pattern fails closed (HR-5) — every inbox in such a
+            # workspace gets quarantined until an operator sets a pattern.
+            client_row = await self.db.fetchrow(
+                "SELECT domain_pattern FROM clients WHERE workspace_id = $1",
+                workspace_id,
+            )
+            domain_pattern = client_row['domain_pattern'] if client_row else None
+            if not domain_pattern:
+                print(f"  [{workspace_name}] WARNING: clients.domain_pattern is NULL/empty — all inboxes will be quarantined (HR-5 fail-closed)")
+
             # Track existing accounts for stale detection
             existing_eb_ids = set()
 
@@ -174,7 +220,9 @@ class AccountSyncModule:
                 audit.increment_processed()
 
                 try:
-                    created = await self.upsert_account(workspace_id, account)
+                    created = await self.upsert_account(
+                        workspace_id, account, domain_pattern=domain_pattern,
+                    )
                     if created:
                         audit.increment_created()
                     else:
@@ -206,16 +254,49 @@ class AccountSyncModule:
         except Exception as e:
             return await audit.fail(e)
 
-    async def upsert_account(self, workspace_id: UUID, account: Dict) -> bool:
+    async def upsert_account(
+        self,
+        workspace_id: UUID,
+        account: Dict,
+        domain_pattern: Optional[str] = None,
+    ) -> bool:
         """
         Upsert a sender account from EmailBison data.
 
+        Args:
+            workspace_id: Target workspace UUID.
+            account: EmailBison sender account dict.
+            domain_pattern: clients.domain_pattern for the workspace. When
+                provided, the cross-workspace integrity firewall (Plan A
+                Phase 5a) computes is_quarantined / quarantine_reason /
+                quarantine_detected_at on the row. When None or empty,
+                firewall fails closed (every row marked is_quarantined=TRUE).
+                Default None preserves backward compatibility for callers
+                that haven't been updated yet — but production callers MUST
+                pass the workspace's pattern.
+
         Returns:
-            True if created, False if updated
+            True if created, False if updated.
         """
         email = account.get('email', '').lower().strip()
         if not email:
             raise ValueError("Account missing email address")
+
+        # Plan A Phase 5a — cross-workspace integrity firewall.
+        # Compute quarantine state from the workspace's domain pattern.
+        # The result is persisted on the row; downstream code (Phase 5b
+        # filters in pool/lifecycle/set_tag/health) honors is_quarantined
+        # to refuse pool tagging on quarantined inboxes.
+        firewall_match = matches_workspace_pattern(email, domain_pattern)
+        is_quarantined = not firewall_match
+        if is_quarantined:
+            email_domain = email.split('@', 1)[1] if '@' in email else email
+            if not domain_pattern:
+                quarantine_reason = "null_pattern_workspace"
+            else:
+                quarantine_reason = f"pattern_mismatch:expected={domain_pattern},got={email_domain}"
+        else:
+            quarantine_reason = None
 
         # Check if this email already exists in a DIFFERENT workspace (data isolation check)
         # Each email should only exist once globally
@@ -288,9 +369,14 @@ class AccountSyncModule:
 
         # Calculate initial inventory status for new inboxes
         # inventory_pool_status = NULL means "dead or not yet assigned" (per migration 074)
-        # Incubating inboxes haven't been assigned to a pool yet, so they stay NULL
+        # Incubating inboxes haven't been assigned to a pool yet, so they stay NULL.
+        # When is_quarantined=TRUE, pool MUST stay NULL — firewall HR-1 (currently
+        # enforced procedurally in this code; migration 103 will add a CHECK
+        # constraint to enforce it structurally).
         initial_lifecycle = 'dead' if inbox_state == 'dead' else 'incubating'
         initial_pool = None  # Always NULL for new inboxes - pool assignment happens later
+        # Quarantine timestamp for new INSERT: only set if is_quarantined=TRUE
+        initial_quarantine_detected_at = datetime.utcnow() if is_quarantined else None
 
         result = await self.db.fetchrow("""
             INSERT INTO sender_accounts (
@@ -320,8 +406,11 @@ class AccountSyncModule:
                 first_seen_at,
                 last_seen_at,
                 last_synced_at,
-                warmup_started_at
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, COALESCE($24, NOW()), NOW(), NOW(), CASE WHEN $11 = TRUE THEN $24 ELSE NULL END)
+                warmup_started_at,
+                is_quarantined,
+                quarantine_reason,
+                quarantine_detected_at
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, COALESCE($24, NOW()), NOW(), NOW(), CASE WHEN $11 = TRUE THEN $24 ELSE NULL END, $25, $26, $27)
             ON CONFLICT (email_address) DO UPDATE SET
                 emailbison_account_id = EXCLUDED.emailbison_account_id,
                 display_name = COALESCE(EXCLUDED.display_name, sender_accounts.display_name),
@@ -420,6 +509,10 @@ class AccountSyncModule:
                 --   6. 21-day calendar fallback → reserve (legacy compat)
                 --   7. ELSE NULL (truly new / no signal)
                 inventory_pool_status = CASE
+                    -- HIGHEST PRIORITY: quarantined rows can NEVER hold a pool tag.
+                    -- Plan A Phase 5a (firewall procedural enforcement; migration
+                    -- 103 will enforce structurally via chk_quarantined_no_pool).
+                    WHEN EXCLUDED.is_quarantined = TRUE THEN NULL
                     WHEN sender_accounts.killed_at IS NOT NULL THEN NULL
                     WHEN EXCLUDED.inbox_state = 'dead' THEN NULL
                     WHEN (SELECT pool_status FROM domains WHERE id = sender_accounts.domain_id)
@@ -433,6 +526,18 @@ class AccountSyncModule:
                          AND sender_accounts.warmup_started_at <= NOW() - INTERVAL '21 days'
                          AND COALESCE(EXCLUDED.warmup_enabled, TRUE) = TRUE THEN 'reserve'
                     ELSE NULL
+                END,
+                -- Plan A Phase 5a quarantine state.
+                -- is_quarantined is recomputed per upsert (pattern can change).
+                -- quarantine_detected_at: stamp on FALSE→TRUE, clear on TRUE→FALSE,
+                -- preserve on TRUE→TRUE so we know the original detection time.
+                is_quarantined = EXCLUDED.is_quarantined,
+                quarantine_reason = EXCLUDED.quarantine_reason,
+                quarantine_detected_at = CASE
+                    WHEN sender_accounts.is_quarantined = FALSE
+                         AND EXCLUDED.is_quarantined = TRUE THEN NOW()
+                    WHEN EXCLUDED.is_quarantined = FALSE THEN NULL
+                    ELSE sender_accounts.quarantine_detected_at
                 END,
                 last_seen_at = NOW(),
                 last_synced_at = NOW(),
@@ -480,7 +585,10 @@ class AccountSyncModule:
             warmup_spam_count,                         # $21 warmup_spam_count (NOT complaints)
             warmup_bounces_received,                   # $22 warmup_bounces_received
             warmup_bounces_caused,                     # $23 warmup_bounces_caused
-            eb_created_at                              # $24 eb_created_at (EB's real upload date)
+            eb_created_at,                             # $24 eb_created_at (EB's real upload date)
+            is_quarantined,                            # $25 firewall — Plan A Phase 5a
+            quarantine_reason,                         # $26 firewall — human-readable why
+            initial_quarantine_detected_at,            # $27 firewall — NULL if not quarantined
         )
 
         if not result:
