@@ -481,6 +481,11 @@ def transform_domain(row: dict) -> dict:
         'inboxes_with_blocks': inboxes_with_blocks,
         'has_compromised_inboxes': has_compromised_inboxes,
 
+        # Burn velocity and swap eligibility
+        'burn_velocity_30d': float(row['burn_velocity_30d']) if row.get('burn_velocity_30d') else 0,
+        'projected_days_to_critical': int(row['projected_days_to_critical']) if row.get('projected_days_to_critical') else None,
+        'swap_eligible': row.get('swap_eligible', False),
+
         # Computed
         'is_purchased': is_purchased,
         'is_ready_for_hyper_tide': is_ready_for_hyper_tide,
@@ -1902,12 +1907,19 @@ async def simple_generate_domains(request: SimpleGenerateRequest):
 
             # Insert into database
             try:
+                # is_active=FALSE: generated candidates are IDEAS, not active.
+                # Flipped to TRUE only when approval_status transitions to
+                # 'purchased' (Dynadot purchase confirm) or 'legacy' (operator
+                # bulk-mark / inbox-derived legacy import). Without this,
+                # generated rows pollute domain_sweep / firewall analysis as
+                # "active" despite never being purchased. See cleanup
+                # 2026-05-01 (143 unpurchased rows soft-deleted).
                 result = await fetch_one("""
                     INSERT INTO domains (
                         workspace_id, domain_name, legitimacy_score,
-                        approval_status, domain_source, notes, rationale
+                        approval_status, is_active, domain_source, notes, rationale
                     )
-                    VALUES ($1, $2, $3, 'available', 'generated', $4, $5)
+                    VALUES ($1, $2, $3, 'available', FALSE, 'generated', $4, $5)
                     RETURNING id, domain_name, legitimacy_score
                 """,
                     workspace_id,
@@ -2170,6 +2182,12 @@ class ProviderCapacityHarmony(BaseModel):
     # HyperTide in-flight
     pending_orders: int
     provisioning: int
+    # Swap eligibility (Entra=true, Google=false until HyperTide adds support)
+    swap_eligible: bool = False
+    # Burn velocity (average across domains for this provider)
+    avg_burn_velocity: float = 0
+    # Earliest projected critical domain (days, None = no domains at risk)
+    projected_first_critical_days: Optional[int] = None
 
 
 class CapacityHarmonyResponse(BaseModel):
@@ -2193,6 +2211,9 @@ class CapacityHarmonyResponse(BaseModel):
     # Overall runway
     runway_exhaustion_date: Optional[str]  # Earliest exhaustion across providers
     runway_healthy: bool  # Both providers healthy
+    # Swap eligibility counts
+    swap_eligible_rotate_now: int = 0  # Domains needing swap that CAN be swapped (Entra)
+    swap_ineligible_rotate_now: int = 0  # Domains needing swap that CANNOT be swapped (Google)
 
 
 @router.get("/pipeline/{client_id}", response_model=PipelineResponse)
@@ -2487,6 +2508,43 @@ async def get_capacity_harmony(client_id: str):
             # Table may not exist in all environments
             hypertide_orders = {'pending_count': 0, 'provisioning_count': 0}
 
+        # Get swap eligibility and velocity data from waterfall view
+        try:
+            swap_counts = await fetch_one("""
+                SELECT
+                    COUNT(*) FILTER (
+                        WHERE rotation_recommendation = 'rotate_now' AND swap_eligible = TRUE
+                    ) as swap_eligible_rotate_now,
+                    COUNT(*) FILTER (
+                        WHERE rotation_recommendation = 'rotate_now' AND swap_eligible = FALSE
+                    ) as swap_ineligible_rotate_now,
+                    COUNT(*) FILTER (
+                        WHERE rotation_recommendation = 'consider_rotate' AND swap_eligible = TRUE
+                        AND projected_days_to_critical IS NOT NULL AND projected_days_to_critical <= 42
+                    ) as swap_eligible_projected_critical,
+                    MIN(projected_days_to_critical) FILTER (
+                        WHERE swap_eligible = TRUE AND projected_days_to_critical IS NOT NULL
+                    ) as earliest_critical_days_entra,
+                    MIN(projected_days_to_critical) FILTER (
+                        WHERE swap_eligible = FALSE AND projected_days_to_critical IS NOT NULL
+                    ) as earliest_critical_days_google,
+                    AVG(burn_velocity_30d) FILTER (
+                        WHERE assigned_provider = 'entra' AND synced_inbox_count > 0
+                    ) as avg_burn_velocity_entra,
+                    AVG(burn_velocity_30d) FILTER (
+                        WHERE assigned_provider = 'google' AND synced_inbox_count > 0
+                    ) as avg_burn_velocity_google
+                FROM v_infrastructure_waterfall
+                WHERE workspace_id = $1 AND synced_inbox_count > 0
+            """, client['workspace_id'])
+        except Exception:
+            swap_counts = {
+                'swap_eligible_rotate_now': 0, 'swap_ineligible_rotate_now': 0,
+                'swap_eligible_projected_critical': 0,
+                'earliest_critical_days_entra': None, 'earliest_critical_days_google': None,
+                'avg_burn_velocity_entra': 0, 'avg_burn_velocity_google': 0,
+            }
+
         # Process runway data
         runway_by_provider = {}
         for row in runway_rows:
@@ -2512,6 +2570,7 @@ async def get_capacity_harmony(client_id: str):
             runway_row: dict,
             pipeline_row: dict,
             hypertide_row: dict,
+            swap_row: dict,
         ) -> ProviderCapacityHarmony:
             prefix = 'entra' if provider == 'entra' else 'google'
 
@@ -2539,6 +2598,15 @@ async def get_capacity_harmony(client_id: str):
 
             burned = runway_row.get('burned_count') or 0 if runway_row else 0
 
+            # Swap eligibility and velocity from waterfall
+            is_swap_eligible = (provider == 'entra')
+            velocity_key = f'avg_burn_velocity_{provider}'
+            critical_key = f'earliest_critical_days_{provider}'
+            avg_velocity = float(swap_row.get(velocity_key) or 0) if swap_row else 0
+            first_critical = swap_row.get(critical_key) if swap_row else None
+            if first_critical is not None:
+                first_critical = int(first_critical)
+
             return ProviderCapacityHarmony(
                 provider=provider,
                 capacity_required=capacity_required,
@@ -2555,6 +2623,9 @@ async def get_capacity_harmony(client_id: str):
                 runway_healthy=runway_healthy,
                 pending_orders=hypertide_row.get('pending_count') or 0 if hypertide_row else 0,
                 provisioning=hypertide_row.get('provisioning_count') or 0 if hypertide_row else 0,
+                swap_eligible=is_swap_eligible,
+                avg_burn_velocity=round(avg_velocity, 2),
+                projected_first_critical_days=first_critical,
             )
 
         entra = build_provider_harmony(
@@ -2563,6 +2634,7 @@ async def get_capacity_harmony(client_id: str):
             runway_by_provider.get('entra') or runway_by_provider.get('microsoft', {}),
             pipeline,
             hypertide_orders,
+            swap_counts or {},
         )
         google = build_provider_harmony(
             'google',
@@ -2570,18 +2642,24 @@ async def get_capacity_harmony(client_id: str):
             runway_by_provider.get('google', {}),
             pipeline,
             hypertide_orders,
+            swap_counts or {},
         )
 
         # Calculate totals and recommendation
         total_gap = entra.gap + google.gap
         total_domain_gap = entra.domain_gap + google.domain_gap
 
-        # Purchase recommendation:
+        # Purchase recommendation (velocity-aware, swap-eligible only):
         # - Cover domain gap
+        # - Add swap-eligible rotate_now domains (need immediate replacement)
+        # - Add projected critical domains (will need replacement within 6 weeks)
         # - Add buffer if runway is low (< 2 months)
         # - Subtract domains already in pipeline (incubating)
         domains_in_pipeline = entra.incubating + google.incubating
-        raw_recommendation = total_domain_gap
+        swap_rotate_now = (swap_counts or {}).get('swap_eligible_rotate_now') or 0
+        swap_projected = (swap_counts or {}).get('swap_eligible_projected_critical') or 0
+
+        raw_recommendation = total_domain_gap + swap_rotate_now + swap_projected
         if not entra.runway_healthy or not google.runway_healthy:
             # Add 2 months of buffer if runway is unhealthy
             avg_burn = (entra.monthly_burn_rate + google.monthly_burn_rate)
@@ -2607,6 +2685,8 @@ async def get_capacity_harmony(client_id: str):
             estimated_cost=estimated_cost,
             runway_exhaustion_date=runway_exhaustion_date,
             runway_healthy=entra.runway_healthy and google.runway_healthy,
+            swap_eligible_rotate_now=swap_rotate_now,
+            swap_ineligible_rotate_now=(swap_counts or {}).get('swap_ineligible_rotate_now') or 0,
         )
 
     except HTTPException:

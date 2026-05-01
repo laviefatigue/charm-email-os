@@ -2078,9 +2078,13 @@ async def purchase_single_domain(domain_id: UUID, provider: Optional[str] = None
             # available_for_setup_at is 30 days after registration_date
             if registration_date:
                 # Use actual WHOIS creation date
+                # is_active=TRUE on purchase confirm — domain is now real and
+                # in service. Pairs with infrastructure.py:1915 (generated =
+                # is_active=FALSE). See cleanup 2026-05-01.
                 await execute("""
                     UPDATE domains
                     SET approval_status = 'purchased',
+                        is_active = TRUE,
                         cached_price = $1,
                         selected_provider = $2,
                         purchased_at = NOW(),
@@ -2093,9 +2097,12 @@ async def purchase_single_domain(domain_id: UUID, provider: Optional[str] = None
                 """, float(price), registrar_name, registration_date, ns_success, ns_status, domain_id)
             else:
                 # Fallback to NOW() if we couldn't fetch the actual date
+                # is_active=TRUE on purchase confirm (fallback path with NOW()
+                # registration). Mirror of the WHOIS-based path above.
                 await execute("""
                     UPDATE domains
                     SET approval_status = 'purchased',
+                        is_active = TRUE,
                         cached_price = $1,
                         selected_provider = $2,
                         purchased_at = NOW(),

@@ -484,9 +484,13 @@ async def migrate_legacy_domains_with_inboxes():
     # Update to 'legacy' status (admin bypass for pre-existing infrastructure)
     domain_ids = [d["id"] for d in domains_to_update]
 
+    # is_active=TRUE on legacy promotion — these domains are owned and
+    # operational. Pairs with the infrastructure.py:1915 INSERT that creates
+    # generated candidates as is_active=FALSE. See cleanup 2026-05-01.
     await execute("""
         UPDATE domains
         SET approval_status = 'legacy',
+            is_active = TRUE,
             updated_at = NOW()
         WHERE id = ANY($1)
     """, domain_ids)
