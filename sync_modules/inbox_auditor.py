@@ -1,7 +1,7 @@
 """
 Inbox Auditor — per-workspace audit producer (Plan: inbox-audit-overhaul.md).
 
-Phase 2 + 3 of the inbox-audit-overhaul.
+Phase 2 + 3 + 4 of the inbox-audit-overhaul.
 
 Generates a structured per-workspace audit row in `inbox_audits` with:
   - workspace_id (S-1: per-workspace scope)
@@ -14,7 +14,9 @@ Generates a structured per-workspace audit row in `inbox_audits` with:
        I-5: Pool-eligibility lockout (quarantined_inbox_count)
        I-6: Promotion-blocked-by-connection (reserve + disconnected)
        I-7: Cap-exceeded (live count > target_live_count_override)
-       I-9 / S-3: Subscription-cancel candidates (all-dead domains)
+       I-9 / S-3: Subscription-cancel candidates (all-dead domains, with
+                  recency-eligibility + alive/dead × connected/disconnected
+                  breakdown — Phase 4)
 
 Deliberately NOT included:
   I-8: Pool-tag drift (DB pool ≠ EB tag) — requires EB API calls.
@@ -474,23 +476,62 @@ class InboxAuditor:
             },
         )
 
+    # Reuse window: a domain stays in the cancel queue only after every inbox
+    # has been dead for this many days. Without it, a freshly-killed cohort
+    # surfaces on day 1 and operator gets noise. With it, domains have to
+    # settle through the window before they appear as recency_eligible.
+    # 14 days is the plan default (per inbox-audit-overhaul.md §"Subscription
+    # cancellation signal"). Tunable here without a schema change.
+    SUBSCRIPTION_CANCEL_REUSE_WINDOW_DAYS = 14
+
     async def _audit_i9_subscription_cancel(
         self, conn: asyncpg.Connection, workspace_id: UUID
     ) -> AuditSection:
-        """I-9 / S-3: Per-domain rollup — domains where 100% of inboxes are dead.
+        """I-9 / S-3 (Phase 4): Per-domain rollup of subscription-cancel candidates.
 
-        Drives Hypertide subscription-cancellation operator queue. Per
-        ADR-009 we never auto-cancel; this surfaces candidates for manual
-        review.
+        Surfaces every domain where 100% of inboxes are dead, with full
+        connection-state breakdown and a recency-eligibility flag based on
+        the reuse window.
+
+        Drives the operator-facing Hypertide subscription-cancel queue.
+        Per ADR-009 we never auto-cancel; the audit_data lists candidates
+        and the operator decides.
+
+        Output per domain:
+          - total_inboxes, dead_inboxes
+          - alive_connected / alive_disconnected
+              (always 0 in candidate rows since we filter to all-dead, but
+               kept in the schema so Phase 5 Slack can render mixed-state
+               domains uniformly when that section expands)
+          - dead_connected / dead_disconnected
+              (operator context: "OAuth still works" vs "clean abandonment")
+          - most_recent_kill (timestamp of the latest kill on the domain)
+          - recency_eligible (boolean — has the domain been all-dead for
+            ≥REUSE_WINDOW_DAYS? if false, defer surfacing)
+
+        Severity:
+          - warn if any recency_eligible candidates exist (actionable queue)
+          - info otherwise (queue is empty or still settling)
         """
         rows = await conn.fetch(
-            """
+            f"""
             SELECT d.id::text AS id,
                    d.domain_name,
                    COUNT(s.id) AS total_inboxes,
                    COUNT(s.id) FILTER (WHERE s.inbox_state = 'dead') AS dead_inboxes,
+                   COUNT(s.id) FILTER (WHERE s.inbox_state = 'alive'
+                                         AND s.status = 'Connected') AS alive_connected,
+                   COUNT(s.id) FILTER (WHERE s.inbox_state = 'alive'
+                                         AND s.status IS DISTINCT FROM 'Connected')
+                     AS alive_disconnected,
                    COUNT(s.id) FILTER (WHERE s.inbox_state = 'dead'
-                                         AND s.status = 'Connected') AS dead_connected
+                                         AND s.status = 'Connected') AS dead_connected,
+                   COUNT(s.id) FILTER (WHERE s.inbox_state = 'dead'
+                                         AND s.status IS DISTINCT FROM 'Connected')
+                     AS dead_disconnected,
+                   MAX(s.killed_at) AS most_recent_kill,
+                   (MAX(s.killed_at) <= NOW() - INTERVAL '{self.SUBSCRIPTION_CANCEL_REUSE_WINDOW_DAYS} days')
+                     AS recency_eligible
             FROM domains d
             JOIN sender_accounts s ON s.domain_id = d.id
             WHERE d.workspace_id = $1
@@ -499,25 +540,46 @@ class InboxAuditor:
             GROUP BY d.id, d.domain_name
             HAVING COUNT(s.id) = COUNT(s.id) FILTER (WHERE s.inbox_state = 'dead')
                AND COUNT(s.id) > 0
+            ORDER BY MAX(s.killed_at) ASC NULLS LAST
             """,
             workspace_id,
         )
+
+        eligible_count = sum(1 for r in rows if r['recency_eligible'])
+        # Section count reflects the actionable subset, not the raw candidate
+        # set — Phase 5 Slack uses count to decide whether to ping operators.
+        # Total candidates (including non-eligible) live in details.total_candidates.
         return AuditSection(
             code='I-9',
             name='Subscription-cancel candidates (all inboxes dead)',
-            severity='warn' if rows else 'info',
-            count=len(rows),
-            sample_ids=[r['id'] for r in rows[:10]],
+            severity='warn' if eligible_count > 0 else 'info',
+            count=eligible_count,
+            sample_ids=[r['id'] for r in rows if r['recency_eligible']][:10],
             details={
-                'note': 'Per-domain rollup. Operator decides whether to cancel '
-                        'Hypertide subscription. Never auto-cancel (ADR-009 D-B/D-C).',
+                'note': (
+                    'Per-domain rollup. Operator decides whether to cancel '
+                    'Hypertide subscription. Never auto-cancel (ADR-009 D-B/D-C). '
+                    f'recency_eligible = all inboxes dead for ≥'
+                    f'{self.SUBSCRIPTION_CANCEL_REUSE_WINDOW_DAYS} days.'
+                ),
+                'reuse_window_days': self.SUBSCRIPTION_CANCEL_REUSE_WINDOW_DAYS,
+                'total_candidates': len(rows),
+                'eligible_count': eligible_count,
                 'domains': [
                     {
                         'domain_id': r['id'],
                         'domain_name': r['domain_name'],
                         'total_inboxes': r['total_inboxes'],
                         'dead_inboxes': r['dead_inboxes'],
+                        'alive_connected': r['alive_connected'],
+                        'alive_disconnected': r['alive_disconnected'],
                         'dead_connected': r['dead_connected'],
+                        'dead_disconnected': r['dead_disconnected'],
+                        'most_recent_kill': (
+                            r['most_recent_kill'].isoformat()
+                            if r['most_recent_kill'] else None
+                        ),
+                        'recency_eligible': r['recency_eligible'],
                     }
                     for r in rows[:50]  # cap at 50 to keep JSONB row reasonable
                 ],
