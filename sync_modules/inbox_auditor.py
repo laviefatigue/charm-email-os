@@ -36,7 +36,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field, asdict
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Any, Dict, List, Optional
 from uuid import UUID
 
@@ -137,9 +137,13 @@ class InboxAuditor:
         One row per workspace per audit_date. Re-running for the same
         workspace+date returns the existing id (idempotent).
         """
+        # asyncpg requires a datetime.date for DATE columns; the dataclass
+        # holds the ISO string for JSON-serialization in audit_data.
+        audit_date_obj = date.fromisoformat(result.audit_date)
+
         existing = await self.db.fetchval(
-            "SELECT id FROM inbox_audits WHERE workspace_id = $1 AND audit_date = $2::date",
-            result.workspace_id, result.audit_date,
+            "SELECT id FROM inbox_audits WHERE workspace_id = $1 AND audit_date = $2",
+            result.workspace_id, audit_date_obj,
         )
         if existing:
             await self.db.execute(
@@ -165,11 +169,11 @@ class InboxAuditor:
             INSERT INTO inbox_audits (
                 workspace_id, audit_date, inbox_id_set, audit_data,
                 status, total_kills, total_disconnected
-            ) VALUES ($1, $2::date, $3, $4, 'pending', $5, $6)
+            ) VALUES ($1, $2, $3, $4, 'pending', $5, $6)
             RETURNING id
             """,
             result.workspace_id,
-            result.audit_date,
+            audit_date_obj,
             json.dumps(result.inbox_id_set),
             json.dumps(result.to_audit_data()),
             self._count_critical_inboxes(result),
