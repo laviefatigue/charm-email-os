@@ -295,7 +295,9 @@ Per HR-5, NULL pattern = quarantine all. So if any of these inactive clients sud
 ### Phase 2: Populate `clients.domain_pattern` — ✅ SHIPPED 2026-05-01
 Single atomic UPDATE using `FROM (VALUES ...)` — see commit message for exact SQL. Defense-in-depth: every firewall query also filters `d.is_active = TRUE AND d.approval_status IN ('legacy','purchased')`.
 
-### Phase 1: Schema migration (migration 101)
+### Phase 1: Schema migration (migration 101) — ✅ SHIPPED 2026-05-01
+Applied to production: 3 columns + partial index. Verified 0/4786 active rows quarantined (default value). CHECK constraint deliberately deferred to Phase 4 / migration 103 (must come after Phase 3 backfill — otherwise it would refuse to apply on existing live+foreign rows).
+
 ```sql
 -- migrations/101_quarantine_columns.sql
 ALTER TABLE sender_accounts

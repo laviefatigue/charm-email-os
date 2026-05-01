@@ -98,7 +98,7 @@ Status keys: ✅ done · 🚧 in progress · ⏳ pending · 🔒 blocked · 👤
 | 0a | **Audit 2026-04-30 evening: confirmed firewall coverage = 0% in production** | ✅ | — | 9 of 11 active workspaces had `clients.domain_pattern = NULL`; Charm + Selery had empty string `""`. RESOLVED Phase 2. |
 | 0b | **Cleanup 2026-05-01: soft-deleted 143 unpurchased candidate domains + forward prevention** | ✅ | — | Charm 86 + Selery 57 unpurchased rows had `is_active=TRUE` despite never being purchased. Soft-deleted. Forward prevention: 4 code changes (commit `ba39fe5`). Active count now: Charm 40, Selery 50, others unchanged. |
 | 0c | Audit 2026-05-01: data-driven domain pattern extraction per workspace | ✅ | — | Pulled all owned domains, extracted brand keywords. 0 inbox-level cross-pollution detected across all 11 workspaces / 4,207 active inboxes. 4 new Charm sub-brands (eudalie-bio, inspi-cure-eu, mydealslift, stylepad24) confirmed legitimate per D-F. |
-| 1 | Migration 101: schema (is_quarantined columns, no CHECK yet) | ⏳ | — | Schema-only change. Phase 2 done first; quarantine column added next when we ship enforcement. |
+| 1 | **Migration 101: schema (is_quarantined columns, no CHECK yet)** | ✅ | — | Shipped 2026-05-01 evening. Adds `is_quarantined BOOLEAN NOT NULL DEFAULT FALSE`, `quarantine_reason VARCHAR`, `quarantine_detected_at TIMESTAMPTZ` + partial index on `is_quarantined=TRUE`. Verified: 0/4786 active rows quarantined (default value). CHECK constraint `chk_quarantined_no_pool` deferred to Phase 4 / migration 103 (must come after Phase 3 backfill). |
 | 2 | **Populate clients.domain_pattern with seed** | ✅ | — | Shipped 2026-05-01 evening. All 11 workspaces have correct domain_pattern. Verified: 0 outliers across 4,207 active inboxes when running the firewall SQL predicate against live data. |
 | 3 | Backfill: quarantine existing pollution + null pool tags | ⏳ | accuracy gates passing | EB-side companion strip script needs operator approval per workspace |
 | 4 | Migration 103: add CHECK constraint | ⏳ | Phase 3 done | Cannot ship before backfill nulls existing pollution |
@@ -266,8 +266,10 @@ THIS WEEK (operator-driven)
    ✅ Kill-trigger accuracy Pass 4 — body_full kept for bounces + silent-error fix (commit 995cd74)
    ⏳ Kill-trigger accuracy Pass 3 — sender-ban code detection (5.7.501-511 family)
    ⏳ Kill-trigger accuracy Pass 6 — apply silent-error pattern to sync_campaigns + sync_engagement
-   ⏳ Firewall Phase 1 — migration 101 (is_quarantined column, schema-only)
+   ✅ Firewall Phase 1 — migration 101 shipped (is_quarantined columns + partial index)
    ⏳ Firewall Phase 5 — gate at sync_accounts.upsert + filters in pool/lifecycle/set_tag/health
+   ⏳ Firewall Phase 3 — backfill quarantine state on existing rows (after Phase 5)
+   ⏳ Firewall Phase 4 — migration 103 add CHECK constraint chk_quarantined_no_pool
 
 NEXT WEEK (gated on this-week's outcomes)
 ───────────────────────────────────────────
