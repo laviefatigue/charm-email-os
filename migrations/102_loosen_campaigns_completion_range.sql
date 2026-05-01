@@ -1,4 +1,10 @@
--- Migration 101: Loosen emailbison_campaigns_completion_range to permit >100%
+-- Migration 102: Loosen emailbison_campaigns_completion_range to permit >100%
+--
+-- (Initially numbered 101 in the first commit; renumbered to 102 to keep 101
+-- reserved for the cross-workspace firewall is_quarantined columns per
+-- docs/plans/cross-workspace-integrity-firewall.md §7 Phase 1. Production
+-- DB constraint was already updated 2026-05-01 19:35 UTC via direct SQL —
+-- this file documents the change for new dev/test environments + audit.)
 --
 -- Why this exists
 -- ───────────────
