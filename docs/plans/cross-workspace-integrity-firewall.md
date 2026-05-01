@@ -258,23 +258,23 @@ Between deploying the gate code and running the backfill, there's a window where
 
 ---
 
-## 6. Keyword seed table (PROPOSED — pending operator confirmation)
+## 6. Keyword seed table (CONFIRMED 2026-05-01 — populated in production)
 
-Based on observed domain strings in the 4,193-inbox audit. Numbers in parens are projected match rates with these keywords.
+Based on data-driven extraction from production owned domains (post-cleanup of 143 unpurchased candidates). All 11 active workspaces confirmed. Verified: 0 outliers across all 4,207 active inboxes when applying the firewall predicate against live data.
 
-| Workspace / Client | Keyword(s) | Projected match | Notes |
+| Workspace / Client | Keyword(s) | Live match | Notes |
 |---|---|---:|---|
-| Sammy | `sammy` | 95% (634/661) | 27 misses are confirmed pollution (22 SPUI + 5 SKMR) |
-| SPUI | `spui` | 100% | matches `growspui`, `setspui` |
-| Spout | `spoutwater` | 100% | matches `discoverspoutwater` and any future `*spoutwater` |
-| Selery | `selery` | 100% | |
-| Search Atlas | `searchatlas` | 100% | |
-| Linkgraph | `linkgraph` | 100% | |
-| Hello Hero | `hellohero` | 100% | |
-| Stable Kernel | `kernel` | 100% (175/175) | catches `*stablekernel` AND `growwithkernel`, `optimizekernel` — NOTE: shared with SKMR (see §5.1) |
-| Stable Kernel Market Research | `stablekernel` | 100% (94/94) | narrower than SK — catches `*stablekernel.*` only — STILL shared with SK |
-| Charm | `charm,growthgroupusa,alldealsgroup,globaloutreachclub,urosaf-bio` | 100% | confirmed by operator 2026-04-30 — sub-brand domains belong to Charm |
-| Barrena | `guardare` | 100% (39/39) | brand uses `guardare.com`, NOT `barrena.com` (corrected from initial seed) |
+| Sammy | `sammy` | 100% (634/634) | All inbox-level cross-pollution previously remembered ("22 SPUI in Sammy") was fixed before this audit — DB clean |
+| SPUI | `spui` | 100% (95/95) | matches `growspui`, `setspui`, etc. |
+| Spout | `spoutwater` | 100% (575/575) | matches `discoverspoutwater` and all `*spoutwater.com` |
+| Selery | `selery` | 100% (729/729) | works across `.com/.co/.info/.io` TLDs |
+| Search Atlas | `searchatlas` | 100% (660/660) | |
+| Linkgraph | `linkgraph` | 100% (238/238) | |
+| Hello Hero | `hellohero` | 100% (520/520) | matches plural form `helloheroes` too |
+| Stable Kernel | `kernel` | 100% (175/175) | catches `*stablekernel` AND `growwithkernel`, `optimizekernel` — shared with SKMR (see §5.1) |
+| Stable Kernel Market Research | `stablekernel` | 100% (105/105) | narrower than SK — catches `*stablekernel.*` only |
+| Charm | `charm,growthgroupusa,alldealsgroup,globaloutreachclub,urosaf-bio,eudalie-bio,inspi-cure-eu,mydealslift,stylepad24` | 100% (437/437) | 9 sub-brands. All sub-brands operate as legitimate sub-clients testing through Charm (operator confirmed 2026-05-01). Per D-F. |
+| Barrena | `guardare` | 100% (39/39) | brand uses `guardare.com`, NOT `barrena.com` |
 
 **Inactive / no-inbox clients** (pattern can stay NULL until first inbox arrives):
 - Checkout Components, Estrada, EventPanda, Ink'd, Neon, Peaksave, Root Access, Test Workspace
@@ -285,11 +285,15 @@ Per HR-5, NULL pattern = quarantine all. So if any of these inactive clients sud
 
 ## 7. Phased implementation
 
-### Phase 0: Preparation (no code change)
-- Operator confirms keyword seed table above (especially shared-pattern decision for SK/SKMR)
-- Operator confirms NULL-pattern fail-closed policy
-- Operator confirms Charm sub-brand domain list (DONE 2026-04-30: 4 confirmed)
-- Snapshot of current pollution baseline saved to `scripts/backfill_snapshots/2026-04-30_firewall_pre_state.json`
+### Phase 0: Preparation — ✅ SHIPPED 2026-05-01
+- ✅ Operator confirmed keyword seed table above
+- ✅ Operator confirmed NULL-pattern fail-closed policy
+- ✅ Charm sub-brand list extended to 9 (4 new: eudalie-bio, inspi-cure-eu, mydealslift, stylepad24) — all confirmed as legitimate sub-clients per D-F
+- ✅ Generated-domain cleanup: 143 unpurchased candidates soft-deleted; forward prevention shipped (commit `ba39fe5`) — `is_active` semantic now strictly `(approval_status IN ('legacy','purchased'))`
+- ✅ `clients.domain_pattern` populated for all 11 active workspaces; verified 0 outliers across 4,207 active inboxes when running firewall SQL predicate against live data
+
+### Phase 2: Populate `clients.domain_pattern` — ✅ SHIPPED 2026-05-01
+Single atomic UPDATE using `FROM (VALUES ...)` — see commit message for exact SQL. Defense-in-depth: every firewall query also filters `d.is_active = TRUE AND d.approval_status IN ('legacy','purchased')`.
 
 ### Phase 1: Schema migration (migration 101)
 ```sql

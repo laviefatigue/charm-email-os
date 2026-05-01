@@ -1,7 +1,7 @@
 ---
 title: Inbox Integrity Program — Master Tracker
 created: 2026-04-30
-updated: 2026-05-01 (kill-trigger accuracy plan added)
+updated: 2026-05-01 (firewall Phase 0+2 shipped, kill-trigger accuracy plan added)
 status: ACTIVE
 purpose: Single-page index of all in-flight inbox-state-machine work
 review-cadence: end of each session, update statuses
@@ -94,12 +94,12 @@ Status keys: ✅ done · 🚧 in progress · ⏳ pending · 🔒 blocked · 👤
 
 | # | Phase | Status | Blocker | Notes |
 |:-:|-------|:------:|---------|-------|
-| 0 | Operator confirms keyword seed table (§6 of plan) | 👤 | needs operator input | Defaults proposed; especially Charm multi-keyword + Barrena `guardare` correction |
-| 0a | **Audit 2026-04-30 evening: confirmed firewall coverage = 0% in production** | ✅ | — | 9 of 11 active workspaces have `clients.domain_pattern = NULL`; Charm + Selery have empty string `""` (which makes `LIKE` match anything — false safety). 193 incubating inboxes will graduate over next ≤4 BD with NO firewall predicate. Mitigating factor: by manual eyeball, all 193 currently match expected workspace pattern. This is fragile, not durable. See deploy-outcome work log §"Q2". |
-| 0b | **Cleanup 2026-05-01: soft-deleted 143 unpurchased candidate domains + forward prevention** | ✅ | — | Charm 86 + Selery 57 unpurchased rows had `is_active=TRUE` despite never being purchased — pure noise from `domain_generator_worker`. Soft-deleted via `is_active=FALSE`. 0 sender_accounts attached (verified). Forward prevention: 4 code changes ensure `is_active=FALSE` on generation INSERT, `is_active=TRUE` on legacy/purchased flips. Per-workspace active count now: Charm 40, Selery 50, others unchanged. |
-| 0c | Audit 2026-05-01: data-driven domain pattern extraction per workspace | ✅ | — | Pulled all owned domains per workspace, extracted brand keywords. 0 inbox-level cross-pollution detected across 11 workspaces. 4 new Charm sub-brands surfaced (eudalie-bio, inspi-cure-eu, mydealslift, stylepad24) — each legacy-status with 2-3 active inboxes. Need decision-log D-F update before Phase 2. |
-| 1 | Migration 101: schema (is_quarantined columns, no CHECK yet) | ⏳ | D-1 from §10 | |
-| 2 | Populate clients.domain_pattern with seed | ⏳ | D-1 + decision-log D-F update | Patterns confirmed via Phase 0c — comma-separated substring approach handles both multi-keyword (Charm) and concatenated-brand (linkgraph, hellohero) cases. |
+| 0 | Operator confirms keyword seed table (§6 of plan) | ✅ | — | All 11 active workspace patterns confirmed 2026-05-01 via data-driven extraction. See D-F + D-L. |
+| 0a | **Audit 2026-04-30 evening: confirmed firewall coverage = 0% in production** | ✅ | — | 9 of 11 active workspaces had `clients.domain_pattern = NULL`; Charm + Selery had empty string `""`. RESOLVED Phase 2. |
+| 0b | **Cleanup 2026-05-01: soft-deleted 143 unpurchased candidate domains + forward prevention** | ✅ | — | Charm 86 + Selery 57 unpurchased rows had `is_active=TRUE` despite never being purchased. Soft-deleted. Forward prevention: 4 code changes (commit `ba39fe5`). Active count now: Charm 40, Selery 50, others unchanged. |
+| 0c | Audit 2026-05-01: data-driven domain pattern extraction per workspace | ✅ | — | Pulled all owned domains, extracted brand keywords. 0 inbox-level cross-pollution detected across all 11 workspaces / 4,207 active inboxes. 4 new Charm sub-brands (eudalie-bio, inspi-cure-eu, mydealslift, stylepad24) confirmed legitimate per D-F. |
+| 1 | Migration 101: schema (is_quarantined columns, no CHECK yet) | ⏳ | — | Schema-only change. Phase 2 done first; quarantine column added next when we ship enforcement. |
+| 2 | **Populate clients.domain_pattern with seed** | ✅ | — | Shipped 2026-05-01 evening. All 11 workspaces have correct domain_pattern. Verified: 0 outliers across 4,207 active inboxes when running the firewall SQL predicate against live data. |
 | 3 | Backfill: quarantine existing pollution + null pool tags | ⏳ | accuracy gates passing | EB-side companion strip script needs operator approval per workspace |
 | 4 | Migration 103: add CHECK constraint | ⏳ | Phase 3 done | Cannot ship before backfill nulls existing pollution |
 | 5 | Code changes: gate at sync_accounts.upsert + filters in pool/lifecycle/set_tag/health | ⏳ | Phase 4 done | |
@@ -173,7 +173,9 @@ These are not up for re-debate. Codified across plan docs and ADRs.
 | D-C | The system never auto-cancels Hypertide subscriptions | connection-state-machine.md §0 | Same as D-B |
 | D-D | Reputation triggers (5) are the ONLY kill triggers | ADR-009 §3 | spam_complaint, hard_bounces_24h, hard_blocked_24h, hard_unknown_24h, fresh_inbox_bounce |
 | D-E | Cross-workspace pattern matching uses `clients.domain_pattern` (single field, comma-separated for multi-brand) | firewall plan §6.5 | Schema field already exists; simplest viable pattern |
-| D-F | Charm exception: multi-keyword pattern accepting `growthgroupusa`, `alldealsgroup`, `globaloutreachclub`, `urosaf-bio` as legitimate sub-brands | operator confirmed 2026-04-30 | Charm operates these sub-brand domains legitimately |
+| D-F | Charm multi-keyword pattern: 9 legitimate brand keywords — `charm` (canonical), `growthgroupusa`, `alldealsgroup`, `globaloutreachclub`, `urosaf-bio`, `eudalie-bio`, `inspi-cure-eu`, `mydealslift`, `stylepad24` | operator confirmed 2026-04-30, extended 2026-05-01 with 4 new sub-brands | Charm operates these as legitimate sub-clients testing through the Charm workspace. Each runs 2-3 inboxes following Charm's per-domain pattern. |
+| D-K | Generated domain candidates start `is_active=FALSE`; flipped to TRUE only on `approval_status` transition to `legacy` (operator bulk mark) or `purchased` (Dynadot confirm) | operator-driven cleanup 2026-05-01 (143 unpurchased rows soft-deleted) | Generated = idea, not real. Active set must reference owned domains only. Forward prevention shipped commit `ba39fe5` (4 code changes across infrastructure.py, domains.py, domain_sourcing.py). |
+| D-L | Domain pattern matching uses comma-separated substring approach in `clients.domain_pattern`. SQL predicate: `EXISTS (SELECT 1 FROM unnest(string_to_array(c.domain_pattern, ',')) AS pat WHERE email_address ILIKE '%' \|\| trim(pat) \|\| '%')`. Handles both multi-keyword (Charm 9-pattern) and concatenated-brand (linkgraph, hellohero, searchatlas, stablekernel, spoutwater) cases natively. | operator confirmed 2026-05-01 | Verified 0 outliers across all 4,207 active inboxes in 11 workspaces. |
 | D-G | Observation before automation — accuracy gates must pass before automated actions on system data | this session's revision | The system was demonstrably wrong for months; trust must be earned |
 | D-H | Decomposition scope: extract incubation-watcher only first, decide on rest after 30-day validation | decomposition plan §2.1 | Avoid premature 6-service commitment |
 | D-I | NULL pattern in clients.domain_pattern → quarantine all inboxes (fail-closed) | firewall plan §10 D-2 | New clients must be configured before any inbox can pool |
@@ -254,13 +256,15 @@ TOMORROW MORNING (May 1)
 THIS WEEK (operator-driven)
 ─────────────────────────────
    👤 Operator review Charm zombie CSV (142 rows)
-   👤 Confirm keyword seed for firewall plan
+   ✅ Firewall keyword seed confirmed + clients.domain_pattern populated (2026-05-01)
+   ✅ Generated-domain cleanup (143 unpurchased rows soft-deleted, 4 forward-prevention code changes)
    👤 Generate Spout zombie CSV + investigate root cause
-   👤 Populate clients.domain_pattern for the 11 active workspaces
    🚧 Re-run accuracy audit, verify SPUI gap closed (sync timing)
    ⏳ Kill-trigger accuracy Pass 1 — rewrite kill-triggers.md SMTP table (zero-risk doc fix)
    ⏳ Kill-trigger accuracy Pass 2 — disable bounce-FBL inference (one-line)
    ⏳ Kill-trigger accuracy Pass 4 — keep body_full retention for bounces
+   ⏳ Firewall Phase 1 — migration 101 (is_quarantined column, schema-only)
+   ⏳ Firewall Phase 5 — gate at sync_accounts.upsert + filters in pool/lifecycle/set_tag/health
 
 NEXT WEEK (gated on this-week's outcomes)
 ───────────────────────────────────────────
