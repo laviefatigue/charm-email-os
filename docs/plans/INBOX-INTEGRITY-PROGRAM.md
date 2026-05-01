@@ -1,7 +1,7 @@
 ---
 title: Inbox Integrity Program — Master Tracker
 created: 2026-04-30
-updated: 2026-05-01 (firewall Phase 0+2 shipped, kill-trigger accuracy plan added)
+updated: 2026-05-01 (firewall Phase 0+2 + kill-trigger Pass 1+2+4 + silent-error fix shipped)
 status: ACTIVE
 purpose: Single-page index of all in-flight inbox-state-machine work
 review-cadence: end of each session, update statuses
@@ -123,11 +123,12 @@ Status keys: ✅ done · 🚧 in progress · ⏳ pending · 🔒 blocked · 👤
 | # | Phase | Status | Blocker | Notes |
 |:-:|-------|:------:|---------|-------|
 | 0 | Forensic audit + plan drafted | ✅ | — | [kill-trigger-accuracy.md](kill-trigger-accuracy.md). Proved 0/383 historical spam_complaint kills had direct evidence; 5/5 sampled were FPs from bounce-text heuristic firing on admin-policy NDRs. |
-| 1 | Rewrite `docs/concepts/kill-triggers.md` SMTP table — full B2B map (MS365 + Google Workspace, ~25 codes incl. 8 currently-undocumented production codes) | ⏳ | — | Doc-only change. Zero behavior risk. Ships today. |
-| 2 | Disable bounce-FBL inference at `sync_events.py:468-470` (one-line `is_spam=False` for `folder='bounced'`) | ⏳ | Phase 1 done | Real complaint detection moves to: existing `folder='inbox'` phrase match + future FBL ingestion. Rate-based safety net (2%/5%/100-min-sends) still catches reputation problems. |
-| 3 | Add sender-ban code detection (5.7.501-511 family) — alert-first for week, then auto-kill | ⏳ | Phase 2 done | Net new capability. Production has 0 hits in 30 days — day-1 impact = 0 inboxes killed. |
-| 4 | Stop wiping `body_full` for bounces (`sync_events.py:385`) + 90-day retention | ⏳ | — | Forensic capability. Trivial storage cost. |
+| 1 | Rewrite `docs/concepts/kill-triggers.md` SMTP table — full B2B map (MS365 + Google Workspace, ~25 codes incl. 8 production codes) | ✅ | — | Shipped commit `a206da3`. Zero behavior change — pure documentation. Provider column, sender-ban severity flags, JMRP + Postmaster Tools out-of-band FBL section. |
+| 2 | Disable bounce-FBL inference at `sync_events.py:468-470` | ✅ | — | Shipped commit `8dd3011`. One-line `is_spam=False` for `folder='bounced'`. Production sample: 2/72 hard_blocked bounces (2.8%) were firing the false-positive heuristic — both fitnessintl.com mail-flow rule blocks. Function preserved for future use; only call site disabled. **69-test parser suite** at `tests/test_bounce_parsing.py` pins behavior. |
+| 3 | Add sender-ban code detection (5.7.501-511 family) — alert-first for week, then auto-kill | ⏳ | — | Net new capability. Production has 0 hits in 30 days — day-1 impact = 0 inboxes killed. |
+| 4 | Keep `body_full` for bounces + silent-error fix at `sync_campaign_replies` | ✅ | — | Shipped commit `995cd74`. Three changes: (a) `body_full` no longer wiped for bounces (forensic capability) — existing 90-day `cleanup_bounce_messages` retention covers cleanup. (b) Per-reply errors now reach `audit.add_error()` instead of `print()`. (c) Per-folder fetch errors same fix. `[silent-error-fallback]` print marker for legacy callers. |
 | 5 | Out-of-band FBL ingestion (`apps/fbl-consumer/` — Microsoft JMRP + Gmail Postmaster Tools) | ⏳ | 30 days clean post-Phase 2 | Separate project. Real spam complaint detection. ARF email parsing + Postmaster Tools API. |
+| 6 | Apply same audit.add_error pattern to sync_modules/sync_campaigns.py + sync_engagement.py | ⏳ | — | Production audit at 2026-05-01 19:30 UTC: campaigns sync has 242 records_failed/24h with `error_message=null` (61 of 222 runs status=partial); engagement sync has 1597 records_failed/24h with same null pattern (7 of 11 runs partial). Counts are tracked, root cause is not. Apply Pass 4 pattern to surface error detail. Different module from sync_events; out of scope for original Plan D but discovered via Pass 4 audit. |
 
 ### 3.5 Decomposition (Plan C — minimum-viable scope)
 
@@ -260,9 +261,11 @@ THIS WEEK (operator-driven)
    ✅ Generated-domain cleanup (143 unpurchased rows soft-deleted, 4 forward-prevention code changes)
    👤 Generate Spout zombie CSV + investigate root cause
    🚧 Re-run accuracy audit, verify SPUI gap closed (sync timing)
-   ⏳ Kill-trigger accuracy Pass 1 — rewrite kill-triggers.md SMTP table (zero-risk doc fix)
-   ⏳ Kill-trigger accuracy Pass 2 — disable bounce-FBL inference (one-line)
-   ⏳ Kill-trigger accuracy Pass 4 — keep body_full retention for bounces
+   ✅ Kill-trigger accuracy Pass 1 — kill-triggers.md SMTP table rewrite (commit a206da3)
+   ✅ Kill-trigger accuracy Pass 2 — bounce-FBL inference disabled + 69 parser tests (commit 8dd3011)
+   ✅ Kill-trigger accuracy Pass 4 — body_full kept for bounces + silent-error fix (commit 995cd74)
+   ⏳ Kill-trigger accuracy Pass 3 — sender-ban code detection (5.7.501-511 family)
+   ⏳ Kill-trigger accuracy Pass 6 — apply silent-error pattern to sync_campaigns + sync_engagement
    ⏳ Firewall Phase 1 — migration 101 (is_quarantined column, schema-only)
    ⏳ Firewall Phase 5 — gate at sync_accounts.upsert + filters in pool/lifecycle/set_tag/health
 

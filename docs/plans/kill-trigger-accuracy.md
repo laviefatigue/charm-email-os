@@ -1,7 +1,8 @@
 ---
 title: Kill-Trigger Accuracy — Bounce Classification Improvement
 created: 2026-05-01
-status: PROPOSED — Pass 1 ready to ship
+updated: 2026-05-01 (Pass 1+2+4 shipped; Pass 3 + Pass 6 pending)
+status: ACTIVE — 3 of 5 phases shipped
 related-plans:
   - INBOX-INTEGRITY-PROGRAM.md (master tracker)
   - connection-state-machine.md (Plan B — sibling kill-state work)
@@ -105,7 +106,7 @@ Production has 0 hits in last 30 days for these specific codes — but when one 
 
 ## 6. Phase plan
 
-### Phase 1 — Documentation correction (zero behavior change, ship today)
+### Phase 1 — Documentation correction (zero behavior change) — ✅ SHIPPED 2026-05-01 (commit `a206da3`)
 
 **Scope:**
 - Replace 7-row SMTP table in `docs/concepts/kill-triggers.md` with full B2B-focused table (~25 rows) covering Microsoft 365 + Google Workspace
@@ -127,7 +128,11 @@ Production has 0 hits in last 30 days for these specific codes — but when one 
 
 ---
 
-### Phase 2 — Disable bounce-FBL inference (one-line, low-risk)
+### Phase 2 — Disable bounce-FBL inference (one-line) — ✅ SHIPPED 2026-05-01 (commit `8dd3011`)
+
+Verified production sample: 2/72 hard_blocked bounces (2.8%) were firing the false-positive heuristic — both fitnessintl.com Microsoft 365 mail-flow rule blocks ("user not able to receive mail from unapproved senders"), neither real complaints. 69-test parser suite at `tests/test_bounce_parsing.py` pins all 4 parser functions' behavior; 100/100 random production bounces classify identically to stored bounce_type after the change. Function preserved (not deleted) for forensic re-analysis once Pass 4 + Pass 5 land.
+
+
 
 **Scope:**
 - `sync_events.py:468-470`: change `is_spam = self.is_spam_complaint(body, bounce_reason)` to `is_spam = False` for `folder='bounced'` path
@@ -172,7 +177,16 @@ Production has 0 hits in last 30 days for these specific codes — but when one 
 
 ---
 
-### Phase 4 — Keep `body_full` for bounces (forensic capability gain)
+### Phase 4 — Keep `body_full` for bounces + silent-error fix — ✅ SHIPPED 2026-05-01 (commit `995cd74`)
+
+Three coordinated changes:
+1. `sync_events.py:382-389` — `store_body_full = None` removed for bounces. `body_full` now stored. 90-day retention via existing `cleanup_bounce_messages` already covers cleanup — no separate retention work needed.
+2. `sync_campaign_replies` per-reply `print(...)` exception replaced with `audit.add_error()` when audit context is provided. Errors now reflected in `records_failed` + `error_log` instead of silently lost.
+3. Same fix applied to per-folder fetch errors (when `get_all_campaign_replies` raises).
+
+Backward-compat: `audit` is `Optional`; legacy callers (deprecated `sync_all_active_campaigns`) fall back to a `[silent-error-fallback]` print marker. 69-test parser suite still passes. Production audit confirmed `events` sync_type has 0 records_failed in 24h (clean).
+
+
 
 **Scope:**
 - `sync_events.py:382-389`: remove `store_body_full = None` for bounces; keep full body
@@ -187,6 +201,28 @@ Production has 0 hits in last 30 days for these specific codes — but when one 
 **Acceptance criteria:**
 - [ ] New bounces have non-null `body_full`
 - [ ] Forensic re-analysis of any new spam_complaint or sender_banned kill is possible
+
+---
+
+### Phase 6 — Apply silent-error pattern to sync_campaigns + sync_engagement
+
+**Scope:**
+Audit at 2026-05-01 evening surfaced two pre-existing observability gaps in modules NOT touched by Pass 4:
+
+| Module | records_failed/24h | partial-status runs/24h | error_message populated? |
+|--------|-------------------:|------------------------:|:------------------------:|
+| `sync_modules/sync_campaigns.py` | 242 | 61 of 222 (27%) | ❌ null |
+| `sync_modules/sync_engagement.py` | 1597 | 7 of 11 (64%) | ❌ null |
+
+The COUNTS are tracked correctly (better than the pre-Pass-4 `events` situation where counts were also lost). The CAUSE is not — `error_message` is `null` on partial-status rows, so we know there are failures but not why. Apply the same `audit.add_error(record_id, error, details)` pattern to the per-record exception sites in both modules.
+
+**Files touched:** `sync_modules/sync_campaigns.py` + `sync_modules/sync_engagement.py` — surface area is the per-record loop body.
+
+**Behavior change:** None. `records_failed` count stays identical; `error_log` JSONB now populated.
+
+**Risk:** Low. Same pattern Pass 4 used — proven to work, tests in place.
+
+**Gating:** Should be done before any further extraction work that depends on these modules being trustworthy. Not blocking Pass 3 or Pass 5.
 
 ---
 
