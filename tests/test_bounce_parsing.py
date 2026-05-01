@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import pytest
 
-from sync_modules.sync_events import EventSyncModule
+from sync_modules.sync_events import EventSyncModule, is_sender_ban_code
 
 
 # Parser methods don't use self — bypass __init__ to avoid building dependencies.
@@ -300,6 +300,97 @@ PRODUCTION_BOUNCE_REASONS = [
     ("550 5.4.1 blocked", "hard_blocked", 13),
     ("blocked policy", "hard_blocked", 12),
 ]
+
+
+# ──────────────────────────────────────────────────────────────────────
+# is_sender_ban_code — Plan D Pass 3 alert-first detection
+# ──────────────────────────────────────────────────────────────────────
+
+class TestIsSenderBanCode:
+    """Microsoft sender-ban SMTP codes — direct accusations from MS that we're banned."""
+
+    # --- Exact match codes ---
+    def test_5_7_501_spam_abuse(self):
+        assert is_sender_ban_code("550 5.7.501 Access denied, spam abuse detected") == "5.7.501"
+
+    def test_5_7_502_banned_sender(self):
+        assert is_sender_ban_code("5.7.502 banned sender") == "5.7.502"
+
+    def test_5_7_503_banned_sender(self):
+        assert is_sender_ban_code("550 5.7.503 banned sender") == "5.7.503"
+
+    def test_5_7_508_ipv6_rate(self):
+        assert is_sender_ban_code("550 5.7.508 IPv6 send rate") == "5.7.508"
+
+    def test_5_7_509_dmarc_reject_is_NOT_ban(self):
+        # Excluded after production sanity check (11 hits in 30d) showed
+        # this is a DMARC ALIGNMENT issue, not a Microsoft ban verdict.
+        # Handled by existing hard_blocked_24h count rule instead.
+        assert is_sender_ban_code("550 5.7.509 sender domain DMARC reject policy") is None
+
+    def test_5_7_511_blocklist(self):
+        assert is_sender_ban_code("550 5.7.511 banned sender, IP blocklist") == "5.7.511"
+
+    def test_5_7_703_tenant_block(self):
+        assert is_sender_ban_code("550 5.7.703 tenant allow/block list") == "5.7.703"
+
+    def test_5_7_705_tenant_threshold(self):
+        assert is_sender_ban_code("550 5.7.705 tenant threshold exceeded") == "5.7.705"
+
+    def test_5_7_708_tenant_traffic(self):
+        assert is_sender_ban_code("550 5.7.708 access denied traffic not accepted") == "5.7.708"
+
+    def test_5_7_750_unregistered_domain(self):
+        assert is_sender_ban_code("550 5.7.750 unregistered domain") == "5.7.750"
+
+    def test_5_7_800_ehlo_banned(self):
+        assert is_sender_ban_code("550 5.7.800 EHLO sender domain banned") == "5.7.800"
+
+    # --- IP range 5.7.606..649 ---
+    def test_5_7_606_banned_ip(self):
+        assert is_sender_ban_code("550 5.7.606 banned IP") == "5.7.606"
+
+    def test_5_7_625_middle_of_range(self):
+        assert is_sender_ban_code("5.7.625 banned IP") == "5.7.625"
+
+    def test_5_7_649_top_of_range(self):
+        assert is_sender_ban_code("550 5.7.649 banned") == "5.7.649"
+
+    # --- Boundary conditions ---
+    def test_5_7_605_below_range(self):
+        # 605 is below the 606..649 range
+        assert is_sender_ban_code("5.7.605 something") is None
+
+    def test_5_7_650_above_range(self):
+        assert is_sender_ban_code("5.7.650 something") is None
+
+    def test_5_7_700_above_range_unrelated(self):
+        # 700 is below the 703..708 set; should not match
+        assert is_sender_ban_code("5.7.700 something") is None
+
+    # --- Non-sender-ban codes return None ---
+    def test_5_7_1_generic_policy_returns_none(self):
+        # 5.7.1 is generic policy — not sender-ban
+        assert is_sender_ban_code("550 5.7.1 blocked policy") is None
+
+    def test_5_7_350_recipient_filter_returns_none(self):
+        # 5.7.350 is recipient-side spam filter, not sender ban
+        assert is_sender_ban_code("550 5.7.350 blocked spam") is None
+
+    def test_5_7_193_tenant_returns_none(self):
+        assert is_sender_ban_code("550 5.7.193 blocked spam") is None
+
+    def test_5_7_51_connector_returns_none(self):
+        # 5.7.51 is partner connector restriction, not sender ban
+        assert is_sender_ban_code("550 5.7.51 blocked spam") is None
+
+    def test_5_1_1_mailbox_unknown_returns_none(self):
+        # 5.1.1 is bad address; unrelated
+        assert is_sender_ban_code("550 5.1.1 user unknown") is None
+
+    def test_empty_returns_none(self):
+        assert is_sender_ban_code("") is None
+        assert is_sender_ban_code(None) is None
 
 
 @pytest.mark.parametrize("reason,expected,_freq", PRODUCTION_BOUNCE_REASONS)

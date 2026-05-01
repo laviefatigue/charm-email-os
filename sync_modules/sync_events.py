@@ -28,6 +28,7 @@ Architecture (workspace-concurrent model):
           worker.  Will be removed in a future cleanup pass.
 """
 import json
+import re
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple
 from uuid import UUID
@@ -36,6 +37,62 @@ import asyncpg
 from .emailbison_client import EmailBisonClient, EmailBisonAPIError
 from .audit_logger import AuditLogger, AuditContext, SyncResult
 from .slack_alerter import SlackAlerter
+
+
+# Plan D Pass 3 (2026-05-01) — Microsoft sender-ban SMTP codes.
+# These codes are direct accusations from Microsoft that OUR sending
+# account / IP / tenant has been banned for outbound abuse. They are NOT
+# recipient-side rejections. Per Microsoft Learn 2026 NDR catalog:
+#   5.7.501  Access denied, spam abuse detected (sending account banned)
+#   5.7.502  Banned sender
+#   5.7.503  Banned sender
+#   5.7.508  IPv6 send-rate exceeded
+#   5.7.511  IP on Microsoft blocklist (delist@microsoft.com)
+#   5.7.606..5.7.649  Banned sending IP range
+#   5.7.703  Recipient Tenant Allow/Block List blocked us
+#   5.7.705  Tenant exceeded outbound abuse threshold
+#   5.7.708  Tenant traffic not accepted from this IP
+#   5.7.750  Unregistered domain block
+#   5.7.800  EHLO/P1/P2 sender domain banned
+SENDER_BAN_CODES_EXACT = {
+    '5.7.501', '5.7.502', '5.7.503', '5.7.508', '5.7.511',
+    '5.7.703', '5.7.705', '5.7.708', '5.7.750', '5.7.800',
+    # NOTE: 5.7.509 (DMARC reject) was considered for inclusion but
+    # excluded after a 2026-05-01 production sanity check showed 11
+    # hits in 30 days — that's a DMARC ALIGNMENT issue (fixable via
+    # SPF/DKIM/DMARC config), not a Microsoft "we banned you" verdict.
+    # Treating it as a ban would generate alert noise. Handled by the
+    # existing hard_blocked_24h count rule instead.
+}
+# 5.7.606..5.7.649 — banned sending IP range (regex check)
+_SENDER_BAN_IP_RANGE = re.compile(r'\b5\.7\.(6[0-4]\d)\b')
+
+
+def is_sender_ban_code(reason: str) -> Optional[str]:
+    """Return the specific sender-ban code if reason matches, else None.
+
+    Used by Plan D Pass 3 (2026-05-01) — sender-ban detection in alert-first
+    mode. When this returns a non-None code, process_reply fires a critical
+    Slack alert telling the operator that Microsoft has banned our sending.
+
+    Pass 3 currently does NOT auto-kill on detection. After 7 days of
+    alert-only observation to confirm real production hits, the kill
+    behavior will be enabled (separate ship).
+
+    Pure function — no I/O, no DB. See tests/test_bounce_parsing.py for
+    coverage.
+    """
+    if not reason:
+        return None
+    for code in SENDER_BAN_CODES_EXACT:
+        if code in reason:
+            return code
+    m = _SENDER_BAN_IP_RANGE.search(reason)
+    if m:
+        digits = int(m.group(1))
+        if 606 <= digits <= 649:
+            return f'5.7.{digits}'
+    return None
 
 
 class EventSyncModule:
@@ -493,6 +550,36 @@ class EventSyncModule:
         # If bounce on sender inbox, update sender_accounts metrics
         if folder == 'bounced' and sender_account_id and bounce_type and bounce_type != 'unknown':
             await self.increment_inbox_bounces(sender_account_id, bounce_type)
+
+        # Plan D Pass 3 — Microsoft sender-ban SMTP code detection (alert-first).
+        # When a sender-ban code (5.7.501-503, .508, .511, .606-649, .703,
+        # .705, .708, .750, .800) appears in the bounce reason, fire a
+        # critical Slack alert. NO kill behavior change yet — operator
+        # reviews ~7 days of real hits before we enable auto-kill.
+        # The bounce still counts toward hard_blocked_24h via the increment
+        # above; the alert is purely additional observability.
+        if folder == 'bounced' and sender_account_id:
+            ban_code = is_sender_ban_code(bounce_reason)
+            if ban_code and self.alerter:
+                try:
+                    # Pull workspace + email for the alert message.
+                    ws_row = await self.db.fetchrow(
+                        "SELECT w.workspace_name FROM workspaces w "
+                        "JOIN sender_accounts s ON s.workspace_id=w.id "
+                        "WHERE s.id=$1",
+                        sender_account_id,
+                    )
+                    ws_name = ws_row['workspace_name'] if ws_row else 'unknown'
+                    await self.alerter.alert_sender_ban(
+                        inbox_email=to_inbox or '(unknown)',
+                        workspace=ws_name,
+                        smtp_code=ban_code,
+                        bounce_reason=bounce_reason or '',
+                    )
+                    print(f"      [SENDER-BAN] {to_inbox} hit code {ban_code} — alerted operator")
+                except Exception as ban_err:
+                    # Don't let alert failures break the upstream sync flow.
+                    print(f"      [SENDER-BAN ALERT FAILED] {to_inbox} {ban_code}: {ban_err!r}")
 
         # Detect spam complaints - Per v3 spec: 1 spam complaint = death, no exceptions
         # Check in THREE places:

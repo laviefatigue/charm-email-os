@@ -168,6 +168,45 @@ class SlackAlerter:
             context='Kill Queue Processor'
         )
 
+    async def alert_sender_ban(
+        self,
+        inbox_email: str,
+        workspace: str,
+        smtp_code: str,
+        bounce_reason: str,
+    ):
+        """Alert when a Microsoft sender-ban SMTP code is detected on a bounce.
+
+        These codes (5.7.501-503, 5.7.508, 5.7.511, 5.7.606-649, 5.7.703,
+        5.7.705, 5.7.708, 5.7.750, 5.7.800) are direct statements from Microsoft
+        that our sending account / IP / tenant has been banned for outbound
+        spam abuse. They are NOT recipient-side rejections.
+
+        Plan D Pass 3 (2026-05-01) ships this alert in **alert-first mode** —
+        no kill behavior change yet. Operator reviews real production hits
+        for ~7 days before flipping to auto-kill. See
+        docs/plans/kill-trigger-accuracy.md Phase 3.
+        """
+        await self.send_alert(
+            level='critical',
+            title='Microsoft Sender-Ban Code Detected',
+            message=(
+                f"Microsoft has banned `{inbox_email}` (or its IP/tenant) "
+                f"for outbound spam abuse. SMTP code: **{smtp_code}**.\n"
+                f"This is NOT a recipient rejection — Microsoft's reputation "
+                f"system has flagged us. Continuing to send from this inbox "
+                f"makes the situation worse. **Operator review required.**"
+            ),
+            fields={
+                'Inbox': inbox_email,
+                'Workspace': workspace,
+                'SMTP Code': smtp_code,
+                'Bounce Reason': bounce_reason[:200] if bounce_reason else '(none)',
+                'Action': 'Alert-first mode (Pass 3) — no auto-kill yet. Review and decide.',
+            },
+            context='Pass 3 sender-ban detection',
+        )
+
     async def alert_inbox_deleted(
         self,
         inbox_email: str,
