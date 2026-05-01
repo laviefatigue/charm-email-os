@@ -204,6 +204,16 @@ Backward-compat: `audit` is `Optional`; legacy callers (deprecated `sync_all_act
 
 ---
 
+### Phase 3 — Sender-ban code detection — ✅ SHIPPED 2026-05-01 (commit `5688789`)
+
+Detects 10 Microsoft sender-ban exact codes (5.7.501/502/503/508/511/703/705/708/750/800) plus 5.7.606-649 IP range. Fires Slack alert at critical level on first hit. NO kill behavior change yet — alert-first per the plan.
+
+5.7.509 (DMARC reject) was considered but excluded after production sanity check showed 11 hits in 30 days — that's a DMARC alignment issue, not a Microsoft ban verdict. Continues to count via `hard_blocked_24h` instead.
+
+23 unit tests cover all codes, IP range boundaries, and false-positive prevention against `5.7.1` / `5.7.193` / `5.7.350` / `5.7.51` / `5.1.1`. Production sanity: 0 alerts would have fired in the last 30 days. The alert path is dormant until a real ban event occurs.
+
+After 7 days of clean alert observation, a follow-up commit will flip to alert + instant-kill behavior.
+
 ### Phase 6 — Apply silent-error pattern to sync_campaigns + sync_engagement
 
 **Scope:**
