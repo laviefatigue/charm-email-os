@@ -1,7 +1,7 @@
 ---
 title: Inbox Integrity Program — Master Tracker
 created: 2026-04-30
-updated: 2026-04-30 (evening — post deploy)
+updated: 2026-05-01 (kill-trigger accuracy plan added)
 status: ACTIVE
 purpose: Single-page index of all in-flight inbox-state-machine work
 review-cadence: end of each session, update statuses
@@ -40,6 +40,7 @@ Each plan is a deep-dive document. This index is the cross-reference.
 | [cross-workspace-integrity-firewall.md](cross-workspace-integrity-firewall.md) | ~600 | PROPOSED | none — pending operator confirm of keyword seed | All 7 phases pending |
 | [connection-state-machine.md](connection-state-machine.md) | ~400 | PARTIAL | Phase 1 (disconnected_timeout removed) | Phases 2-6 pending accuracy validation |
 | [emailbison-sync-decomposition.md](emailbison-sync-decomposition.md) | ~600 | PROPOSED | none | Phases 1-4 pending |
+| [kill-trigger-accuracy.md](kill-trigger-accuracy.md) | ~500 | PROPOSED — Pass 1 ready | none — drafted 2026-05-01 evening | All 5 phases pending; Pass 1 (docs) shippable today |
 
 Plus the foundational records:
 
@@ -86,7 +87,8 @@ Status keys: ✅ done · 🚧 in progress · ⏳ pending · 🔒 blocked · 👤
 | **[docs/operations/2026-04-30-deploy-runbook.md](../operations/2026-04-30-deploy-runbook.md)** | ✅ **METHODIC DEPLOY RUNBOOK — operator's primary doc for landing today's 13 commits** | `675d3aa` |
 | [docs/operations/2026-04-30-deploy-quickref.md](../operations/2026-04-30-deploy-quickref.md) | ✅ written | `bc5744b` |
 | **[docs/work-logs/2026-04-30-deploy-outcome.md](../work-logs/2026-04-30-deploy-outcome.md)** | ✅ **TODAY'S DEPLOY OUTCOME — 6/6 verification checks PASS, walk-away monitor scheduled, May 1 morning checklist** | (this commit) |
-| **THIS DOC** (`INBOX-INTEGRITY-PROGRAM.md`) | 🚧 updated end of evening session | — |
+| **[docs/plans/kill-trigger-accuracy.md](kill-trigger-accuracy.md)** | ✅ **drafted 2026-05-01 evening — bounce classification + spam_complaint correctness, 5-phase plan** | (this commit) |
+| **THIS DOC** (`INBOX-INTEGRITY-PROGRAM.md`) | 🚧 updated end of evening session 2026-05-01 | — |
 
 ### 3.3 Cross-workspace integrity firewall (Plan A)
 
@@ -113,6 +115,17 @@ Status keys: ✅ done · 🚧 in progress · ⏳ pending · 🔒 blocked · 👤
 | 4 | Drop `status='Connected'` filter from pool_promotion | ⏳ | accuracy gates passing | |
 | 5 | Operator-driven zombie restoration per workspace (CSV review) | 👤 | operator | Charm CSV ready; smallest-workspace-first sequence in plan §8 |
 | 6 | EB tag cleanup for restored zombies (operator-confirmed) | 👤 | Phase 5 in progress | |
+
+### 3.4b Kill-trigger accuracy (Plan D — bounce classification + spam_complaint correctness)
+
+| # | Phase | Status | Blocker | Notes |
+|:-:|-------|:------:|---------|-------|
+| 0 | Forensic audit + plan drafted | ✅ | — | [kill-trigger-accuracy.md](kill-trigger-accuracy.md). Proved 0/383 historical spam_complaint kills had direct evidence; 5/5 sampled were FPs from bounce-text heuristic firing on admin-policy NDRs. |
+| 1 | Rewrite `docs/concepts/kill-triggers.md` SMTP table — full B2B map (MS365 + Google Workspace, ~25 codes incl. 8 currently-undocumented production codes) | ⏳ | — | Doc-only change. Zero behavior risk. Ships today. |
+| 2 | Disable bounce-FBL inference at `sync_events.py:468-470` (one-line `is_spam=False` for `folder='bounced'`) | ⏳ | Phase 1 done | Real complaint detection moves to: existing `folder='inbox'` phrase match + future FBL ingestion. Rate-based safety net (2%/5%/100-min-sends) still catches reputation problems. |
+| 3 | Add sender-ban code detection (5.7.501-511 family) — alert-first for week, then auto-kill | ⏳ | Phase 2 done | Net new capability. Production has 0 hits in 30 days — day-1 impact = 0 inboxes killed. |
+| 4 | Stop wiping `body_full` for bounces (`sync_events.py:385`) + 90-day retention | ⏳ | — | Forensic capability. Trivial storage cost. |
+| 5 | Out-of-band FBL ingestion (`apps/fbl-consumer/` — Microsoft JMRP + Gmail Postmaster Tools) | ⏳ | 30 days clean post-Phase 2 | Separate project. Real spam complaint detection. ARF email parsing + Postmaster Tools API. |
 
 ### 3.5 Decomposition (Plan C — minimum-viable scope)
 
@@ -243,6 +256,9 @@ THIS WEEK (operator-driven)
    👤 Generate Spout zombie CSV + investigate root cause
    👤 Populate clients.domain_pattern for the 11 active workspaces
    🚧 Re-run accuracy audit, verify SPUI gap closed (sync timing)
+   ⏳ Kill-trigger accuracy Pass 1 — rewrite kill-triggers.md SMTP table (zero-risk doc fix)
+   ⏳ Kill-trigger accuracy Pass 2 — disable bounce-FBL inference (one-line)
+   ⏳ Kill-trigger accuracy Pass 4 — keep body_full retention for bounces
 
 NEXT WEEK (gated on this-week's outcomes)
 ───────────────────────────────────────────
