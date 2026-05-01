@@ -466,8 +466,35 @@ class EventSyncModule:
                 # Analyze lead response text for spam complaint indicators
                 is_spam = self.detect_spam_in_response(body, subject)
             elif folder == 'bounced' and bounce_type == 'hard_blocked':
-                # Check if bounce message indicates spam complaint (FBL)
-                is_spam = self.is_spam_complaint(body, bounce_reason)
+                # Plan D Pass 2 (2026-05-01) — DISABLED.
+                #
+                # The bounce-body FBL inference was structurally unsound. Audit
+                # showed 0/383 historical spam_complaint kills had folder='spam'
+                # direct evidence; 5/5 sampled were the heuristic firing on
+                # admin-policy NDRs (e.g. SGMC mail-flow rules), Microsoft
+                # 5.7.51 partner-connector restrictions, recipient-server spam
+                # filters (5.7.350) — none of which are user-initiated spam
+                # complaints. Per Microsoft Learn 2026 NDR catalog and Gmail
+                # SMTP error reference, NO SMTP code from MS365 or Google
+                # Workspace means "user reported as spam." Real complaints
+                # route out-of-band: Microsoft JMRP (ARF emails to a registered
+                # FBL address) and Gmail Postmaster Tools (dashboard, requires
+                # Feedback-ID: header).
+                #
+                # The is_spam_complaint() function is left in place (not deleted)
+                # for forensic re-analysis once Plan D Pass 4 lands (body_full
+                # retention) and for the future apps/fbl-consumer/ extraction
+                # (Plan D Pass 5). Pinned by tests/test_bounce_parsing.py.
+                #
+                # Behavior change: bounces still drive hard_blocked_24h via
+                # increment_inbox_bounces (above). Same inboxes still die when
+                # they should — just via the correct rule. ~24h delay on death
+                # for false-positive single-bounce cases (which is the desired
+                # behavior — admin policy blocks shouldn't kill a healthy inbox).
+                #
+                # See docs/plans/kill-trigger-accuracy.md and
+                # docs/concepts/kill-triggers.md § "Spam complaint detection".
+                is_spam = False
 
             if is_spam:
                 await self.increment_inbox_complaints(sender_account_id, to_inbox)
