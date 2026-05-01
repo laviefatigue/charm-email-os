@@ -236,26 +236,45 @@ The COUNTS are tracked correctly (better than the pre-Pass-4 `events` situation 
 
 ---
 
-### Phase 5 (FUTURE) — Out-of-band FBL ingestion (separate project)
+### Phase 5 (BLOCKED) — Out-of-band FBL ingestion
 
-**Scope:**
-- Register an FBL recipient address with Microsoft JMRP (enroll via SNDS at `https://sendersupport.olc.protection.outlook.com`)
-- Add `Feedback-ID: <sender-id>:<campaign-id>:<workspace-id>` header to outbound mail (configure in EmailBison)
-- Build `apps/fbl-consumer/` — small Python service that:
-  - Polls the FBL inbox (or webhook receives ARF emails)
-  - Parses ARF format (RFC 5965)
-  - Increments `complaints_lifetime` on the matching sender
-- Configure Gmail Postmaster Tools account; integrate with Gmail Postmaster Tools API (read-only) for daily complaint-rate signal
+**Status: BLOCKED on operator decisions, not on engineering work.**
 
-**Files touched:** New `apps/fbl-consumer/`, EB outbound config, separate ADR
+The original premise of Phase 5 was: build `apps/fbl-consumer/` to ingest Microsoft JMRP ARF emails and Gmail Postmaster Tools data, finally giving us authoritative complaint signal.
 
-**Behavior change:** Real spam complaints actually get detected. The `KILL_THRESHOLD_SPAM = 1` rule becomes safe to act on (was structurally unsafe before).
+**That premise is invalid for Charm's current setup.** Confirmed 2026-05-01 via direct EB-API audit + operator confirmation:
 
-**Risk:** Medium — net new ingestion pipeline, ARF parsing, EB header injection.
+- **Charm has no Postmaster Tools access.** Gmail Postmaster Tools is a Google Workspace product that requires DNS verification of the sending domain. We send from per-domain workspaces (charm.com sub-brands, etc.) and have not enrolled any of them.
+- **Charm is not enrolled in Microsoft JMRP.** No FBL recipient address is registered with SNDS (`https://sendersupport.olc.protection.outlook.com`). No ARF emails are being delivered anywhere we control.
+- **EB's `/replies?folder=spam` returns empty.** Verified across 5 active campaigns / 11 workspaces — 0 rows ever. EB does not populate this folder for our cold-email setup, regardless of whether recipients click "Report as Junk" in Outlook.
+- **EB's `emailbison_campaigns.complaints` field always returns 0.** All 198 active campaigns. EB-side metric isn't fed by the same backend that drives FBL routing.
 
-**Sequencing:** Gated on Phase 1–4 stability. After 30 days of clean Phase 2 metrics, scope this as its own plan.
+**Practical implication:** the only complaint signal we have is the `folder='inbox'` phrase match in `detect_spam_in_response`. That's it. The Health V3 spec assumed JMRP-grade signal volume; in our setup, the spec's complaint-detection rules are aspirational rather than enforceable.
 
-**Acceptance criteria:** N/A this sprint.
+#### What it would take to unblock
+
+| Path | Operator action required | Engineering work after that |
+|------|--------------------------|------------------------------|
+| **JMRP** | Enroll at `https://sendersupport.olc.protection.outlook.com`. Register an FBL recipient address (probably `fbl@charm.com` or per-workspace addresses). Configure outbound DKIM + correct `From:` domain alignment. | Build `apps/fbl-consumer/` to parse incoming ARF emails (RFC 5965), match the FBL `Original-Mail-From:` header to our `sender_accounts.email_address`, increment `complaints_lifetime`. ~2-3 days of work. |
+| **Postmaster Tools** | Verify domain ownership in Postmaster Tools dashboard (per workspace domain — would need ~50 verifications). Configure EB to add `Feedback-ID: <sender-id>:<campaign-id>:<workspace-id>` header to all outbound. | Either scrape the dashboard daily (fragile) or use the Postmaster Tools API (limited adoption, gated access). Reports complaint RATES not events. ~1 week of work. |
+
+Until either path is unblocked, **the kill-trigger system operates with the constraint that complaint coverage is heuristic-only**. See `docs/concepts/kill-triggers.md` § "Spam complaint detection" for the operational implications.
+
+#### What we built INSTEAD of Phase 5
+
+Recognizing the constraint, the session shipped:
+- **Pass 2** disabled the bounce-body FBL inference (was producing false positives)
+- **Pass 3** sender-ban code detection (alert-first → instant-kill in 7 days) — uses Microsoft 5.7.501-511/606-649/703-750/800 codes as a proxy for "Microsoft says we're banned"
+- **Pass 4** preserves `body_full` for forensic analysis when we DO get hits
+
+These don't replace JMRP/Postmaster Tools but they cover the most actionable subset: cases where Microsoft has already made a verdict against us via reputation data they collected internally.
+
+#### Future engineering follow-ups that don't require operator unblocking
+
+- **Engagement decay detection** — proxy reputation signal using the per-inbox open/reply rates we already sync. A drop in opens >50% from 7d baseline is a leading indicator before bounces accumulate. Build separately as its own phase; no blockers.
+- **Complaint-rate proxy via bounce velocity** — if `hard_blocked_24h` jumps from 0 → 5+ in a single sync window for a single domain, that's a strong signal that something flipped reputation-wise. Could fire as an early-warning alert before the count threshold ≥2 kill rule triggers.
+
+These should be tracked as a separate plan once the existing work is verified in production.
 
 ---
 

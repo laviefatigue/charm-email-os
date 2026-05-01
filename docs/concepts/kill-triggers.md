@@ -29,14 +29,19 @@ Automated inbox termination system that protects domain reputation by detecting 
 
 Kill triggers are thresholds that, when breached, automatically queue an inbox for deletion. The system follows the v3 spec philosophy: **protect domains over inboxes** - inboxes are disposable, domains are not.
 
+> ## ⚠ KEY CONSTRAINT — Read this before interpreting any threshold below
+>
+> **Charm has no access to authoritative spam-complaint signal.** No Microsoft JMRP enrollment. No Gmail Postmaster Tools API access. EB's `/replies?folder=spam` returns empty for our setup. Our entire complaint-detection surface is **response-parsing of EB-synced replies** — specifically the `folder='inbox'` lead-reply phrase match path (`detect_spam_in_response`). The Health V3 spec assumed JMRP-grade signal volume. **Our actual reputation defense in production is `hard_blocked_24h ≥ 2`** (catches MS hard-rejection of repeated abuse). See § _Spam complaint detection_ below for the full constraint analysis.
+
 ## Core Philosophy
 
 1. **Kill fast, swap fast, diagnose after** - Don't investigate while reputation degrades
 2. **100% backup capacity** - Always have warmed backups ready
-3. **1 spam complaint = inbox death** - The inbox is always killed immediately. The *domain* burn decision is rate-based for Microsoft (≥1.0%) but instant for Google (small fleet).
+3. **1 spam complaint = inbox death** - The inbox is always killed immediately when a complaint is detected. Note the constraint above: in practice we only detect complaints via lead-reply phrase match (low coverage), so this rule fires rarely. The *domain* burn decision is rate-based for Microsoft (≥1.0%) but instant for Google (small fleet) — but again, dependent on detecting real complaints.
 4. **Differentiated thresholds** - Spam blocks are worse than bad addresses
-5. **Proportional domain response** - Domain complaint rate determines action for Microsoft. Google bypasses rate evaluation (3-inbox population is too small for rates to be meaningful).
+5. **Proportional domain response** - Domain complaint rate determines action for Microsoft. Google bypasses rate evaluation (3-inbox population is too small for rates to be meaningful). _Caveat: complaint rates are aspirational in our setup — see constraint above._
 6. **Min-volume floor (post-overhaul)** - Count-based triggers require ≥20 sends in 24h to fire. Otherwise low-volume noise (1 bounce out of 2 sends) generates false kills.
+7. **Response-parsing is the entire signal source for non-bounce kill detection** - Every kill trigger is driven by data we extract from `/replies` (bounces) or `/sender-emails` (per-inbox metrics). There is no out-of-band feedback loop, no FBL ARF inbox, no Postmaster Tools dashboard. If we don't see it in EB, we can't detect it.
 
 ## Kill Trigger Types
 
@@ -44,13 +49,15 @@ Kill triggers are thresholds that, when breached, automatically queue an inbox f
 
 All triggers kill the **inbox** immediately when breached. Count-based thresholds vary by ESP; rate-based and spam_complaint apply equally to both.
 
+**Coverage note:** the `spam_complaint` threshold is correct on paper but in practice fires rarely because the only signal source is `detect_spam_in_response` phrase matching on lead replies (see Key Constraint above). Real reputation protection in our setup comes from `hard_blocked_24h ≥ 2` plus the future-pending sender-ban code instant-kill (Plan D Pass 3 currently alert-first).
+
 **Microsoft (legacy ride-to-death):**
 
-| Trigger | Threshold | Priority | Rationale |
-|---------|-----------|----------|-----------|
-| `spam_complaint` | **≥1** | 0 (Highest) | User reported spam — inbox killed instantly |
-| `hard_blocked_24h` | **≥2** | 1 | Spam/policy rejection = active reputation damage |
-| `hard_unknown_24h` | **≥3** | 2 | Bad addresses = list quality issue |
+| Trigger | Threshold | Priority | Rationale | Signal coverage |
+|---------|-----------|----------|-----------|-----------------|
+| `spam_complaint` | **≥1** | 0 (Highest) | Lead actively reported spam — inbox killed instantly | Phrase-match on lead replies only (low coverage; no JMRP/Postmaster Tools) |
+| `hard_blocked_24h` | **≥2** | 1 | Spam/policy rejection = active reputation damage | **Full coverage — load-bearing protection** |
+| `hard_unknown_24h` | **≥3** | 2 | Bad addresses = list quality issue | Full coverage |
 | `hard_bounces_24h` | **≥2** | 3 | Combined fallback for unclassified bounces |
 | `hard_bounce_rate_7d` | **>2.0%** | 4 | Sustained hard bounce rate (min 100 sends) |
 | `bounce_rate_all_7d` | **>5%** | 5 | Total bounce rate threshold (min 100 sends) |
@@ -326,16 +333,68 @@ These codes mean Microsoft (or Gmail's algorithmic system) has explicitly banned
 | 421 4.7.28 | Gmail | Unusual unsolicited email rate (rate-limited) | `soft_temp` | None |
 | 421 4.7.29 | Gmail | TLS required (rate-limited) | `soft_temp` | None |
 
-### Spam complaint detection — out-of-band, NOT in SMTP codes
+### ⚠ HARD CONSTRAINT — Spam complaint detection is response-parsing only
 
-For B2B cold email targeting Microsoft 365 and Google Workspace, the only authoritative spam-complaint signals come through dedicated channels — not bounces, not NDRs:
+**Charm does NOT have access to authoritative spam-complaint signals.** This is a load-bearing constraint that affects every aspect of how the kill-trigger system can detect real reputation damage. Read this section carefully.
 
-| Provider | Channel | Mechanism |
-|----------|---------|-----------|
-| Microsoft 365 | **JMRP** (Junk Email Reporting Program) | Separate ARF-formatted emails sent to a registered FBL recipient address when recipients click "Report as Junk" in Outlook. Free; enroll via SNDS at `https://sendersupport.olc.protection.outlook.com`. |
-| Google Workspace | **Postmaster Tools** | Dashboard-only — reports complaint rate (not individual events). Requires `Feedback-ID:` header on outbound mail. |
+#### What we don't have
 
-`apps/fbl-consumer/` (Plan D Pass 5, future) will ingest JMRP ARF emails and surface the Postmaster Tools rate. Until then, `complaints_lifetime` increments come from two paths: (1) lead-reply phrase match on `folder='inbox'` responses (`detect_spam_in_response`), and (2) bounce-body FBL inference (`is_spam_complaint`). Path (2) is structurally unsound — no SMTP code in the 5.7.x family means user complaint — and is scheduled to be disabled in Plan D Pass 2. See [docs/plans/kill-trigger-accuracy.md](../plans/kill-trigger-accuracy.md).
+| Provider channel | Status | Why we can't use it |
+|------------------|--------|---------------------|
+| **Microsoft JMRP** (Junk Email Reporting Program) | ❌ Not enrolled | Requires registering an FBL recipient address with SNDS. Not currently configured. Even if we enrolled, getting ARF emails into our pipeline would require building an `apps/fbl-consumer/` ARF parser. |
+| **Gmail Postmaster Tools** | ❌ No access | Dashboard-only product, no API surface. Requires `Feedback-ID:` header on outbound (configurable at EmailBison). Even with the header, we'd only see aggregate rates, not per-inbox events. |
+| **EB `/replies?folder=spam`** | ✅ Endpoint exists, ❌ always empty | Verified 2026-05-01: 0 rows across all active campaigns / all workspaces / all time. EB doesn't populate this folder for our cold-email setup. |
+| **EB `emailbison_campaigns.complaints` field** | ✅ Synced, ❌ always 0 | All 198 active campaigns report `complaints=0`. EB-side metric isn't fed by the same backend that drives FBL routing — appears to be unused for our tenant configuration. |
+
+#### What we DO have — the entire complaint-detection surface
+
+```
+folder='inbox' phrase match  (active path)
+   ├── detect_spam_in_response() runs on every reply we sync from EB
+   ├── matches active-voice phrases: "I marked this as spam",
+   │   "reported you as spam", "moved to junk folder", etc.
+   └── Production rate: very low — most leads who complain don't reply at all
+
+folder='spam' direct          (dormant)
+   ├── EB endpoint returns 200 but always 0 rows
+   └── Kept in code for the day EB starts populating, but currently never fires
+
+folder='bounced' FBL inference  (DISABLED Plan D Pass 2)
+   ├── Was matching SMTP codes + keywords in bounce bodies
+   ├── Verified false-positive rate of ~2.8% of hard_blocked bounces
+   └── No SMTP code from MS365 or Gmail means "user reported as spam"
+       per Microsoft Learn 2026 + Google Workspace SMTP error reference
+```
+
+#### What this means operationally
+
+1. **Coverage is poor.** Real users who report us as spam without replying are invisible. We see only the small subset who BOTH report us AND reply with text containing trigger phrases.
+
+2. **`KILL_THRESHOLD_SPAM = 1` ("1 complaint = death") still fires correctly when triggered**, but the input signal is much weaker than the spec implies. A phrase-match reply is a strong indicator (the lead is angry enough to write back), so 1=death remains defensible — but the spec was written assuming JMRP-grade signal volume.
+
+3. **Our actual reputation defense is `hard_blocked_24h ≥ 2`**. When Microsoft starts hard-rejecting our mail (typically what happens after spam reports cross thresholds), we see `5.7.x` codes pile up and the count-based kill rule fires. That's our load-bearing protection.
+
+4. **Sender-ban codes** (5.7.501-503/508/511/606-649/703/705/708/750/800) are the closest proxy we have to "Microsoft is angry at us." Pass 3 (alert-first) detects these and fires Slack alerts. After 7 days of clean alert observation, the plan is to flip to instant-kill on these specific codes.
+
+#### What would unblock real complaint detection
+
+If access changes in the future, two paths re-open:
+
+| Path | What's needed |
+|------|---------------|
+| **JMRP enrollment** | Register an FBL recipient address with Microsoft SNDS at `https://sendersupport.olc.protection.outlook.com`. Build `apps/fbl-consumer/` to parse incoming ARF emails (RFC 5965 format) and increment `complaints_lifetime` on the matching sender. |
+| **Postmaster Tools** | Add `Feedback-ID: <sender-id>:<campaign-id>:<workspace-id>` header to outbound mail (EmailBison config). Get Postmaster Tools dashboard access for charm.com. Dashboard reports rates only — would need scheduled scraping or API access (Google does have a Postmaster Tools API but with limited adoption). |
+
+Both are operator tasks, not engineering tasks. Until either lands, **assume our complaint signal is heuristic-only**.
+
+#### Why this matters for Health V3
+
+Health V3 was authored assuming an authoritative complaint feed exists. The spec's "1 complaint = inbox death" rule and `<0.3% complaint rate threshold` numbers come from a world where JMRP / Postmaster Tools provide reliable signal. **In our current setup, those numbers are aspirational, not enforceable.** The sections of Health V3 that depend on authoritative complaint data are dormant; what actually keeps reputation safe is the combination of:
+
+- `hard_blocked_24h ≥ 2` (catches MS hard-rejection of repeated abuse)
+- Sender-ban code detection (Pass 3 alert-first → future instant-kill)
+- Cross-workspace integrity firewall (Plan A — prevents one workspace's reputation problems from polluting another)
+- Engagement decay detection (future — uses opens/replies as a leading indicator)
 
 **Yahoo CFL is irrelevant to Charm's scope** (B2B sending only — no consumer Yahoo recipients). All references in this codebase to Yahoo-specific FBL paths can be safely ignored.
 
