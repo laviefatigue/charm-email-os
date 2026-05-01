@@ -121,6 +121,10 @@ class SyncOrchestrator:
         self.last_workspace_discovery: Optional[datetime] = None
         self.last_onboarding_monitor: Optional[datetime] = None
         self.last_overhaul_audit: Optional[datetime] = None
+        # Inbox Audit Overhaul (Plan: docs/plans/inbox-audit-overhaul.md) —
+        # per-workspace structured audit. Runs daily; persists to inbox_audits
+        # table with workspace_id + inbox_id_set + audit_data populated.
+        self.last_inbox_audit: Optional[datetime] = None
 
     async def start(self, single_pass: bool = False):
         """Initialize connections and start the sync worker."""
@@ -278,6 +282,19 @@ class SyncOrchestrator:
                     except Exception as e:
                         print(f"[ERROR] Overhaul audit failed: {e}")
                     self.last_overhaul_audit = now
+
+                # Daily inbox audit (per-workspace) — Inbox Audit Overhaul.
+                # Phase 2/3 of docs/plans/inbox-audit-overhaul.md. Runs the
+                # InboxAuditor against each active workspace, persists the
+                # structured audit row with workspace_id + inbox_id_set +
+                # audit_data populated. Phase 5 (Slack restructure) and
+                # Phase 6 (SLA enforcement) read from this table.
+                if self._should_run_daily(self.last_inbox_audit):
+                    try:
+                        await self.run_inbox_audit()
+                    except Exception as e:
+                        print(f"[ERROR] Inbox audit failed: {e}")
+                    self.last_inbox_audit = now
 
                 # OAuth queue processing - every 5 min (for new workspaces)
                 if self._should_run(self.last_oauth_queue_check, POLL_INTERVAL_OAUTH_QUEUE):
@@ -439,6 +456,51 @@ class SyncOrchestrator:
             f"dead_cleaned={dead_cleaned}, +A={a_tagged}, +B={b_tagged}, "
             f"promoted={promoted}, kills_flagged={kills_tagged} [{status}]"
         )
+
+    async def run_inbox_audit(self):
+        """Per-workspace structured inbox audit — Inbox Audit Overhaul Phase 2/3.
+
+        Runs InboxAuditor.audit_workspace() against every active workspace,
+        persists each as a row in inbox_audits with workspace_id, inbox_id_set,
+        and audit_data JSONB populated. Idempotent per workspace+date.
+
+        Plan: docs/plans/inbox-audit-overhaul.md
+        Tracker: docs/plans/INBOX-INTEGRITY-PROGRAM.md §3.7
+        """
+        from sync_modules.inbox_auditor import InboxAuditor
+
+        print(f"[{datetime.now()}] Inbox audit (per-workspace)...")
+
+        # Pull all active workspaces.
+        workspaces = await self.db.fetch(
+            "SELECT id, workspace_name FROM workspaces WHERE is_active = TRUE ORDER BY workspace_name"
+        )
+
+        auditor = InboxAuditor(self.db)
+        succeeded = 0
+        failed = 0
+
+        for ws in workspaces:
+            try:
+                result = await auditor.audit_workspace(ws['id'])
+                audit_id = await auditor.persist(result)
+                # Surface critical/warn findings to the worker log so they
+                # appear in Coolify's container output. Phase 5 will route
+                # the same data through Slack with per-workspace formatting.
+                critical = sum(1 for s in result.sections if s.severity == 'critical' and s.count > 0)
+                warn = sum(1 for s in result.sections if s.severity == 'warn' and s.count > 0)
+                marker = '🔴' if critical else ('🟡' if warn else '🟢')
+                print(
+                    f"  {marker} [{ws['workspace_name']}] audit_id={audit_id} "
+                    f"inboxes={len(result.inbox_id_set)} "
+                    f"critical={critical} warn={warn}"
+                )
+                succeeded += 1
+            except Exception as e:
+                print(f"  [ERROR] [{ws['workspace_name']}] audit failed: {e!r}")
+                failed += 1
+
+        print(f"  Inbox audit: {succeeded} of {len(workspaces)} succeeded ({failed} failed)")
 
     async def run_retention_cleanup(self):
         """Run data retention cleanup."""
