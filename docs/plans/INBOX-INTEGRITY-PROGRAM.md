@@ -1,7 +1,7 @@
 ---
 title: Inbox Integrity Program — Master Tracker
 created: 2026-04-30
-updated: 2026-04-30
+updated: 2026-04-30 (evening — post deploy)
 status: ACTIVE
 purpose: Single-page index of all in-flight inbox-state-machine work
 review-cadence: end of each session, update statuses
@@ -84,13 +84,16 @@ Status keys: ✅ done · 🚧 in progress · ⏳ pending · 🔒 blocked · 👤
 | [docs/plans/inbox-audit-overhaul.md](inbox-audit-overhaul.md) | ✅ requirements catalog (deferred) | `765cd3d` |
 | [apps/incubation-watcher/HANDOFF.md](../../apps/incubation-watcher/HANDOFF.md) | ✅ self-contained handoff | `72b901d` |
 | **[docs/operations/2026-04-30-deploy-runbook.md](../operations/2026-04-30-deploy-runbook.md)** | ✅ **METHODIC DEPLOY RUNBOOK — operator's primary doc for landing today's 13 commits** | `675d3aa` |
-| **THIS DOC** (`INBOX-INTEGRITY-PROGRAM.md`) | 🚧 writing | — |
+| [docs/operations/2026-04-30-deploy-quickref.md](../operations/2026-04-30-deploy-quickref.md) | ✅ written | `bc5744b` |
+| **[docs/work-logs/2026-04-30-deploy-outcome.md](../work-logs/2026-04-30-deploy-outcome.md)** | ✅ **TODAY'S DEPLOY OUTCOME — 6/6 verification checks PASS, walk-away monitor scheduled, May 1 morning checklist** | (this commit) |
+| **THIS DOC** (`INBOX-INTEGRITY-PROGRAM.md`) | 🚧 updated end of evening session | — |
 
 ### 3.3 Cross-workspace integrity firewall (Plan A)
 
 | # | Phase | Status | Blocker | Notes |
 |:-:|-------|:------:|---------|-------|
 | 0 | Operator confirms keyword seed table (§6 of plan) | 👤 | needs operator input | Defaults proposed; especially Charm multi-keyword + Barrena `guardare` correction |
+| 0a | **Audit 2026-04-30 evening: confirmed firewall coverage = 0% in production** | ✅ | — | 9 of 11 active workspaces have `clients.domain_pattern = NULL`; Charm + Selery have empty string `""` (which makes `LIKE` match anything — false safety). 193 incubating inboxes will graduate over next ≤4 BD with NO firewall predicate. Mitigating factor: by manual eyeball, all 193 currently match expected workspace pattern. This is fragile, not durable. See deploy-outcome work log §"Q2". |
 | 1 | Migration 101: schema (is_quarantined columns, no CHECK yet) | ⏳ | D-1 from §10 | |
 | 2 | Populate clients.domain_pattern with seed | ⏳ | D-1 | |
 | 3 | Backfill: quarantine existing pollution + null pool tags | ⏳ | accuracy gates passing | EB-side companion strip script needs operator approval per workspace |
@@ -116,16 +119,17 @@ Status keys: ✅ done · 🚧 in progress · ⏳ pending · 🔒 blocked · 👤
 | # | Phase | Status | Blocker | Notes |
 |:-:|-------|:------:|---------|-------|
 | 1 | Validate baseline accuracy (audit script passes for relevant workspaces) | 🚧 | 9 of 11 pass; SPUI + Spout fail | Could proceed for the 9 passing |
-| 2 | Extract `apps/incubation-watcher/` (lifecycle_tag_sync only) | ⏳ | Phase 1 partial | Most isolated module; lowest risk |
-| 3 | Shadow-mode validation 7+ days | ⏳ | Phase 2 done | |
-| 4 | Switch ownership: feature-flag off in emailbison-sync, on in incubation-watcher | ⏳ | Phase 3 done | |
+| 2 | Extract `apps/incubation-watcher/` (lifecycle_tag_sync only) | ✅ | — | Shipped 2026-04-30 evening. Coolify UUID `pssgc0c8w4sooos8gs0scsos`. Container alive in `sleep infinity` mode for shadow validation (no daemon yet — operator-invoked). 31 unit tests pass. |
+| 3 | Shadow-mode validation 7+ days | 🚧 | starts May 1 morning capture | First capture: `incubation-watcher check --workspace Charm` at ~02:50 UTC, then `shadow-compare --since 2026-05-01T00:00:00Z` at ~03:30 UTC. ⚠ `coolify.py exec` does not exist — use local invocation with prod env vars OR `run-sql` HTTP endpoint. |
+| 4 | Switch ownership: feature-flag off in emailbison-sync, on in incubation-watcher | ⏳ | 7 days clean shadow validation | |
+| 4a | v2 daemon mode (continuous loop) | ⏳ | after Phase 4 cutover OR alongside it | Today's Dockerfile is `CMD ["sleep","infinity"]`. v2 changes to `CMD ["incubation-watcher","daemon"]` + new `daemon` subcommand that loops `run --apply=False` on a schedule. Without daemon mode, operator must invoke daily — the shadow-validation data the cutover decision needs. |
 | 5 | Decide whether to extract `kill-watcher`, `inventory-manager`, `tag-writer` based on Phase 4 outcomes | ⏳ | 30 days post-Phase-4 | Don't commit to all 6 services until incubation-watcher proves the pattern |
 
 ### 3.6 Operator-driven actions (require human review/decision)
 
 | Workstream | Status | Notes |
 |------------|:------:|-------|
-| Deploy commits `94fd0fa` + `6d5f2a3` to charm-api + emailbison-sync | 👤 | Coolify deploys: app-uuids `nckgggwww8sggg0kc4wo00o8` (api) + `l4g44o00s4cccg804osswgcc` (sync) |
+| ~~Deploy commits to charm-api + emailbison-sync~~ | ✅ | **emailbison-sync DEPLOYED 2026-04-30 23:12 UTC** (deployment uuid `fo8cwg00k40gk0o0cwog0s00`). 6/6 verification checks PASS, walk-away monitor scheduled. charm-api skipped per quickref §5 (no relevant changes). See deploy-outcome work log. |
 | Charm zombie CSV review (142 rows, 127 currently Connected) | 👤 | [docs/audits/2026-04-30-zombie-review-charm.csv](../audits/2026-04-30-zombie-review-charm.csv) — fill `operator_decision` column, run SQL by hand |
 | Re-run accuracy audit weekly | 👤 | `py scripts/audit_system_accuracy.py` |
 | ~~Investigate Spout's 641 disconnected_timeout zombies~~ — RECLASSIFIED 2026-04-30 end of session: Spout has 0 disconnected_timeout zombies. The 641 dead+Connected are CORRECTLY reputation-killed (183 spam, 162 hard_bounces, 267 fresh-inbox failures). 553 of 641 came from a single 2026-02-14 mass provisioning event (550 inboxes killed across 10 *spoutwater.com domains). New investigation: **Hypertide root-cause for the 2026-02-14 batch failure.** | 👤 | See work-log §"Workstream D investigation — Spout 641 reclassified" |
@@ -199,20 +203,45 @@ Confusion source. Words mean specific things in this program; use them precisely
 ## 8. Sequencing (the "what ships when" diagram)
 
 ```
-TODAY (shipped 94fd0fa, 6d5f2a3, this session's kill_processor patch)
+TODAY (2026-04-30) — shipped + deployed
 ─────────────────────────────────────────────────────────────────────
    ✅ lifecycle_tag_sync workspace-orphan handling
+   ✅ lifecycle_tag_sync race-check + per-row exception isolation
    ✅ disconnected_timeout removed as kill trigger
    ✅ kill_processor pool-tag strip retry-on-transient
+   ✅ set_tag_sync per-row exception isolation
    ✅ accuracy audit script + Charm zombie CSV
-   ✅ All plan docs + ADR-009 + work log + production docs
+   ✅ apps/incubation-watcher/ extracted, 31 unit tests pass
+   ✅ shadow-compare subcommand for May 1 parity validation
+   ✅ Methodic deploy runbook + quickref + baseline JSON
+   ✅ ADR-009 + plan docs + work logs + production docs
+
+   ✅ DEPLOYED 2026-04-30 evening
+       - incubation-watcher provisioned (Coolify uuid pssgc0c8w4sooos8gs0scsos)
+         alive in sleep-infinity mode (operator-invoked, no daemon yet)
+       - emailbison-sync redeployed at 23:12 UTC (deployment fo8cwg00k40gk0o0cwog0s00)
+         6/6 verification checks PASS, walk-away monitor scheduled
+
+   ⚠ DISCOVERED 2026-04-30 evening (audit Q2)
+       - clients.domain_pattern coverage = 0% in production
+         (NULL for 9 workspaces, "" for Charm + Selery)
+       - Mitigated today by manual eyeball — all 193 incubating inboxes
+         match expected workspace pattern by inspection
+       - Firewall plan Phase 0a updated to reflect this gap
+
+TOMORROW MORNING (May 1)
+─────────────────────────
+   ⏳ ~02:50 UTC: pre-cycle candidate snapshot (incubation-watcher check)
+   ⏳ ~03:30 UTC: shadow-compare run, output saved
+   ⏳ Afternoon: pre-cycle list compared to actual_only set, parity verified
+   ⏳ Re-run 6 verification checks at start of day
 
 THIS WEEK (operator-driven)
 ─────────────────────────────
-   👤 Deploy 94fd0fa + 6d5f2a3 + this session's patch
    👤 Operator review Charm zombie CSV (142 rows)
    👤 Confirm keyword seed for firewall plan
    👤 Generate Spout zombie CSV + investigate root cause
+   👤 Populate clients.domain_pattern for the 11 active workspaces
    🚧 Re-run accuracy audit, verify SPUI gap closed (sync timing)
 
 NEXT WEEK (gated on this-week's outcomes)
