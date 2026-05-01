@@ -262,19 +262,82 @@ Is it spam_complaint?
 Inbox-level kill. Domain continues operating. Promote B-Set inbox.
 ```
 
-## SMTP Code Classification
+## SMTP Code Classification (B2B: Microsoft 365 + Google Workspace)
 
-Bounces are classified by extracting SMTP codes from message bodies:
+Bounces are classified by extracting SMTP enhanced status codes from message bodies via regex (`extract_bounce_reason` in `sync_modules/sync_events.py`). The classification is provider-aware: Microsoft 365 and Google Workspace have overlapping but not identical code semantics.
 
-| Code | Extended | Classification | Kill Trigger |
-|------|----------|----------------|--------------|
-| 550 | 5.1.1 | `hard_unknown` | `hard_unknown_24h` |
-| 550 | 5.1.0 | `hard_unknown` | `hard_unknown_24h` |
-| 550 | 5.7.1 | `hard_blocked` | `hard_blocked_24h` |
-| 550 | 5.7.51 | `hard_blocked` + spam | `spam_complaint` |
-| 552 | 5.2.2 | `soft_full` | None |
-| 452 | 4.2.2 | `soft_full` | None |
-| 421 | 4.7.0 | `soft_temp` | None |
+**Critical clarification (2026-05-01 audit):** No SMTP code from either Microsoft 365 or Google Workspace means "user reported as spam." Real complaint signals route out-of-band — see § _Spam complaint detection_ below. Earlier versions of this table mapped `550 5.7.51` to `spam_complaint`; that was incorrect (5.7.51 is `TenantInboundAttribution`, a B2B partner-connector restriction). Removed.
+
+### Recipient-side rejections (NORMAL — count toward `hard_blocked_24h` / `hard_unknown_24h` thresholds)
+
+| Code | Provider | Meaning | bounce_type | Kill trigger |
+|------|----------|---------|-------------|--------------|
+| 550 5.1.0 | Both | Sender address rejected | `hard_unknown` | `hard_unknown_24h` |
+| 550 5.1.1 | Both | Mailbox doesn't exist | `hard_unknown` | `hard_unknown_24h` |
+| 550 5.1.10 | MS | Recipient not found by SMTP lookup | `hard_unknown` | `hard_unknown_24h` |
+| 553 5.1.2 | Gmail | Domain not found | `hard_unknown` | `hard_unknown_24h` |
+| 550 5.2.1 | Both | Recipient account inactive / receive rate exceeded | `hard_unknown` | `hard_unknown_24h` |
+| 550 5.4.1 | MS | Recipient address rejected (admin policy / no longer employed / org rule) | `hard_unknown` | `hard_unknown_24h` |
+| 554 5.4.14 | MS | Hop count exceeded / mail loop | `hard_unknown` | `hard_unknown_24h` |
+| 550 5.0.350 | MS | Generic wrapper for non-specific errors from external recipient server (read body) | varies | varies (depends on body content) |
+| 550 5.4.317 | MS | Recipient anti-spam policy block | `hard_blocked` | `hard_blocked_24h` |
+| 550 5.7.1 | Both | Generic policy block — auth, IP-rep, distribution group, transport rule | `hard_blocked` | `hard_blocked_24h` |
+| 550 5.7.12 | MS | Recipient set up to reject outside-org mail | `hard_blocked` | `hard_blocked_24h` |
+| 550 5.7.23 | MS | SPF violation at recipient | `hard_blocked` | `hard_blocked_24h` |
+| 550 5.7.26 | Gmail | DMARC/SPF/DKIM unauthenticated (sender setup issue) | `hard_blocked` | `hard_blocked_24h` |
+| 550 5.7.27 | Gmail | SPF specifically failed | `hard_blocked` | `hard_blocked_24h` |
+| 550 5.7.28 | Gmail | **Algorithmic: unusual unsolicited email rate detected** | `hard_blocked` | `hard_blocked_24h` (reputation alarm) |
+| 550 5.7.30 | Gmail | DKIM specifically failed | `hard_blocked` | `hard_blocked_24h` |
+| 550 5.7.32 | Gmail | From-header alignment failure | `hard_blocked` | `hard_blocked_24h` |
+| 550 5.7.40 | Gmail | Missing DMARC record/policy | `hard_blocked` | `hard_blocked_24h` |
+| 550 5.7.51 | MS | TenantInboundAttribution / partner connector restriction (B2B config issue) | `hard_blocked` | `hard_blocked_24h` |
+| 550 5.7.124/.133/.134/.136 | MS | Distribution group / mailbox / mail-user set to reject outside-org | `hard_blocked` | `hard_blocked_24h` |
+| 550 5.7.193 | MS | Microsoft tenant-level rejection (recipient policy) | `hard_blocked` | `hard_blocked_24h` |
+| 550 5.7.350 | MS | Recipient external server detected as spam (server-level filter) | `hard_blocked` | `hard_blocked_24h` |
+| 550 5.7.520 | MS | Recipient anti-spam policy variant (5.7.5xx range) | `hard_blocked` | `hard_blocked_24h` |
+| 550 5.7.703 | MS | Recipient Tenant Allow/Block List blocked | `hard_blocked` | `hard_blocked_24h` |
+
+### Sender-side severe warnings (RARE but CRITICAL — your account/IP/tenant has been banned)
+
+These codes mean Microsoft (or Gmail's algorithmic system) has explicitly banned your sending. They are NOT recipient errors — they are direct accusations that your reputation is in trouble. Future code should treat these as instant-kill candidates (currently fall through to `hard_blocked_24h ≥ 2` — see Plan D Pass 3 in `docs/plans/kill-trigger-accuracy.md`).
+
+| Code | Provider | Meaning | Severity |
+|------|----------|---------|----------|
+| 550 5.7.501 | MS | "Spam abuse detected" — sending account banned | **CRITICAL** |
+| 550 5.7.502 | MS | "Banned sender" | **CRITICAL** |
+| 550 5.7.503 | MS | "Banned sender" | **CRITICAL** |
+| 550 5.7.508 | MS | IPv6 send-rate exceeded | High |
+| 550 5.7.511 | MS | "Access denied, banned sender" — IP on Microsoft blocklist (delist@microsoft.com) | **CRITICAL** |
+| 550 5.7.606–649 | MS | Banned sending IP range | **CRITICAL** |
+| 550 5.7.705 | MS | Tenant exceeded outbound abuse threshold | **CRITICAL** |
+| 550 5.7.708 | MS | Traffic not accepted from this IP — tenant flagged | **CRITICAL** |
+| 550 5.7.750 | MS | Unregistered domain block | High |
+| 550 5.7.800 | MS | EHLO/P1/P2 sender domain banned | **CRITICAL** |
+| 550 5.7.509 | MS | Sender DMARC reject policy hit recipient | High |
+
+### Soft / temporary
+
+| Code | Provider | Meaning | bounce_type | Kill trigger |
+|------|----------|---------|-------------|--------------|
+| 552 5.2.2 / 452 4.2.2 | Both | Mailbox full | `soft_full` | None |
+| 552 5.3.4 | Gmail | Message exceeds size/header limits | `soft_full` | None |
+| 421 4.7.0 | Both | Generic temporary failure / PTR / TLS | `soft_temp` | None |
+| 421 4.7.26 / 4.7.27 / 4.7.30 / 4.7.40 | Gmail | Rate-limited variant of auth-failure codes (.26/.27/.30/.40 family) | `soft_temp` | None |
+| 421 4.7.28 | Gmail | Unusual unsolicited email rate (rate-limited) | `soft_temp` | None |
+| 421 4.7.29 | Gmail | TLS required (rate-limited) | `soft_temp` | None |
+
+### Spam complaint detection — out-of-band, NOT in SMTP codes
+
+For B2B cold email targeting Microsoft 365 and Google Workspace, the only authoritative spam-complaint signals come through dedicated channels — not bounces, not NDRs:
+
+| Provider | Channel | Mechanism |
+|----------|---------|-----------|
+| Microsoft 365 | **JMRP** (Junk Email Reporting Program) | Separate ARF-formatted emails sent to a registered FBL recipient address when recipients click "Report as Junk" in Outlook. Free; enroll via SNDS at `https://sendersupport.olc.protection.outlook.com`. |
+| Google Workspace | **Postmaster Tools** | Dashboard-only — reports complaint rate (not individual events). Requires `Feedback-ID:` header on outbound mail. |
+
+`apps/fbl-consumer/` (Plan D Pass 5, future) will ingest JMRP ARF emails and surface the Postmaster Tools rate. Until then, `complaints_lifetime` increments come from two paths: (1) lead-reply phrase match on `folder='inbox'` responses (`detect_spam_in_response`), and (2) bounce-body FBL inference (`is_spam_complaint`). Path (2) is structurally unsound — no SMTP code in the 5.7.x family means user complaint — and is scheduled to be disabled in Plan D Pass 2. See [docs/plans/kill-trigger-accuracy.md](../plans/kill-trigger-accuracy.md).
+
+**Yahoo CFL is irrelevant to Charm's scope** (B2B sending only — no consumer Yahoo recipients). All references in this codebase to Yahoo-specific FBL paths can be safely ignored.
 
 ## Daily Counter Reset
 
