@@ -115,8 +115,15 @@ class EngagementSyncModule:
             if not inboxes:
                 return await audit.complete(metadata={'inboxes': 0})
 
-            # Yesterday's date range for daily snapshot
-            yesterday = (datetime.now(timezone.utc) - timedelta(days=1)).strftime('%Y-%m-%d')
+            # Yesterday's date — keep BOTH a date object (for asyncpg date binding)
+            # AND a string (for EmailBison API + _parse_event_stats which both want
+            # ISO strings). Pre-2026-05-01 only had the string form, which broke the
+            # asyncpg INSERT below with: "invalid input for query argument $3:
+            # 'YYYY-MM-DD' ('str' object has no attribute 'toordinal')". Result was
+            # 100% engagement-sync failure for ~weeks unnoticed (records_failed
+            # tracked, but the surface of error_details JSONB was never queried).
+            yesterday_date = (datetime.now(timezone.utc) - timedelta(days=1)).date()
+            yesterday = yesterday_date.isoformat()  # 'YYYY-MM-DD' for EB API + parse
 
             print(f"  [Engagement] {workspace_name}: {len(inboxes)} inboxes, date={yesterday}")
 
@@ -150,7 +157,7 @@ class EngagementSyncModule:
                                 bounced = EXCLUDED.bounced,
                                 unsubscribed = EXCLUDED.unsubscribed
                         """,
-                            inbox['id'], workspace_id, yesterday,
+                            inbox['id'], workspace_id, yesterday_date,
                             day_data.get('opens', 0),
                             day_data.get('unique_opens', 0),
                             day_data.get('replies', 0),
