@@ -1,7 +1,7 @@
 ---
 title: Inbox Integrity Program — Master Tracker
 created: 2026-04-30
-updated: 2026-05-01 (firewall Phase 0+2 + kill-trigger Pass 1+2+4 + silent-error fix shipped)
+updated: 2026-05-01 evening (Plan A complete · Plan D Passes 1-4 + sender-ban detection + response-parsing-only constraint locked in D-M)
 status: ACTIVE
 purpose: Single-page index of all in-flight inbox-state-machine work
 review-cadence: end of each session, update statuses
@@ -33,14 +33,14 @@ These aren't independent — fixing #2 requires verifying #3 first, fixing #4 re
 
 ## 2. Constituent plans
 
-Each plan is a deep-dive document. This index is the cross-reference.
+Each plan is a deep-dive document. This index is the cross-reference. Status as of 2026-05-01 evening:
 
-| Plan | Lines | Status | Phase shipped today | Phases remaining |
-|------|------:|--------|---------------------|------------------|
-| [cross-workspace-integrity-firewall.md](cross-workspace-integrity-firewall.md) | ~600 | PROPOSED | none — pending operator confirm of keyword seed | All 7 phases pending |
-| [connection-state-machine.md](connection-state-machine.md) | ~400 | PARTIAL | Phase 1 (disconnected_timeout removed) | Phases 2-6 pending accuracy validation |
-| [emailbison-sync-decomposition.md](emailbison-sync-decomposition.md) | ~600 | PROPOSED | none | Phases 1-4 pending |
-| [kill-trigger-accuracy.md](kill-trigger-accuracy.md) | ~500 | PROPOSED — Pass 1 ready | none — drafted 2026-05-01 evening | All 5 phases pending; Pass 1 (docs) shippable today |
+| Plan | Lines | Status | What shipped | What remains |
+|------|------:|--------|--------------|--------------|
+| [cross-workspace-integrity-firewall.md](cross-workspace-integrity-firewall.md) | ~600 | **COMPLETE** | All 8 phases shipped + Phase 0d EB-side audit + cleanup. Migration 101 (columns) + 103 (CHECK constraint) live. `clients.domain_pattern` populated for all 11 workspaces. Phase 5a (upsert gate) + 5b (lifecycle_tag_sync guards) shipped. **HR-1 enforced structurally at DB layer.** | Phase 3 (backfill) was a no-op since 0 outliers — closed. |
+| [connection-state-machine.md](connection-state-machine.md) | ~400 | PARTIAL | Phase 1 (disconnected_timeout removed) shipped 2026-04-30 | Phases 2-6 pending. Phase 2 (notification ladder) is the next natural ship. |
+| [emailbison-sync-decomposition.md](emailbison-sync-decomposition.md) | ~600 | IN PROGRESS | Phase 2 (`apps/incubation-watcher/` extracted) shipped 2026-04-30 | Phase 3 (shadow validation) running — 1 day in of 7 needed. Phase 4 (cutover) gated on shadow data. Phase 4a (daemon mode) needed for shadow data to accumulate without operator intervention. |
+| [kill-trigger-accuracy.md](kill-trigger-accuracy.md) | ~500 | **MOSTLY COMPLETE** | Passes 1, 2, 3, 4 shipped (docs rewrite + bounce-FBL disable + sender-ban alert-first + body_full retention + silent-error fix). 23+25+69 = 117 unit tests covering parser/firewall/sender-ban. | Pass 5 BLOCKED on operator (no JMRP/Postmaster Tools — see D-M). Pass 6 (sync_campaigns/engagement silent-error pattern) optional. |
 
 Plus the foundational records:
 
@@ -99,15 +99,15 @@ Status keys: ✅ done · 🚧 in progress · ⏳ pending · 🔒 blocked · 👤
 | 0b | **Cleanup 2026-05-01: soft-deleted 143 unpurchased candidate domains + forward prevention** | ✅ | — | Charm 86 + Selery 57 unpurchased rows had `is_active=TRUE` despite never being purchased. Soft-deleted. Forward prevention: 4 code changes (commit `ba39fe5`). Active count now: Charm 40, Selery 50, others unchanged. |
 | 0c | Audit 2026-05-01: data-driven domain pattern extraction per workspace | ✅ | — | Pulled all owned domains, extracted brand keywords. 0 inbox-level cross-pollution detected across all 11 workspaces / 4,207 active inboxes. 4 new Charm sub-brands (eudalie-bio, inspi-cure-eu, mydealslift, stylepad24) confirmed legitimate per D-F. |
 | 0d | Fleet-wide EB tenant audit + Sammy zombie cleanup | ✅ | — | Pulled all 11 workspaces' EB tenants via API. Found Sammy EB clean (historical "22 SPUI in Sammy" issue resolved). Found 2 setspui rows in Spout EB tenant (cross-tenant duplicates with eb_ids 8860/8859 — Phase 5a dedup prevented DB pollution). 22 SPUI-domain DB rows still labeled `workspace_id=Sammy` (cosmetic — already dead/inactive, EB confirmed in SPUI tenant since 2026-04-30 17:34 kill). Cleanup SQL: moved 22 to `workspace_id=SPUI`, annotated 2 setspui rows. SPUI now: 82 active+live / 13 active+dead / 81 inactive+live / 45 inactive+dead (was 23 dead, +22 zombies = 45). Operator action remaining: clean 2 cross-tenant duplicates from EB Spout via EB UI. |
-| 1 | **Migration 101: schema (is_quarantined columns, no CHECK yet)** | ✅ | — | Shipped 2026-05-01 evening. Adds `is_quarantined BOOLEAN NOT NULL DEFAULT FALSE`, `quarantine_reason VARCHAR`, `quarantine_detected_at TIMESTAMPTZ` + partial index on `is_quarantined=TRUE`. Verified: 0/4786 active rows quarantined (default value). CHECK constraint `chk_quarantined_no_pool` deferred to Phase 4 / migration 103. |
-| 4 | **Migration 103: chk_quarantined_no_pool CHECK constraint (HR-1 structural)** | ✅ | — | Shipped 2026-05-01 evening. Pre-check verified 0 violating rows. Constraint refuses any write where `is_quarantined=TRUE AND inventory_pool_status IS NOT NULL`. Real violation attempt against production confirmed enforcement: write rejected with `violates check constraint "chk_quarantined_no_pool"`, no row state changed. Procedural CASE branch in sync_accounts.upsert (Phase 5a) becomes belt-and-suspenders; this constraint is now load-bearing. |
-| 2 | **Populate clients.domain_pattern with seed** | ✅ | — | Shipped 2026-05-01 evening. All 11 workspaces have correct domain_pattern. Verified: 0 outliers across 4,207 active inboxes when running the firewall SQL predicate against live data. |
-| 3 | Backfill: quarantine existing pollution + null pool tags | ⏳ | accuracy gates passing | EB-side companion strip script needs operator approval per workspace |
-| 4 | Migration 103: add CHECK constraint | ⏳ | Phase 3 done | Cannot ship before backfill nulls existing pollution |
-| 5 | Code changes: gate at sync_accounts.upsert + filters in pool/lifecycle/set_tag/health | ⏳ | Phase 4 done | |
-| 6 | Tests + audit gate verification | ⏳ | Phase 5 done | |
-| 7 | Deploy + post-deploy verification | ⏳ | Phase 6 done | |
-| 8 | eod-reapply integration (refuse target if quarantined inbox in workspace) | ⏳ | Phase 7 done | |
+| 1 | **Migration 101: schema (is_quarantined columns, no CHECK yet)** | ✅ | — | Shipped 2026-05-01 evening (commit `96b6257`). 3 columns + partial index. 0/4786 quarantined initially. |
+| 2 | **Populate clients.domain_pattern with seed** | ✅ | — | Shipped 2026-05-01 (commit `9c799b1`). All 11 workspaces. Verified 0 outliers across 4,207 active inboxes. |
+| 3 | Backfill: quarantine existing pollution | ✅ closed | — | NO-OP — the 2026-05-01 fleet audit (Phase 0d) confirmed 0 cross-tenant pollution at the inbox level across all 11 workspaces. Phase 0d cleanup additionally moved 22 SPUI-Sammy zombies. No backfill SQL needed. |
+| 4 | **Migration 103: chk_quarantined_no_pool CHECK constraint** | ✅ | — | Shipped 2026-05-01 evening (commit `060cabe`). HR-1 enforced structurally. Real violation attempt rejected with proper error. |
+| 5a | **Phase 5a: gate at sync_accounts.upsert** | ✅ | — | Shipped 2026-05-01 (commit `f43b7b4`). `matches_workspace_pattern()` helper + 25 unit tests. Per-row `is_quarantined` computed at upsert time. Pool forced NULL on quarantined rows. Shadow check verified 0 false positives. |
+| 5b | **Phase 5b: lifecycle_tag_sync downstream guards** | ✅ | — | Shipped 2026-05-01 (commit `c9a437c`). 3 SQL guards added: `_graduate_mature_inboxes` SELECT + UPDATE race-check + `_tag_new_warmup_inboxes` SELECT. Refuses to graduate or EB-tag quarantined rows. |
+| 6 | Tests + audit gate verification | ✅ | — | 25 firewall unit tests at `tests/test_firewall.py`; full test suite 221 passed / 29 skipped. Production shadow check: 0 outliers across 4,207 active inboxes. |
+| 7 | Deploy + post-deploy verification | ✅ | — | emailbison-sync redeployed twice for Phase 5a + 5b. Verified `running:healthy` post-deploy. Active accounts sync (Barrena 39 records / 0 failed) confirmed firewall code path executes cleanly in production. |
+| 8 | eod-reapply integration (refuse target if quarantined inbox in workspace) | ⏳ | — | Future — when an operator runs eod-reapply, refuse to retarget any quarantined inbox in the target workspace. Currently no quarantined rows so it's a no-op; ship when convenient. |
 
 ### 3.4 Connection state machine (Plan B)
 
@@ -224,70 +224,88 @@ Confusion source. Words mean specific things in this program; use them precisely
 ## 8. Sequencing (the "what ships when" diagram)
 
 ```
-TODAY (2026-04-30) — shipped + deployed
+SHIPPED (2026-04-30 + 2026-05-01) — 20 commits across 2 sessions
 ─────────────────────────────────────────────────────────────────────
-   ✅ lifecycle_tag_sync workspace-orphan handling
-   ✅ lifecycle_tag_sync race-check + per-row exception isolation
-   ✅ disconnected_timeout removed as kill trigger
-   ✅ kill_processor pool-tag strip retry-on-transient
-   ✅ set_tag_sync per-row exception isolation
+
+SILENT-FAILURE HARDENING (foundation, shipped 2026-04-30)
+   ✅ lifecycle_tag_sync workspace-orphan handling (94fd0fa)
+   ✅ lifecycle_tag_sync race-check + per-row exception isolation (d775761)
+   ✅ disconnected_timeout removed as kill trigger (94fd0fa)
+   ✅ kill_processor pool-tag strip retry-on-transient (e7bbd59)
+   ✅ set_tag_sync per-row exception isolation (3ef8400)
    ✅ accuracy audit script + Charm zombie CSV
    ✅ apps/incubation-watcher/ extracted, 31 unit tests pass
-   ✅ shadow-compare subcommand for May 1 parity validation
-   ✅ Methodic deploy runbook + quickref + baseline JSON
-   ✅ ADR-009 + plan docs + work logs + production docs
+   ✅ shadow-compare subcommand
+   ✅ ADR-009 + plan docs + deploy runbook
 
-   ✅ DEPLOYED 2026-04-30 evening
-       - incubation-watcher provisioned (Coolify uuid pssgc0c8w4sooos8gs0scsos)
-         alive in sleep-infinity mode (operator-invoked, no daemon yet)
-       - emailbison-sync redeployed at 23:12 UTC (deployment fo8cwg00k40gk0o0cwog0s00)
-         6/6 verification checks PASS, walk-away monitor scheduled
+PRODUCTION DEPLOYS (2026-04-30 + 2026-05-01)
+   ✅ incubation-watcher provisioned (sleep-infinity, operator-invoked)
+   ✅ emailbison-sync redeployed multiple times — last with Plan A Phase 5
+   ✅ charm-api redeployed for domain is_active semantic
+   ✅ Master fast-forwarded to feature branch — branches in sync
 
-   ⚠ DISCOVERED 2026-04-30 evening (audit Q2)
-       - clients.domain_pattern coverage = 0% in production
-         (NULL for 9 workspaces, "" for Charm + Selery)
-       - Mitigated today by manual eyeball — all 193 incubating inboxes
-         match expected workspace pattern by inspection
-       - Firewall plan Phase 0a updated to reflect this gap
+PLAN A — CROSS-WORKSPACE INTEGRITY FIREWALL (complete)
+   ✅ Phase 0  — keyword seeds confirmed for 11 workspaces
+   ✅ Phase 0a — audit found firewall coverage = 0% (problem statement)
+   ✅ Phase 0b — 143 unpurchased domains soft-deleted + 4 forward-prevention code changes
+   ✅ Phase 0c — data-driven pattern extraction, 0 inbox-level pollution
+   ✅ Phase 0d — fleet EB-tenant audit + 22 SPUI-Sammy zombies reattributed
+   ✅ Phase 1  — migration 101: is_quarantined columns + partial index
+   ✅ Phase 2  — clients.domain_pattern populated for 11 workspaces
+   ✅ Phase 3  — backfill closed (no-op since 0 outliers)
+   ✅ Phase 4  — migration 103: chk_quarantined_no_pool CHECK (HR-1 structural)
+   ✅ Phase 5a — gate at sync_accounts.upsert + 25 unit tests + shadow-verified
+   ✅ Phase 5b — lifecycle_tag_sync downstream guards (3 SQL filters)
+   ✅ Phase 6  — tests + audit gates passing
+   ✅ Phase 7  — deploy + post-deploy verification
+   ⏳ Phase 8  — eod-reapply integration (no-op currently; ship when convenient)
 
-TOMORROW MORNING (May 1)
-─────────────────────────
-   ⏳ ~02:50 UTC: pre-cycle candidate snapshot (incubation-watcher check)
-   ⏳ ~03:30 UTC: shadow-compare run, output saved
-   ⏳ Afternoon: pre-cycle list compared to actual_only set, parity verified
-   ⏳ Re-run 6 verification checks at start of day
+PLAN D — KILL-TRIGGER ACCURACY (Passes 1-4 + 3 done; 5 blocked, 6 optional)
+   ✅ Pass 1  — kill-triggers.md SMTP table rewrite (full B2B map)
+   ✅ Pass 2  — bounce-FBL inference disabled + 69 parser tests
+   ✅ Pass 3  — sender-ban code detection (alert-first; 23 tests)
+   ✅ Pass 4  — body_full retention for bounces + silent-error fix
+   🔒 Pass 5  — out-of-band FBL ingestion (BLOCKED on operator decisions, see D-M)
+   ⏳ Pass 6  — apply silent-error pattern to sync_campaigns + sync_engagement (optional follow-up)
 
-THIS WEEK (operator-driven)
-─────────────────────────────
-   👤 Operator review Charm zombie CSV (142 rows)
-   ✅ Firewall keyword seed confirmed + clients.domain_pattern populated (2026-05-01)
-   ✅ Generated-domain cleanup (143 unpurchased rows soft-deleted, 4 forward-prevention code changes)
-   👤 Generate Spout zombie CSV + investigate root cause
-   🚧 Re-run accuracy audit, verify SPUI gap closed (sync timing)
-   ✅ Kill-trigger accuracy Pass 1 — kill-triggers.md SMTP table rewrite (commit a206da3)
-   ✅ Kill-trigger accuracy Pass 2 — bounce-FBL inference disabled + 69 parser tests (commit 8dd3011)
-   ✅ Kill-trigger accuracy Pass 4 — body_full kept for bounces + silent-error fix (commit 995cd74)
-   ⏳ Kill-trigger accuracy Pass 3 — sender-ban code detection (5.7.501-511 family)
-   ⏳ Kill-trigger accuracy Pass 6 — apply silent-error pattern to sync_campaigns + sync_engagement
-   ✅ Firewall Phase 1 — migration 101 shipped (is_quarantined columns + partial index)
-   ✅ Firewall Phase 5a — gate at sync_accounts.upsert (commit f43b7b4)
-   ✅ Firewall Phase 5b — lifecycle_tag_sync downstream guards (commit c9a437c)
-   ✅ Firewall Phase 4 — migration 103 chk_quarantined_no_pool CHECK constraint (HR-1 structural)
-   ✅ Firewall Phase 0d — fleet EB audit + Sammy zombie cleanup (22 reattributed)
-   ⏳ Firewall Phase 3 — backfill quarantine state on existing rows (currently no-op since 0 outliers)
+CONNECTION STATE MACHINE (Plan B — Phase 1 only)
+   ✅ Phase 1 — disconnected_timeout removed (2026-04-30)
 
-NEXT WEEK (gated on this-week's outcomes)
-───────────────────────────────────────────
-   ⏳ Firewall Phase 1-3: schema + populate + backfill (per workspace)
-   ⏳ Connection plan Phase 2: notification ladder (24h/3d/7d/20d)
-   ⏳ Begin apps/incubation-watcher/ extraction (decomposition)
+DECOMPOSITION (Plan C — Phase 2 only; shadow validation in flight)
+   ✅ Phase 2 — apps/incubation-watcher/ extracted
+   🚧 Phase 3 — 7-day shadow validation (Day 1 of 7)
 
-NEXT SPRINT (gated on firewall + decomposition validation)
-─────────────────────────────────────────────────────────────
-   ⏳ ADR-008 step 2: collapse pool + lifecycle into inbox_status
-   ⏳ Decide on extracting kill-watcher, inventory-manager, tag-writer
-   ⏳ Workspace package assignments
+
+PENDING — operator-driven (no system code work)
+─────────────────────────────────────────────────────────────────────
+   👤 Charm zombie CSV review (142 rows, 127 currently Connected)
+   👤 Subscription-cancel candidates (91 domains)
+   👤 20d+ disconnect queue (666 fleet-wide)
+   👤 Package recommendations CSV
+   👤 Hypertide root-cause for 2026-02-14 Spout mass-provisioning failure
+   👤 Clean 2 cross-tenant SPUI duplicates from EB Spout (eb_ids 8860, 8859)
+   👤 Operator decision: enroll in JMRP and/or Postmaster Tools (unblocks Pass 5)
+
+
+PENDING — system code, shippable next session
+─────────────────────────────────────────────────────────────────────
+   ⏳ Connection state machine Phase 2 — notification ladder (24h/3d/7d/20d Slack)
+   ⏳ Decomposition Phase 4a — incubation-watcher v2 daemon mode
+   ⏳ Decomposition Phase 4 — watcher cutover (gated on Day 7 of shadow)
+   ⏳ Plan D Pass 6 — sync_campaigns + sync_engagement silent-error pattern
+   ⏳ Plan D Pass 3 alert→kill flip (gated on 7 days of clean alert data)
+   ⏳ Engagement decay detection — proxy reputation signal (closes part of the
+       gap created by no JMRP/Postmaster Tools — uses open/reply rates we
+       already sync)
+
+
+NEXT SPRINT
+─────────────────────────────────────────────────────────────────────
+   ⏳ ADR-008 step 2 — collapse pool + lifecycle into single inbox_status
+   ⏳ Workspace package assignments (operator)
    ⏳ inbox_audits overhaul (deferred this sprint)
+   ⏳ Decide on extracting kill-watcher, inventory-manager, tag-writer
+       (30 days post-incubation-watcher cutover)
 ```
 
 ---
