@@ -33,7 +33,7 @@ These aren't independent — fixing #2 requires verifying #3 first, fixing #4 re
 
 ## 2. Constituent plans
 
-Each plan is a deep-dive document. This index is the cross-reference. Status as of 2026-05-01 evening:
+Each plan is a deep-dive document. This index is the cross-reference. Status as of 2026-05-02 (post inbox-audit-overhaul Phase 4 deploy):
 
 | Plan | Lines | Status | What shipped | What remains |
 |------|------:|--------|--------------|--------------|
@@ -41,6 +41,7 @@ Each plan is a deep-dive document. This index is the cross-reference. Status as 
 | [connection-state-machine.md](connection-state-machine.md) | ~400 | PARTIAL | Phase 1 (disconnected_timeout removed) shipped 2026-04-30 | Phases 2-6 pending. Phase 2 (notification ladder) is the next natural ship. |
 | [emailbison-sync-decomposition.md](emailbison-sync-decomposition.md) | ~600 | IN PROGRESS | Phase 2 (`apps/incubation-watcher/` extracted) shipped 2026-04-30 | Phase 3 (shadow validation) running — 1 day in of 7 needed. Phase 4 (cutover) gated on shadow data. Phase 4a (daemon mode) needed for shadow data to accumulate without operator intervention. |
 | [kill-trigger-accuracy.md](kill-trigger-accuracy.md) | ~500 | **MOSTLY COMPLETE** | Passes 1, 2, 3, 4 shipped (docs rewrite + bounce-FBL disable + sender-ban alert-first + body_full retention + silent-error fix). 23+25+69 = 117 unit tests covering parser/firewall/sender-ban. | Pass 5 BLOCKED on operator (no JMRP/Postmaster Tools — see D-M). Pass 6 (sync_campaigns/engagement silent-error pattern) optional. |
+| [inbox-audit-overhaul.md](inbox-audit-overhaul.md) | ~150 | **MOSTLY COMPLETE** | Phases 1+2+3+4 shipped 2026-05-01/02. Migration 104 (workspace_id + JSONB columns) live; `InboxAuditor` class produces 8 integrity sections per workspace (I-1..I-7, I-9); daily dispatch wired into `emailbison_sync_worker.poll_loop`; Phase 4 subscription-cancel rollup with 14-day reuse window + `live`/`dead` × `Connected`/`Disconnected` breakdown live. First Phase 4 run 2026-05-02 00:28 UTC: 57 eligible cancel candidates across 7 workspaces. | Phase 5 (Slack restructure) + Phase 6 (SLA enforcement) pending. I-8 (pool-tag drift) deferred — requires EB API calls. |
 
 Plus the foundational records:
 
@@ -82,7 +83,7 @@ Status keys: ✅ done · 🚧 in progress · ⏳ pending · 🔒 blocked · 👤
 | [docs/work-logs/2026-04-30-...md](../work-logs/2026-04-30-systems-accuracy-and-cleanup.md) | ✅ written | `94fd0fa` + `6d5f2a3` |
 | [docs/concepts/kill-triggers.md](../concepts/kill-triggers.md) | ✅ updated (disconnected_timeout removed from tables) | `6d5f2a3` |
 | [production/coolify/services.md](../../production/coolify/services.md) | ✅ updated (connection state, silent-failure hardening, audits) | `6d5f2a3` |
-| [docs/plans/inbox-audit-overhaul.md](inbox-audit-overhaul.md) | ✅ requirements catalog (deferred) | `765cd3d` |
+| [docs/plans/inbox-audit-overhaul.md](inbox-audit-overhaul.md) | ✅ Phases 1–4 SHIPPED — production-live, 5+6 pending | `f36d70d` + `534d56e` + `ce931d3` + `642e9c4` + `4be0887` + `bfb7e2a` |
 | [apps/incubation-watcher/HANDOFF.md](../../apps/incubation-watcher/HANDOFF.md) | ✅ self-contained handoff | `72b901d` |
 | **[docs/operations/2026-04-30-deploy-runbook.md](../operations/2026-04-30-deploy-runbook.md)** | ✅ **METHODIC DEPLOY RUNBOOK — operator's primary doc for landing today's 13 commits** | `675d3aa` |
 | [docs/operations/2026-04-30-deploy-quickref.md](../operations/2026-04-30-deploy-quickref.md) | ✅ written | `bc5744b` |
@@ -161,7 +162,7 @@ Status keys: ✅ done · 🚧 in progress · ⏳ pending · 🔒 blocked · 👤
 | ADR-008 step 2 — collapse inventory_lifecycle_status + inventory_pool_status into single inbox_status | system | Firewall (Plan A) shipped first |
 | Workspace package assignments | operator | Decide which packages each workspace gets (SKMR likely 50k_google) |
 | v3-vs-ours kill-trigger comparison on a sending workspace | system | Pick a sending workspace (Hello Hero / Spout / Selery / Search Atlas) |
-| inbox_audits overhaul ([requirements catalog](inbox-audit-overhaul.md)) | deferred | User confirmed: deferred — focus on state machine first. Captured requirements: per-workspace audit, snapshot inbox sets, integrity sections (I-1..I-9), **subscription-cancel signal for domains where all inboxes are dead** (added 2026-04-30), SLA on corrections workflow. |
+| inbox_audits overhaul ([plan](inbox-audit-overhaul.md)) | Phases 1–4 SHIPPED | Per-workspace audit live. Subscription-cancel queue (57 eligible domains) populated daily via `audit_data.sections[I-9].details.domains[]`. Phase 5 Slack restructure + Phase 6 SLA enforcement pending. |
 
 ---
 
@@ -275,11 +276,23 @@ DECOMPOSITION (Plan C — Phase 2 only; shadow validation in flight)
    ✅ Phase 2 — apps/incubation-watcher/ extracted
    🚧 Phase 3 — 7-day shadow validation (Day 1 of 7)
 
+INBOX AUDIT OVERHAUL (Phases 1–4 shipped; 5–6 pending)
+   ✅ Phase 1  — migration 104: workspace_id + inbox_id_set + audit_data JSONB
+   ✅ Phase 2  — InboxAuditor class + idempotent persist (per-workspace)
+   ✅ Phase 3  — integrity sections I-1..I-7, I-9 (I-8 deferred — needs EB API)
+   ✅ Worker  — daily dispatch wired into emailbison_sync_worker.poll_loop
+   ✅ Phase 4  — subscription-cancel rollup with 14-day reuse window
+                + live/dead × connected/disconnected breakdown per domain
+                + recency_eligible boolean → 57 eligible across 7 workspaces
+   ⏳ Phase 5  — Slack restructure (per-workspace channels, action lists)
+   ⏳ Phase 6  — SLA enforcement (24h escalate, 7d page) on pending audits
+
 
 PENDING — operator-driven (no system code work)
 ─────────────────────────────────────────────────────────────────────
    👤 Charm zombie CSV review (142 rows, 127 currently Connected)
-   👤 Subscription-cancel candidates (91 domains)
+   👤 Subscription-cancel candidates (57 eligible across 7 workspaces — see
+       inbox_audits.audit_data->'sections'->I-9 for live per-domain rollup)
    👤 20d+ disconnect queue (666 fleet-wide)
    👤 Package recommendations CSV
    👤 Hypertide root-cause for 2026-02-14 Spout mass-provisioning failure
@@ -303,7 +316,7 @@ NEXT SPRINT
 ─────────────────────────────────────────────────────────────────────
    ⏳ ADR-008 step 2 — collapse pool + lifecycle into single inbox_status
    ⏳ Workspace package assignments (operator)
-   ⏳ inbox_audits overhaul (deferred this sprint)
+   ⏳ inbox-audit-overhaul Phase 5 (Slack restructure) + Phase 6 (SLA enforcement)
    ⏳ Decide on extracting kill-watcher, inventory-manager, tag-writer
        (30 days post-incubation-watcher cutover)
 ```

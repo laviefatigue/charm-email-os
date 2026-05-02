@@ -1,18 +1,21 @@
 ---
-title: Inbox Audit Overhaul — Requirements Catalog (DEFERRED)
+title: Inbox Audit Overhaul — Phases 1–4 SHIPPED, 5–6 pending
 created: 2026-04-30
-updated: 2026-04-30
-status: DEFERRED — capture-only, no execution this sprint
-purpose: Single doc collecting all audit-related requirements surfaced
-         during the 2026-04-29 + 2026-04-30 sessions, for later scoping
+updated: 2026-05-02
+status: IN PROGRESS — Phases 1+2+3+4 shipped 2026-05-01/02; Phases 5 + 6 pending
+purpose: Per-workspace structured audit replacing the 2026-02-18
+         fleet-aggregate Slack-driven workflow. Drives the cross-workspace
+         integrity firewall observability + Hypertide subscription-cancel
+         operator queue.
 ---
 
 # Inbox Audit Overhaul
 
-> **Status: DEFERRED.** User explicitly deferred this work to focus on
-> state-machine reliability first. This doc is a capture-only catalog of
-> requirements as they surface during related work, so the eventual
-> overhaul has clear scope.
+> **Status: Phases 1–4 SHIPPED in production (2026-05-01 evening through
+> 2026-05-02).** Per-workspace audits run daily inside `emailbison-sync`,
+> producing a structured row per workspace per day in `inbox_audits` with
+> integrity sections I-1..I-7, I-9 + recency-windowed subscription-cancel
+> rollup. Phase 5 (Slack restructure) and Phase 6 (SLA enforcement) remain.
 
 ## Context
 
@@ -108,32 +111,43 @@ reputation die but OAuth still works (operator decided to stop using)?"
 - Replacing the existing daily Slack flow → augmenting, not replacing
 - Building per-workspace Slack channel infrastructure → operator config
 
-## Implementation phasing (when work picks up)
+## Implementation phasing — status
 
-| Phase | Work | Effort estimate |
-|-------|------|----------------|
-| 1 | Schema migration: add `workspace_id` + `inbox_id_set JSONB` columns to `inbox_audits` | 1 day + migration |
-| 2 | Per-workspace audit query rewrite | 1 day |
-| 3 | Add integrity sections (I-1 through I-9) | 2 days |
-| 4 | Subscription-cancel domain rollup section | 1 day |
-| 5 | Slack message restructure (per-workspace, with action lists) | 1 day |
-| 6 | SLA enforcement on corrections (escalation at 24h, page at 7d) | 1 day |
-| Total | | ~7 days |
+| Phase | Work | Status | Commit(s) |
+|-------|------|:------:|-----------|
+| 1 | Schema migration 104: add `workspace_id` + `inbox_id_set JSONB` + `audit_data JSONB` columns to `inbox_audits` | ✅ | `f36d70d` |
+| 2 | Per-workspace audit query — `InboxAuditor` class + idempotent `persist()` | ✅ | `f36d70d` |
+| 3 | Integrity sections I-1..I-7, I-9 (I-8 deferred — needs EB API calls) | ✅ | `f36d70d` |
+| — | Worker integration: daily dispatch from `emailbison_sync_worker.poll_loop` | ✅ | `534d56e` |
+| — | Bugfix: `audit_date` str → `datetime.date` for asyncpg | ✅ | `ce931d3` |
+| 4 | Subscription-cancel rollup: 14-day reuse window + `live`/`dead` × `Connected`/`Disconnected` breakdown + `recency_eligible` per domain | ✅ | `642e9c4` + `4be0887` + `bfb7e2a` |
+| 5 | Slack message restructure (per-workspace, with action lists) | ⏳ | — |
+| 6 | SLA enforcement on corrections (escalation at 24h, page at 7d) | ⏳ | — |
 
-Sequencing: this should NOT ship until the firewall (Plan A) is in place,
+Sequencing was respected: Plan A (firewall) shipped before this overhaul
 because integrity sections I-5/I-6 depend on the `is_quarantined` column.
 
-## When to pick this up
+## What's live now
 
-After:
-1. Firewall (Plan A) ships
-2. Connection state machine Phases 2-4 ship (notification ladder, EB tags)
-3. apps/incubation-watcher cutover validated
+Daily, at first poll-loop iteration after `_should_run_daily()` returns
+true, the worker iterates all active workspaces and produces one
+`inbox_audits` row per workspace with:
 
-The audit overhaul is the integrative observability layer that makes all
-the above legible. It's worth doing but only after the underlying
-state-machine work is stable. Building it earlier means refactoring it
-when the state machine changes shape.
+- `workspace_id` (S-1 fixed)
+- `inbox_id_set` JSONB array of in-scope `sender_account` UUIDs (S-2 fixed)
+- `audit_data.sections[]` — 8 integrity sections (I-1..I-7, I-9)
+- `audit_data.sections[I-9].details.domains[]` — per-domain rollup
+  with `live_connected`, `live_disconnected`, `dead_connected`,
+  `dead_disconnected`, `most_recent_kill`, `recency_eligible`
+- `audit_data.sections[I-9].details.eligible_count` /
+  `total_candidates` / `reuse_window_days` for actionable summarization
+
+First production run: 2026-05-01 22:50 UTC (Phase 2/3 shape, 11 workspaces).
+Phase 4 shape live: 2026-05-02 00:28 UTC (all 11 workspaces upserted).
+
+Fleet-wide subscription-cancel queue at first Phase 4 run: 57 eligible
+domains (≥14d window) across 7 workspaces (Spout 30, Barrena 13, Charm 5,
+Sammy 4, SPUI 3, Linkgraph 1, Selery 1).
 
 ## Cross-references
 
