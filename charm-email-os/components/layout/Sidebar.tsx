@@ -2,13 +2,14 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { Users, LogOut, Globe } from 'lucide-react';
+import { Users, LogOut, Globe, FileBarChart2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { useUser } from '@/lib/contexts/UserContext';
 
 const navigation = [
   { name: 'Clients', href: '/clients', icon: Users },
+  { name: 'Reports', href: '/reports', icon: FileBarChart2 },
 ];
 
 export function Sidebar() {
