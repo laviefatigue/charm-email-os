@@ -519,9 +519,9 @@ class InboxAuditor:
                    d.domain_name,
                    COUNT(s.id) AS total_inboxes,
                    COUNT(s.id) FILTER (WHERE s.inbox_state = 'dead') AS dead_inboxes,
-                   COUNT(s.id) FILTER (WHERE s.inbox_state = 'alive'
+                   COUNT(s.id) FILTER (WHERE s.inbox_state = 'live'
                                          AND s.status = 'Connected') AS alive_connected,
-                   COUNT(s.id) FILTER (WHERE s.inbox_state = 'alive'
+                   COUNT(s.id) FILTER (WHERE s.inbox_state = 'live'
                                          AND s.status IS DISTINCT FROM 'Connected')
                      AS alive_disconnected,
                    COUNT(s.id) FILTER (WHERE s.inbox_state = 'dead'
