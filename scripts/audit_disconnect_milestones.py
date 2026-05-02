@@ -20,7 +20,7 @@ Outputs two reports per active workspace:
   REPORT B: subscription-cancel candidates per domain
   ----------------------------------------------------
   Per-domain rollup showing inbox states. Cancel-eligible when 100%
-  of inboxes on the domain are dead AND no inbox returned to alive in
+  of inboxes on the domain are dead AND no inbox returned to live in
   the last 14 days.
 
 Both reports are operator-driven. NEVER auto-acts. NEVER touches EB.
@@ -113,7 +113,7 @@ def bucketize(hours: float) -> str | None:
 
 
 def audit_subscription_cancel(workspace_filter: str | None) -> list[dict[str, Any]]:
-    """Per-domain rollup. Cancel-eligible if all inboxes dead, none alive in 14d.
+    """Per-domain rollup. Cancel-eligible if all inboxes dead, none live in 14d.
 
     Flattened query (no CTE) to keep the admin SQL endpoint happy on large
     fleets — the CTE version can timeout / return error strings when joining
@@ -130,13 +130,13 @@ def audit_subscription_cancel(workspace_filter: str | None) -> list[dict[str, An
             d.pool_status AS domain_pool_status,
             COUNT(*) AS total_inboxes,
             COUNT(*) FILTER (WHERE sa.inbox_state = 'dead') AS dead_count,
-            COUNT(*) FILTER (WHERE sa.inbox_state = 'live') AS alive_count,
-            COUNT(*) FILTER (WHERE sa.inbox_state = 'live' AND sa.status = 'Connected') AS alive_connected,
-            COUNT(*) FILTER (WHERE sa.inbox_state = 'live' AND sa.status != 'Connected') AS alive_disconnected,
+            COUNT(*) FILTER (WHERE sa.inbox_state = 'live') AS live_count,
+            COUNT(*) FILTER (WHERE sa.inbox_state = 'live' AND sa.status = 'Connected') AS live_connected,
+            COUNT(*) FILTER (WHERE sa.inbox_state = 'live' AND sa.status != 'Connected') AS live_disconnected,
             COUNT(*) FILTER (WHERE sa.inbox_state = 'dead' AND sa.status = 'Connected') AS dead_connected,
             COUNT(*) FILTER (WHERE sa.inbox_state = 'dead' AND sa.status != 'Connected') AS dead_disconnected,
             MAX(sa.killed_at)::date AS last_killed_date,
-            MAX(CASE WHEN sa.inbox_state = 'live' THEN sa.updated_at END)::date AS last_alive_date,
+            MAX(CASE WHEN sa.inbox_state = 'live' THEN sa.updated_at END)::date AS last_live_date,
             (COUNT(*) FILTER (WHERE sa.inbox_state = 'live') = 0 AND COUNT(*) > 0) AS subscription_cancel_eligible
         FROM domains d
         JOIN sender_accounts sa ON sa.domain_id = d.id
@@ -208,11 +208,11 @@ def report_b_subscription_cancel(rows: list[dict]) -> None:
 
     eligible = [r for r in rows if r.get('subscription_cancel_eligible')]
     not_eligible_partial = [r for r in rows if r['dead_count'] > 0 and not r.get('subscription_cancel_eligible')]
-    fully_alive = [r for r in rows if r['dead_count'] == 0]
+    fully_live = [r for r in rows if r['dead_count'] == 0]
 
     print(f"  Cancel-eligible domains (all inboxes dead):     {len(eligible)}")
-    print(f"  Mixed (some dead, some alive — keep paying):    {len(not_eligible_partial)}")
-    print(f"  Fully alive domains (no dead inboxes):          {len(fully_alive)}")
+    print(f"  Mixed (some dead, some live — keep paying):     {len(not_eligible_partial)}")
+    print(f"  Fully live domains (no dead inboxes):           {len(fully_live)}")
 
     if eligible:
         print(f"\n  --- Cancel-eligible domains ({len(eligible)}) — operator review ---")
@@ -268,8 +268,8 @@ def main() -> int:
     sub_csv = OUTPUT_DIR / f'{today}-subscription-cancel{suffix}.csv'
     write_csv(sub_csv, [
         'workspace_name', 'domain_name', 'domain_pool_status', 'total_inboxes',
-        'dead_count', 'alive_count', 'alive_connected', 'alive_disconnected',
-        'dead_connected', 'dead_disconnected', 'last_killed_date', 'last_alive_date',
+        'dead_count', 'live_count', 'live_connected', 'live_disconnected',
+        'dead_connected', 'dead_disconnected', 'last_killed_date', 'last_live_date',
         'subscription_cancel_eligible',
     ], sub_rows)
 

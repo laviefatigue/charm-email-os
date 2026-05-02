@@ -35,7 +35,7 @@ Each row links back to where it surfaced.
 |:-:|-------------|----------|----------------|
 | S-1 | Per-workspace audit, not fleet-aggregated | 2026-04-30 session §"Schema-level criticism" | Today's `inbox_audits` has no `workspace_id`. Cannot answer "is Sammy specifically in trouble?" without re-running queries against live data. |
 | S-2 | Snapshot the inbox set, not just count | 2026-04-30 session §"Schema-level criticism" | Today the audit captures `total_kills=380` for 2026-04-29 but no record of WHICH 380. Investigation after the fact is impossible. |
-| S-3 | Connected-status of dead inboxes for subscription-cancel signal | **2026-04-30 (this addition)** | An inbox killed by reputation but still showing Connected in EB has working OAuth. The DOMAIN it lives on still costs money. We need a per-domain rollup: "all inboxes on this domain are dead → subscription can be cancelled" vs "some dead, some alive → keep paying." Drives operator decisions on Hypertide cancellation. |
+| S-3 | Connected-status of dead inboxes for subscription-cancel signal | **2026-04-30 (this addition)** | An inbox killed by reputation but still showing Connected in EB has working OAuth. The DOMAIN it lives on still costs money. We need a per-domain rollup: "all inboxes on this domain are dead → subscription can be cancelled" vs "some dead, some live → keep paying." Drives operator decisions on Hypertide cancellation. |
 
 ### Integrity sections (new audit categories)
 
@@ -71,16 +71,16 @@ Per-domain audit row:
   domain_name
   total_inboxes
   dead_inboxes (count)
-  alive_connected (count)
-  alive_disconnected (count)
+  live_connected (count)
+  live_disconnected (count)
   dead_connected (count)        ← informational; OAuth works but inbox dead
   dead_not_connected (count)    ← truly inactive
   subscription_cancel_eligible? boolean
-    = (dead_inboxes == total_inboxes)  AND (no inbox returns to alive in last N days)
+    = (dead_inboxes == total_inboxes)  AND (no inbox returns to live in last N days)
 ```
 
 Operator workflow when the signal fires:
-1. Audit lists "domains where 100% of inboxes are dead, none alive in last 14 days"
+1. Audit lists "domains where 100% of inboxes are dead, none live in last 14 days"
 2. Operator reviews each row
 3. Operator decides: cancel the Hypertide subscription manually
 4. Operator removes from EB workspace manually
@@ -94,7 +94,7 @@ Importantly, the signal differentiates:
 - **All-dead, none-connected** → strong cancel signal
 - **All-dead, some still Connected** → still strong, just OAuth works (but
   no value since reputation-damaged)
-- **Mixed dead/alive** → keep the subscription (alive inboxes still useful)
+- **Mixed dead/live** → keep the subscription (live inboxes still useful)
 
 Both "all-dead-Connected" and "all-dead-Not-connected" are equivalent for
 cancellation purposes per ADR-009 (kill is terminal regardless of connection

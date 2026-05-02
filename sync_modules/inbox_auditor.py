@@ -15,7 +15,7 @@ Generates a structured per-workspace audit row in `inbox_audits` with:
        I-6: Promotion-blocked-by-connection (reserve + disconnected)
        I-7: Cap-exceeded (live count > target_live_count_override)
        I-9 / S-3: Subscription-cancel candidates (all-dead domains, with
-                  recency-eligibility + alive/dead × connected/disconnected
+                  recency-eligibility + live/dead × connected/disconnected
                   breakdown — Phase 4)
 
 Deliberately NOT included:
@@ -497,9 +497,9 @@ class InboxAuditor:
         Per ADR-009 we never auto-cancel; the audit_data lists candidates
         and the operator decides.
 
-        Output per domain:
+        Output per domain (vocabulary matches inbox_state enum: 'live' / 'dead'):
           - total_inboxes, dead_inboxes
-          - alive_connected / alive_disconnected
+          - live_connected / live_disconnected
               (always 0 in candidate rows since we filter to all-dead, but
                kept in the schema so Phase 5 Slack can render mixed-state
                domains uniformly when that section expands)
@@ -520,10 +520,10 @@ class InboxAuditor:
                    COUNT(s.id) AS total_inboxes,
                    COUNT(s.id) FILTER (WHERE s.inbox_state = 'dead') AS dead_inboxes,
                    COUNT(s.id) FILTER (WHERE s.inbox_state = 'live'
-                                         AND s.status = 'Connected') AS alive_connected,
+                                         AND s.status = 'Connected') AS live_connected,
                    COUNT(s.id) FILTER (WHERE s.inbox_state = 'live'
                                          AND s.status IS DISTINCT FROM 'Connected')
-                     AS alive_disconnected,
+                     AS live_disconnected,
                    COUNT(s.id) FILTER (WHERE s.inbox_state = 'dead'
                                          AND s.status = 'Connected') AS dead_connected,
                    COUNT(s.id) FILTER (WHERE s.inbox_state = 'dead'
@@ -571,8 +571,8 @@ class InboxAuditor:
                         'domain_name': r['domain_name'],
                         'total_inboxes': r['total_inboxes'],
                         'dead_inboxes': r['dead_inboxes'],
-                        'alive_connected': r['alive_connected'],
-                        'alive_disconnected': r['alive_disconnected'],
+                        'live_connected': r['live_connected'],
+                        'live_disconnected': r['live_disconnected'],
                         'dead_connected': r['dead_connected'],
                         'dead_disconnected': r['dead_disconnected'],
                         'most_recent_kill': (
