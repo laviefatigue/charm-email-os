@@ -1,17 +1,22 @@
 ---
 title: Kill-Trigger Accuracy — Bounce Classification Improvement
 created: 2026-05-01
-updated: 2026-05-01 (Pass 1+2+4 shipped; Pass 3 + Pass 6 pending)
-status: ACTIVE — 3 of 5 phases shipped
+updated: 2026-05-04 (note: count-based rules removed by ADR-010; classification work still relevant)
+status: PARTIALLY SUPERSEDED — bounce classification (Pass 1, 2, 4) is still load-bearing for the new lifetime-rate rule; count-based threshold work (Pass 3 sender-ban, Pass 5+) absorbed by ADR-010 / replaced.
 related-plans:
   - INBOX-INTEGRITY-PROGRAM.md (master tracker)
+  - kill-rule-rate-based-rewrite.md (ADR-010 plan — replaces the count rules this plan protected)
   - connection-state-machine.md (Plan B — sibling kill-state work)
 related-adrs:
   - adr-009 (connection separated from kill state)
+  - adr-010 (lifetime-rate rule, 2026-05-04 — supersedes count thresholds)
 related-docs:
-  - docs/concepts/kill-triggers.md (our spec — Pass 1 rewrites the SMTP table)
-  - docs/work-logs/2026-04-30-deploy-outcome.md (today's deploy that surfaced this)
+  - docs/concepts/kill-triggers.md (rewritten 2026-05-04 to reflect new rule)
+  - docs/work-logs/2026-04-30-deploy-outcome.md (deploy that surfaced this)
+  - docs/work-logs/2026-05-04-kill-rule-rate-rewrite-and-revival.md (rewrite execution)
 ---
+
+> **2026-05-04 supersession note:** ADR-010 replaced all count-based 24h kill rules (`hard_blocked_24h ≥ N` etc.) with a single lifetime-rate rule. The Passes in this plan that touched **bounce classification** (Pass 1 SMTP table rewrite, Pass 2 bounce-FBL disable, Pass 4 silent-error fix in sync_events) **are still load-bearing** — the new rate rule reads `bounce_type IN ('hard_blocked','hard_unknown')` from `response_messages`, so accurate classification is more important than ever. The Passes that touched **threshold logic** (Pass 3 sender-ban → instant kill, Pass 5+ further threshold tightening) are partially absorbed: the lifetime rate rule already catches what count thresholds were trying to catch. Pass 3 sender-ban detection remains relevant as a future instant-kill carve-out for explicit Microsoft account bans (5.7.501-503/511/606-649/etc) that wouldn't trip the rate rule on their own.
 
 # Kill-Trigger Accuracy — Plan
 

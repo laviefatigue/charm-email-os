@@ -2,17 +2,30 @@
 
 Kill triggers determine when an inbox is marked as "dead" and removed from active sending.
 
-## Trigger Types & Thresholds
+> **2026-05-04 — Rate-based rewrite (ADR-010).** All count-based 24h triggers and 7d windowed rate triggers were replaced by a single ESP-agnostic lifetime-rate rule. Numerator computed on demand from `response_messages` (no rolling counter). See [docs/concepts/kill-triggers.md](concepts/kill-triggers.md) for the full reference.
+
+## Trigger Types & Thresholds (current)
 
 | Trigger | Threshold | Type | Domain Burn? | Description |
 |---------|-----------|------|--------------|-------------|
-| `spam_complaint` | >= 1 | Reputation | Rate-based (see thresholds) | Spam complaint kills inbox. Domain burn evaluated by complaint rate against thresholds |
-| `hard_blocked_24h` | >= 2 | Reputation | No | Spam/policy rejection in 24h |
-| `hard_unknown_24h` | >= 3 | List Quality | No | Invalid recipient errors in 24h |
-| `hard_bounces_24h` | >= 2 | Operational | No | Combined hard bounces in 24h |
-| `disconnected_timeout` | 21 days | Operational | No | Disconnected for 21+ days |
-| `hard_bounce_rate_7d` | > 2.0% | Operational | No | 7-day hard bounce rate (min 100 sends) |
-| `bounce_rate_all_7d` | > 5% | Operational | No | 7-day total bounce rate (min 100 sends) |
+| `spam_complaint` | `complaints_lifetime ≥ 1` | Reputation | Rate-based (see below) | Phrase-matched spam complaint in lead reply. Inbox kill instant; domain burn evaluated by complaint rate. |
+| `hard_bounce_rate_lifetime` | `hard_bounces / emails_sent_all_time > 5%` (≥ 20 sends) | Reputation + List Quality | No (inbox-level only) | Lifetime hard-bounce rate exceeds Postmaster "high" threshold. ESP-agnostic. |
+
+## Removed Triggers (kept in enum for historical rows only)
+
+These were the rules pre-2026-05-04. They are no longer evaluated; new kills do not emit them. Historical `kill_queue` and `sender_accounts.kill_trigger` rows still classify under these values.
+
+| Trigger | Old Threshold | Reason for removal |
+|---------|---------------|--------------------|
+| `hard_blocked_24h` | ≥ 1 (Gmail) / ≥ 2 (MS) | Counter inflation — `GREATEST(stale, fresh)` reconciliation produced false positives. 2026-04-14 Barrena mass-kill triggered the rewrite. |
+| `hard_unknown_24h` | ≥ 1 (Gmail) / ≥ 3 (MS) | Same |
+| `hard_bounces_24h` | ≥ 1 (Gmail) / ≥ 2 (MS) | Same |
+| `hard_bounce_rate_7d` | > 2.0% (min 100 sends) | Replaced by lifetime rate (more stable, no window math). |
+| `bounce_rate_all_7d` | > 5% (incl. soft) | Removed — soft bounces are not reputation signals. |
+| `disconnected_timeout` | ≥ 21 days disconnected | Removed by ADR-009 — connection state is monitoring-only. |
+| `fresh_inbox_blocked`, `fresh_inbox_unknown` | (removed 2026-03-18) | Were duplicates of `hard_blocked_24h` / `hard_unknown_24h`. |
+
+307 inboxes killed by the count-based rules but healthy under the new rate rule were resurrected on 2026-05-04 via `scripts/resurrect_false_positive_kills.py`.
 
 ## Domain Burn Classification
 

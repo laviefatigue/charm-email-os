@@ -1,13 +1,15 @@
 ---
 title: Health Monitoring
 created: 2026-02-12
-updated: 2026-03-19
-tags: [health, monitoring, infrastructure, database, kill-triggers, warmup, capacity]
+updated: 2026-05-04 (kill rule rewritten — see ADR-010)
+tags: [health, monitoring, infrastructure, database, kill-triggers, warmup, capacity, rate-rewrite-2026-05-04]
 ---
 
 # Health Monitoring
 
 Database-driven infrastructure health monitoring for email inboxes and domains, with automated kill trigger detection.
+
+> **2026-05-04 — Kill rule rewritten.** All count-based 24h triggers and 7d windowed-rate triggers replaced by a single ESP-agnostic lifetime-rate rule (`hard_bounces_lifetime / emails_sent_all_time > 5%`). Numerator computed on demand from `response_messages`, eliminating the rolling-counter inflation bug class. See [[../concepts/kill-triggers]] and [[../adr/adr-010-lifetime-rate-kill-rule-2026-05-04]].
 
 ## Overview
 

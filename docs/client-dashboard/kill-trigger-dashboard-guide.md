@@ -2,6 +2,8 @@
 
 **Purpose:** Understanding what the Kill Velocity and Kill Breakdown charts show on the Executive Dashboard
 
+> **2026-05-04 — Rule rewritten.** All count-based 24h triggers (`hard_blocked_24h ≥ N`, `hard_unknown_24h ≥ N`, `hard_bounces_24h ≥ N`) and 7d rate triggers were replaced by a **single ESP-agnostic lifetime-rate rule**. Dashboard charts will now show kills attributed to `hard_bounce_rate_lifetime` (and `spam_complaint`) only. Historical kills with the old trigger types remain in the data for trend continuity. See [docs/concepts/kill-triggers.md](../concepts/kill-triggers.md) and [adr-010-lifetime-rate-kill-rule-2026-05-04](../adr/adr-010-lifetime-rate-kill-rule-2026-05-04.md).
+
 ---
 
 ## Executive Summary
@@ -21,15 +23,24 @@ The Executive Dashboard tracks **system-initiated inbox deaths due to bad sendin
 
 ### System Kills (Shown on Dashboard) ✅
 
-These are **automated flags** triggered by the health monitoring system:
+These are **automated flags** triggered by the health monitoring system. **Post-2026-05-04**, two trigger types fire under the new lifetime-rate rule:
 
 | Trigger Type | Threshold | What It Means | Why It Matters |
 |--------------|-----------|---------------|----------------|
-| `spam_complaint` | ≥1 complaint | User clicked "Report Spam" | **Instant death** - kills sender reputation |
-| `hard_blocked_24h` | ≥1 block | ESP rejected as spam/policy violation | **Reputation damage** - server thinks we're spam |
-| `hard_unknown_24h` | ≥3 bad addresses | Emails to non-existent addresses | **List quality issue** - we have bad data |
-| `hard_bounces_24h` | ≥2 bounces | Unclassified hard bounces | **Fallback** - catches edge cases |
-| `fresh_inbox_hard_bounce` | ≥1 bounce on new inbox | Any bounce on inbox <14 days old | **Premature deployment** - inbox wasn't ready |
+| `spam_complaint` | ≥1 complaint (lifetime) | User reported spam (phrase-match on lead reply) | **Instant death** - kills sender reputation |
+| `hard_bounce_rate_lifetime` | hard bounces ÷ lifetime sends > **5%** (≥20 sends required) | Lifetime hard-bounce rate exceeds Postmaster Tools "high" threshold | **Sustained reputation / list-quality issue** - inbox is consistently bouncing too much |
+
+**Pre-2026-05-04 (historical only — still visible in older kill data):**
+
+| Trigger Type | (Removed) | Reason for removal |
+|--------------|-----------|--------------------|
+| `hard_blocked_24h` | Was ≥1 (Gmail) / ≥2 (MS) | Replaced — count rules over 24h windows produced false positives via rolling-counter inflation |
+| `hard_unknown_24h` | Was ≥1 (Gmail) / ≥3 (MS) | Same |
+| `hard_bounces_24h` | Was ≥1 (Gmail) / ≥2 (MS) | Same |
+| `hard_bounce_rate_7d` | Was > 2% with 100+ sends | Replaced by lifetime rate (more stable, no window math) |
+| `bounce_rate_all_7d` | Was > 5% (incl. soft bounces) | Removed — soft bounces are mailbox-full / temp issues, not reputation signal |
+| `fresh_inbox_blocked` / `fresh_inbox_unknown` | (already removed 2026-03-18) | Were duplicates of `hard_blocked_24h` / `hard_unknown_24h` |
+| `disconnected_timeout` | (removed 2026-04-30 by ADR-009) | Connection state is now monitoring-only, not a kill trigger |
 
 ### Manual Deactivations (NOT Shown) ❌
 
@@ -45,27 +56,30 @@ These are **business/operational decisions**:
 
 ## The Kill Queue Workflow
 
-When an inbox triggers a kill threshold, here's what happens:
+When an inbox triggers a kill threshold, here's what happens (post-2026-05-04 rate rule):
 
 ```
 1. DETECT (Every 15 min)
-   Health check finds: hard_blocked_24h = 1
+   Health check computes: hard_bounces_lifetime / emails_sent_all_time
+   If > 5% AND emails_sent_all_time >= 20: trigger fires
    ↓
 
 2. QUEUE
    Insert into kill_queue table
    Status: 'pending'
+   trigger_type: 'hard_bounce_rate_lifetime' or 'spam_complaint'
+   trigger_value: actual rate (e.g., 0.0673 = 6.73%) or complaint count
    ↓
 
 3. TAG (EmailBison)
-   Apply tag: "flagged_hard_blocked_24h"
+   Apply tag: "flagged_hard_bounce_rate_lifetime" or "flagged_spam_complaint"
    Inbox remains in EmailBison (NOT deleted)
    ↓
 
 4. FLAG (Local DB)
    inbox_state = 'dead'
    killed_at = NOW()
-   kill_trigger = 'hard_blocked_24h'
+   kill_trigger = 'hard_bounce_rate_lifetime'
    ↓
 
 5. DASHBOARD
@@ -97,62 +111,66 @@ When an inbox triggers a kill threshold, here's what happens:
 
 **What it shows:** Distribution of kill triggers over the last 30 days.
 
-**How to interpret:**
+**How to interpret (post-2026-05-04):**
 
 | Dominant Trigger | Root Cause | Action Needed |
 |------------------|------------|---------------|
-| `spam_complaint` | Recipients actively reporting spam | **Messaging problem** - emails are spammy or irrelevant |
-| `hard_blocked_24h` | ESP blocking you | **Reputation damage** - need to improve sender reputation |
-| `hard_unknown_24h` | Bad email addresses | **List quality** - clean your data sources |
-| `fresh_inbox_bounce` | New inboxes bouncing | **Premature deployment** - need longer warmup |
+| `spam_complaint` | Recipients actively reporting spam (phrase-match in lead reply) | **Messaging problem** - emails are spammy or irrelevant |
+| `hard_bounce_rate_lifetime` | Sustained > 5% lifetime hard-bounce rate | **List quality + reputation** - bad addresses and/or ESP rejection over the inbox's life |
+
+**Older kills (pre-2026-05-04 in historical data only):**
+
+| Trigger | Interpretation today |
+|---------|----------------------|
+| `hard_blocked_24h`, `hard_unknown_24h`, `hard_bounces_24h` | Old count-based rules; many were false positives from counter inflation. 307 such kills were resurrected on 2026-05-04. |
+| `hard_bounce_rate_7d`, `bounce_rate_all_7d` | Old windowed rate rules; replaced by lifetime rate. |
+| `disconnected_timeout` | Old connection-based kill; removed by ADR-009. ~1,200 fleet-wide zombies attributed to it. |
 
 ---
 
-## Differentiated Bounce Thresholds
+## Kill Thresholds (post-2026-05-04)
 
-Not all hard bounces are treated equally. The system uses **different thresholds** based on severity:
+The system uses **two thresholds**:
 
 ### High Urgency: Reputation Damage
 
-**`spam_complaint`** - Threshold: ≥1
-- User clicked "Report Spam"
+**`spam_complaint`** - Threshold: `complaints_lifetime ≥ 1`
+- User reported as spam (phrase-match on lead reply)
 - **Instant death, no exceptions**
 - Indicates messaging is perceived as spam
+- Coverage caveat: phrase-match on lead replies only — no JMRP / Postmaster Tools
 
-**`hard_blocked_24h`** - Threshold: ≥1
-- SMTP code 550 5.7.x (spam/policy rejection)
-- **Critical** - ESP thinks you're a spammer
-- Single occurrence triggers flag
+### Sustained: List Quality + Reputation
 
-### Medium Urgency: List Quality
+**`hard_bounce_rate_lifetime`** - Threshold: lifetime hard-bounce rate **> 5%** (with ≥20 lifetime sends)
+- `(hard_blocked + hard_unknown bounces) / emails_sent_all_time > 0.05`
+- Computed on demand from `response_messages` — no rolling counter to drift
+- 5% chosen to match Google Postmaster Tools / AWS SES "high bounce" range
+- ESP-agnostic — applies same threshold to Gmail and Microsoft
 
-**`hard_unknown_24h`** - Threshold: ≥3
-- SMTP code 550 5.1.1 (user unknown)
-- **Tolerant** - need pattern, not single event
-- Indicates bad email addresses in your list
+### What gets ignored
 
-### Fallback: Unclassified
-
-**`hard_bounces_24h`** - Threshold: ≥2
-- Generic hard bounce counter
-- Only triggers if specific triggers didn't fire
-- Catches edge cases where SMTP code extraction failed
+- **Soft bounces** (mailbox-full, temp errors): captured for analytics, **never kill**
+- **Below 20 lifetime sends**: skipped (insufficient data — give the inbox time to graduate)
+- **Connection state**: monitoring-only per ADR-009, not a kill trigger
 
 ---
 
 ## SMTP Code Classification
 
-Bounces are classified by extracting SMTP codes from message bodies:
+Bounces are classified by extracting SMTP codes from message bodies. Classification feeds into the lifetime-rate numerator (`hard_blocked` + `hard_unknown`):
 
-| SMTP Code | Extended Code | Classification | Kill Trigger | Meaning |
-|-----------|---------------|----------------|--------------|---------|
-| 550 | 5.1.1 | `hard_unknown` | `hard_unknown_24h` | User doesn't exist |
-| 550 | 5.7.1 | `hard_blocked` | `hard_blocked_24h` | Spam/policy block |
-| 550 | 5.7.51 | `hard_blocked` + spam | `spam_complaint` | User reported spam |
-| 552 | 5.2.2 | `soft_full` | None | Mailbox full (temporary) |
-| 421 | 4.7.0 | `soft_temp` | None | Temporary failure (retry) |
+| SMTP Code | Extended Code | Classification | Used in rate? | Meaning |
+|-----------|---------------|----------------|----------------|---------|
+| 550 | 5.1.1 | `hard_unknown` | **Yes** | User doesn't exist |
+| 550 | 5.7.1 | `hard_blocked` | **Yes** | Spam/policy block |
+| 550 | 5.7.x (most) | `hard_blocked` | **Yes** | ESP-side reputation/policy rejection |
+| 552 | 5.2.2 | `soft_full` | No | Mailbox full (temporary) |
+| 421 | 4.7.0 | `soft_temp` | No | Temporary failure (retry) |
 
-**Soft bounces** (4xx codes) don't trigger kills - they're temporary issues.
+**Soft bounces** (4xx codes) are still classified and stored for analytics, but they don't enter the kill rate calculation.
+
+See [docs/concepts/kill-triggers.md](../concepts/kill-triggers.md) for the full SMTP code table.
 
 ---
 

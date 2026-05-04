@@ -2,7 +2,9 @@
 
 **Document ID:** CORE-STATUS-001
 **Created:** 2026-02-26
-**Last Updated:** 2026-04-28
+**Last Updated:** 2026-05-04 (kill rule rewritten — see ADR-010)
+
+> **2026-05-04 — Kill rule rewritten (ADR-010).** The set of kill_trigger enum values used for new kills is now reduced to `spam_complaint` and `hard_bounce_rate_lifetime`. Legacy values (`hard_blocked_24h`, `hard_unknown_24h`, `hard_bounces_24h`, `hard_bounce_rate_7d`, `bounce_rate_all_7d`, `disconnected_timeout`) are retained in the `kill_trigger_type` enum for historical kill_queue / sender_accounts rows but are no longer emitted by `evaluate_inbox_health`. See [[../concepts/kill-triggers]] for the current rule.
 
 ---
 

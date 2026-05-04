@@ -1,13 +1,15 @@
 ---
 title: EmailBison Sync Worker
 created: 2026-02-12
-updated: 2026-02-13
-tags: [worker, emailbison, sync, health, database, kill-triggers, warmup]
+updated: 2026-05-04 (kill rule rewritten — see ADR-010)
+tags: [worker, emailbison, sync, health, database, kill-triggers, warmup, rate-rewrite-2026-05-04]
 ---
 
 # EmailBison Sync Worker
 
 The EmailBison Sync Worker keeps the local database synchronized with EmailBison (the source of truth for inbox/campaign data).
+
+> **2026-05-04 — Kill rule rewritten (ADR-010).** The worker still runs `run_health_checks` every 15 min, but the rule it evaluates is now a single ESP-agnostic lifetime-rate rule (`hard_bounces_lifetime / emails_sent_all_time > 5%`). The `aggregate_bounce_counts_from_events`, `reset_daily_counters`, and `decay_weekly_counters` jobs still run for legacy `_24h` / `_7d` column maintenance but **no longer feed kill decisions** — kept for UI consumers, will be removed after one release cycle. See [[../concepts/kill-triggers]] and [[../adr/adr-010-lifetime-rate-kill-rule-2026-05-04]].
 
 ## Purpose
 

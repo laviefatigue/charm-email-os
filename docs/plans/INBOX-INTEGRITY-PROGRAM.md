@@ -1,7 +1,7 @@
 ---
 title: Inbox Integrity Program — Master Tracker
 created: 2026-04-30
-updated: 2026-05-01 evening (Plan A complete · Plan D Passes 1-4 + sender-ban detection + response-parsing-only constraint locked in D-M)
+updated: 2026-05-04 (lifetime-rate kill rule rewrite shipped; 307 false-positive revivals; ADR-010 accepted)
 status: ACTIVE
 purpose: Single-page index of all in-flight inbox-state-machine work
 review-cadence: end of each session, update statuses
@@ -40,7 +40,8 @@ Each plan is a deep-dive document. This index is the cross-reference. Status as 
 | [cross-workspace-integrity-firewall.md](cross-workspace-integrity-firewall.md) | ~600 | **COMPLETE** | All 8 phases shipped + Phase 0d EB-side audit + cleanup. Migration 101 (columns) + 103 (CHECK constraint) live. `clients.domain_pattern` populated for all 11 workspaces. Phase 5a (upsert gate) + 5b (lifecycle_tag_sync guards) shipped. **HR-1 enforced structurally at DB layer.** | Phase 3 (backfill) was a no-op since 0 outliers — closed. |
 | [connection-state-machine.md](connection-state-machine.md) | ~400 | PARTIAL | Phase 1 (disconnected_timeout removed) shipped 2026-04-30 | Phases 2-6 pending. Phase 2 (notification ladder) is the next natural ship. |
 | [emailbison-sync-decomposition.md](emailbison-sync-decomposition.md) | ~600 | IN PROGRESS | Phase 2 (`apps/incubation-watcher/` extracted) shipped 2026-04-30 | Phase 3 (shadow validation) running — 1 day in of 7 needed. Phase 4 (cutover) gated on shadow data. Phase 4a (daemon mode) needed for shadow data to accumulate without operator intervention. |
-| [kill-trigger-accuracy.md](kill-trigger-accuracy.md) | ~500 | **MOSTLY COMPLETE** | Passes 1, 2, 3, 4 shipped (docs rewrite + bounce-FBL disable + sender-ban alert-first + body_full retention + silent-error fix). 23+25+69 = 117 unit tests covering parser/firewall/sender-ban. | Pass 5 BLOCKED on operator (no JMRP/Postmaster Tools — see D-M). Pass 6 (sync_campaigns/engagement silent-error pattern) optional. |
+| [kill-trigger-accuracy.md](kill-trigger-accuracy.md) | ~500 | **PARTIALLY SUPERSEDED by ADR-010** | Passes 1, 2, 3, 4 shipped (docs rewrite + bounce-FBL disable + sender-ban alert-first + body_full retention + silent-error fix). 23+25+69 = 117 unit tests. | Bounce classification work still load-bearing (read by new lifetime-rate rule). Threshold work absorbed by ADR-010. Pass 5 BLOCKED on operator (no JMRP/Postmaster). Pass 6 optional. |
+| [kill-rule-rate-based-rewrite.md](kill-rule-rate-based-rewrite.md) | ~400 | **CODE COMPLETE — DRY-RUN DEPLOYED** | Migration 105, code rewrite (3-branch lifetime rate rule), 22 unit + 12 integration tests, validator + resurrection scripts, ADR-010 accepted. Phase 2 Barrena revival (35/35) + Phase 3 fleet revival (272/272) shipped 2026-05-04. Total 307 false-positive kills resurrected. | Phase 4 (flip `KILL_RULE_DRY_RUN=false`) gated on operator confirming one clean dry-run cycle. Phase 5 cleanup (drop legacy `_24h`/`_7d` columns + `aggregate_bounce_counts_from_events`) waits one release cycle. |
 | [inbox-audit-overhaul.md](inbox-audit-overhaul.md) | ~150 | **MOSTLY COMPLETE** | Phases 1+2+3+4 shipped 2026-05-01/02. Migration 104 (workspace_id + JSONB columns) live; `InboxAuditor` class produces 8 integrity sections per workspace (I-1..I-7, I-9); daily dispatch wired into `emailbison_sync_worker.poll_loop`; Phase 4 subscription-cancel rollup with 14-day reuse window + `live`/`dead` × `Connected`/`Disconnected` breakdown live. First Phase 4 run 2026-05-02 00:28 UTC: 57 eligible cancel candidates across 7 workspaces. | Phase 5 (Slack restructure) + Phase 6 (SLA enforcement) pending. I-8 (pool-tag drift) deferred — requires EB API calls. |
 
 Plus the foundational records:
@@ -48,6 +49,8 @@ Plus the foundational records:
 | Document | Type | Status |
 |----------|------|--------|
 | [docs/adr/adr-009-connection-state-separated-from-kill-state-2026-04-30.md](../adr/adr-009-connection-state-separated-from-kill-state-2026-04-30.md) | ADR | accepted |
+| [docs/adr/adr-010-lifetime-rate-kill-rule-2026-05-04.md](../adr/adr-010-lifetime-rate-kill-rule-2026-05-04.md) | ADR | accepted (2026-05-04) |
+| [docs/work-logs/2026-05-04-kill-rule-rate-rewrite-and-revival.md](../work-logs/2026-05-04-kill-rule-rate-rewrite-and-revival.md) | Work log | shipped + 307 revivals executed |
 | [docs/work-logs/2026-04-30-systems-accuracy-and-cleanup.md](../work-logs/2026-04-30-systems-accuracy-and-cleanup.md) | Work log | active |
 | [docs/audits/2026-04-30-system-accuracy-snapshot.json](../audits/2026-04-30-system-accuracy-snapshot.json) | Audit data | snapshot — re-run periodically |
 | [docs/audits/2026-04-30-zombie-review-charm.csv](../audits/2026-04-30-zombie-review-charm.csv) | Operator queue | awaiting operator |
