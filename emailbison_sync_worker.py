@@ -562,33 +562,28 @@ class SyncOrchestrator:
             )
 
     async def run_slack_audit(self):
-        """Send daily inbox audit summary to Slack #inbox-audits channel.
+        """Send daily inbox-audit summary to Slack #inbox-audit channel (v2 redesign).
 
-        Includes:
-        - Kill trigger summary (last 24h)
-        - Disconnected inbox count
-        - Download buttons for CSVs
-        - Confirm/Issues buttons for team review
+        Per-workspace cumulative summary + domain rollup + 7 buttons linking
+        to the /reports/* operator pages. Replaces the legacy fleet-aggregate
+        twice-daily flow (last successful post 2026-04-27; broken since).
+
+        Plan ref: docs/plans/inbox-audit-overhaul.md (Phase 5)
         """
-        from sync_modules.slack_audit import send_daily_audit, SLACK_WEBHOOK_URL
+        from sync_modules.slack_audit_v2 import send_daily_audit, SLACK_WEBHOOK_URL
 
         if not SLACK_WEBHOOK_URL:
             print(f"[{datetime.now()}] Slack audit skipped (SLACK_AUDIT_WEBHOOK_URL not configured)")
             return
 
-        print(f"[{datetime.now()}] Sending daily Slack audit...")
+        print(f"[{datetime.now()}] Sending daily Slack audit (v2)...")
 
-        result = await send_daily_audit()
+        result = await send_daily_audit(self.db)
 
         if result.get("success"):
-            stats = result.get("stats", {})
-            print(
-                f"  Audit sent: {stats.get('total_kills', 0)} kills | "
-                f"{stats.get('new_disconnected', 0)} new disconnected | "
-                f"audit_id={result.get('audit_id')}"
-            )
+            print(f"  Audit sent: {result.get('workspace_count', 0)} workspaces summarized")
         else:
-            print(f"  Audit failed: {result.get('error')}")
+            print(f"  Audit failed: {result.get('reason')}")
 
     async def run_overhaul_audit(self):
         """Daily reconciliation audit for the 2026-04-27 tagging-kill model.
@@ -874,31 +869,32 @@ class SyncOrchestrator:
         return last_run.date() < now.date()
 
     def _should_run_slack_audit(self, last_run: Optional[datetime]) -> bool:
-        """Check if we should run Slack audit (6 AM and 1 PM Pacific daily)."""
+        """Check if we should run the redesigned Slack audit (7 AM Pacific daily).
+
+        v2 redesign (2026-05-04): single daily post at 7 AM Pacific replacing
+        the legacy 6 AM + 1 PM cadence. The 7 AM window is a 5-minute slice;
+        the worker poll loop's 30-second interval gives ~10 chances to hit it.
+        """
         from datetime import timezone
         from zoneinfo import ZoneInfo
 
-        # Get current time in Pacific timezone
         pacific = ZoneInfo("America/Los_Angeles")
         now_pacific = datetime.now(pacific)
 
-        # Run at 6 AM and 1 PM Pacific (within 5 min window)
-        audit_hours = [6, 13]  # 6 AM and 1 PM
-        if now_pacific.hour not in audit_hours or now_pacific.minute >= 5:
+        # 7 AM Pacific, 5-minute window.
+        if now_pacific.hour != 7 or now_pacific.minute >= 5:
             return False
 
-        # Check if already ran in this time slot
         if last_run is None:
             return True
 
-        # Convert last_run to Pacific for comparison
         if last_run.tzinfo is None:
             last_run_pacific = last_run.replace(tzinfo=timezone.utc).astimezone(pacific)
         else:
             last_run_pacific = last_run.astimezone(pacific)
 
-        # Don't run if we already ran in the same hour slot today
-        if last_run_pacific.date() == now_pacific.date() and last_run_pacific.hour == now_pacific.hour:
+        # Once per Pacific calendar day.
+        if last_run_pacific.date() == now_pacific.date():
             return False
 
         return True

@@ -58,7 +58,7 @@ export const reportsApi = {
       `/api/reports/disconnects?attention_only=${attentionOnly}`,
     );
   },
-  async getKills(window: '24h' | '7d' | '30d' = '24h'): Promise<ReportEnvelope<KillRow>> {
+  async getKills(window: 'all' | '24h' | '7d' | '30d' = 'all'): Promise<ReportEnvelope<KillRow>> {
     return fetchJson<ReportEnvelope<KillRow>>(`/api/reports/kills?window=${window}`);
   },
   async getRotation(): Promise<ReportEnvelope<RotationRow>> {

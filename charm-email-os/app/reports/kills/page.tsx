@@ -8,7 +8,7 @@ import type { KillRow, ReportEnvelope } from '@/lib/types/reports';
 import { ReportTable, type ReportColumn } from '@/components/reports/ReportTable';
 import { DownloadCSVButton } from '@/components/reports/DownloadCSVButton';
 
-type Window = '24h' | '7d' | '30d';
+type Window = 'all' | '24h' | '7d' | '30d';
 
 const DOMAIN_KILLING = new Set(['spam_complaint']);
 
@@ -20,7 +20,7 @@ function severityBadge(trigger: string) {
 }
 
 export default function KillsPage() {
-  const [windowSize, setWindowSize] = useState<Window>('24h');
+  const [windowSize, setWindowSize] = useState<Window>('all');
   const [data, setData] = useState<ReportEnvelope<KillRow> | null>(null);
   const [isLoading, setIsLoading] = useState(true);
 
@@ -81,7 +81,7 @@ export default function KillsPage() {
         </div>
         <div className="flex items-center gap-3">
           <div className="inline-flex rounded-md border">
-            {(['24h', '7d', '30d'] as Window[]).map((w) => (
+            {(['all', '24h', '7d', '30d'] as Window[]).map((w) => (
               <Button
                 key={w}
                 size="sm"
@@ -109,7 +109,7 @@ export default function KillsPage() {
         columns={columns}
         rows={data?.rows ?? []}
         isLoading={isLoading}
-        emptyMessage={`No kills in the last ${windowSize}.`}
+        emptyMessage={windowSize === 'all' ? 'No kills recorded.' : `No kills in the last ${windowSize}.`}
         groupBy="workspace_name"
         defaultSortKey="killed_at"
         defaultSortDirection="desc"

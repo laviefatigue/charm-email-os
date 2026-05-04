@@ -108,11 +108,17 @@ async def report_disconnects(
 
 @router.get("/kills")
 async def report_kills(
-    window: str = Query("24h", regex="^(24h|7d|30d)$"),
+    window: str = Query("all", regex="^(all|24h|7d|30d)$"),
     format: str = Query("json", regex="^(json|csv)$"),
 ):
-    """Per-inbox kills within window. Sorted by workspace, killed_at DESC."""
-    interval = {"24h": "24 hours", "7d": "7 days", "30d": "30 days"}[window]
+    """Per-inbox kills. Default cumulative ('all'); window slices supported.
+    Sorted by workspace, killed_at DESC.
+    """
+    if window == "all":
+        time_filter = ""
+    else:
+        interval = {"24h": "24 hours", "7d": "7 days", "30d": "30 days"}[window]
+        time_filter = f"AND sa.killed_at >= NOW() - INTERVAL '{interval}'"
     rows = await fetch_all(f"""
         SELECT
             w.workspace_name,
@@ -128,11 +134,11 @@ async def report_kills(
         FROM sender_accounts sa
         JOIN workspaces w ON sa.workspace_id = w.id
         LEFT JOIN domains d ON sa.domain_id = d.id
-        WHERE sa.killed_at >= NOW() - INTERVAL '{interval}'
-          AND sa.kill_trigger IS NOT NULL
+        WHERE sa.kill_trigger IS NOT NULL
           AND sa.emailbison_account_id IS NOT NULL
           AND w.is_active = TRUE
           AND (d.pool_status IS NULL OR d.pool_status != 'cancelled')
+          {time_filter}
         ORDER BY w.workspace_name, sa.killed_at DESC
     """)
     if format == "csv":
