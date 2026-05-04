@@ -18,9 +18,12 @@ inbox_audits.audit_data JSONB (Phase 4 cancel-candidate rollup).
 
 Configuration:
   SLACK_AUDIT_WEBHOOK_URL — webhook for #inbox-audit channel (required)
-  PUBLIC_REPORTS_URL      — public origin of the reports UI
-                            (e.g. https://app.wizardgrimoire.cloud)
-                            If unset, button URLs degrade to relative paths.
+  PUBLIC_API_URL          — public origin of the FastAPI service.
+                            Defaults to https://api.wizardgrimoire.cloud.
+                            Buttons link to /api/reports/<slug>?format=csv —
+                            clicking downloads a CSV directly. Frontend-
+                            independent so the message stays useful while
+                            the operator UI is being rebuilt.
 
 Plan ref: docs/plans/inbox-audit-overhaul.md (Phase 5 redesign)
 """
@@ -32,7 +35,8 @@ import asyncpg
 import httpx
 
 SLACK_WEBHOOK_URL = os.getenv("SLACK_AUDIT_WEBHOOK_URL")
-PUBLIC_REPORTS_URL = (os.getenv("PUBLIC_REPORTS_URL", "") or "").rstrip("/")
+# API origin — buttons link to /api/reports/<slug>?format=csv directly.
+PUBLIC_API_URL = (os.getenv("PUBLIC_API_URL", "https://api.wizardgrimoire.cloud") or "").rstrip("/")
 
 
 async def get_per_workspace_summary(db: asyncpg.Pool) -> List[Dict[str, Any]]:
@@ -115,14 +119,13 @@ async def get_domain_rollup(db: asyncpg.Pool) -> Dict[str, int]:
 
 
 def _btn(label: str, slug: str) -> Dict[str, Any]:
-    elem: Dict[str, Any] = {
+    """Button that triggers a CSV download from the API directly."""
+    return {
         "type": "button",
         "text": {"type": "plain_text", "text": label, "emoji": True},
-        "action_id": f"open_{slug}",
+        "action_id": f"download_{slug}",
+        "url": f"{PUBLIC_API_URL}/api/reports/{slug}?format=csv",
     }
-    if PUBLIC_REPORTS_URL:
-        elem["url"] = f"{PUBLIC_REPORTS_URL}/reports/{slug}"
-    return elem
 
 
 def build_message(
@@ -188,7 +191,7 @@ def build_message(
             "type": "section",
             "text": {
                 "type": "mrkdwn",
-                "text": "*Open a report (cumulative, sortable by workspace + most recent event):*",
+                "text": "*Download a report (cumulative CSV, sorted by workspace + most-recent-event):*",
             },
         },
         {
