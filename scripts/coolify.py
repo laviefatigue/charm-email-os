@@ -211,11 +211,18 @@ def cmd_env_delete(app_name, key):
 
 
 def cmd_deploy(app_name):
-    """Trigger deployment for an app."""
+    """Trigger deployment for an app.
+
+    Uses force=true so Coolify pulls the latest commit fresh from git.
+    With force=false, Coolify reuses its cached git state, which silently
+    deploys an outdated image even when newer commits are pushed — this
+    bit us 2026-05-04 (kill-rule rewrite deployed cached commit baf90cf7
+    instead of 5118d59).
+    """
     name, uuid = resolve_app(app_name)
     # Coolify uses GET /deploy?uuid=... (not POST /applications/{uuid}/deploy)
-    result = api("GET", f"/deploy?uuid={uuid}&force=false")
-    print(f"Deployment triggered for {name}")
+    result = api("GET", f"/deploy?uuid={uuid}&force=true")
+    print(f"Deployment triggered for {name} (force=true: fresh git pull)")
     if isinstance(result, dict):
         deployments = result.get("deployments", [])
         if deployments:
