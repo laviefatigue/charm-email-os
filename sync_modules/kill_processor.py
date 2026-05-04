@@ -73,14 +73,17 @@ ESP_BURN_MIN_COMPLAINTS_DEFAULT = 1  # Unknown ESP: conservative, treat like Goo
 # Inbox-killing triggers indicate inbox-level or list-level issues.
 # Safe to promote B-Set inboxes from the same domain.
 INBOX_KILLING_TRIGGERS = {
-    # fresh_inbox_blocked and fresh_inbox_unknown removed (2026-03-18) —
-    # redundant with hard_blocked_24h and hard_unknown_24h (identical thresholds).
-    'hard_bounces_24h',      # Transient or list quality issue
-    'hard_blocked_24h',      # Could escalate, but start as inbox-level
-    'hard_unknown_24h',      # Bad addresses in list
-    'hard_bounce_rate_7d',   # Sustained issue, likely list quality
-    'bounce_rate_all_7d',    # General bounce rate
-    'disconnected_timeout',  # OAuth issue, not reputation
+    # New post-2026-05-04 rate-based rule — see docs/plans/kill-rule-rate-based-rewrite.md.
+    'hard_bounce_rate_lifetime',  # Lifetime hard bounce rate > 5% (replaces _24h count rules)
+    # Legacy values retained so historical kill_queue rows still classify correctly.
+    # New kills under the rewritten rule will only emit hard_bounce_rate_lifetime
+    # or spam_complaint.
+    'hard_bounces_24h',      # Transient or list quality issue (legacy)
+    'hard_blocked_24h',      # Could escalate, but start as inbox-level (legacy)
+    'hard_unknown_24h',      # Bad addresses in list (legacy)
+    'hard_bounce_rate_7d',   # Sustained issue, likely list quality (legacy)
+    'bounce_rate_all_7d',    # General bounce rate (legacy)
+    'disconnected_timeout',  # OAuth issue, not reputation (legacy)
 }
 
 

@@ -49,6 +49,16 @@ from tests.fakes import FakeEmailBisonClient
 pytestmark = pytest.mark.asyncio
 
 
+# Tests below assert behavior of the pre-2026-05-04 count-based kill rule
+# (`hard_blocked_24h`, `hard_unknown_24h`, `hard_bounces_24h`, `hard_bounce_rate_7d`,
+# `disconnected_timeout`). All count-based and 7d-rate triggers were removed
+# in the lifetime-rate rewrite — see docs/plans/kill-rule-rate-based-rewrite.md.
+# Lifetime-rate behavior is covered in tests/test_kill_rule_lifetime.py.
+_OBSOLETE_COUNT_RULE = pytest.mark.skip(
+    reason="Pre-2026-05-04 count-based rule, superseded by lifetime-rate rewrite"
+)
+
+
 # ──────────────────────────────────────────────────────────────────────────
 # Helpers
 # ──────────────────────────────────────────────────────────────────────────
@@ -150,6 +160,7 @@ async def _kill_queue_rows_for(db_pool, inbox_id):
 # ──────────────────────────────────────────────────────────────────────────
 # W1: Google + 1 hard bounce + 25 sends_24h → kill (post-ADR-007 threshold)
 # ──────────────────────────────────────────────────────────────────────────
+@_OBSOLETE_COUNT_RULE
 async def test_w1_google_one_hb_with_floor_kills(
     db_pool, fake_client, workspace_factory
 ):
@@ -231,6 +242,7 @@ async def test_w3_microsoft_one_hb_no_kill(
 # ──────────────────────────────────────────────────────────────────────────
 # W4: Microsoft + 2 hard bounces → kill (MS threshold met)
 # ──────────────────────────────────────────────────────────────────────────
+@_OBSOLETE_COUNT_RULE
 async def test_w4_microsoft_two_hb_kills(
     db_pool, fake_client, workspace_factory
 ):
@@ -287,6 +299,7 @@ async def test_w5_google_only_7d_signal_no_kill_without_rate_gate(
 # ──────────────────────────────────────────────────────────────────────────
 # W6: Google + 1 hard_blocked_24h → kill with trigger_type='hard_blocked_24h'
 # ──────────────────────────────────────────────────────────────────────────
+@_OBSOLETE_COUNT_RULE
 async def test_w6_google_hard_blocked_priority(
     db_pool, fake_client, workspace_factory
 ):
@@ -488,6 +501,7 @@ async def test_w10_migration_restores_microsoft_to_deployed(
 # ──────────────────────────────────────────────────────────────────────────
 # W11: kill_queue dedup — flagged + alive should NOT block new kill (mig 099)
 # ──────────────────────────────────────────────────────────────────────────
+@_OBSOLETE_COUNT_RULE
 async def test_w11_flagged_but_alive_does_not_block_new_kill(
     db_pool, fake_client, workspace_factory
 ):
@@ -569,6 +583,8 @@ async def test_r1_spam_complaint_no_floor(
 
 
 # R2: disconnected_at = NOW() - 22 days → disconnected_timeout kill
+# Removed by ADR-009 (2026-04-30): connection state no longer drives kills.
+@pytest.mark.skip(reason="ADR-009: disconnected_timeout removed as kill trigger")
 async def test_r2_disconnected_timeout(
     db_pool, fake_client, workspace_factory
 ):
@@ -594,6 +610,7 @@ async def test_r2_disconnected_timeout(
 
 
 # R3: hard_bounce_rate_7d > 2% with 100+ sends → kill via rate path
+@_OBSOLETE_COUNT_RULE
 async def test_r3_rate_based_kill(
     db_pool, fake_client, workspace_factory
 ):

@@ -1,0 +1,35 @@
+-- Migration 105: add 'hard_bounce_rate_lifetime' to kill_trigger_type enum
+--
+-- Plan reference: docs/plans/kill-rule-rate-based-rewrite.md
+--
+-- WHY THIS EXISTS
+-- ───────────────
+-- The 2026-04-14 mass kill of Barrena (39 healthy Connected inboxes wiped in
+-- a single 0.18-second health-check tick) was traced to GREATEST(stale, fresh)
+-- inflation in the rolling _24h bounce counters. While kill processing was
+-- paused, the columns kept accumulating; when it resumed, every long-running
+-- inbox crossed `hard_blocked_24h ≥ 2` and was killed.
+--
+-- The fix replaces all _24h count rules with a single ESP-agnostic lifetime
+-- rate rule:
+--
+--   spam_complaint  ≥ 1                                   → instant kill
+--   sends_lifetime  < 20                                  → skip (insufficient data)
+--   hard_bounces_lifetime / sends_lifetime > 5%           → kill (lifetime rate)
+--
+-- Numerator computed on demand from response_messages (no stored counter).
+-- Denominator from sender_accounts.emails_sent_all_time (synced from EB).
+-- Inflation bug class disappears because there is no rolling counter to
+-- inflate, no decay job to keep current, no daily reset to skip.
+--
+-- This migration only adds the new enum value. The kill_trigger column,
+-- evaluation logic, and kill_processor mappings change in code (not SQL).
+-- Existing enum values (hard_blocked_24h, hard_unknown_24h, etc.) are kept
+-- for historical kill_trigger_events and dead inboxes; new kills under the
+-- rewritten rule will use the new value.
+
+ALTER TYPE kill_trigger_type ADD VALUE IF NOT EXISTS 'hard_bounce_rate_lifetime';
+
+-- Verify (read-only):
+-- SELECT enumlabel FROM pg_type t JOIN pg_enum e ON e.enumtypid = t.oid
+-- WHERE t.typname = 'kill_trigger_type' ORDER BY e.enumsortorder;

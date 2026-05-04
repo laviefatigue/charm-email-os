@@ -38,6 +38,38 @@ GOOGLE_KILL_THRESHOLD_HARD_UNKNOWN_24H = int(os.getenv('GOOGLE_KILL_THRESHOLD_HA
 GOOGLE_KILL_THRESHOLD_HARD_BOUNCES_24H = int(os.getenv('GOOGLE_KILL_THRESHOLD_HARD_BOUNCES_24H', 1))
 
 
+def evaluate_lifetime_rule(
+    complaints: int,
+    sends: int,
+    hard_bounces: int,
+    *,
+    spam_threshold: int = 1,
+    min_sends: int = 20,
+    rate_threshold: float = 0.05,
+) -> Optional[Tuple[str, float, float]]:
+    """Pure function form of the post-2026-05-04 lifetime kill rule.
+
+    Returns (trigger_type, value, threshold) when the inbox should be killed,
+    or None when it should be left alive.
+
+    Branches (top to bottom):
+      1. complaints >= spam_threshold        → ('spam_complaint', complaints, spam_threshold)
+      2. sends < min_sends                   → None (skip — insufficient data)
+      3. hard_bounces / sends > rate_threshold → ('hard_bounce_rate_lifetime', rate, rate_threshold)
+      4. otherwise                           → None
+
+    Extracted for unit-testability — see tests/test_kill_rule_lifetime.py.
+    """
+    if complaints >= spam_threshold:
+        return ('spam_complaint', float(complaints), float(spam_threshold))
+    if sends < min_sends:
+        return None
+    rate = hard_bounces / sends if sends > 0 else 0.0
+    if rate > rate_threshold:
+        return ('hard_bounce_rate_lifetime', rate, rate_threshold)
+    return None
+
+
 def get_count_threshold(esp: Optional[str], trigger: str) -> int:
     """Return the count threshold for a trigger, ESP-aware.
 
@@ -58,6 +90,19 @@ def get_count_threshold(esp: Optional[str], trigger: str) -> int:
 KILL_THRESHOLD_HARD_BOUNCE_RATE = float(os.getenv('KILL_THRESHOLD_HARD_BOUNCE_RATE', 0.02))
 KILL_THRESHOLD_TOTAL_BOUNCE_RATE = float(os.getenv('KILL_THRESHOLD_TOTAL_BOUNCE_RATE', 0.05))
 KILL_THRESHOLD_MIN_SENDS = int(os.getenv('KILL_THRESHOLD_MIN_SENDS', 100))  # Industry standard: min 100 sends before rate triggers
+
+# Lifetime-rate rule (post-2026-05-04 rewrite — see docs/plans/kill-rule-rate-based-rewrite.md).
+# Replaces the windowed-count rules (hard_blocked_24h ≥ N, etc.) that produced
+# the 2026-04-14 Barrena mass-kill via stored-counter inflation. Numerator
+# computed on demand from response_messages bounce events; denominator is
+# sender_accounts.emails_sent_all_time (synced from EB). No rolling counter,
+# no decay, no reset — therefore no inflation bug class.
+KILL_MIN_SENDS_LIFETIME = int(os.getenv('KILL_MIN_SENDS_LIFETIME', 20))
+KILL_MATURE_RATE = float(os.getenv('KILL_MATURE_RATE', 0.05))
+# When true, evaluate the new rule but log decisions instead of queueing kills.
+# Default true on first deploy so we can read one cycle of would-kill output
+# before flipping. Set KILL_RULE_DRY_RUN=false in env to make rule load-bearing.
+KILL_RULE_DRY_RUN = os.getenv('KILL_RULE_DRY_RUN', 'true').lower() in ('true', '1', 'yes')
 # Min campaign send volume required before count-based bounce triggers
 # (hard_bounces_24h, hard_blocked_24h, hard_unknown_24h, combined
 # hard_bounces_24h) fire. CEO target of 15-20 sends/day per inbox is the
@@ -125,6 +170,13 @@ KILL_THRESHOLDS = {
         'min_sends': KILL_THRESHOLD_MIN_SENDS,
         'severity': 'instant',
         'description': f'Total bounce rate >{KILL_THRESHOLD_TOTAL_BOUNCE_RATE*100}%'
+    },
+    # New post-2026-05-04 rule — see comment block on KILL_MIN_SENDS_LIFETIME above.
+    'hard_bounce_rate_lifetime': {
+        'value': KILL_MATURE_RATE,
+        'min_sends': KILL_MIN_SENDS_LIFETIME,
+        'severity': 'instant',
+        'description': f'Lifetime hard bounce rate >{KILL_MATURE_RATE*100:.0f}% (min {KILL_MIN_SENDS_LIFETIME} sends)'
     },
     # 'disconnected_timeout' was removed 2026-04-30 per docs/plans/connection-state-machine.md.
     # The 21-day-disconnect-equals-dead rule produced ~1,200 fleet-wide zombies (rows
@@ -302,9 +354,16 @@ class HealthCheckModule:
         Returns:
             Number of kill triggers detected
         """
-        # Get all active inboxes with metrics
-        # NOTE: warmup_started_at is used to calculate incubation age (2-week period)
-        # NOTE: disconnected_at tracks when inbox lost connection (for 21-day auto-kill)
+        # Get all active inboxes with metrics.
+        #
+        # Lifetime metrics for the new rate rule:
+        #   emails_sent_all_time      — synced from EB sender.emails_sent_count (denominator)
+        #   complaints_lifetime       — instant-kill on ≥1
+        #   hard_bounces_lifetime     — computed on demand from response_messages
+        #                              (numerator; no stored counter to drift)
+        #
+        # Legacy _24h / _7d columns retained in the SELECT for now because UI
+        # consumers may still read them. The kill-rule body no longer uses them.
         inboxes = await self.db.fetch("""
             SELECT
                 sa.id,
@@ -324,7 +383,14 @@ class HealthCheckModule:
                 sa.warmup_started_at,
                 sa.sending_started_at,
                 sa.disconnected_at,
-                sa.complaints_lifetime
+                sa.complaints_lifetime,
+                COALESCE(sa.emails_sent_all_time, 0) AS emails_sent_all_time,
+                (
+                    SELECT COUNT(*) FROM response_messages rm
+                    WHERE rm.sender_account_id = sa.id
+                      AND rm.folder = 'bounced'
+                      AND rm.bounce_type IN ('hard_blocked', 'hard_unknown')
+                ) AS hard_bounces_lifetime
             FROM sender_accounts sa
             LEFT JOIN domains d ON sa.domain_id = d.id
             WHERE sa.workspace_id = $1
@@ -373,168 +439,61 @@ class HealthCheckModule:
         workspace_name: str
     ) -> Tuple[str, List[Dict]]:
         """
-        Evaluate health state for a single inbox.
+        Evaluate health for one live inbox using the post-2026-05-04 rule.
 
-        Returns:
-            Tuple of (health_state, list of triggered kill conditions)
+        Three branches, evaluated top to bottom:
+
+          1. complaints_lifetime ≥ 1                    → spam_complaint kill
+          2. emails_sent_all_time < KILL_MIN_SENDS_LIFETIME (default 20)
+                                                        → skip (insufficient data)
+          3. hard_bounces_lifetime / emails_sent_all_time > KILL_MATURE_RATE
+             (default 5%)                               → hard_bounce_rate_lifetime kill
+
+        The numerator (`hard_bounces_lifetime`) is computed in
+        check_workspace_health from response_messages (no stored counter to
+        drift). The denominator (`emails_sent_all_time`) is synced from EB.
+
+        See docs/plans/kill-rule-rate-based-rewrite.md for the rationale and
+        the 2026-04-14 Barrena mass-kill incident this rewrite addresses.
+
+        When KILL_RULE_DRY_RUN is true, log the would-kill decision instead
+        of queueing.
         """
-        triggers = []
+        triggers: List[Dict] = []
 
-        hard_bounces_24h = inbox.get('hard_bounces_24h') or 0
-        hard_blocked_24h = inbox.get('hard_blocked_24h') or 0
-        hard_unknown_24h = inbox.get('hard_unknown_24h') or 0
-        hard_bounces_7d = inbox.get('hard_bounces_7d') or 0
-        soft_bounces_7d = inbox.get('soft_bounces_7d') or 0
-        total_sends_24h = inbox.get('total_sends_24h') or 0
-        total_sends_7d = inbox.get('total_sends_7d') or 0
-        warmup_started_at = inbox.get('warmup_started_at')
+        complaints = int(inbox.get('complaints_lifetime') or 0)
+        sends = int(inbox.get('emails_sent_all_time') or 0)
+        hard_bounces = int(inbox.get('hard_bounces_lifetime') or 0)
 
-        # Calculate "sending age" for fresh_inbox_blocked/fresh_inbox_unknown triggers
-        #
-        # Two separate concepts:
-        # 1. Incubation (warmup_started_at) - determines Live/Reserve classification
-        # 2. Sending age (sending_started_at) - determines fresh inbox trigger eligibility
-        #
-        # An inbox is "fresh" when < 21 days from first campaign assignment.
-        # We use sending_started_at because:
-        # - It's set when inbox first assigned to active campaign
-        # - Warmup dates may be inaccurate due to backfilling/sync
-        # - The dangerous period is early SENDING, not early warmup
-        #
-        # Fallback to warmup_started_at for legacy data without sending_started_at
-        sending_started_at = inbox.get('sending_started_at')
-        inbox_sending_age_days = None
-        if sending_started_at:
-            if isinstance(sending_started_at, str):
-                sending_started_at = datetime.fromisoformat(sending_started_at.replace('Z', '+00:00'))
-            inbox_sending_age_days = (datetime.now(timezone.utc) - sending_started_at.replace(tzinfo=timezone.utc)).days
-        elif warmup_started_at:
-            # Fallback for inboxes without sending_started_at
-            inbox_sending_age_days = (datetime.now(timezone.utc) - warmup_started_at.replace(tzinfo=timezone.utc)).days
-
-        # Check each kill threshold (priority order: spam > provider_block > blocked > unknown > combined > rates)
-        # 0. Spam complaints (HIGHEST PRIORITY - v3 spec: 1 complaint = death)
-        # Spam complaints are not subject to the min-sends floor: a single
-        # complaint is signal regardless of volume, and Google instant-burns
-        # the domain anyway downstream.
-        threshold = KILL_THRESHOLDS['spam_complaint']
-        complaints = inbox.get('complaints_lifetime') or 0
-        if complaints >= threshold['value']:
-            triggers.append({
-                'trigger_type': 'spam_complaint',
-                'value': complaints,
-                'threshold': threshold['value']
-            })
-
-        # NOTE: provider_block_* auto-detection was here but removed (2026-03-18).
-        # hard_blocked bounces = RECIPIENT server rejections (550 5.7.x), not provider domain blocks.
-        # A strict corporate recipient spam filter was being misclassified as provider_block_{esp},
-        # which is a DOMAIN_KILLING_TRIGGER, causing instant domain burns on single recipient rejections.
-        # Provider blocks should be detected via account disconnection/suspension signals instead.
-
-        # Min-sends floor for COUNT-based bounce triggers. With CEO target of
-        # 15-20 sends/day per inbox, 2 hard bounces on an inbox below that
-        # floor is overwhelmingly a warmup-network artifact, not list-quality
-        # damage. Without this floor we were killing healthy graduated
-        # inboxes (Phase 0: 65% of last week's hard_bounces_24h kills had
-        # total_sends_7d < 20).
-        #
-        # Accept EITHER 24h or 7d signal — see comment on the constants for
-        # rollout-safety reasoning.
-        has_min_send_volume = (
-            total_sends_24h >= KILL_THRESHOLD_MIN_SENDS_24H_FOR_COUNT_TRIGGER
-            or total_sends_7d >= KILL_THRESHOLD_MIN_SENDS_7D_FALLBACK
+        verdict = evaluate_lifetime_rule(
+            complaints=complaints,
+            sends=sends,
+            hard_bounces=hard_bounces,
+            spam_threshold=KILL_THRESHOLDS['spam_complaint']['value'],
+            min_sends=KILL_MIN_SENDS_LIFETIME,
+            rate_threshold=KILL_MATURE_RATE,
         )
-
-        # ESP-aware count thresholds. Google: 1/1/1 (post-ADR-007).
-        # Microsoft and unknown-ESP: 2/3/2 (pre-overhaul defaults retained).
-        esp = inbox.get('esp')
-
-        # 1. Hard blocked (spam/policy rejection) - HIGHEST PRIORITY after spam
-        # These indicate sender reputation damage.
-        blocked_threshold = get_count_threshold(esp, 'hard_blocked_24h')
-        if hard_blocked_24h >= blocked_threshold and has_min_send_volume:
+        if verdict is not None:
+            trigger_type, value, threshold = verdict
             triggers.append({
-                'trigger_type': 'hard_blocked_24h',
-                'value': hard_blocked_24h,
-                'threshold': blocked_threshold
+                'trigger_type': trigger_type,
+                'value': value,
+                'threshold': threshold,
             })
 
-        # 2. Hard unknown (bad email addresses) - list quality, less urgent.
-        unknown_threshold = get_count_threshold(esp, 'hard_unknown_24h')
-        if hard_unknown_24h >= unknown_threshold and has_min_send_volume:
-            triggers.append({
-                'trigger_type': 'hard_unknown_24h',
-                'value': hard_unknown_24h,
-                'threshold': unknown_threshold
-            })
+        # Determine health state.
+        health_state = 'critical' if triggers else 'healthy'
 
-        # 3. Combined hard bounces - FALLBACK.
-        # Only adds if neither specific trigger fired (catches edge cases).
-        bounces_threshold = get_count_threshold(esp, 'hard_bounces_24h')
-        if hard_bounces_24h >= bounces_threshold and has_min_send_volume:
-            if not any(t['trigger_type'] in ['hard_blocked_24h', 'hard_unknown_24h'] for t in triggers):
-                triggers.append({
-                    'trigger_type': 'hard_bounces_24h',
-                    'value': hard_bounces_24h,
-                    'threshold': bounces_threshold
-                })
-
-        # 2. Hard bounce rate 7d
-        threshold = KILL_THRESHOLDS['hard_bounce_rate_7d']
-        if total_sends_7d >= threshold.get('min_sends', 0):
-            hard_rate = hard_bounces_7d / total_sends_7d if total_sends_7d > 0 else 0
-            if hard_rate > threshold['value']:
-                triggers.append({
-                    'trigger_type': 'hard_bounce_rate_7d',
-                    'value': hard_rate,
-                    'threshold': threshold['value']
-                })
-
-        # 3. Total bounce rate 7d
-        threshold = KILL_THRESHOLDS['bounce_rate_all_7d']
-        if total_sends_7d >= threshold.get('min_sends', 0):
-            total_bounces = hard_bounces_7d + soft_bounces_7d
-            total_rate = total_bounces / total_sends_7d if total_sends_7d > 0 else 0
-            if total_rate > threshold['value']:
-                triggers.append({
-                    'trigger_type': 'bounce_rate_all_7d',
-                    'value': total_rate,
-                    'threshold': threshold['value']
-                })
-
-        # NOTE: fresh_inbox_blocked and fresh_inbox_unknown triggers removed (2026-03-18).
-        # They had identical thresholds to hard_blocked_24h (>=2) and hard_unknown_24h (>=3),
-        # making them redundant. The regular triggers already catch these cases regardless of inbox age.
-
-        # 4. Disconnected timeout — REMOVED 2026-04-30
-        # The 21-day-disconnect-equals-dead rule was wrong. It treated operational
-        # disconnects (OAuth/IMAP needing reconnect) as terminal reputation kills,
-        # producing ~1,200 fleet-wide zombies — rows marked dead in DB while their
-        # actual EB inboxes were connected and actively sending after late reconnect.
-        #
-        # Per docs/plans/connection-state-machine.md, connection state is now
-        # monitoring-only: notification ladder at 24h/3d/7d/20d, but no kill driven
-        # by disconnect duration. Quality state (live/dead) is driven only by the
-        # five reputation triggers above (spam, hard bounces, hard blocked, hard
-        # unknown, fresh-inbox bounce). A disconnected inbox is not a damaged inbox.
-        #
-        # Existing rows with kill_trigger='disconnected_timeout' are subject to a
-        # separate operator-driven review per docs/plans/connection-state-machine.md
-        # §8 — restoration is gated on reputation re-validation and is NOT auto-run.
-
-        # Determine health state. Post-2026-04-29 (ADR-007), the 'warning'
-        # intermediate state is removed — inboxes are either healthy or
-        # in critical/kill state. The pre-overhaul soft-pause buffer was a
-        # charm-specific addition; v3 spec only has healthy → kill paths.
-        if triggers:
-            health_state = 'critical'
-        else:
-            health_state = 'healthy'
-
-        # Queue for kill if triggers found
-        if triggers:
-            for trigger in triggers:
+        # Queue or dry-run-log every fired trigger.
+        for trigger in triggers:
+            if KILL_RULE_DRY_RUN:
+                print(
+                    f"  [KILL_RULE_DRY_RUN] would-kill {inbox['email_address']} "
+                    f"({workspace_name}): trigger={trigger['trigger_type']} "
+                    f"value={trigger['value']:.4f} threshold={trigger['threshold']:.4f} "
+                    f"(sends={sends}, hard_bounces={hard_bounces}, complaints={complaints})"
+                )
+            else:
                 await self.queue_for_kill(
                     inbox_id=inbox['id'],
                     workspace_id=workspace_id,
@@ -542,7 +501,7 @@ class HealthCheckModule:
                     inbox_email=inbox['email_address'],
                     trigger_type=trigger['trigger_type'],
                     trigger_value=trigger['value'],
-                    trigger_threshold=trigger['threshold']
+                    trigger_threshold=trigger['threshold'],
                 )
 
         return health_state, triggers
