@@ -76,6 +76,7 @@ POLL_INTERVAL_ENGAGEMENT = int(os.getenv('SYNC_INTERVAL_ENGAGEMENT', 86400))  # 
 POLL_INTERVAL_OAUTH_QUEUE = int(os.getenv('SYNC_INTERVAL_OAUTH_QUEUE', 300))  # 5 min  (queue processing)
 POLL_INTERVAL_OAUTH_VERIFY = int(os.getenv('SYNC_INTERVAL_OAUTH_VERIFY', 30 * 24 * 3600))  # 30 days
 POLL_INTERVAL_WORKSPACE_DISCOVERY = int(os.getenv('SYNC_INTERVAL_WORKSPACE_DISCOVERY', 300))  # 5 min
+POLL_INTERVAL_TAG_OP_DRAIN = int(os.getenv('SYNC_INTERVAL_TAG_OP_DRAIN', 1800))  # 30 min — Tier 2 batch tag worker
 
 # Concurrent workspace processing — how many workspaces run in parallel per batch
 SYNC_WORKSPACE_CONCURRENCY = int(os.getenv('SYNC_WORKSPACE_CONCURRENCY', '3'))
@@ -125,6 +126,12 @@ class SyncOrchestrator:
         # per-workspace structured audit. Runs daily; persists to inbox_audits
         # table with workspace_id + inbox_id_set + audit_data populated.
         self.last_inbox_audit: Optional[datetime] = None
+        # Tag Op Worker — Tier 2 of event-driven architecture. Drains pending
+        # tag_op_* events from event_log per workspace using workspace-scoped
+        # EB API keys. See docs/plans/event-driven-architecture.md.
+        # No-op until event_log accumulates rows (which only happens when
+        # listener handlers are active — i.e., EVENT_DRIVEN_ENABLED=true).
+        self.last_tag_op_drain: Optional[datetime] = None
 
     async def start(self, single_pass: bool = False):
         """Initialize connections and start the sync worker."""
@@ -304,6 +311,20 @@ class SyncOrchestrator:
                         print(f"[ERROR] OAuth queue failed: {e}")
                     self.last_oauth_queue_check = now
 
+                # Tag Op Worker — Tier 2 of event-driven architecture (every 30 min).
+                # Drains pending tag_op_* events from event_log per workspace and
+                # bulk-applies to EB. Coexists with set_tag_sync during the rollout
+                # — both are idempotent so duplicate writes are 200 OK no-ops.
+                # No-op when event_log has no pending rows (i.e., when the listener
+                # isn't running and handlers aren't producing tag_op events).
+                # Plan: docs/plans/event-driven-architecture.md
+                if self._should_run(self.last_tag_op_drain, POLL_INTERVAL_TAG_OP_DRAIN):
+                    try:
+                        await self.run_tag_op_drain()
+                    except Exception as e:
+                        print(f"[ERROR] Tag op drain failed: {e}")
+                    self.last_tag_op_drain = now
+
                 # OAuth monthly verification - every 30 days
                 if self._should_run(self.last_oauth_verify, POLL_INTERVAL_OAUTH_VERIFY):
                     try:
@@ -389,6 +410,31 @@ class SyncOrchestrator:
         (via WorkspaceSyncQueue.request_force_refresh).
         """
         await self.sync_queue.process_priority_batch()
+
+    async def run_tag_op_drain(self):
+        """Drain pending tag_op_* events from event_log per workspace.
+
+        Tier 2 of the event-driven architecture
+        (docs/plans/event-driven-architecture.md). Runs every 30 min.
+
+        Each workspace processed with its own scoped EB API key (per
+        ADR-006). Workspace-level failures are isolated.
+
+        No-op when event_log has no pending tag_op rows. With
+        EVENT_DRIVEN_ENABLED=false, the listener never produces tag_op
+        events, so this is just a daily empty SELECT — cheap.
+        """
+        from sync_modules.tag_op_worker import TagOpWorker
+        print(f"[{datetime.now()}] Tag op drain (Tier 2 batch worker)...")
+
+        worker = TagOpWorker(
+            db=self.db,
+            audit_logger=self.audit_logger,
+            alerter=self.alerter,
+        )
+        result = await worker.run_once()
+        status = 'OK' if result.success else 'FAILED'
+        print(f"  Tag ops: {result.records_processed} workspaces touched [{status}]")
 
     async def run_health_checks(self):
         """Run health checks and kill trigger detection."""

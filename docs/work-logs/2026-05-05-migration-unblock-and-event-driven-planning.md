@@ -199,9 +199,99 @@ Migration runner state changes (DB-only, no commits):
 
 1. **Wait** for incubation-watcher Phase 3 shadow soak to complete
    (~6 days). Then operator decides on Phase 4 cutover.
-2. **Operator decision** on workspace package assignments.
-   Recommendations + analysis already in yesterday's session report.
-3. **Once incubation-watcher Phase 4 cuts over**, kick off event-driven
-   Phase 1 on `feature/event-driven-architecture` branch. Foundation
-   work: migration 107 (event_log table), listener module, feature
-   flag scaffold. ~1 day.
+2. **Operator decision** on Charm package assignment (other 7 done).
+
+## Late-day update (event-driven feature branch — Phases 1-4 SHIPPED)
+
+After unblocking the migration runner and assigning packages, kicked
+off the event-driven workstream on `feature/event-driven-architecture`.
+NOT MERGED to master. Production unaffected.
+
+### Phase 1 (commit df06e85): foundation
+
+- Migration `107_event_log.sql` — durable event queue with two-stage
+  tracking (emitted → processing → completed/failed/orphaned).
+  CHECK constraint enforces `workspace_id NOT NULL` for any tag_op_*
+  event (per ADR-006 partitioning rule).
+- Migration `108_event_triggers.sql` — 7 triggers + emit_event() helper.
+  Triggers: bounce_observed, kill_queued, inbox_died, inbox_pickup,
+  pool_changed, domain_burned, package_assigned.
+- `sync_modules/event_listener.py` — asyncpg LISTEN/NOTIFY consumer
+  with reconnect-resilient catch-up (drains status='emitted' on start)
+  and watchdog for orphaned events.
+- `tests/test_event_triggers.py` — 12 Gate 1 synthetic tests covering
+  trigger correctness, transaction-rollback guarantees, and the CHECK
+  constraint.
+
+### Phase 2 (commit e71cb94): handler implementations
+
+- `sync_modules/event_handlers/` package with 7 handlers + shared helpers.
+- 5 full implementations: bounce_observed, kill_queued, pool_changed,
+  domain_burned, inbox_pickup.
+- 2 stubs (Phase 3 wires real promotion): inbox_died, package_assigned.
+- HANDLER_REGISTRY exports for listener wiring.
+- `tests/test_event_handlers.py` — 10 Gate 2 idempotency tests.
+
+### Phase 3 (commit 34089bc): single-row promote_to_target + listener fix
+
+- Listener architecture fix: handlers now get a fresh pool connection,
+  not the LISTEN connection (which must stay free for notifications).
+  EventHandler signature changed to `(event, conn)`.
+- New `pool_promotion.promote_to_target(db, workspace_id, target)` —
+  single-row entry point shared by polling cycle and event handlers.
+  Returns structured result with promoted count, deficit, reserves
+  available, no_candidates flag.
+- `pool_promotion.get_workspace_promotion_target(conn, workspace_id)` —
+  resolves effective target (override > package default > None).
+- inbox_died_handler + package_assigned_handler stubs replaced with
+  real implementations calling promote_to_target.
+- `_maintain_pool_thresholds` in workspace_writes.py refactored to use
+  shared `promote_to_target` (DRY). Reserve-runway and no-reserves
+  alerts stay in the orchestrator (alerter is workspace-orchestrator-
+  specific).
+
+### Phase 4 (this commit): Tier 2 batch tag worker
+
+- `sync_modules/tag_op_worker.py` — TagOpWorker class. Drains pending
+  `tag_op_*` events from event_log per workspace. Each workspace gets
+  its own EmailBisonClient (workspace-scoped key per ADR-006).
+  Workspace-level failures isolated. Bulk per-tag grouping minimizes
+  EB API calls. Per-workspace tag_id cache.
+- `emailbison_client.py` — added `tag_inboxes_bulk` and
+  `untag_inboxes_bulk` (the underlying EB endpoints already accept
+  arrays; existing `tag_inbox` was just calling them with single-element
+  lists).
+- `tests/fakes.py` — extended FakeEmailBisonClient with bulk methods.
+- `tests/test_tag_op_worker.py` — 10 Gate 2 tests covering bulk
+  grouping, workspace isolation, EB failure handling, retry_after
+  backoff, missing emailbison_account_id, idempotency, tag id cache,
+  and the CHECK constraint.
+- `emailbison_sync_worker.py` — wired `run_tag_op_drain` into poll loop
+  with `SYNC_INTERVAL_TAG_OP_DRAIN` (default 30 min).
+- `set_tag_sync.py` — untouched, but header annotated with the
+  coexistence note. Both modules run side-by-side; tag operations are
+  idempotent on EB so duplicate writes are 200 OK no-ops. Plan to
+  remove set_tag_sync after Gate 6 (drop state polling).
+
+### Test count across all phases
+
+22 from Phase 1+2 + 10 from Phase 4 = **32 synthetic tests**. All
+parse + skip cleanly without Docker (testcontainers required for
+real-DB integration). CI runs them end-to-end.
+
+Plus 1,046 historical kills + 500 historical promotions already
+replayed through Gate 3.5 retroactive validator — 0 unexplained
+mismatches.
+
+### Gating
+
+Pre-deploy: incubation-watcher Phase 4 cutover (~6 days remaining
+shadow soak per the conflict analysis). After cutover, merge feature
+branch to master, then deploy with `EVENT_DRIVEN_ENABLED=false`
+(listener stays dormant). Then Gate 4 shadow mode (~3 days), Gate 5
+co-execution (1 week), Gate 6 drop state polling (1 week), Gate 7
+remove polling code.
+
+Total remaining timeline: ~3-4 weeks of soak, no further engineering
+work needed (Phase 5 disconnect ladder + sender-ban detection are
+designed but not built — ship after Phase 4 proves out).

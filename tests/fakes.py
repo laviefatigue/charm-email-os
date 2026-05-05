@@ -93,6 +93,20 @@ class FakeEmailBisonClient:
         self.inbox_tags.setdefault(account_id, set()).discard(tag_id)
         return {"ok": True}
 
+    async def tag_inboxes_bulk(self, tag_id: int, account_ids: List[int]) -> Dict[str, Any]:
+        self._maybe_fail("tag_inboxes_bulk", tag_id=tag_id, account_ids=tuple(account_ids))
+        self._record("tag_inboxes_bulk", tag_id=tag_id, account_ids=tuple(account_ids))
+        for aid in account_ids:
+            self.inbox_tags.setdefault(aid, set()).add(tag_id)
+        return {"ok": True, "count": len(account_ids)}
+
+    async def untag_inboxes_bulk(self, tag_id: int, account_ids: List[int]) -> Dict[str, Any]:
+        self._maybe_fail("untag_inboxes_bulk", tag_id=tag_id, account_ids=tuple(account_ids))
+        self._record("untag_inboxes_bulk", tag_id=tag_id, account_ids=tuple(account_ids))
+        for aid in account_ids:
+            self.inbox_tags.setdefault(aid, set()).discard(tag_id)
+        return {"ok": True, "count": len(account_ids)}
+
     # ------------------------------------------------- workspace placeholders
     async def switch_workspace(self, workspace_id: int) -> bool:
         # Per-workspace fake — no-op like the scoped real client.
