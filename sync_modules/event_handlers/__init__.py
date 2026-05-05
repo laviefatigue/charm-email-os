@@ -20,20 +20,17 @@ Wiring at startup:
 Plan: docs/plans/event-driven-architecture.md
 
 Phase status (2026-05-05):
-  Phase 2 SHIPPED on this branch:
-    bounce_observed   — full implementation (queue kill if rate > 5%)
-    kill_queued       — full implementation (mark dead + enqueue tag ops)
-    pool_changed      — full implementation (enqueue tag ops)
-    domain_burned     — full implementation (NULL pool_status on all inboxes)
+  Phase 1+2+3 SHIPPED on this branch:
+    bounce_observed   — full (queue kill if rate > 5%)
+    kill_queued       — full (mark dead + enqueue tag ops)
+    inbox_died        — full (Phase 3 — wired to pool_promotion.promote_to_target)
+    pool_changed      — full (enqueue tag ops)
+    domain_burned     — full (NULL pool_status on all inboxes)
     inbox_pickup      — audit log only
-    inbox_died        — STUB; Phase 3 wires pool_promotion.promote_one()
-    package_assigned  — STUB; Phase 3 wires maintain_pool_thresholds_one()
+    package_assigned  — full (Phase 3 — wired to promote_to_target)
 
-  Phase 3 (next): refactor kill_processor / pool_promotion to expose
-  single-row methods so the stubs above become full implementations.
-
-  Phase 4: refactor set_tag_sync as Tier 2 batch worker reading from
-  event_log queue (per workspace).
+  Phase 4 (next): refactor set_tag_sync as Tier 2 batch worker reading
+  from event_log queue per workspace.
 
   Phase 5+: deferred handlers (disconnect_observed, sender_ban_detected,
   graduated, reconnected). Folded in from Plan B Phase 2 + Plan D Pass 3.

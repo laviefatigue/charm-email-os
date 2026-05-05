@@ -215,31 +215,67 @@ async def kill_queued_handler(event: Dict, conn: asyncpg.Connection) -> None:
 
 
 async def inbox_died_handler(event: Dict, conn: asyncpg.Connection) -> None:
-    """An inbox transitioned to 'dead'. Fire pool promotion.
+    """An inbox transitioned to 'dead'. Fill the resulting deficit by
+    promoting a reserve (if the workspace has a package configured).
 
-    Phase 2 (this commit): records the event for audit. Real promotion
-    logic delegated to pool_promotion.promote_one(workspace_id) which
-    Phase 3 will extract from the existing batch promote_inbox_to_deployed.
+    The event_listener passes a fresh pool connection. We use it both
+    for resolving workspace target and for the promote_to_target call.
 
-    For now: log. Polling-based pool_promotion still runs, so promotion
-    happens (just not event-driven).
+    promote_to_target is shared between:
+      - This handler (event-driven, fires immediately)
+      - WorkspaceWriteOrchestrator._maintain_pool_thresholds (poll, every 60s)
 
-    Once Phase 3 ships:
-        from sync_modules.pool_promotion import promote_one
-        ...
-        if has_package_set(conn, workspace_id):
-            await promote_one(conn, workspace_id)
+    Both paths produce identical outcomes; this one's just faster.
+
+    Workspaces with package_id=NULL or pause_pool_transitions=TRUE
+    silently skip. Polling backstop continues to handle those (which
+    is the right thing — operator hasn't opted into proactive promotion).
     """
-    payload = event['payload']
-    if isinstance(payload, str):
-        import json as _json
-        payload = _json.loads(payload)
-
-    workspace_id = payload.get('workspace_id')
-    inbox_id = event.get('entity_id')
-
-    logger.info(
-        "inbox_died: %s in workspace %s (Phase 2 stub — promotion via poll until Phase 3)",
-        inbox_id, workspace_id,
+    from sync_modules.pool_promotion import (
+        get_workspace_promotion_target,
+        promote_to_target,
     )
-    # Phase 3 wires pool_promotion.promote_one(conn, workspace_id) here.
+
+    workspace_id = event.get('workspace_id')
+    if isinstance(workspace_id, str):
+        workspace_id = UUID(workspace_id)
+
+    if not workspace_id:
+        logger.warning("inbox_died: missing workspace_id, skip")
+        return
+
+    target = await get_workspace_promotion_target(conn, workspace_id)
+    if target is None:
+        # No package set or paused. Polling backstop handles latent-capacity
+        # warnings; nothing for events to do here.
+        return
+
+    # Use the connection's pool for promote_to_target — it expects a Pool,
+    # not a Connection, because promote_inbox_to_deployed acquires its own
+    # connection for the transactional UPDATE+INSERT pattern.
+    pool = conn._holder._pool if hasattr(conn, '_holder') else None
+    if pool is None:
+        # Fallback for tests / direct conn use: just log (poll handles it)
+        logger.warning(
+            "inbox_died: handler couldn't access pool from conn (test context?), "
+            "polling will handle promotion"
+        )
+        return
+
+    result = await promote_to_target(
+        pool, workspace_id, target,
+        triggered_by='event_driven_inbox_died',
+        rotation_type='promote',
+        reason='kill_replacement',
+    )
+
+    if result['promoted']:
+        logger.info(
+            "inbox_died: promoted %d reserve(s) for workspace %s (target=%d, was deficit=%d)",
+            result['promoted'], workspace_id, target, result['deficit_at_decision'],
+        )
+    elif result['no_candidates'] and result['deficit_at_decision'] > 0:
+        logger.warning(
+            "inbox_died: workspace %s has deficit=%d but no promotable reserves",
+            workspace_id, result['deficit_at_decision'],
+        )

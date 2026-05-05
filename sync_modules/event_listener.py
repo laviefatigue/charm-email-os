@@ -75,24 +75,36 @@ WATCHDOG_INTERVAL_SECONDS = int(os.getenv('EVENT_WATCHDOG_INTERVAL_SECONDS', 300
 MAX_RETRIES = int(os.getenv('EVENT_MAX_RETRIES', 3))
 
 
-# Handler signature: receives the full event_log row dict, returns nothing.
-# Handler is responsible for marking the event completed/failed via emitter helpers.
-EventHandler = Callable[[Dict], Awaitable[None]]
+# Handler signature: receives the full event_log row dict + a fresh DB
+# connection (from the pool, separate from the LISTEN connection).
+# Handler raises on failure; the listener catches and marks 'failed'.
+EventHandler = Callable[[Dict, asyncpg.Connection], Awaitable[None]]
 
 
 class EventListener:
     """LISTEN/NOTIFY consumer for the event-driven architecture.
 
     Usage:
-        listener = EventListener(db_dsn=DSN)
+        listener = EventListener(db_dsn=DSN, db_pool=pool)
         listener.register('kill_queued', kill_queued_handler)
         listener.register('inbox_died',  inbox_died_handler)
         # ...
         await listener.run()  # loops forever
+
+    Architecture
+    ────────────
+    The listener holds ONE dedicated connection (db_dsn) for LISTEN/NOTIFY
+    only. It MUST stay free for receiving notifications, so handlers never
+    run on it.
+
+    Handlers receive a fresh connection from db_pool (acquired per dispatch).
+    This keeps LISTEN connection unblocked and lets handlers do heavy DB
+    work without concurrency penalty.
     """
 
-    def __init__(self, db_dsn: str):
+    def __init__(self, db_dsn: str, db_pool: asyncpg.Pool):
         self.db_dsn = db_dsn
+        self.db_pool = db_pool
         self.handlers: Dict[str, EventHandler] = {}
         self._conn: Optional[asyncpg.Connection] = None
         self._stop = asyncio.Event()
@@ -219,8 +231,11 @@ class EventListener:
     async def _dispatch(self, event: Dict) -> None:
         """Run the handler for an event, with status tracking.
 
+        Acquires a fresh connection from db_pool for the handler so the
+        LISTEN connection stays free for notifications.
+
         Idempotent: if the event is already 'processing' or 'completed',
-        bail out. Multi-listener safe via SELECT FOR UPDATE SKIP LOCKED.
+        bail out. Multi-listener safe via UPDATE WHERE status='emitted'.
         """
         event_id = event['id']
         event_type = event['event_type']
@@ -230,38 +245,39 @@ class EventListener:
             logger.debug("EventListener: no handler for %s (event %s)", event_type, event_id)
             return
 
-        # Claim the event atomically. If another worker grabbed it first,
-        # this update affects 0 rows and we bail.
-        claimed = await self._claim(event_id)
-        if not claimed:
-            return
+        async with self.db_pool.acquire() as conn:
+            # Claim the event atomically. If another worker grabbed it first,
+            # this update affects 0 rows and we bail.
+            claimed = await self._claim(conn, event_id)
+            if not claimed:
+                return
 
-        try:
-            await handler(event)
-            await self._mark_completed(event_id)
-        except Exception as exc:
-            logger.exception("EventListener: handler %s raised on event %s", event_type, event_id)
-            await self._mark_failed(event_id, str(exc))
+            try:
+                await handler(event, conn)
+                await self._mark_completed(conn, event_id)
+            except Exception as exc:
+                logger.exception("EventListener: handler %s raised on event %s", event_type, event_id)
+                await self._mark_failed(conn, event_id, str(exc))
 
-    async def _claim(self, event_id: UUID) -> bool:
+    async def _claim(self, conn: asyncpg.Connection, event_id: UUID) -> bool:
         """Try to claim event for processing. Returns True if we got it."""
-        result = await self._conn.execute("""
+        result = await conn.execute("""
             UPDATE event_log
             SET status = 'processing', handler_started_at = NOW()
             WHERE id = $1 AND status = 'emitted'
         """, event_id)
         return result.endswith(' 1')
 
-    async def _mark_completed(self, event_id: UUID) -> None:
-        await self._conn.execute("""
+    async def _mark_completed(self, conn: asyncpg.Connection, event_id: UUID) -> None:
+        await conn.execute("""
             UPDATE event_log
             SET status = 'completed', handler_completed_at = NOW()
             WHERE id = $1
         """, event_id)
 
-    async def _mark_failed(self, event_id: UUID, error: str) -> None:
+    async def _mark_failed(self, conn: asyncpg.Connection, event_id: UUID, error: str) -> None:
         # Exponential backoff: 1m, 2m, 4m
-        await self._conn.execute("""
+        await conn.execute("""
             UPDATE event_log
             SET status = 'failed',
                 error_message = $2,
