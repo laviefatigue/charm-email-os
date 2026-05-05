@@ -159,36 +159,53 @@ def cmd_env_list(app_name):
 
 
 def cmd_env_set(app_name, key, value):
-    """Create or update an environment variable."""
+    """Create or update an environment variable.
+
+    Self-heals duplicate-key drift. Coolify allows multiple env entries
+    with the same key (each has its own UUID). PATCH on the collection
+    only updates the first match, leaving stale duplicates with old
+    values — which bit us 2026-05-05 when KILL_RULE_DRY_RUN had two
+    entries (false + true) and the rule's behavior on container restart
+    became non-deterministic.
+
+    On every env-set call we:
+      1. Pull all entries.
+      2. If 2+ entries share the key, delete extras (keep first).
+      3. PATCH (or POST) the survivor.
+    """
     name, uuid = resolve_app(app_name)
 
-    # Check if var already exists
     envs = api("GET", f"/applications/{uuid}/envs")
     if isinstance(envs, dict):
         envs = envs.get("data", envs.get("envs", []))
 
-    existing = None
-    for env in (envs if isinstance(envs, list) else []):
-        if env.get("key") == key:
-            existing = env
-            break
+    matches = [e for e in (envs if isinstance(envs, list) else []) if e.get("key") == key]
 
-    if existing:
+    # Self-heal: delete duplicates (keep the first)
+    if len(matches) > 1:
+        for dup in matches[1:]:
+            dup_id = dup.get("uuid") or dup.get("id")
+            if dup_id:
+                try:
+                    api("DELETE", f"/applications/{uuid}/envs/{dup_id}")
+                    print(f"  cleaned up duplicate {key} entry (uuid={dup_id})")
+                except Exception as e:
+                    print(f"  WARNING: failed to delete duplicate {key} (uuid={dup_id}): {e}")
+
+    if matches:
         # Update existing — Coolify PATCH works on the collection endpoint with key+value
-        result = api("PATCH", f"/applications/{uuid}/envs", {
+        api("PATCH", f"/applications/{uuid}/envs", {
             "key": key,
             "value": value,
         })
         print(f"UPDATED {key}={value} on {name}")
     else:
         # Create new
-        result = api("POST", f"/applications/{uuid}/envs", {
+        api("POST", f"/applications/{uuid}/envs", {
             "key": key,
             "value": value,
         })
         print(f"CREATED {key}={value} on {name}")
-
-    return result
 
 
 def cmd_env_delete(app_name, key):
