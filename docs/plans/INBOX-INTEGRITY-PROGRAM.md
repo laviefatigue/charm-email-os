@@ -1,7 +1,7 @@
 ---
 title: Inbox Integrity Program — Master Tracker
 created: 2026-04-30
-updated: 2026-05-04 (lifetime-rate kill rule rewrite shipped; 307 false-positive revivals; ADR-010 accepted)
+updated: 2026-05-05 (event-driven architecture plan + per-workspace batch tag sync + latent-capacity warnings)
 status: ACTIVE
 purpose: Single-page index of all in-flight inbox-state-machine work
 review-cadence: end of each session, update statuses
@@ -42,6 +42,7 @@ Each plan is a deep-dive document. This index is the cross-reference. Status as 
 | [emailbison-sync-decomposition.md](emailbison-sync-decomposition.md) | ~600 | IN PROGRESS | Phase 2 (`apps/incubation-watcher/` extracted) shipped 2026-04-30 | Phase 3 (shadow validation) running — 1 day in of 7 needed. Phase 4 (cutover) gated on shadow data. Phase 4a (daemon mode) needed for shadow data to accumulate without operator intervention. |
 | [kill-trigger-accuracy.md](kill-trigger-accuracy.md) | ~500 | **PARTIALLY SUPERSEDED by ADR-010** | Passes 1, 2, 3, 4 shipped (docs rewrite + bounce-FBL disable + sender-ban alert-first + body_full retention + silent-error fix). 23+25+69 = 117 unit tests. | Bounce classification work still load-bearing (read by new lifetime-rate rule). Threshold work absorbed by ADR-010. Pass 5 BLOCKED on operator (no JMRP/Postmaster). Pass 6 optional. |
 | [kill-rule-rate-based-rewrite.md](kill-rule-rate-based-rewrite.md) | ~400 | **SHIPPED — fully load-bearing** | Migration 105 + code (commits `5118d59` / `b55531b` / `f42cf0e`, prod at `b55531bd`). Phase 1-4 all complete on 2026-05-04. 307 false positives revived, 63 legitimate kills processed under new rule (SKMR 27, Hello Hero 23, Search Atlas 7, Spout 4, SPUI+Linkgraph 1 each). 22+12 tests green. ADR-010 accepted. Two deploy-side bugs surfaced + fixed in passing (`force=false` cache, git remote mismatch). | Phase 5 (cleanup of legacy `_24h`/`_7d` columns + `aggregate_bounce_counts_from_events` + `_thresholds_for_esp` + `@_OBSOLETE_COUNT_RULE` tests) waits one release cycle. |
+| [event-driven-architecture.md](event-driven-architecture.md) | ~600 | **PLANNING** (2026-05-05) | Two-tier design accepted: Tier 1 (DB triggers + LISTEN/NOTIFY + event_log, real-time) for state transitions; Tier 2 (per-workspace batch every 30 min) for EB tag sync; Tier 3 (watchdog) for orphan recovery. Per-workspace partitioning enforced via CHECK constraint. Long-term endpoint: drop state polling completely once event_log proves reliable. | Feature branch + 7 validation gates (8 phases including soak). 5-6 days engineering + 4-6 weeks soak. Pre-Phase-1 dependency: unblock migration runner (076). |
 | [inbox-audit-overhaul.md](inbox-audit-overhaul.md) | ~150 | **MOSTLY COMPLETE** | Phases 1+2+3+4 shipped 2026-05-01/02. Migration 104 (workspace_id + JSONB columns) live; `InboxAuditor` class produces 8 integrity sections per workspace (I-1..I-7, I-9); daily dispatch wired into `emailbison_sync_worker.poll_loop`; Phase 4 subscription-cancel rollup with 14-day reuse window + `live`/`dead` × `Connected`/`Disconnected` breakdown live. First Phase 4 run 2026-05-02 00:28 UTC: 57 eligible cancel candidates across 7 workspaces. | Phase 5 (Slack restructure) + Phase 6 (SLA enforcement) pending. I-8 (pool-tag drift) deferred — requires EB API calls. |
 
 Plus the foundational records:
@@ -72,6 +73,41 @@ py scripts/coolify.py deploy <APP_NAME>   # force=true is now default (commit f4
 Pushing to only one and triggering a Coolify deploy silently deploys
 stale code. Diagnosed and fixed during the kill-rule rewrite —
 see [docs/work-logs/2026-05-04-kill-rule-rate-rewrite-and-revival.md](../work-logs/2026-05-04-kill-rule-rate-rewrite-and-revival.md) § "Post-mortem."
+
+## 2.2 Coolify env-var duplication self-heal (2026-05-05 lesson)
+
+Coolify allows multiple env entries with the same key (each has its
+own UUID). Coolify PATCH on the collection endpoint only updates the
+first match, leaving stale duplicates with old values. This bit us
+2026-05-05 when `KILL_RULE_DRY_RUN` had two entries (`false` + `true`)
+and the rule's behavior on container restart became non-deterministic.
+
+`scripts/coolify.py env-set` now self-heals on every call: if multiple
+entries share the key, extras are deleted before the PATCH/POST. Fix
+shipped in commit `c51ce9e`. **Always use `scripts/coolify.py env-set`,
+never set env vars via the Coolify UI directly** — UI sets bypass the
+self-heal.
+
+## 2.3 Per-workspace EB API key partitioning (load-bearing rule)
+
+**Every EB API call uses a workspace-scoped key.** No global key. Ever.
+
+This is enforced in:
+- `kill_processor.py` — `process_workspace_queue(workspace_id, name)` per ADR-006
+- `workspace_writes.py` — orchestrator iterates workspaces, builds workspace-scoped client per workspace
+- `set_tag_sync.py` — same pattern
+- `lifecycle_tag_sync.py` — same
+- `scripts/resurrect_false_positive_kills.py` — uses `workspace_api_keys.key_token` per inbox
+- `scripts/cleanup_eb_tag_drift.py` — same
+
+The event-driven architecture ([event-driven-architecture.md](event-driven-architecture.md))
+inherits this rule. Tier 2 batch tag worker iterates workspaces with
+their own EB clients; `event_log.workspace_id` is NOT NULL via CHECK
+constraint for any tag_op event.
+
+If you ever need to add an EB-touching code path, **start by reading
+the workspace's `workspace_api_keys.key_token`**. There is no other
+correct way.
 
 ---
 
