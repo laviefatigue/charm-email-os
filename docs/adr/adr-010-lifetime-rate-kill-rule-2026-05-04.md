@@ -17,11 +17,39 @@ tags: [adr, kill-triggers, reputation, accepted]
 
 ## Status
 
-**Accepted, shipped 2026-05-04.** Code committed (`5118d59`),
-deployed to charm-api + emailbison-sync with `KILL_RULE_DRY_RUN=true`
-flag for one-cycle verification before going load-bearing.
-Migration 105 applied (adds `hard_bounce_rate_lifetime` to
-`kill_trigger_type` enum).
+**Accepted and fully shipped 2026-05-04.**
+
+- Code committed (`5118d59`) + comprehensive docs (`b55531b`) + script
+  fix (`f42cf0e`).
+- Migration 105 applied (adds `hard_bounce_rate_lifetime` to
+  `kill_trigger_type` enum).
+- Deployed to charm-api + emailbison-sync (commit `b55531bd` live).
+- Phase 1-4 complete. `KILL_RULE_DRY_RUN=false` flipped at ~22:08 UTC
+  after one verified dry-run cycle showed 40 legitimate would-kills.
+- 307 false-positive inboxes resurrected (35 Barrena + 272 fleet).
+- 63 legitimate kills queued + processed (kill_processor cycle ran
+  immediately after flag flip, all `flagged_hard_bounce_rate_lifetime`
+  tags applied in EB).
+
+### Deploy issues encountered (post-mortem)
+
+Two unrelated deploy bugs surfaced today and were fixed in passing:
+
+1. **`scripts/coolify.py deploy` defaulted to `force=false`.** Coolify
+   reuses cached git state on `force=false`, which silently deployed
+   commit `baf90cf7` (the prior commit on master) instead of `5118d59`.
+   Diagnosis: production worker logs showed `Health: 11 workspaces, 0
+   with triggers [OK]` even though the validator predicted 50+ kills.
+   Fix: changed default to `force=true` in commit `f42cf0e`.
+
+2. **Git remote mismatch.** Local `origin` points to
+   `laviefatigue/charm-email-os`; production Coolify pulls from
+   `HireCharm/charm-email-os`. The kill-rule rewrite was pushed to
+   `origin` but not `hirecharm`, so even a `force=true` deploy
+   couldn't pick it up. Fix: pushed to both remotes; both now at
+   `f42cf0e`. The local working tree retains both remotes (`origin`
+   and `hirecharm`) — operators must remember to `git push hirecharm
+   master` for production deploys to pick up changes.
 
 ## Context
 

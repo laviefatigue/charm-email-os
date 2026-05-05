@@ -41,7 +41,7 @@ Each plan is a deep-dive document. This index is the cross-reference. Status as 
 | [connection-state-machine.md](connection-state-machine.md) | ~400 | PARTIAL | Phase 1 (disconnected_timeout removed) shipped 2026-04-30 | Phases 2-6 pending. Phase 2 (notification ladder) is the next natural ship. |
 | [emailbison-sync-decomposition.md](emailbison-sync-decomposition.md) | ~600 | IN PROGRESS | Phase 2 (`apps/incubation-watcher/` extracted) shipped 2026-04-30 | Phase 3 (shadow validation) running — 1 day in of 7 needed. Phase 4 (cutover) gated on shadow data. Phase 4a (daemon mode) needed for shadow data to accumulate without operator intervention. |
 | [kill-trigger-accuracy.md](kill-trigger-accuracy.md) | ~500 | **PARTIALLY SUPERSEDED by ADR-010** | Passes 1, 2, 3, 4 shipped (docs rewrite + bounce-FBL disable + sender-ban alert-first + body_full retention + silent-error fix). 23+25+69 = 117 unit tests. | Bounce classification work still load-bearing (read by new lifetime-rate rule). Threshold work absorbed by ADR-010. Pass 5 BLOCKED on operator (no JMRP/Postmaster). Pass 6 optional. |
-| [kill-rule-rate-based-rewrite.md](kill-rule-rate-based-rewrite.md) | ~400 | **CODE COMPLETE — DRY-RUN DEPLOYED** | Migration 105, code rewrite (3-branch lifetime rate rule), 22 unit + 12 integration tests, validator + resurrection scripts, ADR-010 accepted. Phase 2 Barrena revival (35/35) + Phase 3 fleet revival (272/272) shipped 2026-05-04. Total 307 false-positive kills resurrected. | Phase 4 (flip `KILL_RULE_DRY_RUN=false`) gated on operator confirming one clean dry-run cycle. Phase 5 cleanup (drop legacy `_24h`/`_7d` columns + `aggregate_bounce_counts_from_events`) waits one release cycle. |
+| [kill-rule-rate-based-rewrite.md](kill-rule-rate-based-rewrite.md) | ~400 | **SHIPPED — fully load-bearing** | Migration 105 + code (commits `5118d59` / `b55531b` / `f42cf0e`, prod at `b55531bd`). Phase 1-4 all complete on 2026-05-04. 307 false positives revived, 63 legitimate kills processed under new rule (SKMR 27, Hello Hero 23, Search Atlas 7, Spout 4, SPUI+Linkgraph 1 each). 22+12 tests green. ADR-010 accepted. Two deploy-side bugs surfaced + fixed in passing (`force=false` cache, git remote mismatch). | Phase 5 (cleanup of legacy `_24h`/`_7d` columns + `aggregate_bounce_counts_from_events` + `_thresholds_for_esp` + `@_OBSOLETE_COUNT_RULE` tests) waits one release cycle. |
 | [inbox-audit-overhaul.md](inbox-audit-overhaul.md) | ~150 | **MOSTLY COMPLETE** | Phases 1+2+3+4 shipped 2026-05-01/02. Migration 104 (workspace_id + JSONB columns) live; `InboxAuditor` class produces 8 integrity sections per workspace (I-1..I-7, I-9); daily dispatch wired into `emailbison_sync_worker.poll_loop`; Phase 4 subscription-cancel rollup with 14-day reuse window + `live`/`dead` × `Connected`/`Disconnected` breakdown live. First Phase 4 run 2026-05-02 00:28 UTC: 57 eligible cancel candidates across 7 workspaces. | Phase 5 (Slack restructure) + Phase 6 (SLA enforcement) pending. I-8 (pool-tag drift) deferred — requires EB API calls. |
 
 Plus the foundational records:
@@ -50,10 +50,28 @@ Plus the foundational records:
 |----------|------|--------|
 | [docs/adr/adr-009-connection-state-separated-from-kill-state-2026-04-30.md](../adr/adr-009-connection-state-separated-from-kill-state-2026-04-30.md) | ADR | accepted |
 | [docs/adr/adr-010-lifetime-rate-kill-rule-2026-05-04.md](../adr/adr-010-lifetime-rate-kill-rule-2026-05-04.md) | ADR | accepted (2026-05-04) |
-| [docs/work-logs/2026-05-04-kill-rule-rate-rewrite-and-revival.md](../work-logs/2026-05-04-kill-rule-rate-rewrite-and-revival.md) | Work log | shipped + 307 revivals executed |
+| [docs/work-logs/2026-05-04-kill-rule-rate-rewrite-and-revival.md](../work-logs/2026-05-04-kill-rule-rate-rewrite-and-revival.md) | Work log | Phase 1-4 shipped: 307 revivals + 63 kills + post-mortem on two deploy-side bugs |
 | [docs/work-logs/2026-04-30-systems-accuracy-and-cleanup.md](../work-logs/2026-04-30-systems-accuracy-and-cleanup.md) | Work log | active |
 | [docs/audits/2026-04-30-system-accuracy-snapshot.json](../audits/2026-04-30-system-accuracy-snapshot.json) | Audit data | snapshot — re-run periodically |
 | [docs/audits/2026-04-30-zombie-review-charm.csv](../audits/2026-04-30-zombie-review-charm.csv) | Operator queue | awaiting operator |
+
+---
+
+## 2.1 Production deploy gotcha (2026-05-04 lesson)
+
+The repo has TWO remotes. **Both must be pushed for production deploys to pick up changes:**
+
+```sh
+git push origin master      # backup / dev
+git push hirecharm master   # production — Coolify pulls from here
+py scripts/coolify.py deploy <APP_NAME>   # force=true is now default (commit f42cf0e)
+```
+
+`origin` points to `laviefatigue/charm-email-os` (personal fork).
+`hirecharm` points to `HireCharm/charm-email-os` (Coolify source).
+Pushing to only one and triggering a Coolify deploy silently deploys
+stale code. Diagnosed and fixed during the kill-rule rewrite —
+see [docs/work-logs/2026-05-04-kill-rule-rate-rewrite-and-revival.md](../work-logs/2026-05-04-kill-rule-rate-rewrite-and-revival.md) § "Post-mortem."
 
 ---
 

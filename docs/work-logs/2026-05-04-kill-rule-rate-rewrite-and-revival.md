@@ -128,11 +128,104 @@ The migration runner at `api/migration_runner.py` has been stuck on `076_domain_
 
 Migration 105 was applied directly via the admin endpoint as a workaround. The rest of the migration backlog is a separate cleanup item.
 
-## Phase 4 — pending
+## Phase 4 — shipped (later same day)
 
-Flip `KILL_RULE_DRY_RUN=false` after observing one clean dry-run cycle. The 58 would-kills will then queue real kill rows and the kill_processor will tag them flagged_hard_bounce_rate_lifetime in EB on its next 30-min cycle.
+After two deploy-side bugs were diagnosed and fixed (see Post-mortem
+below), `KILL_RULE_DRY_RUN=false` was flipped at ~22:08 UTC.
 
-After that, Phase 5 cleanup (delete legacy `_24h` / `_7d` columns, remove `aggregate_bounce_counts_from_events`, etc.) waits for one release of UI-consumer migration, then runs.
+- One dry-run cycle observed cleanly: 40 `[KILL_RULE_DRY_RUN] would-kill`
+  log lines (data shifted slightly from the validator's 58 due to fresh
+  EB sync — Hello Hero's Jessica Jordan rates dropped under 5% briefly
+  before climbing back).
+- After flipping, the next health-check cycle queued **63 real kills**
+  (`status='pending'`).
+- The kill_processor cycle ran immediately after, processed all 63 to
+  `status='flagged'`, applied `flagged_hard_bounce_rate_lifetime` tags
+  in EB, and set `inbox_state='dead'` in DB.
+
+### Final per-workspace kill distribution
+
+| Workspace | Pending → flagged | Pattern |
+|---|---:|---|
+| Stable Kernel Market Research | 27 | Mary Elzey list-quality issue |
+| Hello Hero | 23 | Jessica Jordan list issue across 6 hellohero domains |
+| Search Atlas | 7 | Manick Bhan + Sophia B personas |
+| Spout | 4 | Scattered single-inbox cases |
+| Linkgraph | 1 | mbhan@growlinkgraph.com |
+| SPUI | 1 | bhoumiks.b@getspui.com |
+
+These match the validator's predictions modulo natural data drift.
+
+## Phase 5 — pending (separate cleanup)
+
+Deferred work after one release cycle of UI-consumer migration:
+
+- Delete legacy `_24h` / `_7d` columns from `sender_accounts` (or stop
+  maintaining them).
+- Remove `aggregate_bounce_counts_from_events`, `reset_daily_counters`,
+  `decay_weekly_counters` from the sync worker.
+- Remove `_thresholds_for_esp` / `get_count_threshold` from
+  health_checks.py.
+- Delete `@_OBSOLETE_COUNT_RULE` skip-marked tests in
+  `tests/test_warning_drop.py`.
+
+## Post-mortem: deploy-side bugs surfaced today
+
+### Bug 1: `coolify.py deploy` defaulted to `force=false`
+
+Symptom: production worker logs showed `Health: 11 workspaces, 0 with
+triggers [OK]` after a deploy that allegedly succeeded. The validator
+predicted 50+ kills should fire.
+
+Root cause: `scripts/coolify.py` called Coolify's deploy endpoint with
+`force=false`, which causes Coolify to reuse its cached git state. The
+deployed image was commit `baf90cf7` (the prior master HEAD), not our
+new `5118d59`.
+
+Fix: changed default to `force=true` in commit `f42cf0e`. Future
+deploys via this script always pull fresh from git.
+
+### Bug 2: git remote mismatch
+
+Symptom: even after `force=true` deploy, Coolify still tried to deploy
+`baf90cf7`.
+
+Root cause: local `origin` points to `laviefatigue/charm-email-os`,
+but Coolify is configured to pull from `HireCharm/charm-email-os`.
+The kill-rule rewrite (`5118d59`) and doc updates (`b55531b`) had been
+pushed to `origin` but not to `hirecharm`. From Coolify's perspective,
+master HEAD on its tracked repo was still `baf90cf7`.
+
+Fix: `git push hirecharm master` to bring HireCharm up to date. After
+this, the next `force=true` deploy correctly pulled `b55531bd` and the
+new code went live.
+
+Verification trail:
+
+```
+git remote -v
+hirecharm    https://github.com/HireCharm/charm-email-os.git (push)
+origin       https://github.com/laviefatigue/charm-email-os.git (push)
+
+git ls-remote hirecharm refs/heads/master
+f42cf0eda07c8e8878c2dfdf7af3e05e27775257    refs/heads/master
+
+git ls-remote origin refs/heads/master
+f42cf0eda07c8e8878c2dfdf7af3e05e27775257    refs/heads/master
+```
+
+Both remotes now in sync at `f42cf0e`.
+
+### Operator note
+
+For future deploys, **push to both remotes** (`origin` for backup,
+`hirecharm` for production):
+
+```sh
+git push origin master
+git push hirecharm master
+py scripts/coolify.py deploy <APP_NAME>  # force=true is now default
+```
 
 ## File index
 

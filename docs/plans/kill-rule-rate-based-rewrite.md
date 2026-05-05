@@ -1,26 +1,41 @@
 ---
 title: Kill Rule — Rate-Based Rewrite + False-Positive Resurrection
 created: 2026-05-04
-status: code complete (awaiting deploy approval)
+status: SHIPPED (Phase 1-4 complete, fully load-bearing in production)
 supersedes: docs/plans/kill-trigger-accuracy.md (Passes 1-4)
 related:
   - docs/concepts/kill-triggers.md
+  - docs/adr/adr-010-lifetime-rate-kill-rule-2026-05-04.md
+  - docs/work-logs/2026-05-04-kill-rule-rate-rewrite-and-revival.md
   - docs/adr/adr-007-drop-warning-state-2026-04-29.md
   - docs/plans/connection-state-machine.md
 ---
 
-> **Implementation status (2026-05-04):**
-> - Validator at `scripts/validate_new_kill_rule.py` ran fleet-wide.
->   Result: 50 new-kills, 309 revival candidates, 0 unexpected.
-> - Rule shipped in `sync_modules/health_checks.py:evaluate_lifetime_rule`
->   (pure function) + `evaluate_inbox_health` (DB integration).
-> - `KILL_RULE_DRY_RUN=true` default — rule fires logs, no kill_queue rows.
-> - Migration 105 adds `hard_bounce_rate_lifetime` enum value.
-> - Tests: `tests/test_kill_rule_unit.py` (22 pure-function tests, all passing
->   locally) + `tests/test_kill_rule_lifetime.py` (12 DB integration tests,
->   skip without Docker, will run in CI). Pre-2026-05-04 count-based tests in
->   `test_warning_drop.py` marked `@_OBSOLETE_COUNT_RULE` skip.
-> - Pending: deploy with dry-run flag, watch one cycle, then Phase 2-4.
+> **Implementation status (final, 2026-05-04 22:08 UTC):**
+>
+> Phase 1-4 SHIPPED. Rule is fully load-bearing in production.
+>
+> - Migration 105 applied (`hard_bounce_rate_lifetime` enum value).
+> - Code shipped in commits `5118d59` (rewrite) + `b55531b` (docs) +
+>   `f42cf0e` (script fix). Production at commit `b55531bd`.
+> - 22 pure-function unit tests + 12 DB integration tests, all green.
+> - Pre-2026-05-04 count-based tests in `test_warning_drop.py` marked
+>   `@_OBSOLETE_COUNT_RULE` skip.
+> - **Phase 2 (Barrena canary):** 35/35 false positives revived.
+> - **Phase 3 (fleet revival):** 272/272 false positives revived
+>   across Charm, Hello Hero, Linkgraph, SPUI, Search Atlas, Selery,
+>   Spout, Stable Kernel. Total 307 inboxes restored.
+> - **Phase 4 (load-bearing):** `KILL_RULE_DRY_RUN=false` flipped after
+>   one verified dry-run cycle (40 would-kills). 63 legitimate kills
+>   queued and processed. Distribution: SKMR 27 (Mary Elzey), Hello
+>   Hero 23 (Jessica Jordan), Search Atlas 7, Spout 4, SPUI + Linkgraph
+>   1 each.
+> - **Phase 5 (cleanup) PENDING.** Removes legacy `_24h` / `_7d`
+>   counter columns + the jobs that maintain them. Waits one release
+>   cycle for any UI consumers to migrate.
+>
+> Two deploy-side bugs surfaced and were fixed in passing — see ADR-010
+> § "Deploy issues encountered (post-mortem)" and the work log.
 
 # Kill Rule — Rate-Based Rewrite + False-Positive Resurrection
 
