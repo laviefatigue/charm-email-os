@@ -443,14 +443,54 @@ causes the failure and asserts:
 - Worker process does not crash.
 - No data corruption, no double-processing.
 
+### Gate 3.5 — Retroactive logic validation (2026-05-05 addition)
+
+This gate validates **handler business logic** against historical
+production data without deploying anything. Uses the existing
+durable state in DB to reconstruct inputs at any point in time
+(`response_messages.received_at`, `kill_queue.created_at`,
+`inbox_rotation_history.executed_at`, etc.) and replays them through
+the proposed handlers.
+
+What it covers:
+- ✓ Kill chain: would the new handler produce the same kill at the
+  same moment given historical inputs?
+- ✓ Promotion chain: would `pick_promotion_candidates` select the
+  same reserve given historical workspace state?
+- ✓ ESP-restriction compliance: validates ADR-006's
+  Microsoft-ride-to-death rule against every historical promotion.
+- ✓ Volume estimates: predicts tag op throughput so we know whether
+  Tier 2 batch sizing is right.
+
+What it does NOT cover (Gate 1 + Gate 4 still needed):
+- ✗ Trigger SQL correctness (synthetic Gate 1)
+- ✗ Listener LISTEN/NOTIFY delivery (synthetic Gate 1 + chaos Gate 3)
+- ✗ event_log write atomicity (synthetic Gate 1)
+- ✗ Real-time end-to-end latency (Gate 4 shadow soak)
+
+Implementation: `scripts/validate_event_driven_retro.py` — read-only,
+no production risk, runs in minutes.
+
+**Initial run (2026-05-05):** 1,046 kills replayed across 60 days,
+500 rotations validated, 0 unexplained mismatches. Strong baseline.
+This gate gets re-run before each subsequent phase to catch any
+regressions in handler logic during development.
+
+Pass: ≥95% of mismatches in Section A explainable as deliberate
+rule changes (e.g., `disconnected_timeout` removal per ADR-009);
+0 non-Google promotions in Section B (per ADR-006); volume estimates
+in Section C below 1000 tag ops/day fleet-wide.
+
 ### Gate 4 — Shadow mode soak (production data, no actions)
 
 - Deploy feature branch to production with `EVENT_DRIVEN_ENABLED=true`,
   but handlers are **READ-ONLY**: they record what they would do in
   `event_log.metadata`, no DB writes, no EB calls.
 - Existing polling continues to do real work.
-- After 1 week: compare event_log "would-have-done" against polling's
-  actual actions.
+- After **3 days** (reduced from 1 week — Gate 3.5 already validated
+  handler logic; Gate 4 is now primarily validating the trigger →
+  listener → event_log stack in real time): compare event_log
+  "would-have-done" against polling's actual actions.
 
 Pass: ≥99% match between events and polls. Any divergence diagnosed
 and explained.
@@ -461,7 +501,8 @@ and explained.
 - Polling cycles stay at current cadence (5 min health, 60s workspace_writes).
 - Watch for double-processing — handlers must be idempotent enough
   that polls finding "already processed" rows are a no-op.
-- 2 weeks of clean operation.
+- **1 week** of clean operation (reduced from 2 weeks — Gate 3.5
+  retroactive validation gives high logic confidence going in).
 
 Pass: zero double-processing detected; all polling actions during
 this window are no-ops because events handled them first.
@@ -531,7 +572,8 @@ If any criterion isn't true, polling stays.
 
 ## Implementation phases
 
-Total: ~5-6 days engineering + 4-6 weeks soak.
+Total: ~5-6 days engineering + **2-3 weeks soak** (reduced from 4-6 weeks
+after Gate 3.5 retroactive validation was added 2026-05-05).
 
 ### Phase 1 — Foundation (1 day)
 - New branch `feature/event-driven-architecture`
