@@ -71,20 +71,25 @@ WHERE w.is_active = TRUE AND sa.is_active = TRUE
   AND sa.warmup_enabled_since < NOW() - INTERVAL '20 days'
 GROUP BY w.workspace_name HAVING COUNT(*) > 0;
 
--- B3: event_log row count by status (must NOT exist yet on master,
---     should exist on event-driven branch)
-SELECT status, COUNT(*) FROM event_log GROUP BY status;
+-- B3: event_log row count by status. Pre-cutover the table does NOT exist
+--     on master/production; it ships with migration 107 on the first
+--     charm-api deploy after merge.
+SELECT to_regclass('public.event_log') AS exists;
+-- If non-null, also: SELECT status, COUNT(*) FROM event_log GROUP BY status;
 SQL
 ```
 
 Save the output. This is your "before" reference.
 
-**Reference values from 2026-05-05 baseline:**
+**Reference values from 2026-05-05 baseline (verified against production):**
 - B1: Charm 248, SKMR 94, Sammy 5, Spout 1 = 348 graduations / 7d
 - B2: **0 rows** (clean parity — incubation-watcher would graduate nothing
   lifecycle_tag_sync hasn't already handled)
-- B3: rows present (Phase 1 migration ran), all `status='completed'` or
-  `'emitted'` from synthetic test runs only
+- B3: **`event_log` table does not exist on production yet.** Migrations
+  107 + 108 are on `feature/event-driven-architecture` only. They apply
+  on the first `charm-api` deploy after merge — see §3.2.
+- Production `_migrations` table uses column `name` (not `version`);
+  highest applied is `105_kill_trigger_lifetime_rate.sql` as of 2026-05-05.
 
 ### 0.3 Coolify access
 
@@ -106,7 +111,10 @@ Coolify access first.
 | 2 | incubation-watcher: APPLY=true (per-workspace) | LOW — idempotent with lifecycle_tag_sync | Both modules can write the same graduations; EB returns 200 OK on duplicates |
 | 3 | 48h soak with both running | LOW | Watch for divergence in `inbox_rotation_history.triggered_by` distribution |
 | 4 | Drop graduate branch from `lifecycle_tag_sync` | LOW | Reduces double-write traffic; incubation-watcher becomes sole source |
-| 5 | Deploy event-driven branch to master | LOW (flag off) | Code reaches prod with `EVENT_DRIVEN_ENABLED=false`. Pure no-op. |
+| 5a | Merge feature branch → master | ZERO — code only | Land Phase 1-5 commits on master. |
+| 5b | Deploy **charm-api** (NOT emailbison-sync first) | LOW | charm-api owns the migration runner; 107 + 108 apply on its boot. emailbison-sync would crash on listener startup if migrations weren't there yet. |
+| 5c | Verify event_log + 7 triggers exist (§3.3) | ZERO — read-only | Schema gate before flipping anything. |
+| 5d | Deploy emailbison-sync with flag OFF | LOW | Code reaches prod with `EVENT_DRIVEN_ENABLED=false`. Pure no-op. |
 | 6 | Set `EVENT_DRIVEN_ENABLED=true` in emailbison-sync env | MEDIUM | Tier 1 listener activates. Watch event_log fill. |
 | 7 | 7-day shadow soak with co-execution | LOW | Tier 2 (tag_op_worker) and `set_tag_sync` both run. Both idempotent. |
 | 8 | Drop `set_tag_sync` runs (Gate 6) | LOW | Worker becomes sole tag-write authority |
@@ -131,12 +139,29 @@ py scripts/coolify.py exec incubation-watcher \
     --since 2026-05-04T00:00:00Z
 ```
 
-**Pass condition:** exit code 0, output reads
-`zero divergence — proposed == actual`.
+> **NB on the CLI's exit-code semantics.** The CLI flags ANY non-empty
+> set difference as divergence — including `actual_only` rows. But
+> `actual_only` is **structural**, not a bug: by the time you query, the
+> rows lifecycle_tag_sync just graduated have left `inventory_lifecycle_status='incubating'`
+> and so no longer match the watcher's predicate. Read the CLI output
+> carefully:
+>
+>   - `watcher_only > 0` → REAL divergence. The watcher would graduate
+>     rows the existing module is NOT graduating. **STOP and investigate.**
+>   - `actual_only > 0` and `watcher_only == 0` → expected. The existing
+>     module is keeping pace; nothing the watcher would catch is being missed.
+>     **Safe to proceed.**
+>
+> Pre-flight on 2026-05-05 returned `watcher_only=0` for all 4 workspaces,
+> with `actual_only` matching the 24h graduation throughput (Charm 3,
+> Spout 1, SKMR 0, Sammy 0). Receipts: `d:/tmp/shadow_compare_per_workspace.py`.
 
-If exit code 1 (divergence): the watcher's candidate set ≠ what
-`lifecycle_tag_sync` actually graduated since the cutoff. Investigate
-BEFORE flipping. Likely causes:
+**Pass condition (rephrased):** `watcher_only == 0` for every workspace.
+Treat any CLI exit code as informational; verify the count yourself.
+
+If `watcher_only > 0`: the watcher's candidate set has rows the
+existing module hasn't caught. Investigate BEFORE flipping. Likely
+causes:
 - Workspace's package_size changed in the window (target target_live_count drift)
 - A graduate was reverted manually (rare; check `inbox_rotation_history` for `rotation_type='revert'`)
 - A `business_days_elapsed` boundary case at exactly 14 days
@@ -256,10 +281,63 @@ Expected diff in `emailbison_sync_worker.py`:
 - Boot log: `Event-driven (Tier 1 listener): OFF`
 - New poll loop branch: `run_tag_op_drain` (already merged in Phase 4 commit)
 
-### 3.2 Deploy with flag OFF — verify no behavior change
+### 3.2 Deploy charm-api FIRST — migrations apply on its boot
+
+The migration runner (`api/migration_runner.py`) is invoked from
+`api/main.py` startup. **emailbison-sync does NOT run migrations**;
+its Dockerfile copies `migrations/` only for reference. So the order
+matters: deploy charm-api first, let it apply 107 + 108, then deploy
+emailbison-sync.
 
 ```bash
 git push origin master
+py scripts/coolify.py deploy charm-api --force
+```
+
+Watch charm-api logs:
+
+```
+INFO: Found 2 pending migration(s)
+INFO: Applied migration: 107_event_log.sql
+INFO: Applied migration: 108_event_triggers.sql
+INFO: Applied 2 database migration(s)
+```
+
+If anything other than this prints, **STOP**. Migration failures are
+caught + logged but the API will still start. Don't proceed until both
+migrations show in `_migrations` (see §3.3).
+
+### 3.3 Pre-flip dry-run: confirm schema state
+
+```sql
+-- 107 + 108 applied?  Note: column is `name`, not `version`.
+SELECT name, applied_at FROM _migrations
+WHERE name IN ('107_event_log.sql', '108_event_triggers.sql')
+ORDER BY name;
+
+-- event_log table exists?
+SELECT to_regclass('public.event_log') AS exists;
+-- Expect: 'event_log' (NULL means migration didn't apply)
+
+-- 7 triggers wired?
+SELECT tgname, tgrelid::regclass AS tbl
+FROM pg_trigger
+WHERE tgname LIKE 'event_%' AND tgisinternal = FALSE
+ORDER BY tgname;
+```
+
+Expect:
+- 2 migrations applied
+- `event_log` regclass is non-null
+- 7 triggers (one per registered handler: bounce_observed, kill_queued,
+  inbox_died, inbox_pickup, pool_changed, domain_burned, package_assigned)
+
+If any of these fail: do NOT deploy emailbison-sync. Re-deploy
+charm-api with `--force` to retry the migrations.
+
+### 3.4 Deploy emailbison-sync with flag OFF — verify no behavior change
+
+```bash
 py scripts/coolify.py deploy emailbison-sync --force
 ```
 
@@ -280,29 +358,7 @@ behaves exactly as before. Tag op drain prints a message every 30 min
 saying it touched 0 workspaces (event_log has no pending rows because
 nothing is producing them yet).
 
-### 3.3 Pre-flip dry-run: confirm migrations are applied
-
-The triggers (migration 108) and event_log table (migration 107) MUST
-be applied on production before flipping the flag. If they aren't, the
-listener will crash on startup looking for `event_log`.
-
-```bash
-psql "$DATABASE_URL" <<'SQL'
-SELECT version, applied_at FROM _migrations
-WHERE version IN ('107', '108')
-ORDER BY version;
-
--- Verify the triggers exist and are wired
-SELECT tgname, tgrelid::regclass FROM pg_trigger
-WHERE tgname LIKE 'event_%' ORDER BY tgname;
-SQL
-```
-
-Expect: 7 triggers (one per event type from the registry), both
-migrations applied. If either is missing: run the migration runner
-before continuing.
-
-### 3.4 Flip EVENT_DRIVEN_ENABLED=true
+### 3.5 Flip EVENT_DRIVEN_ENABLED=true
 
 ```bash
 py scripts/coolify.py env-set emailbison-sync EVENT_DRIVEN_ENABLED=true
@@ -324,7 +380,7 @@ check:
 
 The listener is non-fatal: even if startup fails, polling continues.
 
-### 3.5 First-cycle smoke (5 min after flip)
+### 3.6 First-cycle smoke (5 min after flip)
 
 ```sql
 -- Triggers should be firing on real bounce/kill traffic.
@@ -351,7 +407,7 @@ the listener is dispatching but handlers are blocking the LISTEN
 connection. This was the Phase 3 bug — should be fixed, but if it
 recurs, the symptom is a single very-old `processing` row. Roll back.
 
-### 3.6 24h shadow soak
+### 3.7 24h shadow soak
 
 For 24h, both `set_tag_sync` and Tier 2 `tag_op_worker` are running.
 Both write the same tag changes; EB API returns 200 OK on duplicates.
@@ -382,11 +438,11 @@ ORDER BY COUNT(*) DESC LIMIT 20;
 - Tag drift cleanup (run `scripts/cleanup_eb_tag_drift.py` in --dry-run
   mode) shows ≤ baseline drift count
 
-### 3.7 7-day shadow soak — Gate 5
+### 3.8 7-day shadow soak — Gate 5
 
-Same queries as §3.6, run daily. Required before dropping `set_tag_sync`.
+Same queries as §3.7, run daily. Required before dropping `set_tag_sync`.
 
-### 3.8 Rollback (Phase 2)
+### 3.9 Rollback (Phase 2)
 
 The flag flip is fully reversible:
 
