@@ -295,3 +295,73 @@ remove polling code.
 Total remaining timeline: ~3-4 weeks of soak, no further engineering
 work needed (Phase 5 disconnect ladder + sender-ban detection are
 designed but not built — ship after Phase 4 proves out).
+
+## End-of-day update (2026-05-05 evening)
+
+### Incubation-watcher shadow validation: clean parity
+
+Two SQL probes against production confirm shadow soak can be
+compressed dramatically:
+
+- **Overdue incubating check** (would lifecycle_tag_sync miss
+  graduations the watcher would catch?) — **0 rows across all
+  workspaces**. Zero divergence.
+- **Recent graduations (last 7d, lifecycle_tag_sync triggered)** —
+  Charm 248, SKMR 94, Sammy 5, Spout 1 = 348 total. Healthy throughput.
+
+Conclusion: original 6-day soak estimate revised to **48h co-execution**
+followed by drop-graduate-branch. The watcher's predicate currently
+matches zero candidates lifecycle_tag_sync hasn't already handled, so
+turning it on with APPLY=true is a no-op until the next graduation
+window — and from there the same row gets handled by both for ~one
+cycle, then by the watcher only.
+
+### Phase 5: EventListener wired into emailbison_sync_worker
+
+`emailbison_sync_worker.py` now imports + spawns the Tier 1 listener
+and watchdog as background asyncio tasks, gated by
+`EVENT_DRIVEN_ENABLED` (default `false`). Boot logs print
+`Event-driven (Tier 1 listener): ON|OFF` so the flag state is
+verifiable in Coolify logs.
+
+Smoke-tested: with `EVENT_DRIVEN_ENABLED=false`, the orchestrator
+constructs cleanly, no event-driven imports execute, no log lines fire.
+Setting flag to true triggers `_start_event_driven` which:
+
+1. Imports `EventListener`, `run_watchdog`, `HANDLER_REGISTRY`
+2. Constructs `EventListener(db_dsn, db_pool)` with all 7 handlers
+   registered
+3. Spawns two named asyncio tasks (`event_listener`, `event_watchdog`)
+4. Logs `Event-driven: listener registered 7 handlers, watchdog
+   spawned`
+
+Failures here are non-fatal — listener startup errors get logged +
+alerted, polling continues unchanged.
+
+`_stop_event_driven` is wired into the existing `finally` block in
+`start()`, so SIGTERM cleanly cancels both tasks before the pool
+closes.
+
+### Cutover runbook published
+
+`docs/operations/2026-05-05-event-driven-cutover-runbook.md` covers:
+
+- Phase 1: incubation-watcher 24h shadow-compare → APPLY=true
+  per-workspace → 48h soak → drop graduate branch
+- Phase 2: feature branch → master → deploy with flag OFF →
+  `EVENT_DRIVEN_ENABLED=true` → 24h gate → 7d shadow soak (Gate 5) →
+  drop set_tag_sync (Gate 6)
+- Verification cookbook with health/partitioning/idempotency queries
+- 5 stop-the-line tripwires
+- Rollback procedure for both phases (env-set false + redeploy is
+  fully reversible; triggers stay armed and accumulate `emitted` rows
+  the next listener catch-up drains)
+
+### Status
+
+- Engineering work complete on `feature/event-driven-architecture`
+  through Phase 5
+- Pre-deploy gate (incubation-watcher cutover) is operator-driven and
+  follows the runbook
+- After incubation-watcher 48h soak + drop, merge feature branch to
+  master and follow Phase 2 of the runbook

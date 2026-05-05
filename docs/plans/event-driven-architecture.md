@@ -1,7 +1,7 @@
 ---
 title: Event-Driven Architecture — Plan & Migration Path
 created: 2026-05-05
-status: PLANNING (no code changes yet; awaiting branch + Phase 1 kickoff)
+status: PHASES 1-5 SHIPPED on feature/event-driven-architecture (gated off in prod via EVENT_DRIVEN_ENABLED=false). Awaiting incubation-watcher Phase 4 cutover (Phase 1 of cutover runbook) before flag flip.
 related-adrs:
   - adr-006-tagging-kill-overhaul-2026-04-27 (workspace-scoped EB API keys)
   - adr-009-connection-state-separated-from-kill-state-2026-04-30
@@ -12,6 +12,7 @@ related-plans:
 related-docs:
   - docs/concepts/kill-triggers.md
   - docs/local-development/emailbison-sync-worker.md
+  - docs/operations/2026-05-05-event-driven-cutover-runbook.md (operator cutover procedure)
 ---
 
 # Event-Driven Architecture — Plan & Migration Path

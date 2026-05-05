@@ -94,6 +94,11 @@ SLACK_WEBHOOK_URL = os.getenv('SLACK_WEBHOOK_URL', '')
 ENABLE_KILL_PROCESSING = os.getenv('ENABLE_KILL_PROCESSING', 'true').lower() == 'true'
 ENABLE_LIFECYCLE_TAGGING = os.getenv('ENABLE_LIFECYCLE_TAGGING', 'true').lower() == 'true'
 
+# Event-driven architecture (Tier 1 listener + watchdog).
+# Default OFF — flipping to true activates LISTEN/NOTIFY consumption + handlers.
+# Plan: docs/plans/event-driven-architecture.md
+EVENT_DRIVEN_ENABLED = os.getenv('EVENT_DRIVEN_ENABLED', 'false').lower() in ('true', '1', 'yes')
+
 
 class SyncOrchestrator:
     """Main orchestrator for EmailBison sync operations."""
@@ -133,6 +138,12 @@ class SyncOrchestrator:
         # listener handlers are active — i.e., EVENT_DRIVEN_ENABLED=true).
         self.last_tag_op_drain: Optional[datetime] = None
 
+        # Event-driven Tier 1 background tasks. Spawned in start() iff
+        # EVENT_DRIVEN_ENABLED=true. The listener owns its own connection
+        # (LISTEN/NOTIFY); the watchdog uses the shared pool.
+        self.event_listener = None  # type: Optional[object]
+        self._event_tasks: list = []
+
     async def start(self, single_pass: bool = False):
         """Initialize connections and start the sync worker."""
         print(f"[{datetime.now()}] EmailBison Sync Worker starting...")
@@ -140,6 +151,7 @@ class SyncOrchestrator:
         print(f"  Slack alerts: {'Enabled' if SLACK_WEBHOOK_URL else 'Disabled'}")
         print(f"  Kill processing: {'Enabled' if ENABLE_KILL_PROCESSING else 'DISABLED'}")
         print(f"  Lifecycle tagging: {'Enabled' if ENABLE_LIFECYCLE_TAGGING else 'DISABLED'}")
+        print(f"  Event-driven (Tier 1 listener): {'ON' if EVENT_DRIVEN_ENABLED else 'OFF'}")
         print(f"  Intervals: events={POLL_INTERVAL_EVENTS}s, full={POLL_INTERVAL_FULL}s, health={POLL_INTERVAL_HEALTH}s, kill={POLL_INTERVAL_KILL}s, warmup={POLL_INTERVAL_WARMUP}s, oauth_queue={POLL_INTERVAL_OAUTH_QUEUE}s")
         print(f"  Workspace concurrency: {SYNC_WORKSPACE_CONCURRENCY} parallel | Priority poll: {POLL_INTERVAL_PRIORITY}s")
 
@@ -177,6 +189,13 @@ class SyncOrchestrator:
                 version = await conn.fetchval("SELECT version()")
                 print(f"  Connected to: {version[:50]}...")
 
+            # Spawn event-driven Tier 1 tasks (listener + watchdog) when
+            # EVENT_DRIVEN_ENABLED=true. Both modules early-return when the
+            # flag is off, so this is safe to call unconditionally — the
+            # explicit guard here just avoids the import + extra task overhead.
+            if EVENT_DRIVEN_ENABLED:
+                await self._start_event_driven()
+
             print(f"[{datetime.now()}] Worker initialized successfully")
 
             if single_pass:
@@ -194,8 +213,65 @@ class SyncOrchestrator:
             raise
 
         finally:
+            await self._stop_event_driven()
             if self.db:
                 await self.db.close()
+
+    async def _start_event_driven(self) -> None:
+        """Spawn Tier 1 listener + watchdog as background asyncio tasks.
+
+        Imports inside the method so the module is only loaded when the
+        feature flag is on (keeps startup fast when off). Failures here
+        are non-fatal — the listener crashing shouldn't take down the
+        polling worker. Errors get logged + alerted, polling continues.
+        """
+        try:
+            from sync_modules.event_listener import EventListener, run_watchdog
+            from sync_modules.event_handlers import HANDLER_REGISTRY
+
+            dsn = (
+                f"postgres://{POSTGRES_USER}:{POSTGRES_PASSWORD}"
+                f"@{POSTGRES_HOST}:{POSTGRES_PORT}/{POSTGRES_DB}"
+            )
+            listener = EventListener(db_dsn=dsn, db_pool=self.db)
+            for event_type, handler in HANDLER_REGISTRY.items():
+                listener.register(event_type, handler)
+
+            self.event_listener = listener
+            self._event_tasks = [
+                asyncio.create_task(listener.run(), name='event_listener'),
+                asyncio.create_task(run_watchdog(self.db), name='event_watchdog'),
+            ]
+            print(
+                f"  Event-driven: listener registered "
+                f"{len(HANDLER_REGISTRY)} handlers, watchdog spawned"
+            )
+        except Exception as exc:
+            print(f"[ERROR] Failed to start event-driven tasks: {exc}")
+            if self.alerter:
+                await self.alerter.alert_sync_failure(
+                    module='event_driven_startup',
+                    error=str(exc),
+                )
+
+    async def _stop_event_driven(self) -> None:
+        """Cancel listener + watchdog tasks on shutdown."""
+        if not self._event_tasks:
+            return
+        if self.event_listener is not None:
+            try:
+                await self.event_listener.stop()
+            except Exception:
+                pass
+        for task in self._event_tasks:
+            task.cancel()
+        for task in self._event_tasks:
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):
+                pass
+        self._event_tasks = []
+        self.event_listener = None
 
     async def poll_loop(self):
         """Main polling loop with staggered sync schedules."""
