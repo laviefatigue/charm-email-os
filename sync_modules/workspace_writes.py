@@ -226,6 +226,23 @@ class WorkspaceWriteOrchestrator:
                             "[WorkspaceWrites:%s] threshold maintenance failed: %s",
                             workspace_name, e, exc_info=True,
                         )
+                elif (
+                    self.enable_lifecycle_tagging
+                    and ws.get('package_id') is None
+                ):
+                    # No package = no proactive promotion. Pre-2026-05-05 this
+                    # was a silent skip — Charm sat with 45 graduated reserves
+                    # idle for 6 months because no signal fired. Surface the
+                    # condition: count graduated Gmail reserves; if > 0, log
+                    # so the operator sees there's latent capacity stuck
+                    # behind the missing package config.
+                    try:
+                        await self._warn_if_latent_capacity_stalled(ws)
+                    except Exception as e:
+                        logger.warning(
+                            "[WorkspaceWrites:%s] latent-capacity check failed: %s",
+                            workspace_name, e,
+                        )
 
                 # PHASE B: set tagging — per-inbox pool reconciliation. Bundled
                 # with lifecycle: if lifecycle is disabled we also skip set tags
@@ -270,6 +287,69 @@ class WorkspaceWriteOrchestrator:
                         )
 
             return results
+
+    async def _warn_if_latent_capacity_stalled(self, ws: asyncpg.Record) -> None:
+        """
+        For workspaces without a package_id assigned, surface latent-capacity
+        stalls so the operator sees that reserves are sitting idle behind a
+        config gap.
+
+        A "stalled reserve" is a Gmail inbox that:
+          - is_active = TRUE
+          - inbox_state = 'live'
+          - inventory_pool_status = 'reserve'
+          - inventory_lifecycle_status = 'active' (graduated, not still in incubation)
+          - status = 'Connected'
+          - graduated more than the visibility threshold ago
+
+        We log at WARNING level when stalled count > 0. We do NOT alert via
+        Slack — the operator decision is "do you want a package on this
+        workspace" and that's a one-time config call, not an every-cycle
+        alarm. Polluting the Slack alert channel would teach operators to
+        ignore it.
+
+        Pre-2026-05-05 this was a silent skip; Charm sat with 45 graduated
+        Gmail reserves idle for ~6 months because no signal fired. See
+        docs/work-logs/2026-05-04-kill-rule-rate-rewrite-and-revival.md
+        for the broader context (the rule rewrite pulled this gap to the
+        surface as part of the fleet audit).
+        """
+        workspace_id = ws['id']
+        workspace_name = ws['workspace_name']
+
+        row = await self.db.fetchrow("""
+            SELECT
+                COUNT(*) FILTER (
+                    WHERE sa.inventory_pool_status = 'reserve'
+                ) AS stalled_reserves,
+                COUNT(*) FILTER (
+                    WHERE sa.inventory_pool_status = 'live'
+                ) AS current_live
+            FROM sender_accounts sa
+            WHERE sa.workspace_id = $1
+              AND sa.esp = 'gmail'
+              AND sa.is_active = TRUE
+              AND sa.inbox_state = 'live'
+              AND sa.status = 'Connected'
+              AND sa.inventory_lifecycle_status = 'active'
+        """, workspace_id)
+
+        if not row:
+            return
+
+        stalled = int(row['stalled_reserves'] or 0)
+        live = int(row['current_live'] or 0)
+        if stalled <= 0:
+            return
+
+        logger.warning(
+            "[WorkspaceWrites:%s] latent-capacity stall: %d graduated Gmail "
+            "reserves idle (current_live=%d). No package_id set on workspace, "
+            "so _maintain_pool_thresholds doesn't run. Either assign a "
+            "workspace_packages row, or set target_live_count_override to "
+            "lock the active count and acknowledge the reserves as a buffer.",
+            workspace_name, stalled, live,
+        )
 
     async def _maintain_pool_thresholds(self, ws: asyncpg.Record) -> None:
         """
