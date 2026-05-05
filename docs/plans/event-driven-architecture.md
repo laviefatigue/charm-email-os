@@ -328,6 +328,54 @@ Each trigger writes one event_log row + emits one pg_notify.
 | `notify_package_assigned` | workspaces UPDATE WHERE package_id NULL→non-NULL | `package_assigned` | Run `_maintain_pool_thresholds` for that workspace immediately |
 | `notify_workspace_paused` | workspaces UPDATE WHERE pause_pool_transitions=TRUE | `workspace_paused` | Cancel pending tag_ops for that workspace (status='cancelled') |
 
+### Connection state triggers (folds in Plan B Phase 2)
+
+[connection-state-machine.md](connection-state-machine.md) Phase 2 calls
+for a disconnect notification ladder (24h / 3d / 7d / 20d). Implementing
+it as event-handlers folds cleanly into the event-driven design instead
+of building a separate notification system.
+
+| Trigger | Fires on | event_type | Handler does |
+|---|---|---|---|
+| `notify_disconnect_observed` | sender_accounts UPDATE WHERE status transitions Connected → 'Not connected' / 'Disconnected' | `disconnect_observed` | Stamp `disconnected_at` if not set; schedule the first ladder rung |
+| `notify_reconnected` | sender_accounts UPDATE WHERE status transitions back to 'Connected' | `reconnected` | Clear `disconnected_at`; cancel any scheduled ladder events |
+
+The notification ladder itself runs as a periodic task (every 1h) that
+queries `event_log WHERE event_type='disconnect_observed' AND ...`
+combined with current `disconnected_at` to identify which rung any
+inbox should fire next. This is "calendar-style" polling on top of
+event-recorded state — clean separation.
+
+### Sender-ban code detection (folds in Plan D Pass 3)
+
+[kill-trigger-accuracy.md](kill-trigger-accuracy.md) Pass 3 currently
+alerts on Microsoft sender-ban codes (5.7.501/502/503/511/606-649/
+703/705/708/750/800) but does not auto-kill. The plan called for "flip
+to instant-kill once we trust the signal." Event-driven IS that flip:
+
+| Trigger | Fires on | event_type | Handler does |
+|---|---|---|---|
+| `notify_sender_ban_detected` | response_messages INSERT WHERE bounce_body matches sender-ban code regex | `sender_ban_detected` | Slack alert (existing behavior); + queue instant-kill row (new behavior, gated by `SENDER_BAN_INSTANT_KILL` env flag for safe rollout) |
+
+Soft rollout: `SENDER_BAN_INSTANT_KILL=false` initial deploy keeps
+alert-only behavior. After observing N days of sender-ban events
+without false positives, flip to `true`. Existing `event_log`
+gives us the audit trail to validate.
+
+### Recap of folded work
+
+This plan absorbs:
+- **Plan B Phase 2** (disconnect ladder) — implemented as Tier 1 events
+  + a 1h-cadence ladder evaluator. No separate notification system.
+- **Plan D Pass 3** (sender-ban instant-kill) — implemented as a
+  Tier 1 trigger with a feature-flag soft rollout.
+- **Plan F Phase 5** (kill-rule cleanup) — Phase 7 of this plan removes
+  the `_24h`/`_7d` columns and `aggregate_bounce_counts_from_events`
+  since the event-driven kill chain doesn't need them.
+
+Each of those plans should reference this one as the implementation
+vehicle.
+
 ## What stays as polling
 
 | Layer | Mechanism | Why |

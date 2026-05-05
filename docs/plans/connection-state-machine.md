@@ -1,16 +1,19 @@
 ---
 title: Connection State Machine — Tagging and Categorization, Never Removal
 created: 2026-04-30
-updated: 2026-04-30
-status: PROPOSED — pending operator confirmation of §10 decisions
+updated: 2026-05-05 (Phase 2 disconnect ladder folded into event-driven architecture)
+status: Phase 1 SHIPPED; Phase 2 folded into event-driven (no separate implementation)
 related:
   - docs/plans/cross-workspace-integrity-firewall.md (P1.A)
   - docs/plans/emailbison-sync-decomposition.md (P1.B/C/D)
+  - docs/plans/event-driven-architecture.md (Phase 2 implementation vehicle)
 non-goal:
   - Removing inboxes from EmailBison (operator handles all EB cleanup manually)
   - Cancelling Hypertide subscriptions (operator handles all Hypertide actions)
   - Auto-decommissioning (no automated destructive EB-side action, ever)
 ---
+
+> **2026-05-05 fold-in note:** Phase 2 (the 24h / 3d / 7d / 20d disconnect notification ladder) is now scheduled as part of the event-driven architecture rollout — see [event-driven-architecture.md](event-driven-architecture.md) § "Connection state triggers (folds in Plan B Phase 2)". A `notify_disconnect_observed` trigger fires on connection-state transitions; a 1h-cadence ladder evaluator reads `event_log` to determine which rung to fire next. No separate notification system needed.
 
 # Connection State Machine
 
