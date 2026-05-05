@@ -319,10 +319,19 @@ ORDER BY name;
 SELECT to_regclass('public.event_log') AS exists;
 -- Expect: 'event_log' (NULL means migration didn't apply)
 
--- 7 triggers wired?
-SELECT tgname, tgrelid::regclass AS tbl
+-- 7 triggers wired? Note: trigger names use `trg_` prefix per migration
+-- 108. Each trigger fires emit_event() which writes event_log + pg_notify.
+SELECT tgname, tgrelid::regclass AS tbl, tgenabled
 FROM pg_trigger
-WHERE tgname LIKE 'event_%' AND tgisinternal = FALSE
+WHERE tgname IN (
+  'trg_response_messages_bounce_observed',
+  'trg_kill_queue_pending',
+  'trg_sender_accounts_died',
+  'trg_sender_accounts_pickup',
+  'trg_sender_accounts_pool_changed',
+  'trg_domains_burned',
+  'trg_workspaces_package_assigned'
+)
 ORDER BY tgname;
 ```
 
@@ -331,6 +340,14 @@ Expect:
 - `event_log` regclass is non-null
 - 7 triggers (one per registered handler: bounce_observed, kill_queued,
   inbox_died, inbox_pickup, pool_changed, domain_burned, package_assigned)
+- All `tgenabled='O'` (origin/enabled)
+
+> **NB:** Triggers fire regardless of `EVENT_DRIVEN_ENABLED`. Once 108
+> applies, every bounce/kill/pool-change/etc writes a row to event_log
+> (status='emitted') and emits pg_notify. With the listener off, those
+> rows accumulate harmlessly — when you flip the flag, the listener's
+> `_drain_pending` catch-up logic processes them in `emitted_at` order.
+> Expect event_log to gain rows immediately after this step.
 
 If any of these fail: do NOT deploy emailbison-sync. Re-deploy
 charm-api with `--force` to retry the migrations.
