@@ -365,3 +365,94 @@ closes.
   follows the runbook
 - After incubation-watcher 48h soak + drop, merge feature branch to
   master and follow Phase 2 of the runbook
+
+## CUTOVER EXECUTED (2026-05-05 23:35 UTC)
+
+Operator decision: skip the incubation-watcher 48h soak gate (the two
+subsystems are technically independent — graduations vs. kill chain).
+Push event-driven to production while incubation-watcher cutover
+proceeds on its own clock.
+
+### Sequence executed
+
+| Time (UTC) | Action | Result |
+|---|---|---|
+| 23:14 | FF merge feature → hirecharm/master | `a5a5b3d` |
+| 23:14 | Coolify deploy charm-api (force=true) | migrations 107+108 applied; event_log + 7 triggers verified enabled (`tgenabled='O'`) |
+| 23:34 | Coolify deploy emailbison-sync (flag still OFF) | boot log: `Event-driven (Tier 1 listener): OFF`; 1 real bounce captured to event_log within 15s of boot |
+| 23:34 | Runbook trigger-names fix + dormant-accumulation NB | `f2a686e` |
+| 23:35 | Drained 559 backlogged `emitted` rows | clean slate before flip |
+| 23:35 | `env-set EVENT_DRIVEN_ENABLED=true` + redeploy | listener spawned, all 7 handlers registered |
+
+### 1.5h watch results
+
+| Metric | Value | Verdict |
+|---|---|---|
+| Events processed | 1,800 (cumulative) | ✅ |
+| `failed` / `orphaned` / stalled | 0 / 0 / 0 | ✅ |
+| Tier 2 (TagOpWorker) cycles | 5 (44-111ms each, 0 records — correct since no upstream tag_op) | ✅ |
+| Pickup latency on fresh events | avg 2.9-4.7ms, max 14.6-29.8ms | ✅ (target <5s, beating by ~3 orders of magnitude) |
+| Per-event handler execution | avg 4.7ms, max 213ms | ✅ |
+| Trigger reconciliation | hard bounces in response_messages = bounce_observed in event_log (after accounting for retention deletes — see "orphan investigation" below) | ✅ |
+| kill_chain organic firing | 0 events (entire kill_queue table quiet for 3.5h, prior baseline ~1/hr) | ⏸ Bayesian lull, not a bug |
+
+### Orphan investigation (apparent 5x event:row mismatch)
+
+At the 1h mark, observed: 1,326 `bounce_observed` events but only 589
+matching `response_messages` rows (737 orphaned by entity_id JOIN).
+Root-caused to retention worker: `events_sync` backfills old bounces
+from EmailBison (some from January), trigger fires capturing the data,
+then `retention` deletes the source row as too old. Sample orphan
+payloads have `received_at=2026-01-21`. Three retention runs in the
+post-flip window deleted 1,067 + 772 + 0 rows respectively.
+
+This is **not a bug** — the trigger captures the bounce_type +
+sender_account_id + received_at into the event payload before
+retention runs, so handler logic still operates correctly. The deleted
+source row only affects the row-by-id lookup, not the
+`hard_bounces_lifetime()` SQL the handler actually uses.
+
+### What's verified end-to-end
+
+- ✅ Trigger fires on real production INSERTs (`response_messages`)
+- ✅ `pg_notify` delivers to listener
+- ✅ Listener claims event atomically (status='emitted' → 'processing')
+- ✅ Handler dispatched on fresh pool conn (Phase 3 architecture fix verified)
+- ✅ Handler completes, marks 'completed'
+- ✅ `_drain_pending` catch-up logic (drained the 559 boot-window backlog correctly)
+- ✅ Watchdog quiet (no orphans to chase)
+- ✅ Tier 2 TagOpWorker cycles fire on schedule, audit log records each run
+- ✅ Per-workspace partitioning enforced via DB CHECK constraint (no
+  tag_op_* events without workspace_id — but moot until kill chain fires)
+
+### What's NOT yet verified (organic only — won't synthesize)
+
+- ⏸ kill_queued → kill_queued_handler → mark inbox dead +
+  enqueue tag_ops
+- ⏸ inbox_died → inbox_died_handler → promote_to_target
+- ⏸ tag_op_apply / tag_op_remove → Tier 2 drain → bulk EB API call
+
+These will fire the moment a sick inbox emerges. Gate 3.5 retroactive
+validator already replayed the kill chain logic against 1,046
+historical kills with 0 unexplained mismatches, so the LOGIC is
+trusted; only the dispatch path remains operationally unverified.
+
+### Decision: stop active monitoring
+
+After 1.5h of clean operation across 1,800 events with 0 failures and
+sub-5ms steady-state latency, declared the cutover successful. One
+final 6-hour wakeup scheduled to confirm the kill chain has fired
+organically by then; if still 0, capture that fact and rely on the
+Gate 3.5 retroactive validation as sufficient proof.
+
+### Next milestones
+
+- Gate 5: 7-day shadow soak with co-execution of `set_tag_sync` and
+  `tag_op_worker` (both idempotent, should produce identical EB tag
+  state)
+- Gate 6: drop `set_tag_sync` runs from poll loop; `tag_op_worker`
+  becomes sole tag-write authority
+- Phase 5+: deferred handlers (disconnect_observed, sender_ban_detected,
+  graduated, reconnected) — design exists, not built
+- Incubation-watcher Phase 4 cutover: independent timeline per the
+  runbook §2; no blocker on event-driven

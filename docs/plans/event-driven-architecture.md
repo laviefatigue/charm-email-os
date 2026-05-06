@@ -1,7 +1,7 @@
 ---
 title: Event-Driven Architecture — Plan & Migration Path
 created: 2026-05-05
-status: PHASES 1-5 SHIPPED on feature/event-driven-architecture (gated off in prod via EVENT_DRIVEN_ENABLED=false). Awaiting incubation-watcher Phase 4 cutover (Phase 1 of cutover runbook) before flag flip.
+status: LIVE in production (cutover 2026-05-05 23:35 UTC). Tier 1 + Tier 2 active. 1,800 events processed in first 1.5h, 0 failed/orphaned. Awaiting Gate 5 (7-day shadow soak) before dropping set_tag_sync. See docs/work-logs/2026-05-05-migration-unblock-and-event-driven-planning.md "CUTOVER EXECUTED" section.
 related-adrs:
   - adr-006-tagging-kill-overhaul-2026-04-27 (workspace-scoped EB API keys)
   - adr-009-connection-state-separated-from-kill-state-2026-04-30
