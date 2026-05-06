@@ -184,7 +184,7 @@ Status keys: ✅ done · 🚧 in progress · ⏳ pending · 🔒 blocked · 👤
 | # | Phase | Status | Blocker | Notes |
 |:-:|-------|:------:|---------|-------|
 | 1 | Remove `disconnected_timeout` from KILL_THRESHOLDS | ✅ | — | Shipped commit `94fd0fa` |
-| 2 | ~~Notification ladder (24h/3d/7d/20d Slack alerts)~~ → **Disconnect report section in inbox-audit** | ⏳ NEXT (re-scoped 2026-05-06) | — | **Re-scoped per operator 2026-05-06:** original "per-inbox Slack ladder" rejected. Replacement: add new section to InboxAuditor (I-10 or similar) — per-workspace count of disconnected inboxes bucketed by duration (<24h / 24h-3d / 3d-7d / 7d-20d / >20d). Surfaces as part of existing daily inbox audit. No per-inbox notification, no separate alert pipeline. Operator reviews the audit and decides what to act on. Aligns with D-N: operators are the remedy path; system surfaces signal. Folds into inbox-audit Phase 5 (Slack restructure) work. |
+| 2 | ~~Notification ladder (24h/3d/7d/20d Slack alerts)~~ → Disconnect report (LIST) | ✅ **ALREADY SHIPPED** as part of 7-page operator queue UI (commit `35e538c`) | — | **Re-scoped per operator 2026-05-06 → discovered already shipped.** The `/reports/disconnects` page (frontend `charm-email-os/app/reports/disconnects/page.tsx` + backend `api/routes/reports.py:57 report_disconnects`) lists every disconnected inbox, **grouped by workspace** (`groupBy="workspace_name"`), with `hours_disconnected` column, ESP-aware thresholds (Microsoft 48h, Google/other 24h), `needs_attention` badge, "Past threshold only" toggle, CSV download. Sorted by oldest disconnect first within each workspace. **No new work needed.** Optional follow-up: change `hours_disconnected` (1.5h precision) to `days_disconnected` if operator prefers, but current format is more useful for short disconnects. |
 | 3 | EB connection tags (`disconnected_24h`, etc) auto-applied | ⏳ | accuracy gate: status mirror validated | Defer until accuracy proven |
 | 4 | ~~Drop `status='Connected'` filter from pool_promotion~~ | ❌ REJECTED | — | Per D-N (2026-05-06): pool and connection are orthogonal axes. `set_tag_sync` line 467 skip-on-disconnect is CORRECT — disconnected inboxes can't receive EB tag pushes anyway, and pool_status is preserved for resume-on-reconnect. Phase 4 would have introduced bugs, not fixed them. |
 | 5 | Operator-driven zombie restoration per workspace (CSV review) | 👤 | operator | Charm CSV ready; smallest-workspace-first sequence in plan §8 |
@@ -414,25 +414,21 @@ PENDING — operator-driven (no system code work)
 
 PENDING — system code, shippable next session (ranked)
 ─────────────────────────────────────────────────────────────────────
-   1. Inbox-audit new section: disconnected inboxes by workspace × duration
-      ↳ Re-scoped from "Plan B Phase 2 notification ladder" per operator
-        2026-05-06: no per-inbox Slack alerts; just a per-workspace count
-        bucketed by duration (<24h / 24h-3d / 3d-7d / 7d-20d / >20d).
-        Add to InboxAuditor as I-10 (or similar). 21-inbox Selery cluster
-        + 31 disconnected fleet-wide (per 2026-05-06 audit) = the data
-        this surfaces. Folds into Inbox-audit Phase 5 work below.
-   2. Kill-rule Phase 5 cleanup — drop legacy `_24h`/`_7d` columns + obsolete
+   1. Kill-rule Phase 5 cleanup — drop legacy `_24h`/`_7d` columns + obsolete
       code paths + `@_OBSOLETE_COUNT_RULE` tests (release cycle elapsed)
-   3. Inbox-audit Phase 5 (Slack restructure) — rebuild daily Slack post around
-      the I-* sections + the new operator-queue UI (commit 35e538c). #1 above
-      ships as part of this if combined.
-   4. Inbox-audit Phase 6 — SLA enforcement (24h escalate, 7d page)
-   5. Plan D Pass 6 — sync_campaigns + sync_engagement silent-error pattern
-   6. Decomposition Phase 4a — incubation-watcher v2 daemon mode
-   7. Decomposition Phase 4 — watcher cutover (independent timeline; runs to its
+   2. Inbox-audit Phase 5 (Slack restructure) — rebuild daily Slack post around
+      the I-* sections + the new operator-queue UI (commit 35e538c)
+   3. Inbox-audit Phase 6 — SLA enforcement (24h escalate, 7d page)
+   4. Plan D Pass 6 — sync_campaigns + sync_engagement silent-error pattern
+   5. Decomposition Phase 4a — incubation-watcher v2 daemon mode
+   6. Decomposition Phase 4 — watcher cutover (independent timeline; runs to its
       own clock per pool/conn lessons)
-   8. Plan D Pass 3 alert→kill flip (gated on 7 days of clean alert data)
-   9. Engagement decay detection — proxy reputation signal
+   7. Plan D Pass 3 alert→kill flip (gated on 7 days of clean alert data)
+   8. Engagement decay detection — proxy reputation signal
+
+   ❌ Removed: "disconnect report section" — already shipped as
+      `/reports/disconnects` page in the 7-page operator queue UI
+      (commit 35e538c). Plan B Phase 2 now ✅ in §3.4.
 
 
 NEXT SPRINT (after current pending queue drains)
