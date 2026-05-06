@@ -1,7 +1,7 @@
 ---
 title: Inbox Integrity Program — Master Tracker
 created: 2026-04-30
-updated: 2026-05-05 (event-driven architecture plan + per-workspace batch tag sync + latent-capacity warnings)
+updated: 2026-05-06 (event-driven Tier 1+2 LIVE in production; pool/conn orthogonality codified; audit script split)
 status: ACTIVE
 purpose: Single-page index of all in-flight inbox-state-machine work
 review-cadence: end of each session, update statuses
@@ -42,7 +42,7 @@ Each plan is a deep-dive document. This index is the cross-reference. Status as 
 | [emailbison-sync-decomposition.md](emailbison-sync-decomposition.md) | ~600 | IN PROGRESS | Phase 2 (`apps/incubation-watcher/` extracted) shipped 2026-04-30 | Phase 3 (shadow validation) running — 1 day in of 7 needed. Phase 4 (cutover) gated on shadow data. Phase 4a (daemon mode) needed for shadow data to accumulate without operator intervention. |
 | [kill-trigger-accuracy.md](kill-trigger-accuracy.md) | ~500 | **PARTIALLY SUPERSEDED by ADR-010** | Passes 1, 2, 3, 4 shipped (docs rewrite + bounce-FBL disable + sender-ban alert-first + body_full retention + silent-error fix). 23+25+69 = 117 unit tests. | Bounce classification work still load-bearing (read by new lifetime-rate rule). Threshold work absorbed by ADR-010. Pass 5 BLOCKED on operator (no JMRP/Postmaster). Pass 6 optional. |
 | [kill-rule-rate-based-rewrite.md](kill-rule-rate-based-rewrite.md) | ~400 | **SHIPPED — fully load-bearing** | Migration 105 + code (commits `5118d59` / `b55531b` / `f42cf0e`, prod at `b55531bd`). Phase 1-4 all complete on 2026-05-04. 307 false positives revived, 63 legitimate kills processed under new rule (SKMR 27, Hello Hero 23, Search Atlas 7, Spout 4, SPUI+Linkgraph 1 each). 22+12 tests green. ADR-010 accepted. Two deploy-side bugs surfaced + fixed in passing (`force=false` cache, git remote mismatch). | Phase 5 (cleanup of legacy `_24h`/`_7d` columns + `aggregate_bounce_counts_from_events` + `_thresholds_for_esp` + `@_OBSOLETE_COUNT_RULE` tests) waits one release cycle. |
-| [event-driven-architecture.md](event-driven-architecture.md) | ~700 | **CODE COMPLETE on feature branch** (2026-05-05) | Phase 1-4 all SHIPPED on `feature/event-driven-architecture` (commits df06e85, e71cb94, 34089bc, +Phase 4). Two-tier design fully built: Tier 1 listener + 7 handlers (full implementations); Tier 2 TagOpWorker drains tag_ops per-workspace with scoped EB keys; Tier 3 watchdog for orphan recovery. Migrations 107 (event_log) + 108 (triggers) ready. 32 synthetic tests across Gate 1 + Gate 2. Retroactive validator already validated handler logic against 60 days of production data (Gate 3.5 — 0 unexplained mismatches). | Pre-deploy: incubation-watcher Phase 4 cutover (~6 days remaining shadow soak). Then merge to master + flip `EVENT_DRIVEN_ENABLED=true` for shadow mode soak (Gate 4, 3 days). Then Gates 5-7. Total remaining timeline ~3-4 weeks. |
+| [event-driven-architecture.md](event-driven-architecture.md) | ~700 | **LIVE in production** (cutover 2026-05-05 23:35 UTC) | Phases 1-5 all SHIPPED + cutover EXECUTED. Master at `3888dfd`. Migrations 107+108 applied; 7 triggers (`trg_*`) enabled; EventListener consuming `pg_notify`; TagOpWorker draining per-workspace. Verified end-to-end at 05:48 UTC via Charm package_assigned cascade — single UPDATE drove `package_assigned → 42 pool_changed → 84 tag_op_*` events through Tier 1+2, all completed in 1.4s with 0 failures. **Steady-state pickup latency 2-5ms** (target was <5s). 3,908 events processed in first 5.5h, 0 failed/orphaned/stalled. Cutover sequence + post-mortem: see `docs/work-logs/2026-05-05-migration-unblock-and-event-driven-planning.md` "CUTOVER EXECUTED" + "Full end-to-end verification" sections. Operator runbook: `docs/operations/2026-05-05-event-driven-cutover-runbook.md`. | Gate 5: 7-day shadow soak with `set_tag_sync` co-execution (passive, ends ~2026-05-12). Gate 6: drop `set_tag_sync` runs from poll loop (after Gate 5 clean). Phase 5+ deferred handlers (sender_ban_detected, graduated, reconnected) — design exists, ship later. **disconnect_observed handler explicitly REJECTED** per D-N (pool/conn orthogonality decision 2026-05-06). |
 | [inbox-audit-overhaul.md](inbox-audit-overhaul.md) | ~150 | **MOSTLY COMPLETE** | Phases 1+2+3+4 shipped 2026-05-01/02. Migration 104 (workspace_id + JSONB columns) live; `InboxAuditor` class produces 8 integrity sections per workspace (I-1..I-7, I-9); daily dispatch wired into `emailbison_sync_worker.poll_loop`; Phase 4 subscription-cancel rollup with 14-day reuse window + `live`/`dead` × `Connected`/`Disconnected` breakdown live. First Phase 4 run 2026-05-02 00:28 UTC: 57 eligible cancel candidates across 7 workspaces. | Phase 5 (Slack restructure) + Phase 6 (SLA enforcement) pending. I-8 (pool-tag drift) deferred — requires EB API calls. |
 
 Plus the foundational records:
@@ -128,6 +128,10 @@ Status keys: ✅ done · 🚧 in progress · ⏳ pending · 🔒 blocked · 👤
 | [scripts/generate_zombie_review_csv.py](../../scripts/generate_zombie_review_csv.py) | ✅ | system | `94fd0fa` | Read-only operator review queue per workspace |
 | [scripts/audit_disconnect_milestones.py](../../scripts/audit_disconnect_milestones.py) | ✅ | system | `6a6bd68` | Read-only disconnect ladder + subscription-cancel signal |
 | [scripts/audit_package_assignments.py](../../scripts/audit_package_assignments.py) | ✅ | system | `f33d355` | Read-only workspace package recommendation CSV |
+| **[Event-driven Phase 1-5 cutover (Tier 1 listener + Tier 2 TagOpWorker LIVE)](../operations/2026-05-05-event-driven-cutover-runbook.md)** | ✅ | system | `df06e85` → `3283b40` | 5 phases shipped + cutover executed 2026-05-05 23:35 UTC. End-to-end verified at 05:48 via Charm cascade. 3,908 events / 0 failures in first 5.5h. |
+| [scripts/audit_tags_fleet.py — split connection-health from tag drift](../../scripts/audit_tags_fleet.py) | ✅ | system | `3888dfd` | Categorizer skips disconnected inboxes for tag-drift checks (matches set_tag_sync's line 467 skip). Output now has two sections: actionable drift + informational connection health. Pre-fix audit reported 3 missing_reserve_tag in Charm; post-fix: 0 actionable drift fleet-wide. |
+| [scripts/shadow_compare_per_workspace.py — per-workspace incubation parity check](../../scripts/shadow_compare_per_workspace.py) | ✅ | system | `a5a5b3d` | Companion to runbook §2.1. Mirrors apps/incubation-watcher/shadow.py logic across all 4 graduating workspaces in one round-trip. Verified watcher_only=0 fleet-wide pre-cutover. |
+| Charm `workspace.package_id` set to `50k_google` base (operational) | ✅ | operator | (DB UPDATE 2026-05-06 15:30 UTC) | Resolved Charm latent-capacity stall (42 graduated Gmail reserves were idle). Side effect: triggered the first end-to-end event-driven cascade verification — `package_assigned → 42 pool_changed → 84 tag_op_*` all drained successfully. |
 
 ### 3.2 Documentation (today's session)
 
@@ -169,12 +173,20 @@ Status keys: ✅ done · 🚧 in progress · ⏳ pending · 🔒 blocked · 👤
 
 ### 3.4 Connection state machine (Plan B)
 
+> **2026-05-06 architectural anchor:** D-N codified pool_status and connection
+> status as orthogonal axes. Disconnected inboxes keep their pool role across
+> disconnects; EB triggers reconnect automatically; operators handle remedy if
+> auto-reconnect fails. This locks Phase 4 below as REJECTED — `set_tag_sync`'s
+> Connected filter is correct, not a bug. Phase 2 (notification ladder) remains
+> the next natural ship and is now strategically aligned: it surfaces
+> disconnect signals so operators can act, without trying to mutate pool state.
+
 | # | Phase | Status | Blocker | Notes |
 |:-:|-------|:------:|---------|-------|
 | 1 | Remove `disconnected_timeout` from KILL_THRESHOLDS | ✅ | — | Shipped commit `94fd0fa` |
-| 2 | Notification ladder (24h/3d/7d/20d Slack alerts) | ⏳ | accuracy gate: disconnect timestamps validated | Could ship as read-only signal first |
+| 2 | Notification ladder (24h/3d/7d/20d Slack alerts) | ⏳ NEXT | accuracy gate: disconnect timestamps validated | Could ship as read-only signal first. Aligns with D-N (operators are the remedy path for persistent disconnects). 21-inbox Selery batch-disconnect (Ryan/James/Brittany cluster, ~360 sends each) is a real test case waiting. |
 | 3 | EB connection tags (`disconnected_24h`, etc) auto-applied | ⏳ | accuracy gate: status mirror validated | Defer until accuracy proven |
-| 4 | Drop `status='Connected'` filter from pool_promotion | ⏳ | accuracy gates passing | |
+| 4 | ~~Drop `status='Connected'` filter from pool_promotion~~ | ❌ REJECTED | — | Per D-N (2026-05-06): pool and connection are orthogonal axes. `set_tag_sync` line 467 skip-on-disconnect is CORRECT — disconnected inboxes can't receive EB tag pushes anyway, and pool_status is preserved for resume-on-reconnect. Phase 4 would have introduced bugs, not fixed them. |
 | 5 | Operator-driven zombie restoration per workspace (CSV review) | 👤 | operator | Charm CSV ready; smallest-workspace-first sequence in plan §8 |
 | 6 | EB tag cleanup for restored zombies (operator-confirmed) | 👤 | Phase 5 in progress | |
 
@@ -206,11 +218,15 @@ Status keys: ✅ done · 🚧 in progress · ⏳ pending · 🔒 blocked · 👤
 | Workstream | Status | Notes |
 |------------|:------:|-------|
 | ~~Deploy commits to charm-api + emailbison-sync~~ | ✅ | **emailbison-sync DEPLOYED 2026-04-30 23:12 UTC** (deployment uuid `fo8cwg00k40gk0o0cwog0s00`). 6/6 verification checks PASS, walk-away monitor scheduled. charm-api skipped per quickref §5 (no relevant changes). See deploy-outcome work log. |
+| ~~Charm `package_id`~~ → `50k_google` base | ✅ | Operator UPDATE 2026-05-06 15:30 UTC. Resolved latent-capacity stall; 42 reserves promoted to live via the event-driven cascade. |
+| **Hello Hero `package_id` is still NULL** | 👤 | Same situation Charm was in pre-2026-05-06. Hello Hero has 422 live + 79 untagged inboxes. Single SQL UPDATE same as Charm. Coordinate with operator before applying — it'll trigger the event-driven cascade and promote any eligible reserves. |
 | Charm zombie CSV review (142 rows, 127 currently Connected) | 👤 | [docs/audits/2026-04-30-zombie-review-charm.csv](../audits/2026-04-30-zombie-review-charm.csv) — fill `operator_decision` column, run SQL by hand |
-| Re-run accuracy audit weekly | 👤 | `py scripts/audit_system_accuracy.py` |
+| Re-run accuracy audit weekly | 👤 | `py scripts/audit_system_accuracy.py` (also: `py scripts/audit_tags_fleet.py` post-3888dfd for the split drift+conn-health view) |
 | ~~Investigate Spout's 641 disconnected_timeout zombies~~ — RECLASSIFIED 2026-04-30 end of session: Spout has 0 disconnected_timeout zombies. The 641 dead+Connected are CORRECTLY reputation-killed (183 spam, 162 hard_bounces, 267 fresh-inbox failures). 553 of 641 came from a single 2026-02-14 mass provisioning event (550 inboxes killed across 10 *spoutwater.com domains). New investigation: **Hypertide root-cause for the 2026-02-14 batch failure.** | 👤 | See work-log §"Workstream D investigation — Spout 641 reclassified" |
 | Cleanup the 10 Spout pool-tag drift rows (operator EB-side untag) | 👤 | Patch shipped to prevent recurrence; existing 10 need manual tag strip via EB UI or scripted untag with operator approval |
 | Strip flagged_disconnected_timeout from EB during zombie restoration | 👤 | Per-row, alongside operator restoration in §3.4 Phase 5 |
+| Investigate 21-inbox Selery batch-disconnect (Ryan/James/Brittany operators, ~360 sends each) | 👤 | Surfaced 2026-05-06 via audit_tags_fleet.py split. Pattern: 3 humans across 7+ Selery domains, all disconnected after similar send counts → likely OAuth/token/credential issue affecting the cluster. Per D-N (pool/conn orthogonal): system won't auto-remedy, operator handles. |
+| Investigate SKMR's 30/35 domains touched by deaths (3 fully dead = cancel candidates) | 👤 | Surfaced 2026-05-06. acceleratestablekernel.com / runstablekernel.com / uncoverstablekernel.com are fully dead (3/3 inboxes). 12 more at 1/3 dead, 15 at 2/3 dead. SKMR domain attrition is workspace-systemic — likely the spam_complaint kill chain (24 in 30d). Worth eyeballing outreach pattern. |
 
 ### 3.7 Future / next-sprint
 
@@ -242,6 +258,7 @@ These are not up for re-debate. Codified across plan docs and ADRs.
 | D-H | Decomposition scope: extract incubation-watcher only first, decide on rest after 30-day validation | decomposition plan §2.1 | Avoid premature 6-service commitment |
 | D-I | NULL pattern in clients.domain_pattern → quarantine all inboxes (fail-closed) | firewall plan §10 D-2 | New clients must be configured before any inbox can pool |
 | D-J | Restoration is operator-driven, manual SQL per row, smallest-workspace-first | connection plan §8 | The system that produced the bug cannot be trusted to auto-fix the bug |
+| D-N | **`inventory_pool_status` and `status` (connection) are orthogonal axes.** Disconnected inboxes keep their pool role across disconnects so they resume on reconnect; EB triggers reconnect automatically; operators handle remedy if EB doesn't recover. The system does NOT clear pool_status on disconnect, and there is NO automated DB-side remedy. | operator decision 2026-05-06 (during audit_tags_fleet review) | Conflating the two would force pool re-planning on every transient connection blip. Codified in `set_tag_sync.py:467` (deliberate skip-on-disconnect) and `audit_tags_fleet.py` (3888dfd: separate connection-health bucket from drift). Memory: `pool-vs-connection-orthogonal.md`. |
 
 ## 5. Open decisions (need operator input before unblocking)
 
@@ -345,35 +362,77 @@ INBOX AUDIT OVERHAUL (Phases 1–4 shipped; 5–6 pending)
    ⏳ Phase 6  — SLA enforcement (24h escalate, 7d page) on pending audits
 
 
+EVENT-DRIVEN ARCHITECTURE (Phases 1–5 shipped; LIVE in production 2026-05-05)
+   ✅ Phase 1 — migration 107 (event_log) + migration 108 (7 triggers) + EventListener
+                + Gate 1 12 trigger correctness tests
+   ✅ Phase 2 — 7 handler implementations (kill_chain.py, lifecycle.py, domain.py,
+                workspace.py) + HANDLER_REGISTRY + Gate 2 10 idempotency tests
+   ✅ Phase 3 — extracted single-row promote_to_target + listener fix (handlers run
+                on fresh pool conn, not LISTEN conn) + DRY refactor
+   ✅ Phase 4 — TagOpWorker (Tier 2 batch worker) + bulk EB API methods
+                (tag_inboxes_bulk + untag_inboxes_bulk) + 10 tests + poll loop wired
+   ✅ Phase 5 — wire EventListener + run_watchdog into emailbison_sync_worker.start()
+                gated by EVENT_DRIVEN_ENABLED env (default false)
+   ✅ Cutover — merged feature → master (a5a5b3d), deploy charm-api (migrations apply),
+                deploy emailbison-sync (flag OFF), drained 559 backlogged emitted rows,
+                set EVENT_DRIVEN_ENABLED=true (23:35 UTC), redeploy. 1.5h watch:
+                1,800 events / 0 failures. End-to-end verified at 05:48 UTC via
+                Charm package_assigned cascade (single UPDATE → 84 tag_op_* drained
+                in 1.4s through Tier 2). Master at 3283b40.
+   🚧 Gate 5  — 7-day shadow soak with set_tag_sync co-execution (passive, ~2026-05-12)
+   ⏳ Gate 6  — drop set_tag_sync runs from poll loop (after Gate 5 clean)
+   ⏳ Phase 5+ — sender_ban_detected / graduated / reconnected handlers (deferred,
+                designs exist; ship later as needed)
+   ❌ disconnect_observed handler — REJECTED per D-N (pool/conn orthogonal; no
+                automated DB-side remedy on disconnect)
+
+
+SESSION 2026-05-06 (operational + audit + cutover)
+─────────────────────────────────────────────────────────────────────
+   ✅ Charm package_id → 50k_google base (DB UPDATE, 42 reserves promoted live)
+   ✅ Pool/conn orthogonality codified (D-N + memory + audit script split)
+   ✅ scripts/audit_tags_fleet.py — separate connection-health from tag drift (3888dfd)
+   ✅ scripts/shadow_compare_per_workspace.py — added (a5a5b3d)
+   ✅ Cutover runbook published + updated 4× through pre-flight discoveries
+
+
 PENDING — operator-driven (no system code work)
 ─────────────────────────────────────────────────────────────────────
+   👤 Hello Hero package_id (NULL → 50k_google base) — same fix as Charm
    👤 Charm zombie CSV review (142 rows, 127 currently Connected)
    👤 Subscription-cancel candidates (57 eligible across 7 workspaces — see
        inbox_audits.audit_data->'sections'->I-9 for live per-domain rollup)
    👤 20d+ disconnect queue (666 fleet-wide)
-   👤 Package recommendations CSV
-   👤 Hypertide root-cause for 2026-02-14 Spout mass-provisioning failure
+   👤 21-inbox Selery batch-disconnect investigation (Ryan/James/Brittany cluster)
+   👤 SKMR domain attrition (3 fully-dead domains for cancel; 27 partially-dead)
    👤 Clean 2 cross-tenant SPUI duplicates from EB Spout (eb_ids 8860, 8859)
    👤 Operator decision: enroll in JMRP and/or Postmaster Tools (unblocks Pass 5)
+   👤 Hypertide subscription-data sync — IN PROGRESS in a separate chat (will
+       address Hypertide root-cause for 2026-02-14 Spout batch + ongoing
+       subscription state visibility once landed)
 
 
-PENDING — system code, shippable next session
+PENDING — system code, shippable next session (ranked)
 ─────────────────────────────────────────────────────────────────────
-   ⏳ Connection state machine Phase 2 — notification ladder (24h/3d/7d/20d Slack)
-   ⏳ Decomposition Phase 4a — incubation-watcher v2 daemon mode
-   ⏳ Decomposition Phase 4 — watcher cutover (gated on Day 7 of shadow)
-   ⏳ Plan D Pass 6 — sync_campaigns + sync_engagement silent-error pattern
-   ⏳ Plan D Pass 3 alert→kill flip (gated on 7 days of clean alert data)
-   ⏳ Engagement decay detection — proxy reputation signal (closes part of the
-       gap created by no JMRP/Postmaster Tools — uses open/reply rates we
-       already sync)
+   1. Connection state machine Phase 2 — notification ladder (24h/3d/7d/20d Slack)
+      ↳ Strategically aligned with D-N (operators are the remedy path).
+        21-inbox Selery batch is a real test case waiting.
+   2. Kill-rule Phase 5 cleanup — drop legacy `_24h`/`_7d` columns + obsolete
+      code paths + `@_OBSOLETE_COUNT_RULE` tests (release cycle elapsed)
+   3. Inbox-audit Phase 5 (Slack restructure) — rebuild daily Slack post around
+      the I-* sections + the new operator-queue UI (5 page commit 35e538c)
+   4. Inbox-audit Phase 6 — SLA enforcement (24h escalate, 7d page)
+   5. Plan D Pass 6 — sync_campaigns + sync_engagement silent-error pattern
+   6. Decomposition Phase 4a — incubation-watcher v2 daemon mode
+   7. Decomposition Phase 4 — watcher cutover (independent timeline; runs to its
+      own clock per pool/conn lessons)
+   8. Plan D Pass 3 alert→kill flip (gated on 7 days of clean alert data)
+   9. Engagement decay detection — proxy reputation signal
 
 
-NEXT SPRINT
+NEXT SPRINT (after current pending queue drains)
 ─────────────────────────────────────────────────────────────────────
    ⏳ ADR-008 step 2 — collapse pool + lifecycle into single inbox_status
-   ⏳ Workspace package assignments (operator)
-   ⏳ inbox-audit-overhaul Phase 5 (Slack restructure) + Phase 6 (SLA enforcement)
    ⏳ Decide on extracting kill-watcher, inventory-manager, tag-writer
        (30 days post-incubation-watcher cutover)
 ```
