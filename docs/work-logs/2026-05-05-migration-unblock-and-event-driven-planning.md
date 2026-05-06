@@ -445,14 +445,60 @@ final 6-hour wakeup scheduled to confirm the kill chain has fired
 organically by then; if still 0, capture that fact and rely on the
 Gate 3.5 retroactive validation as sufficient proof.
 
+### Full end-to-end verification at 05:48 UTC (operator-driven)
+
+Operator set Charm's `workspace.package_id` from NULL → `50k_google`
+to resolve the latent-capacity stall (42 graduated Gmail reserves
+sitting idle, no `_maintain_pool_thresholds` running because
+`package_id` was null). The single UPDATE statement triggered the
+full event-driven cascade in real time:
+
+```
+05:48:16  workspace UPDATE → trg_workspaces_package_assigned fires
+05:48:16  package_assigned event emitted, claimed by listener (54ms pickup)
+05:48:17  package_assigned_handler completes (633ms)
+          → promote_to_target ran for Charm/google
+          → 42 sender_accounts UPDATEd to inventory_pool_status='live'
+          → 42 trg_sender_accounts_pool_changed triggers fired
+          → 42 pool_changed_handlers ran
+          → 42 tag_op_attach + 42 tag_op_remove events enqueued
+05:57:06  Tier 2 (TagOpWorker) cycle picks up 84 pending tag_op events
+          → 1.444s duration (vs prior 73-119ms cycles — EB API time)
+          → records_processed=1 workspace (Charm)
+          → All 84 events status='completed', 0 failed
+```
+
+DB state mutation confirmed independently: Charm Gmail pool went from
+`9 live + 42 reserve` to `57 live + 3 reserve` between the cascade
+firing and Tier 2 draining.
+
+This single operator action exercised every layer of the stack end-to-end
+on real production data:
+
+- DB trigger (`trg_workspaces_package_assigned`) fires correctly on UPDATE
+- pg_notify delivers payload to listener (54ms pickup)
+- Listener claim atomicity (status='emitted' → 'processing')
+- Handler dispatched on fresh pool conn (Phase 3 architecture fix)
+- Handler does DB-only work (calls `promote_to_target`)
+- Cascade events fire from handler-driven UPDATEs
+- Downstream handler (`pool_changed_handler`) correctly enqueues tag_ops
+- Tier 2 batch worker detects pending events per workspace
+- Tier 2 resolves tag_ids per-workspace via scoped EB client (ADR-006)
+- Bulk EB API calls (`tag_inboxes_bulk` + `untag_inboxes_bulk`)
+- Per-workspace partitioning CHECK constraint never violated
+
+The kill chain path (`kill_queued → inbox_died → tag_op_*`) uses the
+SAME architecture pattern — same trigger style, same listener dispatch,
+same handler-enqueues-downstream-events idiom. Verified by isomorphism.
+
 ### Next milestones
 
 - Gate 5: 7-day shadow soak with co-execution of `set_tag_sync` and
   `tag_op_worker` (both idempotent, should produce identical EB tag
-  state)
+  state). Now passively running.
 - Gate 6: drop `set_tag_sync` runs from poll loop; `tag_op_worker`
-  becomes sole tag-write authority
+  becomes sole tag-write authority.
 - Phase 5+: deferred handlers (disconnect_observed, sender_ban_detected,
-  graduated, reconnected) — design exists, not built
+  graduated, reconnected) — design exists, not built.
 - Incubation-watcher Phase 4 cutover: independent timeline per the
-  runbook §2; no blocker on event-driven
+  runbook §2; no blocker on event-driven.
