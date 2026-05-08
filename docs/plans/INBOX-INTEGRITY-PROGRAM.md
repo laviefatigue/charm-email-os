@@ -1,7 +1,7 @@
 ---
 title: Inbox Integrity Program — Master Tracker
 created: 2026-04-30
-updated: 2026-05-06 (event-driven Tier 1+2 LIVE in production; pool/conn orthogonality codified; audit script split)
+updated: 2026-05-08 (EOD plan refresh + warmup-disable-on-kill design from 318-inbox post-kill bleed audit; eod-reapply v1 + Plan F added to tracker)
 status: ACTIVE
 purpose: Single-page index of all in-flight inbox-state-machine work
 review-cadence: end of each session, update statuses
@@ -44,6 +44,8 @@ Each plan is a deep-dive document. This index is the cross-reference. Status as 
 | [kill-rule-rate-based-rewrite.md](kill-rule-rate-based-rewrite.md) | ~400 | **SHIPPED — fully load-bearing** | Migration 105 + code (commits `5118d59` / `b55531b` / `f42cf0e`, prod at `b55531bd`). Phase 1-4 all complete on 2026-05-04. 307 false positives revived, 63 legitimate kills processed under new rule (SKMR 27, Hello Hero 23, Search Atlas 7, Spout 4, SPUI+Linkgraph 1 each). 22+12 tests green. ADR-010 accepted. Two deploy-side bugs surfaced + fixed in passing (`force=false` cache, git remote mismatch). | Phase 5 (cleanup of legacy `_24h`/`_7d` columns + `aggregate_bounce_counts_from_events` + `_thresholds_for_esp` + `@_OBSOLETE_COUNT_RULE` tests) waits one release cycle. |
 | [event-driven-architecture.md](event-driven-architecture.md) | ~700 | **LIVE in production** (cutover 2026-05-05 23:35 UTC) | Phases 1-5 all SHIPPED + cutover EXECUTED. Master at `3888dfd`. Migrations 107+108 applied; 7 triggers (`trg_*`) enabled; EventListener consuming `pg_notify`; TagOpWorker draining per-workspace. Verified end-to-end at 05:48 UTC via Charm package_assigned cascade — single UPDATE drove `package_assigned → 42 pool_changed → 84 tag_op_*` events through Tier 1+2, all completed in 1.4s with 0 failures. **Steady-state pickup latency 2-5ms** (target was <5s). 3,908 events processed in first 5.5h, 0 failed/orphaned/stalled. Cutover sequence + post-mortem: see `docs/work-logs/2026-05-05-migration-unblock-and-event-driven-planning.md` "CUTOVER EXECUTED" + "Full end-to-end verification" sections. Operator runbook: `docs/operations/2026-05-05-event-driven-cutover-runbook.md`. | Gate 5: 7-day shadow soak with `set_tag_sync` co-execution (passive, ends ~2026-05-12). Gate 6: drop `set_tag_sync` runs from poll loop (after Gate 5 clean). Phase 5+ deferred handlers (sender_ban_detected, graduated, reconnected) — design exists, ship later. **disconnect_observed handler explicitly REJECTED** per D-N (pool/conn orthogonality decision 2026-05-06). |
 | [inbox-audit-overhaul.md](inbox-audit-overhaul.md) | ~150 | **MOSTLY COMPLETE** | Phases 1+2+3+4 shipped 2026-05-01/02. Migration 104 (workspace_id + JSONB columns) live; `InboxAuditor` class produces 8 integrity sections per workspace (I-1..I-7, I-9); daily dispatch wired into `emailbison_sync_worker.poll_loop`; Phase 4 subscription-cancel rollup with 14-day reuse window + `live`/`dead` × `Connected`/`Disconnected` breakdown live. First Phase 4 run 2026-05-02 00:28 UTC: 57 eligible cancel candidates across 7 workspaces. | Phase 5 (Slack restructure) + Phase 6 (SLA enforcement) pending. I-8 (pool-tag drift) deferred — requires EB API calls. |
+| [eod-campaign-reapply.md](eod-campaign-reapply.md) | ~470 | **v1 SHIPPED** (operator CLI); awaiting L5 staging + v2 scheduler | v1 CLI shipped at `apps/eod-reapply/`. 209 tests passing (99% coverage), tested through L4 (mocked unit + integration). Core loop: pull EB campaign senders, pull EB senders with `live` tag, diff, pause→attach→remove→verify→resume. Library function `reapply_campaign(...)` already supports v2 scheduler import unchanged. Doc refresh 2026-05-08 (status, event-driven impact, sister mechanism: warmup-disable-on-kill). | **L5 real-EB staging gate (Barrena pilot)**, then **v2 scheduler/daemon** (auto-runs across active campaigns with timezone-aware EOD predicate; needs `campaign_schedules` + `campaign_reapply_runs` tables). Both blockers tracked as next-ship items. |
+| [warmup-disable-on-kill — TBD plan doc; sketch in eod-campaign-reapply.md "Sister mechanism"](eod-campaign-reapply.md) | — | **DESIGNED — not built** | Audit 2026-05-08 found **318 dead inboxes still receiving bounces**, some 3+ months post-kill (e.g. bhoumik@stylespui.com killed 2026-02-14, last bounce 2026-05-08 15:17 UTC). Root cause: kill cascade marks DB+EB tags but doesn't disable warmup → EB warmup daemon keeps sending → reputation bleed. **Design**: extend `kill_queued_handler` to UPDATE `warmup_enabled=FALSE` and enqueue new `warmup_disable` event type drained by Tier 2 (or sibling worker) that calls EB to disable warmup. Operator approved 2026-05-08; ~1d engineering + 1d backfill. Per ADR-006 partitioning rule, workspace-scoped EB key. | (1) Add `warmup_enabled=FALSE` to `kill_queued_handler` UPDATE. (2) Add `warmup_disable` event_type + handler. (3) Add `EmailBisonClient.disable_warmup()`. (4) Tests. (5) Backfill script for existing 318 affected. |
 
 Plus the foundational records:
 
@@ -212,6 +214,27 @@ Status keys: ✅ done · 🚧 in progress · ⏳ pending · 🔒 blocked · 👤
 | 4 | Switch ownership: feature-flag off in emailbison-sync, on in incubation-watcher | ⏳ | 7 days clean shadow validation | |
 | 4a | v2 daemon mode (continuous loop) | ⏳ | after Phase 4 cutover OR alongside it | Today's Dockerfile is `CMD ["sleep","infinity"]`. v2 changes to `CMD ["incubation-watcher","daemon"]` + new `daemon` subcommand that loops `run --apply=False` on a schedule. Without daemon mode, operator must invoke daily — the shadow-validation data the cutover decision needs. |
 | 5 | Decide whether to extract `kill-watcher`, `inventory-manager`, `tag-writer` based on Phase 4 outcomes | ⏳ | 30 days post-Phase-4 | Don't commit to all 6 services until incubation-watcher proves the pattern |
+
+### 3.5b EOD Campaign Reapply (Plan E)
+
+| # | Phase | Status | Blocker | Notes |
+|:-:|-------|:------:|---------|-------|
+| 1 | v1 CLI: per-(workspace, campaign) reapply tool | ✅ | — | Shipped at `apps/eod-reapply/`. 209 tests, 99% coverage, L4 complete. Library function `reapply_campaign(...)` ready for v2 import. |
+| 2 | L5 real-EB staging gate | ⏳ NEXT | operator runs against throwaway test campaign | See `apps/eod-reapply/STAGING-RUNBOOK.md`. **Pilot candidate: Barrena** (2 active campaigns, 35 live inboxes — smallest blast radius). |
+| 3 | v2 scheduler/daemon mode | ⏳ | L5 passes | New tables: `campaign_schedules` + `campaign_reapply_runs`. Time-zone-aware EOD predicate per campaign. Auto-runs across all active campaigns ~5min. |
+| 4 | Workspace allowlist phased rollout | ⏳ | v2 ships | Per plan §"Rollout plan" — start with smallest workspace, add one at a time |
+
+### 3.5c Warmup-disable on kill (Plan F — designed 2026-05-08)
+
+| # | Phase | Status | Blocker | Notes |
+|:-:|-------|:------:|---------|-------|
+| 0 | Audit + design | ✅ | — | Audit found 318 dead inboxes still receiving bounces (e.g. bhoumik@stylespui.com killed 2026-02-14, last bounce 2026-05-08 15:17 UTC). Design sketched in `eod-campaign-reapply.md` §"Sister mechanism". Operator approved 2026-05-08. |
+| 1 | Add `warmup_enabled = FALSE` to `kill_queued_handler` UPDATE | ⏳ | — | One-line addition to `sync_modules/event_handlers/kill_chain.py` UPDATE. Same transaction as `inbox_state=dead`. |
+| 2 | Add `warmup_disable` event_type | ⏳ | — | Extend event_log schema (the existing CHECK constraint already requires workspace_id NOT NULL on tag_op_*; same applies). Migration. |
+| 3 | Handler in Tier 2 `TagOpWorker` (or sibling `WarmupOpWorker`) | ⏳ | Phase 2 | Per-workspace batching reuses existing infrastructure. Per-workspace EB key per ADR-006. Idempotent. |
+| 4 | `EmailBisonClient.disable_warmup(account_id)` | ⏳ | — | Need OpenAPI lookup for the right EB endpoint. |
+| 5 | Tests (handler logic, idempotency, partitioning) | ⏳ | Phase 1-4 | Pattern from existing `test_event_handlers.py` + `test_tag_op_worker.py`. |
+| 6 | Backfill script for the existing 318 affected | ⏳ | Phases 1-5 ship | One-shot: SELECT dead inboxes WHERE warmup_enabled=TRUE → enqueue warmup_disable for each. Tier 2 picks them up on next cycle. |
 
 ### 3.6 Operator-driven actions (require human review/decision)
 
@@ -412,19 +435,27 @@ PENDING — operator-driven (no system code work)
        subscription state visibility once landed)
 
 
-PENDING — system code, shippable next session (ranked)
+PENDING — system code, shippable next session (ranked, updated 2026-05-08)
 ─────────────────────────────────────────────────────────────────────
-   1. Kill-rule Phase 5 cleanup — drop legacy `_24h`/`_7d` columns + obsolete
+   1. Plan F: warmup-disable-on-kill (event-driven) — closes the 318-inbox
+      post-kill bleed found 2026-05-08. Sketch in eod-campaign-reapply.md
+      §"Sister mechanism". ~1d engineering + 1d backfill.
+   2. Plan E Phase 2: EOD reapply L5 staging gate (Barrena pilot, 2 active
+      campaigns, 35 live inboxes). Run `apps/eod-reapply/STAGING-RUNBOOK.md`.
+      Operator-invoked.
+   3. Plan E Phase 3: v2 EOD scheduler/daemon — table additions, poll loop,
+      timezone-aware predicate. Gated on L5 passing.
+   4. Kill-rule Phase 5 cleanup — drop legacy `_24h`/`_7d` columns + obsolete
       code paths + `@_OBSOLETE_COUNT_RULE` tests (release cycle elapsed)
-   2. Inbox-audit Phase 5 (Slack restructure) — rebuild daily Slack post around
+   5. Inbox-audit Phase 5 (Slack restructure) — rebuild daily Slack post around
       the I-* sections + the new operator-queue UI (commit 35e538c)
-   3. Inbox-audit Phase 6 — SLA enforcement (24h escalate, 7d page)
-   4. Plan D Pass 6 — sync_campaigns + sync_engagement silent-error pattern
-   5. Decomposition Phase 4a — incubation-watcher v2 daemon mode
-   6. Decomposition Phase 4 — watcher cutover (independent timeline; runs to its
+   6. Inbox-audit Phase 6 — SLA enforcement (24h escalate, 7d page)
+   7. Plan D Pass 6 — sync_campaigns + sync_engagement silent-error pattern
+   8. Decomposition Phase 4a — incubation-watcher v2 daemon mode
+   9. Decomposition Phase 4 — watcher cutover (independent timeline; runs to its
       own clock per pool/conn lessons)
-   7. Plan D Pass 3 alert→kill flip (gated on 7 days of clean alert data)
-   8. Engagement decay detection — proxy reputation signal
+  10. Plan D Pass 3 alert→kill flip (gated on 7 days of clean alert data)
+  11. Engagement decay detection — proxy reputation signal
 
    ❌ Removed: "disconnect report section" — already shipped as
       `/reports/disconnects` page in the 7-page operator queue UI

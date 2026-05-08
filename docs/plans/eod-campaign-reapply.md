@@ -1,29 +1,101 @@
 ---
 title: EOD Campaign Reapply Service
-status: scoping
+status: v1 SHIPPED (operator-invoked CLI, 209 tests passing) — awaiting L5 real-EB staging gate; v2 scheduler still scoped
 created: 2026-04-29
-tags: [plan, emailbison, campaign, reapply, timezone, kill-triggers, scope]
+updated: 2026-05-08 (post event-driven cutover refresh; warmup-disable-on-kill design added)
+tags: [plan, emailbison, campaign, reapply, timezone, kill-triggers, scope, event-driven]
+related-plans:
+  - INBOX-INTEGRITY-PROGRAM.md (master tracker)
+  - event-driven-architecture.md (Tier 1+2 LIVE — affects how live tag is applied)
 ---
 
 # EOD Campaign Reapply Service
 
 A small, independent app that reapplies the `live` inbox tag set to every active EmailBison campaign once per local-day, after that campaign's send window closes. Its only job is to keep each active campaign's attached senders in sync with the current `live` set, so kill-triggered inboxes drop off the next sending day automatically.
 
+## Status (as of 2026-05-08)
+
+| Layer | State |
+|---|---|
+| **v1 — operator-invoked CLI** | ✅ SHIPPED at [`apps/eod-reapply/`](../../apps/eod-reapply/). 209 tests passing (99% coverage). Tested through L4 (mocked unit + integration). |
+| **L5 — real-EB staging gate** | ⏳ NOT YET RUN. Mandatory before any production use. See [`apps/eod-reapply/STAGING-RUNBOOK.md`](../../apps/eod-reapply/STAGING-RUNBOOK.md). Pilot candidate: Barrena (2 active campaigns, 35 live inboxes, smallest blast radius). |
+| **v2 — scheduler / daemon** | ⏳ NOT YET BUILT. Roadmapped: `campaign_schedules` + `campaign_reapply_runs` tables, poll loop, time-zone gate, daemon mode. The library function `reapply_campaign(...)` already supports being called from the v2 scheduler unchanged. |
+
 ## Purpose
 
 Today, when an inbox dies:
 
-- `kill_processor` sets `inbox_state='dead'` in our DB and strips the `live` tag in EmailBison ([sync_modules/kill_processor.py:444-459](../../sync_modules/kill_processor.py#L444-L459)).
-- The dead inbox is **not** detached from the EB campaigns it was already attached to. It just stops sending because the team manually re-runs "filter by `live` tag → attach to campaign" — or doesn't, and the dead inbox sits there.
+- The kill cascade sets `inbox_state='dead'` in our DB and removes the `live` tag in EmailBison.
+- **Post event-driven cutover (2026-05-05):** the live tag removal happens via [`sync_modules/event_handlers/kill_chain.py`](../../sync_modules/event_handlers/kill_chain.py) — `kill_queued_handler` enqueues a `tag_op_remove` event for the `live` tag. The Tier 2 `TagOpWorker` ([`sync_modules/tag_op_worker.py`](../../sync_modules/tag_op_worker.py)) drains the queue every 30 min and calls EB's bulk untag endpoint. `set_tag_sync` co-executes as the reconciler safety net (per Gate 5 of event-driven plan).
+- (Pre-cutover this happened in `kill_processor.py` only; the path is now event-driven with set_tag_sync as backup.)
+- The dead inbox is **not** automatically detached from the EB campaigns it was already attached to. It stops sending **campaigns** because the team manually re-runs "filter by `live` tag → attach to campaign" — or doesn't, and the dead inbox sits there sending in-flight or queued emails.
+- Critically, the dead inbox **also keeps doing warmup sends** if `warmup_enabled=true` in EB — that's a separate mechanism EOD reapply does NOT address (see "Sister mechanism: warmup-disable on kill" below).
 
-The comment at [kill_processor.py:443](../../sync_modules/kill_processor.py#L443) (`"Strip both pool tags from the dead inbox so it cannot be re-included in a campaign reapply by tag filter."`) is a TODO for the orchestrator that does the reapply. This service is that orchestrator.
+This service is the orchestrator that closes the campaign-attachment half of that loop. The warmup half is closed by the warmup-disable-on-kill mechanism designed elsewhere in this doc.
 
 ## Non-goals
 
 - Not a campaign creator. Campaign creation stays in [api/routes/strategy.py](../../api/routes/strategy.py).
-- Not a tag manager. `lifecycle_tag_sync` and `kill_processor` still own the `live`/`reserve`/`incubating` lifecycle.
-- Not a kill-trigger evaluator. `health_checks` + `kill_processor` keep that responsibility.
+- Not a tag manager. The `live`/`reserve`/`incubating` lifecycle is owned by `lifecycle_tag_sync` (incubation) + the event-driven kill chain (`kill_queued_handler` enqueueing `tag_op_*` events drained by Tier 2 `TagOpWorker`) + `set_tag_sync` (reconciler).
+- Not a kill-trigger evaluator. `health_checks` + the event-driven `bounce_observed_handler` keep that responsibility.
+- Not a warmup manager. Warmup-disable-on-kill is a sibling event-driven mechanism (see "Sister mechanism" below); EOD reapply only touches campaign sender attachments.
 - Not a replacement for `emailbison_sync_worker`. This service consumes data the sync worker writes (workspaces, campaigns, API keys).
+
+## Relationship to event-driven architecture
+
+The event-driven cutover (2026-05-05) didn't change the EOD design but did change two things adjacent to it:
+
+1. **The `live` tag in EB is now updated faster.** Pre-cutover, `set_tag_sync` was the only writer of the live tag (every ~30s polling). Post-cutover, the event-driven Tier 2 `TagOpWorker` writes it ~real-time (within 30 min of any kill / pool change), with `set_tag_sync` continuing as reconciler. When EOD reads "senders with the `live` tag", it gets a more current snapshot than before.
+2. **Tag drift is operationally close to zero.** `audit_tags_fleet.py` (post-2026-05-06 split) reports drift in two buckets: actionable (Connected inboxes) and informational (disconnected inboxes; preserved for resume-on-reconnect per ADR D-N). Actionable drift has been 0 since the cutover. EOD can trust the live-tag set in EB without an additional reconciliation pass.
+
+**Net:** EOD's design is unchanged. It still uses the EB live tag as authority and reconciles campaign attachments to it. The cutover just made that source-of-truth more accurate.
+
+## Sister mechanism: warmup-disable on kill (event-driven, designed 2026-05-08)
+
+Audit on 2026-05-08 found **318 dead inboxes still receiving bounces, some on inboxes killed 3+ months ago**. Root cause: kill cascade marks DB state and applies `flagged_*` tag, but does NOT disable warmup. EB's warmup daemon keeps sending warmup mail from dead inboxes, tarnishing the reputation of their domain neighbors.
+
+EOD reapply addresses **only the campaign-attachment half** of the bleed:
+- ✅ Dead inbox detached from active campaigns → no more campaign sends
+- ❌ Dead inbox still warming → still sending warmup mail
+
+The warmup half is closed by an **event-driven warmup-disable mechanism** designed alongside this plan:
+
+```
+KILL CASCADE (today):
+  bounce_observed → kill_queued → kill_queued_handler:
+    1. UPDATE sender_accounts: inbox_state=dead, kill_trigger=…, killed_at=NOW(),
+                               inventory_pool_status=NULL,
+                               inventory_lifecycle_status=dead
+    2. enqueue tag_op_attach (flagged_*)
+    3. enqueue tag_op_remove (live)
+
+KILL CASCADE (proposed addition):
+    1. (same UPDATE, plus) warmup_enabled=FALSE
+    4. enqueue warmup_disable event   ← NEW
+                                       ↓
+WARMUP_DISABLE EVENT (Tier 2 drain, per-workspace):
+    Handler calls EB API to disable warmup on the inbox
+    Marks event completed; idempotent (re-running on already-disabled is OK)
+```
+
+**Why event-driven (not procedural):**
+- Same partitioning rules: workspace-scoped EB key (per ADR-006). The event_log CHECK constraint already enforces `workspace_id NOT NULL` for `tag_op_*` events; same will apply to `warmup_disable`.
+- Same Tier 2 batching infrastructure: drain pending warmup_disable events per workspace, call EB in bulk if endpoint supports it (or per-inbox if not).
+- Same retry/watchdog semantics: failed → retry with exponential backoff; orphan threshold; status tracking.
+- Idempotent by design: setting warmup_enabled=FALSE on already-disabled is safe.
+
+**Sequencing:** the kill_queued_handler runs in a single transaction, so the DB updates (inbox_state=dead AND warmup_enabled=FALSE) commit atomically. Tier 2 then drains the queued events on its 30-min cycle. Order between tag_op_remove (live) and warmup_disable doesn't matter because EB's flagged_* tag and warmup state are independent.
+
+**Engineering scope (sketch — needs operator OK before building):**
+1. Add `warmup_enabled = FALSE` to the UPDATE in `kill_queued_handler` (one line)
+2. Add `enqueue_warmup_disable(...)` helper alongside `enqueue_tag_op(...)` in `_common.py`
+3. Add `warmup_disable` to the event_type enum in `event_log` (or extend the CHECK constraint)
+4. Either: extend `TagOpWorker` to handle `warmup_disable` events (simpler, reuses bulk batching), or create sibling `WarmupOpWorker` (cleaner separation, more code)
+5. Add EB API method to `EmailBisonClient`: `disable_warmup(account_id)` or `set_warmup(account_id, enabled=false)` — needs OpenAPI lookup
+6. Tests: handler logic, idempotency, partitioning enforcement
+7. Backfill script (one-shot): for the existing 318 dead-with-bouncing inboxes, run warmup_disable retroactively
+
+This is sized at ~1 day engineering + ~1 day backfill + tests.
 
 ## Why a separate app, not a module in charm-email-os
 
