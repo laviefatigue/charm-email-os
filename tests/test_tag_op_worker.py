@@ -456,3 +456,161 @@ async def test_tag_op_without_workspace_id_rejected_at_db_layer(db_pool):
             """,
             inbox_id,
         )
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Plan F: warmup_disable tests
+# ──────────────────────────────────────────────────────────────────────────
+
+async def _enqueue_warmup_disable(pool, *, inbox_id, workspace_id):
+    """Insert a pending warmup_disable event into event_log."""
+    return await pool.fetchval(
+        """
+        INSERT INTO event_log (
+            event_type, entity_type, entity_id,
+            payload, status, workspace_id
+        ) VALUES (
+            'warmup_disable', 'inbox', $1, $2::jsonb, 'pending', $3
+        ) RETURNING id
+        """,
+        inbox_id,
+        json.dumps({'inbox_id': str(inbox_id)}),
+        workspace_id,
+    )
+
+
+# Test 11: single warmup_disable event drained via bulk EB call
+async def test_warmup_disable_drains_via_bulk_call(db_pool):
+    ws_id = await _make_workspace_with_key(db_pool, "ws-tow-wd1", 7011)
+    inbox_id = await _make_inbox(db_pool, ws_id, eb_account_id=70110)
+    ev_id = await _enqueue_warmup_disable(
+        db_pool, inbox_id=inbox_id, workspace_id=ws_id,
+    )
+
+    fake = FakeEmailBisonClient()
+    worker = TagOpWorker(db_pool, _audit_logger(db_pool), _alerter())
+
+    with _patch_eb_client(fake):
+        await worker.run_once()
+
+    row = await db_pool.fetchrow(
+        "SELECT status FROM event_log WHERE id = $1", ev_id,
+    )
+    assert row['status'] == 'completed'
+
+    bulk_calls = fake.calls_named('disable_warmup')
+    assert len(bulk_calls) == 1
+    assert bulk_calls[0].kwargs['sender_email_ids'] == (70110,)
+
+
+# Test 12: multiple warmup_disable events for one workspace → single bulk call
+async def test_multiple_warmup_disable_bulk_into_one_call(db_pool):
+    ws_id = await _make_workspace_with_key(db_pool, "ws-tow-wd2", 7012)
+    inbox_a = await _make_inbox(db_pool, ws_id, eb_account_id=70121)
+    inbox_b = await _make_inbox(db_pool, ws_id, eb_account_id=70122)
+    inbox_c = await _make_inbox(db_pool, ws_id, eb_account_id=70123)
+
+    for ib in (inbox_a, inbox_b, inbox_c):
+        await _enqueue_warmup_disable(db_pool, inbox_id=ib, workspace_id=ws_id)
+
+    fake = FakeEmailBisonClient()
+    worker = TagOpWorker(db_pool, _audit_logger(db_pool), _alerter())
+
+    with _patch_eb_client(fake):
+        await worker.run_once()
+
+    bulk_calls = fake.calls_named('disable_warmup')
+    assert len(bulk_calls) == 1
+    assert set(bulk_calls[0].kwargs['sender_email_ids']) == {70121, 70122, 70123}
+
+    completed = await db_pool.fetchval(
+        """
+        SELECT COUNT(*) FROM event_log
+        WHERE workspace_id = $1 AND event_type = 'warmup_disable'
+          AND status = 'completed'
+        """,
+        ws_id,
+    )
+    assert completed == 3
+
+
+# Test 13: tag_op + warmup_disable mixed in same workspace cycle
+async def test_mixed_tag_op_and_warmup_disable_in_one_cycle(db_pool):
+    """Simulates the kill cascade enqueue: 1 tag_op_attach + 1 tag_op_remove
+    + 1 warmup_disable. All three drain in one Tier 2 cycle, 3 separate EB
+    calls (1 attach bulk, 1 untag bulk, 1 disable_warmup bulk)."""
+    ws_id = await _make_workspace_with_key(db_pool, "ws-tow-wd3", 7013)
+    inbox_id = await _make_inbox(db_pool, ws_id, eb_account_id=70131)
+
+    await _enqueue_tag_op(
+        db_pool, op='attach', inbox_id=inbox_id,
+        workspace_id=ws_id, tag_name='flagged_hard_bounce_rate_lifetime',
+    )
+    await _enqueue_tag_op(
+        db_pool, op='remove', inbox_id=inbox_id,
+        workspace_id=ws_id, tag_name='live',
+    )
+    await _enqueue_warmup_disable(
+        db_pool, inbox_id=inbox_id, workspace_id=ws_id,
+    )
+
+    fake = FakeEmailBisonClient()
+    worker = TagOpWorker(db_pool, _audit_logger(db_pool), _alerter())
+
+    with _patch_eb_client(fake):
+        await worker.run_once()
+
+    # All three event_log rows completed
+    completed = await db_pool.fetchval(
+        """
+        SELECT COUNT(*) FROM event_log
+        WHERE workspace_id = $1 AND status = 'completed'
+        """,
+        ws_id,
+    )
+    assert completed == 3
+
+    # EB called once each
+    assert len(fake.calls_named('tag_inboxes_bulk')) == 1
+    assert len(fake.calls_named('untag_inboxes_bulk')) == 1
+    assert len(fake.calls_named('disable_warmup')) == 1
+
+
+# Test 14: warmup_disable EB failure marks events failed with retry_after
+async def test_warmup_disable_failure_marks_events_failed(db_pool):
+    ws_id = await _make_workspace_with_key(db_pool, "ws-tow-wd4", 7014)
+    inbox_id = await _make_inbox(db_pool, ws_id, eb_account_id=70141)
+    ev_id = await _enqueue_warmup_disable(
+        db_pool, inbox_id=inbox_id, workspace_id=ws_id,
+    )
+
+    fake = FakeEmailBisonClient(fail_on={'disable_warmup': FakeEBError("EB 500")})
+    worker = TagOpWorker(db_pool, _audit_logger(db_pool), _alerter())
+
+    with _patch_eb_client(fake):
+        await worker.run_once()
+
+    row = await db_pool.fetchrow(
+        "SELECT status, error_message, retry_after FROM event_log WHERE id = $1", ev_id,
+    )
+    assert row['status'] == 'failed'
+    assert 'warmup_disable' in (row['error_message'] or '')
+    assert row['retry_after'] is not None
+
+
+# Test 15: warmup_disable without workspace_id rejected at DB layer
+async def test_warmup_disable_without_workspace_id_rejected(db_pool):
+    """Migration 109's CHECK constraint enforces workspace_id NOT NULL on
+    warmup_disable events. Same partitioning rule as tag_op_*."""
+    inbox_id = uuid.uuid4()
+    with pytest.raises(asyncpg.exceptions.CheckViolationError):
+        await db_pool.execute(
+            """
+            INSERT INTO event_log (
+                event_type, entity_type, entity_id, payload, status, workspace_id
+            ) VALUES (
+                'warmup_disable', 'inbox', $1, '{}'::jsonb, 'pending', NULL
+            )
+            """,
+            inbox_id,
+        )

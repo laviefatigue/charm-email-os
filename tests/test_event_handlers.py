@@ -257,11 +257,14 @@ async def test_kill_queued_marks_inbox_dead_and_enqueues_tag_ops(db_pool):
     async with db_pool.acquire() as conn:
         await kill_queued_handler(event, conn)
 
-    # Inbox is dead with the right trigger
+    # Inbox is dead with the right trigger.
+    # Plan F (2026-05-08): warmup_enabled also flips to FALSE in the same
+    # transaction, atomic with the kill mark.
     inbox = await db_pool.fetchrow(
         """
         SELECT inbox_state, kill_trigger::text AS kill_trigger,
-               inventory_pool_status, inventory_lifecycle_status::text AS lifecycle
+               inventory_pool_status, inventory_lifecycle_status::text AS lifecycle,
+               warmup_enabled
         FROM sender_accounts WHERE id = $1
         """,
         inbox_id,
@@ -270,6 +273,7 @@ async def test_kill_queued_marks_inbox_dead_and_enqueues_tag_ops(db_pool):
     assert inbox['kill_trigger'] == 'hard_bounce_rate_lifetime'
     assert inbox['inventory_pool_status'] is None
     assert inbox['lifecycle'] == 'dead'
+    assert inbox['warmup_enabled'] is False  # Plan F: warmup off on kill
 
     # kill_queue marked flagged
     kq = await db_pool.fetchrow(
@@ -279,21 +283,25 @@ async def test_kill_queued_marks_inbox_dead_and_enqueues_tag_ops(db_pool):
     assert kq['tagged_at'] is not None
 
     # Tag ops enqueued (one attach for flagged_*, one remove for live)
-    tag_ops = await db_pool.fetch(
+    # plus one warmup_disable event (Plan F).
+    workspace_events = await db_pool.fetch(
         """
-        SELECT event_type, status, payload
+        SELECT event_type, status, workspace_id
         FROM event_log
-        WHERE entity_id = $1 AND event_type LIKE 'tag_op_%'
+        WHERE entity_id = $1
+          AND event_type IN ('tag_op_attach', 'tag_op_remove', 'warmup_disable')
         ORDER BY emitted_at
         """,
         inbox_id,
     )
-    assert len(tag_ops) == 2
-    op_types = {r['event_type'] for r in tag_ops}
+    assert len(workspace_events) == 3
+    op_types = {r['event_type'] for r in workspace_events}
     assert 'tag_op_attach' in op_types
     assert 'tag_op_remove' in op_types
-    for op in tag_ops:
+    assert 'warmup_disable' in op_types
+    for op in workspace_events:
         assert op['status'] == 'pending'
+        assert op['workspace_id'] == ws_id  # Per ADR-006: workspace-scoped
 
 
 async def test_kill_queued_idempotent(db_pool):

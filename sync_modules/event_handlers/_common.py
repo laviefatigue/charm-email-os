@@ -69,6 +69,53 @@ async def enqueue_tag_op(
     return row_id
 
 
+async def enqueue_warmup_disable(
+    conn: asyncpg.Connection,
+    *,
+    inbox_id: UUID,
+    workspace_id: UUID,
+    triggered_by_event_id: Optional[UUID] = None,
+) -> UUID:
+    """Insert a warmup_disable event into event_log for the Tier 2 batch worker.
+
+    Same partitioning rule as tag_op_* (per ADR-006 + the migration 109
+    CHECK constraint): every warmup_disable MUST carry workspace_id so
+    the Tier 2 worker can route the EB API call through the
+    workspace-scoped key.
+
+    The Tier 2 worker (TagOpWorker, which also handles warmup_disable
+    in the same per-workspace batch loop) will:
+      SELECT FROM event_log WHERE event_type = 'warmup_disable' AND status = 'pending'
+        AND workspace_id = X
+      → bulk EB call: PATCH /warmup/sender-emails/disable {sender_email_ids: [...]}
+      → mark events 'completed' (or 'failed' with error_message)
+
+    Idempotent: calling EB to disable already-disabled warmup is a 200
+    OK no-op, so re-running the event after a transient failure is safe.
+
+    Returns the new event_log row id.
+    """
+    payload = {
+        'inbox_id': str(inbox_id),
+        'triggered_by_event_id': str(triggered_by_event_id) if triggered_by_event_id else None,
+    }
+
+    row_id = await conn.fetchval(
+        """
+        INSERT INTO event_log (
+            event_type, entity_type, entity_id,
+            payload, status, workspace_id
+        ) VALUES (
+            'warmup_disable', 'inbox', $1,
+            $2::jsonb, 'pending', $3
+        )
+        RETURNING id
+        """,
+        inbox_id, json.dumps(payload), workspace_id,
+    )
+    return row_id
+
+
 async def fetch_inbox(conn: asyncpg.Connection, inbox_id: UUID) -> Optional[dict]:
     """Read a sender_accounts row by id. Returns None if not found / inactive."""
     row = await conn.fetchrow(

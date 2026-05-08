@@ -107,6 +107,17 @@ class FakeEmailBisonClient:
             self.inbox_tags.setdefault(aid, set()).discard(tag_id)
         return {"ok": True, "count": len(account_ids)}
 
+    async def disable_warmup(self, sender_email_ids: List[int]) -> Dict[str, Any]:
+        self._maybe_fail("disable_warmup", sender_email_ids=tuple(sender_email_ids))
+        self._record("disable_warmup", sender_email_ids=tuple(sender_email_ids))
+        # Track warmup state — initialize on demand. Idempotent: setting
+        # to False on already-False is a no-op.
+        if not hasattr(self, 'warmup_state'):
+            self.warmup_state = {}  # eb_id → bool
+        for aid in sender_email_ids:
+            self.warmup_state[aid] = False
+        return {"ok": True, "count": len(sender_email_ids)}
+
     # ------------------------------------------------- workspace placeholders
     async def switch_workspace(self, workspace_id: int) -> bool:
         # Per-workspace fake — no-op like the scoped real client.

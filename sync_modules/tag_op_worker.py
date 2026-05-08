@@ -2,13 +2,17 @@
 Tag Op Worker — Tier 2 of the event-driven architecture.
 
 Plan: docs/plans/event-driven-architecture.md § "Tier 2 — EB tag synchronization"
+Plan F (2026-05-08): also drains `warmup_disable` events through the same
+per-workspace batch loop. Same partitioning rules, same scoped-key
+guarantee, same idempotency semantics. See `eod-campaign-reapply.md`
+§"Sister mechanism".
 
 Purpose
 ───────
-Drain pending `tag_op_attach` and `tag_op_remove` events from `event_log`
-and apply them to EmailBison in bulk per workspace. Each workspace
-processed with its own scoped EB API key (per ADR-006 — no global EB
-client, ever).
+Drain pending `tag_op_attach`, `tag_op_remove`, and `warmup_disable`
+events from `event_log` and apply them to EmailBison in bulk per
+workspace. Each workspace processed with its own scoped EB API key
+(per ADR-006 — no global EB client, ever).
 
 Tier 1 (event_listener.py + handlers) does DB-only work. Handlers
 enqueue tag_op events into event_log with status='pending' and
@@ -189,10 +193,14 @@ class TagOpWorker:
             workspace_id = ws['id']
             workspace_name = ws['workspace_name']
 
-            # Pull pending tag_ops for this workspace, skipping ones still
-            # on retry_after backoff. ORDER BY emitted_at preserves causal
-            # ordering (a kill's attach-flagged tag-op was emitted before
-            # any subsequent reconnect tag-op, etc.).
+            # Pull pending workspace-scoped events for this workspace,
+            # skipping ones still on retry_after backoff. ORDER BY
+            # emitted_at preserves causal ordering (a kill's
+            # attach-flagged tag-op was emitted before any subsequent
+            # reconnect tag-op, etc.).
+            #
+            # Includes both tag_op_* and warmup_disable. Per migration 109's
+            # CHECK constraint, both event-type families require workspace_id.
             rows = await self.db.fetch(
                 """
                 SELECT
@@ -205,7 +213,7 @@ class TagOpWorker:
                     sa.emailbison_account_id
                 FROM event_log el
                 LEFT JOIN sender_accounts sa ON sa.id = el.entity_id
-                WHERE el.event_type LIKE 'tag_op_%'
+                WHERE (el.event_type LIKE 'tag_op_%' OR el.event_type = 'warmup_disable')
                   AND el.status = 'pending'
                   AND el.workspace_id = $1
                   AND (el.retry_after IS NULL OR el.retry_after < NOW())
@@ -222,6 +230,9 @@ class TagOpWorker:
             # attach[(tag_name)] = [(event_id, eb_account_id), ...]
             attach_groups: Dict[str, List[Tuple[UUID, int]]] = defaultdict(list)
             remove_groups: Dict[str, List[Tuple[UUID, int]]] = defaultdict(list)
+            # warmup_disable doesn't have a tag_name; one bulk call per workspace
+            # via /warmup/sender-emails/disable
+            warmup_disable_ops: List[Tuple[UUID, int]] = []
 
             # Events that can't be processed (e.g., missing eb_account_id)
             # — fail individually, don't poison the bulk groups.
@@ -232,17 +243,22 @@ class TagOpWorker:
                 if isinstance(payload, str):
                     payload = json.loads(payload)
 
-                tag_name = payload.get('tag_name')
-                if not tag_name:
-                    unprocessable.append((r['event_id'], 'missing tag_name in payload'))
-                    continue
-
                 eb_account_id = r['emailbison_account_id']
                 if eb_account_id is None:
                     unprocessable.append((
                         r['event_id'],
                         f'inbox {r["inbox_id"]} has no emailbison_account_id',
                     ))
+                    continue
+
+                if r['event_type'] == 'warmup_disable':
+                    warmup_disable_ops.append((r['event_id'], int(eb_account_id)))
+                    continue
+
+                # Tag-op branches need a tag_name in the payload
+                tag_name = payload.get('tag_name')
+                if not tag_name:
+                    unprocessable.append((r['event_id'], 'missing tag_name in payload'))
                     continue
 
                 key = tag_name
@@ -253,7 +269,7 @@ class TagOpWorker:
                 else:
                     unprocessable.append((
                         r['event_id'],
-                        f'unknown tag_op event_type {r["event_type"]}',
+                        f'unknown event_type {r["event_type"]}',
                     ))
 
             # Mark unprocessable ones failed up front
@@ -262,7 +278,7 @@ class TagOpWorker:
                 await self._mark_failed(ev_id, reason)
                 failed_count += 1
 
-            if not attach_groups and not remove_groups:
+            if not attach_groups and not remove_groups and not warmup_disable_ops:
                 return {'completed': 0, 'failed': failed_count, 'skipped': 0}
 
             # Open a workspace-scoped EB session for the duration of this
@@ -310,6 +326,29 @@ class TagOpWorker:
                             )
                             failed_count += len(ops)
 
+                    # Plan F: warmup_disable. Single bulk EB call per
+                    # workspace per cycle. Idempotent — disabling
+                    # already-disabled warmup is a 200 OK no-op.
+                    if warmup_disable_ops:
+                        try:
+                            await client.disable_warmup(
+                                [a for _, a in warmup_disable_ops]
+                            )
+                            await self._mark_completed_bulk(
+                                [ev for ev, _ in warmup_disable_ops]
+                            )
+                            completed += len(warmup_disable_ops)
+                        except Exception as exc:
+                            logger.exception(
+                                "[TagOpWorker:%s] warmup_disable failed for %d ops: %s",
+                                workspace_name, len(warmup_disable_ops), exc,
+                            )
+                            await self._mark_failed_bulk(
+                                [ev for ev, _ in warmup_disable_ops],
+                                f'warmup_disable: {exc!r}'[:500],
+                            )
+                            failed_count += len(warmup_disable_ops)
+
             except Exception as exc:
                 # Workspace-level failure (couldn't open EB session, expired
                 # key, etc.). Mark all in-flight events failed so the watchdog
@@ -322,6 +361,7 @@ class TagOpWorker:
                 in_flight_ids = (
                     [ev for ops in attach_groups.values() for ev, _ in ops]
                     + [ev for ops in remove_groups.values() for ev, _ in ops]
+                    + [ev for ev, _ in warmup_disable_ops]
                 )
                 if in_flight_ids:
                     await self._mark_failed_bulk(

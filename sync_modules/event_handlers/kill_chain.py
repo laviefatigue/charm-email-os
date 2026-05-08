@@ -24,7 +24,7 @@ from uuid import UUID
 
 import asyncpg
 
-from ._common import enqueue_tag_op, fetch_inbox, hard_bounces_lifetime
+from ._common import enqueue_tag_op, enqueue_warmup_disable, fetch_inbox, hard_bounces_lifetime
 
 logger = logging.getLogger(__name__)
 
@@ -113,11 +113,13 @@ async def kill_queued_handler(event: Dict, conn: asyncpg.Connection) -> None:
     Steps (all in same transaction since the listener wraps the handler call):
       1. Claim the kill_queue row (UPDATE status='flagged') — idempotent
       2. UPDATE sender_accounts: inbox_state='dead', kill_trigger=...,
-         killed_at=NOW(), inventory_pool_status=NULL
+         killed_at=NOW(), inventory_pool_status=NULL, warmup_enabled=FALSE
       3. Enqueue tag_op_attach for flagged_{trigger_type}
       4. Enqueue tag_op_remove for 'live' tag
+      5. Enqueue warmup_disable (Plan F — closes post-kill bleed where
+         dead inboxes kept warmup-sending and bouncing for months)
 
-    No EB API calls. Tier 2 batch worker drains the tag_ops later.
+    No EB API calls. Tier 2 batch worker drains tag_ops + warmup_disable later.
 
     The inbox_state UPDATE will fire the inbox_died trigger, which
     will fire inbox_died_handler (which handles pool_promotion).
@@ -150,6 +152,9 @@ async def kill_queued_handler(event: Dict, conn: asyncpg.Connection) -> None:
 
     # 2. Mark the inbox dead. Guarded by inbox_state='live' so re-runs
     #    don't reset the state of an already-dead inbox.
+    #    Plan F (2026-05-08): also flip warmup_enabled=FALSE in the same
+    #    transaction. Atomicity matters here — we want the kill mark and
+    #    the warmup-off intent to commit together or not at all.
     updated = await conn.fetchval(
         """
         UPDATE sender_accounts
@@ -158,6 +163,7 @@ async def kill_queued_handler(event: Dict, conn: asyncpg.Connection) -> None:
             killed_at = NOW(),
             inventory_pool_status = NULL,
             inventory_lifecycle_status = 'dead',
+            warmup_enabled = FALSE,
             updated_at = NOW()
         WHERE id = $1 AND inbox_state = 'live'
         RETURNING email_address
@@ -208,8 +214,20 @@ async def kill_queued_handler(event: Dict, conn: asyncpg.Connection) -> None:
         triggered_by_event_id=triggered_by,
     )
 
+    # 5. Enqueue warmup_disable (Plan F). Order doesn't matter relative
+    #    to the tag_op events — they're all drained per-workspace by
+    #    the same Tier 2 cycle. EB warmup state and EB tag state are
+    #    independent fields on the sender_account, so applying them
+    #    in any order produces the same end state.
+    await enqueue_warmup_disable(
+        conn,
+        inbox_id=inbox_id,
+        workspace_id=workspace_id,
+        triggered_by_event_id=triggered_by,
+    )
+
     logger.info(
-        "kill_queued: %s killed (trigger=%s); tag ops enqueued",
+        "kill_queued: %s killed (trigger=%s); tag ops + warmup_disable enqueued",
         updated, trigger_type,
     )
 
