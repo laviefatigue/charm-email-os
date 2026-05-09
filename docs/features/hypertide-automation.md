@@ -1,10 +1,20 @@
 ---
-title: Hypertide Inbox Automation
+title: Hypertide Inbox Automation (DEPRECATED)
 created: 2026-02-13
-updated: 2026-02-23
+updated: 2026-04-23
 selector_mapping_date: 2026-02-13
-tags: [feature, hypertide, automation, inboxes, playwright, selectors, capacity]
+tags: [feature, hypertide, automation, inboxes, playwright, selectors, capacity, deprecated]
 ---
+
+> **DEPRECATED as of 2026-04-23.** Hypertide now exposes a REST API; Playwright UI automation is no longer used. This document's selector mappings and browser flows are historical — they no longer match how orders get placed.
+>
+> New integration:
+> - Auth: `x-api-key` header against `${HYPERTIDE_API_URL}/api/v1/*`
+> - **Canonical API reference: [[hypertide-api]]** (docs/integrations/hypertide-api.md) — sole source of truth as of 2026-05-06
+> - Client code: [api/services/hypertide_client.py](../../api/services/hypertide_client.py) (sync) and [hypertide_api/client.py](../../hypertide_api/client.py) (async)
+> - Read-only reconciliation: [scripts/hypertide_reconcile.py](../../scripts/hypertide_reconcile.py)
+> - Architecture: [[domain-purchase-pipeline]]
+> - Operations: [[domain-pipeline-runbook]]
 
 # Hypertide Inbox Automation
 
