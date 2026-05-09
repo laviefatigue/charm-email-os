@@ -183,7 +183,7 @@ These flags are **idempotent and durable**. The reconciliation worker reads them
 
 ## Schema design
 
-### Migration 094 — workspace + domain HT state
+### Migration 110 — workspace + domain HT state
 
 ```sql
 -- Workspace classification
@@ -215,7 +215,7 @@ Field semantics:
 - `hypertide_last_seen_at` — timestamp of last reconcile pass where this `hypertide_record_id` appeared in `/orders/active`. If this stops advancing while the row exists, HT has purged the record vendor-side — flag for review (don't auto-delete).
 - `expected_inbox_count` — populated from HT plan (52 for entra, 3 for google). Used by Phase 2 provisioning watchdog.
 
-### Migration 095 — hypertide_jobs (Phase 2)
+### Migration 111 — hypertide_jobs (Phase 2)
 
 Deferred to Phase 2. Job queue is not needed for read-only collection.
 
@@ -250,7 +250,7 @@ Deferred to Phase 2. Job queue is not needed for read-only collection.
 
 **Deliverables:**
 
-1. **Migration 094** (workspace + domain state)
+1. **Migration 110** (workspace + domain state)
 2. **`hypertide_api/classifier.py`** — single source of truth for decision logic (lifted from `d:/tmp/`, no curl, env-var secrets)
 3. **`apps/hypertide-worker/`** — new Coolify app, replaces existing `hypertide-worker`
    - `pyproject.toml`, `Dockerfile`, `README.md`, `HANDOFF.md`
