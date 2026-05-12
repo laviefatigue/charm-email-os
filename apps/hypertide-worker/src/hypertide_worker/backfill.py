@@ -90,19 +90,21 @@ async def run_backfill(
             continue
         ws_id = _infer_workspace_id(ht_rec, ws_by_name)
         if ws_id is None:
+            # workspace_id is NOT NULL on domains. Cannot INSERT — log for operator review.
             result.workspace_unresolved += 1
-        else:
-            result.workspace_assigned += 1
-            ws_name = next(
-                (w["workspace_name"] for w in workspaces if w["id"] == ws_id), "<unknown>"
-            )
-            result.by_workspace[ws_name] = result.by_workspace.get(ws_name, 0) + 1
+            continue
+        result.workspace_assigned += 1
+        ws_name = next(
+            (w["workspace_name"] for w in workspaces if w["id"] == ws_id), "<unknown>"
+        )
+        result.by_workspace[ws_name] = result.by_workspace.get(ws_name, 0) + 1
         inserts.append(
             (
                 ht_rec["domain"],
                 ws_id,
-                "hypertide",                   # domain_source — new value for HT-INSERTs
-                "approved",                    # approval_status — bias toward operational live
+                "purchased",                   # domain_source — must be in CHECK ('generated','purchased','legacy'); these ARE HT-purchased
+                "active",                      # approval_status — matches existing post-activation convention
+                _infer_infrastructure_type(ht_rec.get("paymentStatus")),  # entra | google | NULL
                 True,                          # is_active
                 ht_rec["id"],
                 ht_rec.get("subscriptionId"),
@@ -133,17 +135,19 @@ async def run_backfill(
                 await conn.executemany(
                     """
                     INSERT INTO domains (
-                        domain_name, workspace_id, domain_source, approval_status, is_active,
+                        domain_name, workspace_id, domain_source, approval_status,
+                        infrastructure_type, is_active,
                         hypertide_record_id, hypertide_subscription_id, hypertide_product_id,
                         hypertide_status, hypertide_payment_status, hypertide_sending_tool,
                         hypertide_cancellation_type, hypertide_to_be_cancelled,
                         hypertide_last_synced_at, hypertide_last_seen_at, expected_inbox_count
                     ) VALUES (
-                        $1, $2, $3, $4, $5,
-                        $6, $7, $8,
-                        $9, $10, $11,
-                        $12, $13,
-                        $14, $15, $16
+                        $1, $2, $3, $4,
+                        $5, $6,
+                        $7, $8, $9,
+                        $10, $11, $12,
+                        $13, $14,
+                        $15, $16, $17
                     )
                     ON CONFLICT (domain_name) DO NOTHING
                     """,
@@ -212,3 +216,21 @@ def _ct_to_str(rev: dict[str, Any] | None) -> str | None:
     if rev is None:
         return None
     return rev.get("cancellationType") or "none"
+
+
+def _infer_infrastructure_type(payment_status: str | None) -> str | None:
+    """
+    Map HT paymentStatus → domains.infrastructure_type (entra|google|NULL).
+
+    Live CHECK constraint: infrastructure_type IS NULL OR IN ('entra','google').
+    Setting this correctly avoids the legacy a/b-set view defaulting to 50
+    for what is actually a 3-inbox Google domain.
+    """
+    if not payment_status:
+        return None
+    p = payment_status.strip()
+    if p == "Paid":
+        return "entra"
+    if p in ("Google", "Google-Solo"):
+        return "google"
+    return None

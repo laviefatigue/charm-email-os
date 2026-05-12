@@ -132,18 +132,25 @@ def expected_inbox_count(payment_status: str | None) -> int | None:
     """
     Map HT payment_status to expected inbox count.
 
-    Empirical observations from production fleet (2026-05-06):
-      - 'Paid'       → 52 (Microsoft Entra plan)
-      - 'Google'     → 3  (Google Workspace plan, 5-domain bundles)
+    Returns the legacy convention used by the existing a/b-set view (migration
+    076) and downstream sync code:
+      - 'Paid'       → 50 (Microsoft Entra plan — legacy convention; HT
+                          vendor doc says 52, but our DB has used 50 since
+                          migration 076 and the a/b-set view's COALESCE
+                          fallback assumes 50)
+      - 'Google'     → 3  (Google Workspace plan)
       - 'Google-Solo'→ 3  (Google Solo plan)
 
-    See docs/integrations/hypertide-api.md "Undocumented enum values".
+    The 50-vs-52 discrepancy is captured in
+    docs/integrations/hypertide-api.md "Empirical observations" — vendor docs
+    quote 52, but actual provisioned counts vary and legacy code has long
+    used 50 as the comparison baseline. Stay consistent with legacy.
     """
     if not payment_status:
         return None
     p = payment_status.strip()
     if p == "Paid":
-        return 52
+        return 50
     if p in ("Google", "Google-Solo"):
         return 3
     return None

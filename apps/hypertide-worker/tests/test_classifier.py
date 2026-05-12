@@ -130,7 +130,7 @@ def test_other_unknown_status():
 @pytest.mark.parametrize(
     "payment,expected",
     [
-        ("Paid", 52),
+        ("Paid", 50),       # legacy convention from migration 076 a/b-set view
         ("Google", 3),
         ("Google-Solo", 3),
         ("Unknown", None),
