@@ -253,21 +253,36 @@ async def _record_audit_run(
     result: AuditResult,
     started_at: datetime,
 ) -> None:
-    """Append a row to sync_audit_log summarizing this run."""
-    await conn.execute(
-        """
-        INSERT INTO sync_audit_log
-            (id, sync_type, started_at, completed_at, status,
-             records_processed, records_updated, metadata)
-        VALUES
-            (gen_random_uuid(), 'hypertide_audit', $1, NOW(), 'completed',
-             $2, $3, $4::jsonb)
-        """,
-        started_at,
-        result.matched,
-        result.rows_updated,
-        _to_metadata_json(result),
-    )
+    """Append a row to sync_audit_log summarizing this run.
+
+    sync_audit_log.started_at is `timestamp without time zone` (legacy
+    schema decision predating Phase 1). asyncpg refuses to bind a
+    tz-aware datetime to that column. We strip the tz here rather than
+    migrate the column.
+    """
+    started_naive = started_at.replace(tzinfo=None) if started_at.tzinfo else started_at
+    try:
+        await conn.execute(
+            """
+            INSERT INTO sync_audit_log
+                (id, sync_type, started_at, completed_at, status,
+                 records_processed, records_updated, metadata)
+            VALUES
+                (gen_random_uuid(), 'hypertide_audit', $1, NOW(), 'completed',
+                 $2, $3, $4::jsonb)
+            """,
+            started_naive,
+            result.matched,
+            result.rows_updated,
+            _to_metadata_json(result),
+        )
+    except Exception as exc:
+        # Don't let an audit-log write failure mask the real work above.
+        # Apply phase already committed; we want the operator to see the
+        # results in stdout even if the bookkeeping row didn't land.
+        logger.warning(
+            "sync_audit_log write failed (apply phase already committed): %s", exc
+        )
 
 
 def _to_metadata_json(result: AuditResult) -> str:
