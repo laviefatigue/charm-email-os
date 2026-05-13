@@ -47,7 +47,9 @@ ENV PATH="/opt/venv/bin:$PATH" \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1
 
-# v1 operator-invoked: default to sleep, exec commands via:
-#   docker exec <container> hypertide-worker audit
-# v2 (Phase 2 daemon mode): CMD = ["hypertide-worker", "daemon"]
-CMD ["sleep", "infinity"]
+# v1 operator-invoked mode. On every container start, run audit-dry-run
+# once to surface any config/connectivity errors, then sleep so the
+# container stays up for ad-hoc command execution and scheduled tasks.
+# Audit is idempotent and read-only without --apply.
+# Phase 2 (daemon mode) will replace this with CMD = ["hypertide-worker", "daemon"].
+CMD ["bash", "-c", "echo '=== hypertide-worker container start ==='; hypertide-worker audit 2>&1 || echo '=== AUDIT FAILED ==='; echo '=== container entering sleep mode ==='; sleep infinity"]
