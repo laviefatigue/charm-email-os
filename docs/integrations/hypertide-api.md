@@ -709,6 +709,24 @@ Out of 18 records with `cancellationType=full_subscription`, **15 have `toBeCanc
   → AND toBeCancelled = false
 ```
 
+## Client ↔ HT organization mapping is many-to-many
+
+Critical operational note — the `organizationName` field on `/orders/active` is a free-text label set at order creation. It is **not a reliable join key** to our internal workspace identity. Three patterns observed:
+
+**1. Many HT org strings → one DB workspace.** Example: Hello Hero has five HT `organizationName` values in our 2026-05-06 snapshot — `"HH Compute"`, `"HH Load balancer"`, `"HH Scaling system"`, `"HH Server farm"`, `"HH System"` — all backing the single `Hello Hero` workspace. Charm has six similar variants.
+
+**2. One HT organization → multiple DB workspaces.** **Stable Kernel** is the canonical case. We maintain two DB workspaces (`Stable Kernel` and `Stable Kernel Market Research`) for what HT bills as one customer, with HT's `organizationName` taking values `"Stable Kernel"`, `"stable kernel"`, `"Stable Kernel Network HT"`, and `"Stable Kernel Market Research"` interchangeably. Domains split between the two DB workspaces based on the actual project they support.
+
+**3. Garbled/internal HT org variants.** Hypertide produces records with organizationName values like `"Section School Data lake"`, `"JUGGERNAUT MARKETING Hyper-converged infrastructure"`, etc. These appear to be vendor-side internal categorization, not customer identity.
+
+**Operational rule:** the only reliable HT↔DB join key is `domain_name`. Workspace assignment is canonical on our side (`domains.workspace_id`), set at order-creation time, never derived from HT metadata.
+
+## Friends-and-family subscriptions are out of scope
+
+Our HT API key covers more than just our GTM work. We provide hosting/occupancy for some friends-and-family relationships, and those HT subscriptions live alongside our managed records. We do not mirror them — our `domains` table is the source of truth for what we manage, and HT records with no matching `domain_name` in our DB are treated as friends-and-family and ignored.
+
+In the 2026-05-13 production audit, 350 of 862 active HT records had no matching DB row. They are flagged informationally as `ht_friends_and_family` and not synced. Explicit one-shot onboarding (when we *do* want to bring a workspace in) is gated via the `hypertide-worker backfill --onboard-workspace <name>` CLI flag.
+
 ## Records-vs-subscription cardinality
 
 In our 732-record sample, **202 unique `subscriptionId` values** ⇒ avg ~3.6 records per subscription. Distribution observed: 2-record subs (Microsoft 51-inbox plan, 2 domains × 1 sub) and 5-record subs (Google 3-inbox plan, 5 domains × 1 sub).

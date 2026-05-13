@@ -33,10 +33,18 @@ def audit_cmd(apply: bool) -> None:
 
 
 @cli.command("backfill")
-@click.option("--apply", is_flag=True, help="INSERT new rows + flag is_legacy (default: dry-run).")
-def backfill_cmd(apply: bool) -> None:
-    """One-time backfill: INSERT HT records not in DB, flag is_legacy."""
-    asyncio.run(_backfill(apply))
+@click.option("--apply", is_flag=True, help="Persist flag-is_legacy and any onboarding INSERTs (default: dry-run).")
+@click.option(
+    "--onboard-workspace", "onboard_workspace", default=None,
+    help=(
+        "Explicit one-shot onboarding for a workspace whose HT records don't yet "
+        "have DB rows (e.g. 'Ink''d'). Default: only flag is_legacy on existing DB "
+        "rows. HT-only records are otherwise treated as friends-and-family and ignored."
+    ),
+)
+def backfill_cmd(apply: bool, onboard_workspace: str | None) -> None:
+    """Align in-scope DB rows to HT state. is_legacy flagging by default; --onboard-workspace adds INSERTs."""
+    asyncio.run(_backfill(apply, onboard_workspace))
 
 
 @cli.command("inspect-domain")
@@ -79,13 +87,15 @@ async def _audit(apply: bool) -> None:
         await conn.close()
 
 
-async def _backfill(apply: bool) -> None:
+async def _backfill(apply: bool, onboard_workspace: str | None) -> None:
     cfg = Config.from_env()
     conn = await connect(cfg.database_url)
     try:
         async with HypertideClient(cfg.hypertide_api_url, cfg.hypertide_api_key) as ht:
-            result = await run_backfill(conn, ht, apply=apply)
-        _print_backfill_result(result, apply)
+            result = await run_backfill(
+                conn, ht, apply=apply, onboard_workspace=onboard_workspace
+            )
+        _print_backfill_result(result, apply, onboard_workspace)
     finally:
         await conn.close()
 
@@ -168,12 +178,14 @@ def _print_audit_result(r: AuditResult, applied: bool) -> None:
     click.echo("=" * 70)
     click.echo(f"Hypertide audit  ({'APPLIED' if applied else 'DRY RUN'})")
     click.echo("=" * 70)
-    click.echo(f"  HT active records:               {r.ht_active_count}")
+    click.echo(f"  HT active records (total):       {r.ht_active_count}")
     click.echo(f"  HT pending records:              {r.ht_pending_count}")
-    click.echo(f"  DB in-scope rows:                {r.db_in_scope_count}")
-    click.echo(f"  Matched (HT x DB):               {r.matched}")
-    click.echo(f"  HT-only (need backfill):         {r.ht_only}")
-    click.echo(f"  DB-only (legacy candid.):        {r.db_only}")
+    click.echo("")
+    click.echo("  --- parity (our DB is source of truth for what we manage) ---")
+    click.echo(f"  DB in-scope rows (our universe): {r.db_in_scope_count}")
+    click.echo(f"  Matched to HT:                   {r.matched}  ({r.parity_pct}%)")
+    click.echo(f"  DB-only (legacy / pre-HT):       {r.db_only}")
+    click.echo(f"  HT friends-and-family (ignored): {r.ht_friends_and_family}")
     click.echo("")
     click.echo("  --- drift signals ---")
     click.echo(f"  Scheduled-cancel queued:         {r.drift_to_be_cancelled}")
@@ -197,14 +209,19 @@ def _print_audit_result(r: AuditResult, applied: bool) -> None:
             )
 
 
-def _print_backfill_result(r: BackfillResult, applied: bool) -> None:
+def _print_backfill_result(r: "BackfillResult", applied: bool, onboard_workspace: str | None) -> None:
     click.echo("=" * 70)
-    click.echo(f"Hypertide backfill  ({'APPLIED' if applied else 'DRY RUN'})")
+    mode = "APPLIED" if applied else "DRY RUN"
+    if onboard_workspace:
+        mode += f" (onboarding workspace: {onboard_workspace})"
+    click.echo(f"Hypertide backfill  ({mode})")
     click.echo("=" * 70)
-    click.echo(f"  Domains to insert:         {r.inserted}")
-    click.echo(f"   ├─ workspace assigned:    {r.workspace_assigned}")
-    click.echo(f"   └─ workspace unresolved:  {r.workspace_unresolved}  (operator review)")
-    click.echo(f"  is_legacy flags to set:    {r.is_legacy_flagged}")
+    click.echo(f"  is_legacy flags to set:           {r.is_legacy_flagged}")
+    click.echo(f"  HT-only friends-and-family:       {r.ht_only_friends_and_family}  (informational, not synced)")
+    if onboard_workspace:
+        click.echo(f"  Domains to INSERT (onboarding):   {r.inserted}")
+        click.echo(f"   ├─ workspace assigned:           {r.workspace_assigned}")
+        click.echo(f"   └─ workspace unresolved:         {r.workspace_unresolved}")
     if r.by_workspace:
         click.echo("\nInserts per workspace:")
         for ws, n in sorted(r.by_workspace.items()):

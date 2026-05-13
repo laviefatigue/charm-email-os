@@ -29,20 +29,32 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class AuditResult:
-    ht_active_count: int = 0
+    """
+    Parity model: our DB is source of truth for which domains we manage.
+    HT records without a DB match are friends-and-family (vendor-side),
+    NOT drift. The parity number is "of our N managed domains, how many
+    are linked to HT and synced."
+    """
+    ht_active_count: int = 0                # total in /orders/active (includes friends-and-family)
     ht_pending_count: int = 0
-    db_in_scope_count: int = 0
-    matched: int = 0
-    db_only: int = 0                       # rows in our DB with no HT match (potential is_legacy)
-    ht_only: int = 0                       # HT records with no DB row (need INSERT via backfill)
+    db_in_scope_count: int = 0              # OUR universe — what we manage
+    matched: int = 0                        # subset linked to a known HT record
+    db_only: int = 0                        # DB rows without an HT match (legacy or pre-HT)
+    ht_friends_and_family: int = 0          # HT records without a DB match — informational
     drift_to_be_cancelled: int = 0
-    drift_cancelled_db_alive: int = 0      # HT cancelled, DB row not killed_at — concerning
+    drift_cancelled_db_alive: int = 0       # HT cancelled, DB row not killed_at — concerning
     drift_ht_cancelled_inboxes_connected: int = 0   # HT cancelled BUT EB shows ≥1 connected inbox
     drift_ht_cancelled_still_sending: int = 0       # subset: any inbox with sends_24h > 0
     by_workspace: dict[str, dict[str, int]] = field(default_factory=dict)
     drift_examples: list[dict[str, Any]] = field(default_factory=list)   # representative rows
     rows_updated: int = 0
     skipped_workspaces: list[str] = field(default_factory=list)
+
+    @property
+    def parity_pct(self) -> float:
+        if self.db_in_scope_count == 0:
+            return 0.0
+        return round(100.0 * self.matched / self.db_in_scope_count, 1)
 
 
 async def run_audit(
@@ -104,7 +116,7 @@ async def run_audit(
             matched_records.append((db_row, ht_rec, cls))
 
     result.matched = len(matched_records)
-    result.ht_only = len(ht_only_records)
+    result.ht_friends_and_family = len(ht_only_records)   # vendor-side, not drift
 
     # --- 4. Per-workspace tallies + drift counts ---
     for db_row, ht_rec, cls in matched_records:
@@ -294,8 +306,9 @@ def _to_metadata_json(result: AuditResult) -> str:
             "ht_pending_count": result.ht_pending_count,
             "db_in_scope_count": result.db_in_scope_count,
             "matched": result.matched,
+            "parity_pct": result.parity_pct,
             "db_only": result.db_only,
-            "ht_only": result.ht_only,
+            "ht_friends_and_family": result.ht_friends_and_family,
             "drift_to_be_cancelled": result.drift_to_be_cancelled,
             "drift_cancelled_db_alive": result.drift_cancelled_db_alive,
             "drift_ht_cancelled_inboxes_connected": result.drift_ht_cancelled_inboxes_connected,

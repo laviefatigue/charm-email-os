@@ -17,9 +17,16 @@ tags: [architecture, hypertide, integration, plan, service]
 
 ## TL;DR
 
-We are building a bounded service around the Hypertide API to make HT the **source of truth for which domains exist, who's billing for them, and what workspace they belong to**. Today our `domains` table learns about new infrastructure *reactively* by parsing inbox emails after EmailBison sees them. Tomorrow it learns *proactively* from HT order metadata, and EmailBison's role flips from discovery to verification.
+We are building a bounded service around the Hypertide API to make HT the **source of truth for the BILLING STATE of domains we manage**. Our DB defines which domains we manage; HT tells us each one's subscription status, payment status, and cancellation state.
 
-**Phase 1 (this PR — ~2-3 days):** read-only data collection. Pull HT records, match to existing DB rows by domain name, populate `hypertide_*` columns. Where no DB row exists for an HT record in an in-scope workspace, insert a new domain row with HT metadata. No writes to HT, no cancellation, no purchase flow.
+**Parity model (refined 2026-05-13):**
+
+- Our DB is the **sole source of truth** for which domains we manage.
+- HT has additional subscriptions for friends-and-family relationships outside our GTM work — those are vendor-side, **NOT mirrored**.
+- "Parity" means: for every domain in our DB managed workspaces, our DB knows HT's current state. **Not**: every HT record is in our DB.
+- HT records with no matching DB row → friends-and-family, **ignored by default**. Explicit onboarding of an HT-managed workspace into our DB is a separate, gated operator action.
+
+**Phase 1 (shipped 2026-05-13):** read-only audit. Pulls HT records, matches existing DB rows by `domain_name`, populates `hypertide_*` columns. Flags DB rows without HT match as `is_legacy=TRUE`. **Does not auto-INSERT new rows from HT-only records.** No writes to HT, no cancellation, no purchase flow.
 
 **Phase 2+ (deferred):** event-driven cancellation via web UI + job queue, then order placement.
 
@@ -148,11 +155,20 @@ The job queue (Phase 2 schema) carries this naturally: jobs have `scheduled_for`
 
 **Decision: don't try to derive workspace from HT metadata. We control the mapping, not Hypertide.**
 
-The Stable Kernel case forced this:
-- Stable Kernel + Stable Kernel Market Research = two DB workspaces
-- Both share **one Hypertide organization** (HT thinks it's one customer)
-- HT's `organizationName` is a free-text field with values like `"Stable Kernel"`, `"stable kernel"`, `"Stable Kernel Network HT"`, `"Stable Kernel Market Research"` (4 strings observed for what HT calls one client)
-- Therefore: any logic that maps `organizationName` → `workspace_id` is wrong by construction
+### The Stable Kernel case (loud: ONE HT org, TWO DB workspaces)
+
+This is the forcing function for the architecture and must stay loudly documented:
+
+- We have **two DB workspaces** for the same client:
+  - `Stable Kernel`
+  - `Stable Kernel Market Research`
+- **Hypertide has ONE organization** ("Stable Kernel") covering both, with multiple `organizationName` text variants observed: `"Stable Kernel"`, `"stable kernel"`, `"Stable Kernel Network HT"`, `"Stable Kernel Market Research"`.
+- The two DB workspaces split the domain pool. A given HT-managed `*stablekernel.com` domain belongs to **whichever DB workspace happens to have that row** — we set `domains.workspace_id` at order-creation time, and the `domain_name` is the join key thereafter.
+- The reconciliation worker MUST NOT map HT `organizationName` → DB workspace. That mapping is many-to-one (multiple HT orgs map to one DB workspace) for Hello Hero, Charm, Stable Kernel, etc., AND one-to-many for Stable Kernel where one HT org spans two DB workspaces.
+
+**Rule of thumb when reading HT data:** treat `organizationName` as a free-text label. The authoritative workspace assignment lives on `domains.workspace_id`.
+
+### General principle
 
 The right architecture:
 
@@ -161,6 +177,16 @@ The right architecture:
 2. **At reconciliation time (Phase 1):** we match by `domain_name` (case-insensitive). For domains that match, we attach the existing `domains.workspace_id`. For unmatched, see workflow below.
 
 3. **For ambiguous/unmatched HT records:** mark as `pending_workspace_assignment`, surface in operator review queue.
+
+## Friends-and-family — what we don't mirror
+
+A non-trivial portion of HT's `/orders/active` (we observed 350 of 862 records on 2026-05-13) belongs to friends-and-family relationships outside our GTM work. They're real HT subscriptions on the same key, but they're not domains we manage on behalf of GTM clients.
+
+**Treatment:**
+- Identify them by: HT record present, no matching `domain_name` in our `domains` table.
+- Backfill **does not auto-INSERT** these. They remain HT-only.
+- They appear in audit output as `ht_friends_and_family` — informational, not drift.
+- If at some point we *do* want to bring one in (e.g. an external partner we now manage), use `hypertide-worker backfill --onboard-workspace 'Foo'` to INSERT the records explicitly. That's an operator-gated one-shot.
 
 ## Legacy & exempt classification
 

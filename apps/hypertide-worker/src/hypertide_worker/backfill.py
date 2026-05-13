@@ -1,18 +1,22 @@
-"""One-time and on-demand backfill: INSERT new domains rows for HT records we don't have.
+"""Backfill: align our DB to HT for the domains WE manage.
 
-Phase 1 backfill responsibilities:
-  1. INSERT a domains row for every HT record in an in-scope workspace that
-     has no matching DB row.
-  2. SET is_legacy=TRUE on existing in-scope DB rows that don't match any HT
-     record.
+PARITY MODEL (2026-05-13 refinement):
+  Our DB is the source of truth for which domains we manage. Hypertide
+  has additional records for friends-and-family subscriptions outside our
+  GTM work — those are vendor-side and we do not mirror them.
 
-Workspace assignment for new INSERTs (in priority order):
-  (a) Domain-name pattern match against known workspace suffixes
-  (b) HT forwardingDomain heuristic
-  (c) Fall back to NULL workspace_id with operator-review flag
+  Therefore backfill does NOT auto-INSERT HT-only records by default.
+  Two operations only:
 
-Idempotent: NOT EXISTS check on domain_name prevents duplicates. is_legacy
-flag is only set, never auto-cleared.
+  1. UPDATE existing DB rows with HT state (handled by audit.py, not here)
+  2. SET is_legacy=TRUE on in-scope DB rows that have no HT match
+     (pre-HT or out-of-band acquired domains)
+
+  Explicit onboarding of an HT-only workspace (e.g. if we ever want to
+  bring "Ink'd" inboxes into our DB) is a separate, gated operation:
+    hypertide-worker backfill --onboard-workspace 'Ink'd'
+
+  Default `backfill` (no flag) only does the legacy flagging pass.
 """
 from __future__ import annotations
 
@@ -35,6 +39,7 @@ class BackfillResult:
     is_legacy_flagged: int = 0
     workspace_assigned: int = 0
     workspace_unresolved: int = 0
+    ht_only_friends_and_family: int = 0   # informational: HT records we deliberately ignore
     by_workspace: dict[str, int] = field(default_factory=dict)
 
 
@@ -43,10 +48,23 @@ async def run_backfill(
     ht: HypertideClient,
     *,
     apply: bool = False,
+    onboard_workspace: str | None = None,
 ) -> BackfillResult:
     """
-    Phase 1 backfill. Returns BackfillResult; if apply=False, no writes happen
-    but the result still reports what *would* be done.
+    Backfill aligned to the parity model.
+
+    Default behavior (no onboard_workspace):
+      - SET is_legacy=TRUE on in-scope DB rows with no HT match
+      - Count HT-only records as friends_and_family (informational only)
+
+    With onboard_workspace='Ink\\'d' (or similar):
+      - Additionally INSERT new domains rows for HT records whose inferred
+        workspace matches that name, under the operator's explicit direction.
+      - Use this for one-shot onboarding of an HT-managed workspace we want
+        to start tracking in our DB.
+
+    Idempotent: NOT EXISTS check on domain_name prevents duplicates. is_legacy
+    flag is only set, never auto-cleared.
     """
     result = BackfillResult()
     now = datetime.now(timezone.utc)
@@ -76,35 +94,44 @@ async def run_backfill(
     )
     ws_by_name = {w["workspace_name"]: w["id"] for w in workspaces}
 
-    # ----- INSERT phase -----
+    # ----- Tally HT-only records (informational; only INSERT if explicit onboard) -----
     inserts: list[tuple[Any, ...]] = []
     for ht_rec in active:
         domain_lc = (ht_rec.get("domain") or "").lower()
         if domain_lc in existing_by_name:
-            continue  # matched, will be UPDATEd by audit (not backfill's job)
+            continue  # matched — audit.py handles UPDATE, not backfill
         rev = revert_by_id.get(ht_rec["id"])
         cls = classify(ht_rec, rev)
         if not cls.is_subscribed:
-            # Don't insert rows for already-cancelled records — they're not actionable
-            # and would only inflate the legacy backlog.
+            # Don't onboard already-cancelled records — they'd land as is_legacy=true zombies
+            result.ht_only_friends_and_family += 1
             continue
+
+        if onboard_workspace is None:
+            # Default: do not auto-INSERT. HT-only = friends-and-family, out of scope.
+            result.ht_only_friends_and_family += 1
+            continue
+
+        # Explicit onboarding: only INSERT records that map to the named workspace
         ws_id = _infer_workspace_id(ht_rec, ws_by_name)
         if ws_id is None:
-            # workspace_id is NOT NULL on domains. Cannot INSERT — log for operator review.
             result.workspace_unresolved += 1
             continue
-        result.workspace_assigned += 1
-        ws_name = next(
-            (w["workspace_name"] for w in workspaces if w["id"] == ws_id), "<unknown>"
+        target_ws_name = next(
+            (w["workspace_name"] for w in workspaces if w["id"] == ws_id), None
         )
-        result.by_workspace[ws_name] = result.by_workspace.get(ws_name, 0) + 1
+        if target_ws_name != onboard_workspace:
+            # In-scope HT record, but for a workspace we're not onboarding right now.
+            continue
+        result.workspace_assigned += 1
+        result.by_workspace[target_ws_name] = result.by_workspace.get(target_ws_name, 0) + 1
         inserts.append(
             (
                 ht_rec["domain"],
                 ws_id,
-                "purchased",                   # domain_source — must be in CHECK ('generated','purchased','legacy'); these ARE HT-purchased
+                "purchased",                   # domain_source — CHECK ('generated','purchased','legacy')
                 "active",                      # approval_status — matches existing post-activation convention
-                _infer_infrastructure_type(ht_rec.get("paymentStatus")),  # entra | google | NULL
+                _infer_infrastructure_type(ht_rec.get("paymentStatus")),
                 True,                          # is_active
                 ht_rec["id"],
                 ht_rec.get("subscriptionId"),
@@ -120,7 +147,7 @@ async def run_backfill(
             )
         )
 
-    # ----- is_legacy flagging -----
+    # ----- is_legacy flagging on DB-only rows (always runs, with or without onboarding) -----
     ht_record_domains = {(o.get("domain") or "").lower() for o in active}
     legacy_ids = [
         r["id"]
@@ -169,15 +196,20 @@ def _infer_workspace_id(
     ws_by_name: dict[str, Any],
 ) -> Any:
     """
-    Workspace assignment heuristic for new HT-INSERTs.
+    Workspace assignment heuristic for explicit onboarding only.
 
     Priority:
       1. Domain-name suffix match: spoutwater→Spout, searchatlas→Search Atlas, etc.
       2. forwardingDomain heuristic: stablekernel.com → Stable Kernel*.
       3. Return None for operator review.
 
-    Phase 1 ships with a small static map of well-known suffixes; Phase 2+
-    can promote this to a configurable table if patterns proliferate.
+    NOTE on Stable Kernel: one HT organization maps to TWO DB workspaces
+    (Stable Kernel + Stable Kernel Market Research). The forwarding-domain
+    heuristic distinguishes them where possible, but the truly authoritative
+    mapping happens at order-creation time when WE set workspace_id.
+
+    Used only when --onboard-workspace is explicitly passed. Default backfill
+    does not call this.
     """
     domain = (ht_rec.get("domain") or "").lower()
     fwd = (ht_rec.get("forwardingDomain") or "").lower()
@@ -202,11 +234,11 @@ def _infer_workspace_id(
         if suffix in domain:
             return ws_by_name.get(ws_name)
 
-    # forwardingDomain heuristic for Stable Kernel (two workspaces share a client).
+    # Stable Kernel: one HT org, two DB workspaces. Forwarding-domain
+    # heuristic narrows where possible.
     if "stablekernel.com/services/market-research" in fwd:
         return ws_by_name.get("Stable Kernel Market Research")
     if "stablekernel.com" in fwd:
-        # Default Stable Kernel domains (non-MR) → Stable Kernel workspace
         return ws_by_name.get("Stable Kernel")
 
     return None
