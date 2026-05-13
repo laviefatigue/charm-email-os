@@ -168,20 +168,33 @@ def _print_audit_result(r: AuditResult, applied: bool) -> None:
     click.echo("=" * 70)
     click.echo(f"Hypertide audit  ({'APPLIED' if applied else 'DRY RUN'})")
     click.echo("=" * 70)
-    click.echo(f"  HT active records:        {r.ht_active_count}")
-    click.echo(f"  HT pending records:       {r.ht_pending_count}")
-    click.echo(f"  DB in-scope rows:         {r.db_in_scope_count}")
-    click.echo(f"  Matched (HT × DB):        {r.matched}")
-    click.echo(f"  HT-only (need backfill):  {r.ht_only}")
-    click.echo(f"  DB-only (legacy candid.): {r.db_only}")
-    click.echo(f"  Scheduled-cancel queued:  {r.drift_to_be_cancelled}")
-    click.echo(f"  HT cancelled / DB alive:  {r.drift_cancelled_db_alive}")
+    click.echo(f"  HT active records:               {r.ht_active_count}")
+    click.echo(f"  HT pending records:              {r.ht_pending_count}")
+    click.echo(f"  DB in-scope rows:                {r.db_in_scope_count}")
+    click.echo(f"  Matched (HT x DB):               {r.matched}")
+    click.echo(f"  HT-only (need backfill):         {r.ht_only}")
+    click.echo(f"  DB-only (legacy candid.):        {r.db_only}")
+    click.echo("")
+    click.echo("  --- drift signals ---")
+    click.echo(f"  Scheduled-cancel queued:         {r.drift_to_be_cancelled}")
+    click.echo(f"  HT cancelled / DB still alive:   {r.drift_cancelled_db_alive}")
+    click.echo(f"  HT cancelled / EB still conn:    {r.drift_ht_cancelled_inboxes_connected}   <-- act on these")
+    click.echo(f"     ... of which still sending:   {r.drift_ht_cancelled_still_sending}")
     if applied:
-        click.echo(f"  Rows updated:             {r.rows_updated}")
+        click.echo(f"\n  Rows updated:                    {r.rows_updated}")
     if r.by_workspace:
         click.echo("\nPer workspace:")
         for ws, states in sorted(r.by_workspace.items()):
             click.echo(f"  {ws:<32}  {dict(states)}")
+    if r.drift_examples:
+        click.echo("\nTop HT-cancelled-but-EB-connected drift (sorted by sends_24h):")
+        click.echo(f"  {'domain':<36} {'workspace':<24} {'conn':>4} {'snd':>4} {'sends_24h':>10}")
+        for ex in r.drift_examples[:20]:
+            click.echo(
+                f"  {ex['domain']:<36} {(ex['workspace'] or '-')[:24]:<24} "
+                f"{ex['connected_inboxes']:>4} {ex['still_sending_inboxes']:>4} "
+                f"{ex['total_sends_24h']:>10}"
+            )
 
 
 def _print_backfill_result(r: BackfillResult, applied: bool) -> None:

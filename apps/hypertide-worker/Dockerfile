@@ -52,4 +52,4 @@ ENV PATH="/opt/venv/bin:$PATH" \
 # container stays up for ad-hoc command execution and scheduled tasks.
 # Audit is idempotent and read-only without --apply.
 # Phase 2 (daemon mode) will replace this with CMD = ["hypertide-worker", "daemon"].
-CMD ["bash", "-c", "echo '=== hypertide-worker container start ==='; hypertide-worker audit 2>&1 || echo '=== AUDIT FAILED ==='; echo '=== container entering sleep mode ==='; sleep infinity"]
+CMD ["bash", "-c", "echo '=== hypertide-worker container start ==='; hypertide-worker audit --apply 2>&1 || echo '=== AUDIT FAILED ==='; echo '=== container entering sleep mode ==='; sleep infinity"]

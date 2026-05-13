@@ -37,7 +37,10 @@ class AuditResult:
     ht_only: int = 0                       # HT records with no DB row (need INSERT via backfill)
     drift_to_be_cancelled: int = 0
     drift_cancelled_db_alive: int = 0      # HT cancelled, DB row not killed_at — concerning
+    drift_ht_cancelled_inboxes_connected: int = 0   # HT cancelled BUT EB shows ≥1 connected inbox
+    drift_ht_cancelled_still_sending: int = 0       # subset: any inbox with sends_24h > 0
     by_workspace: dict[str, dict[str, int]] = field(default_factory=dict)
+    drift_examples: list[dict[str, Any]] = field(default_factory=list)   # representative rows
     rows_updated: int = 0
     skipped_workspaces: list[str] = field(default_factory=list)
 
@@ -117,6 +120,55 @@ async def run_audit(
     seen_ids = {r[0]["id"] for r in matched_records}
     db_only_rows = [r for r in db_rows if r["id"] not in seen_ids]
     result.db_only = len(db_only_rows)
+
+    # --- 4b. HT-cancelled-but-EB-connected drift detection ---
+    # When HT terminates a subscription, the Microsoft/Google tenants behind
+    # the inboxes don't disappear instantly — EmailBison's status stays
+    # "Connected" until the next provider-side reaper runs. During that gap
+    # we're using infrastructure we're no longer paying for, which is fine
+    # short-term but the inboxes ARE sending mail through dead tenants. If a
+    # campaign reaches a lead during this window and they bounce/complain,
+    # the trail leads back to us with no live HT order to support it.
+    cancelled_domain_ids = [
+        db_row["id"] for (db_row, _ht, cls) in matched_records
+        if not cls.is_subscribed
+    ]
+    if cancelled_domain_ids:
+        drift_rows = await conn.fetch(
+            """
+            SELECT d.id, d.domain_name, w.workspace_name,
+                   COUNT(*) AS total_inboxes,
+                   COUNT(*) FILTER (WHERE sa.status = 'Connected') AS connected,
+                   COUNT(*) FILTER (WHERE sa.status = 'Connected'
+                                    AND sa.total_sends_24h > 0) AS still_sending,
+                   COALESCE(SUM(sa.total_sends_24h)
+                            FILTER (WHERE sa.status = 'Connected'), 0) AS sends_24h_total
+            FROM domains d
+            LEFT JOIN workspaces w ON w.id = d.workspace_id
+            LEFT JOIN sender_accounts sa ON sa.domain_id = d.id
+            WHERE d.id = ANY($1::uuid[])
+            GROUP BY d.id, d.domain_name, w.workspace_name
+            HAVING COUNT(*) FILTER (WHERE sa.status = 'Connected') > 0
+            """,
+            cancelled_domain_ids,
+        )
+        result.drift_ht_cancelled_inboxes_connected = len(drift_rows)
+        result.drift_ht_cancelled_still_sending = sum(
+            1 for r in drift_rows if r["still_sending"] > 0
+        )
+        # Keep top 20 most-sending examples for operator visibility
+        sorted_drift = sorted(
+            drift_rows, key=lambda r: r["sends_24h_total"], reverse=True
+        )
+        for r in sorted_drift[:20]:
+            result.drift_examples.append({
+                "type": "HT_CANCELLED_INBOXES_CONNECTED",
+                "domain": r["domain_name"],
+                "workspace": r["workspace_name"],
+                "connected_inboxes": r["connected"],
+                "still_sending_inboxes": r["still_sending"],
+                "total_sends_24h": r["sends_24h_total"],
+            })
 
     # --- 5. Apply phase ---
     if apply:
@@ -231,6 +283,9 @@ def _to_metadata_json(result: AuditResult) -> str:
             "ht_only": result.ht_only,
             "drift_to_be_cancelled": result.drift_to_be_cancelled,
             "drift_cancelled_db_alive": result.drift_cancelled_db_alive,
+            "drift_ht_cancelled_inboxes_connected": result.drift_ht_cancelled_inboxes_connected,
+            "drift_ht_cancelled_still_sending": result.drift_ht_cancelled_still_sending,
+            "drift_examples": result.drift_examples,
             "by_workspace": result.by_workspace,
         }
     )
