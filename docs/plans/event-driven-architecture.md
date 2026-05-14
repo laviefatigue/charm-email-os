@@ -1,7 +1,7 @@
 ---
 title: Event-Driven Architecture — Plan & Migration Path
 created: 2026-05-05
-status: PLANNING (no code changes yet; awaiting branch + Phase 1 kickoff)
+status: LIVE in production (cutover 2026-05-05 23:35 UTC). Tier 1 + Tier 2 verified end-to-end at 05:57 UTC via Charm package_assigned cascade — 84 tag_op events drained successfully, 42 reserves promoted to live, 0 failures. Awaiting Gate 5 (7-day shadow soak) before dropping set_tag_sync. See docs/work-logs/2026-05-05-migration-unblock-and-event-driven-planning.md "Full end-to-end verification" section.
 related-adrs:
   - adr-006-tagging-kill-overhaul-2026-04-27 (workspace-scoped EB API keys)
   - adr-009-connection-state-separated-from-kill-state-2026-04-30
@@ -12,6 +12,7 @@ related-plans:
 related-docs:
   - docs/concepts/kill-triggers.md
   - docs/local-development/emailbison-sync-worker.md
+  - docs/operations/2026-05-05-event-driven-cutover-runbook.md (operator cutover procedure)
 ---
 
 # Event-Driven Architecture — Plan & Migration Path
@@ -593,11 +594,26 @@ after Gate 3.5 retroactive validation was added 2026-05-05).
 - Existing batch methods stay as poll backstop
 - Gate 2 tests pass
 
-### Phase 4 — Decouple EB tag ops from Tier 1 handlers (1 day)
-- Tier 1 handlers no longer call EB API
-- They emit `tag_op_attach` / `tag_op_remove` events into event_log
-- Refactor `set_tag_sync` to be Tier 2 batch worker (per-workspace)
-- Gate 3 failure-mode tests pass
+### Phase 4 — Tier 2 batch tag worker (1 day, **SHIPPED 2026-05-05 on feature branch**)
+- ✅ Tier 1 handlers do not call EB API (Phase 2)
+- ✅ Handlers emit `tag_op_attach` / `tag_op_remove` events into event_log
+- ✅ New `sync_modules/tag_op_worker.py` (TagOpWorker class) — drains
+  pending tag_ops per workspace using workspace-scoped EB clients
+- ✅ Bulk endpoints added to `emailbison_client.py`
+  (`tag_inboxes_bulk`, `untag_inboxes_bulk`)
+- ✅ Wired into `emailbison_sync_worker.py` poll loop with
+  `SYNC_INTERVAL_TAG_OP_DRAIN` env var (default 1800s = 30 min)
+- ✅ Coexists with `set_tag_sync` (both idempotent on EB side)
+- ✅ Gate 2 tests (10 cases) covering: bulk grouping, per-workspace
+  isolation, EB failure handling, retry_after backoff, missing
+  emailbison_account_id, idempotency, tag id cache, CHECK constraint
+  enforcement of workspace_id
+
+  Tests parse + skip cleanly locally; run in CI.
+
+  Set_tag_sync is NOT removed yet — both run in parallel during the
+  rollout. After Gate 6 (drop state polling), set_tag_sync becomes
+  redundant and can be removed in cleanup.
 
 ### Phase 5 — Shadow mode (1 week soak)
 - Production deploy with handlers in READ-ONLY mode
@@ -623,13 +639,14 @@ after Gate 3.5 retroactive validation was added 2026-05-05).
 |------|--------|
 | `migrations/107_event_log.sql` | NEW — event_log table + indexes + tag_op CHECK constraint |
 | `migrations/108_event_triggers.sql` | NEW — all triggers + functions |
-| `sync_modules/event_listener.py` | NEW — asyncpg LISTEN, dispatcher |
-| `sync_modules/event_emitter.py` | NEW — helper for status updates |
-| `sync_modules/event_handlers/` | NEW — one module per event_type |
-| `sync_modules/kill_processor.py` | Add `process_one(kill_queue_id)` |
-| `sync_modules/pool_promotion.py` | Add `promote_one(workspace_id)` |
-| `sync_modules/set_tag_sync.py` | Refactor as per-workspace Tier 2 batch worker |
-| `emailbison_sync_worker.py` | Spawn EventListener task in poll loop startup |
+| `sync_modules/event_listener.py` | NEW — asyncpg LISTEN, dispatcher (Phase 1 ✅) |
+| `sync_modules/event_handlers/` | NEW — one module per event_type (Phase 2 ✅) |
+| `sync_modules/pool_promotion.py` | Added `promote_to_target` + `get_workspace_promotion_target` (Phase 3 ✅) |
+| `sync_modules/workspace_writes.py` | DRY refactor: `_maintain_pool_thresholds` calls `promote_to_target` (Phase 3 ✅) |
+| `sync_modules/tag_op_worker.py` | NEW — Tier 2 batch worker (Phase 4 ✅) |
+| `sync_modules/emailbison_client.py` | Added `tag_inboxes_bulk` + `untag_inboxes_bulk` (Phase 4 ✅) |
+| `sync_modules/set_tag_sync.py` | Untouched (coexists with TagOpWorker; removed post-Gate-6) |
+| `emailbison_sync_worker.py` | Wired `run_tag_op_drain` into poll loop (Phase 4 ✅); EventListener wiring still pending |
 | `tests/test_event_triggers.py` | NEW — Gate 1 |
 | `tests/test_event_handlers.py` | NEW — Gate 2 |
 | `tests/test_event_failure_modes.py` | NEW — Gate 3 |

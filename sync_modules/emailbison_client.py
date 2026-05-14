@@ -331,6 +331,51 @@ class EmailBisonClient:
             }
         )
 
+    async def tag_inboxes_bulk(self, tag_id: int, account_ids: List[int]) -> Dict:
+        """Bulk-attach a single tag to many inboxes in one EB API call.
+
+        Used by the Tier 2 batch worker (sync_modules/tag_op_worker.py) to
+        flush a workspace's pending tag_op_attach events. Single-call attach
+        of N inboxes is dramatically more efficient than N single-inbox calls,
+        and stays under EB rate limits.
+
+        Idempotent on EB's side: attaching a tag that's already on an inbox
+        is a 200 no-op. Safe to retry.
+
+        Args:
+            tag_id: tag id from list_tags / create_tag
+            account_ids: emailbison sender_email ids to apply the tag to
+
+        Returns the EB API response.
+        """
+        if not account_ids:
+            return {}
+        return await self._request(
+            'POST',
+            '/tags/attach-to-sender-emails',
+            json_data={
+                'tag_ids': [tag_id],
+                'sender_email_ids': list(account_ids),
+            },
+        )
+
+    async def untag_inboxes_bulk(self, tag_id: int, account_ids: List[int]) -> Dict:
+        """Bulk-remove a single tag from many inboxes in one EB API call.
+
+        Companion to tag_inboxes_bulk; same endpoint family.
+        Idempotent: removing a tag that isn't there is a 200 no-op.
+        """
+        if not account_ids:
+            return {}
+        return await self._request(
+            'POST',
+            '/tags/remove-from-sender-emails',
+            json_data={
+                'tag_ids': [tag_id],
+                'sender_email_ids': list(account_ids),
+            },
+        )
+
     # =========================================================================
     # CAMPAIGNS
     # =========================================================================

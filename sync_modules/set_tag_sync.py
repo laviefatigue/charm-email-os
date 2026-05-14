@@ -4,6 +4,19 @@ Set Tag Sync Module — Per-Inbox Pool Authority
 Manages the 'live' and 'reserve' pool tags in EmailBison so they reflect each
 inbox's `inventory_pool_status`.
 
+> **2026-05-05 coexistence note:** event-driven architecture Phase 4 ships
+> a parallel `sync_modules/tag_op_worker.py` (TagOpWorker) that drains
+> `tag_op_*` events from `event_log` per workspace. Both modules write
+> tag changes to EB and run side-by-side during the rollout. EB
+> operations are idempotent so duplicate writes are 200 OK no-ops.
+>
+> After Gate 6 of the event-driven plan (drop state polling), this
+> module becomes redundant — every state change fires triggers that
+> produce tag_op events that TagOpWorker handles. Plan to remove this
+> module in a Phase 7 cleanup commit.
+>
+> See docs/plans/event-driven-architecture.md.
+
 Authority model (post-2026-04-27 overhaul)
 ──────────────────────────────────────────
 `sender_accounts.inventory_pool_status` is the SOLE authority for which pool

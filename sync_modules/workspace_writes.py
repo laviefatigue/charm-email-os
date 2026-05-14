@@ -384,17 +384,28 @@ class WorkspaceWriteOrchestrator:
 
         effective_live_target = override if override is not None else package_live
 
-        current_live = await count_pool_state(
-            self.db, workspace_id, 'live', esp='gmail'
-        )
-        current_reserve = await count_pool_state(
-            self.db, workspace_id, 'reserve', esp='gmail'
+        # Promotion mechanics extracted in 2026-05-05 Phase 3 refactor.
+        # Both polling (this method) and event-driven handlers
+        # (sync_modules/event_handlers/kill_chain.py:inbox_died_handler,
+        #  sync_modules/event_handlers/workspace.py:package_assigned_handler)
+        # call promote_to_target. Single source of truth for the
+        # promotion algorithm.
+        from .pool_promotion import promote_to_target
+
+        result = await promote_to_target(
+            self.db, workspace_id, effective_live_target,
+            triggered_by='orchestrator',
+            rotation_type='threshold_promotion',
+            reason='threshold_maintenance',
         )
 
-        # Reserve runway alert (one-way alert — does not block promotion).
+        # Reserve runway alert (one-way; does not block promotion).
+        # Stays in the orchestrator path since the alerter dependency is
+        # workspace-orchestrator-specific and event handlers don't have
+        # an alerter.
         if (
             package_reserve_min is not None
-            and current_reserve < package_reserve_min
+            and result['reserve_count'] < package_reserve_min
             and self.alerter
         ):
             try:
@@ -402,7 +413,7 @@ class WorkspaceWriteOrchestrator:
                     level="warning",
                     title=f"Reserve runway low: {workspace_name}",
                     message=(
-                        f"Google reserve count {current_reserve} is below "
+                        f"Google reserve count {result['reserve_count']} is below "
                         f"package minimum {package_reserve_min}. Consider "
                         f"ordering more Google domains via HyperTide, or lower "
                         f"`target_live_count_override` to keep more inboxes on "
@@ -411,7 +422,7 @@ class WorkspaceWriteOrchestrator:
                     context={
                         'workspace_id': str(workspace_id),
                         'workspace_name': workspace_name,
-                        'current_reserve': current_reserve,
+                        'current_reserve': result['reserve_count'],
                         'package_reserve_minimum': package_reserve_min,
                     },
                 )
@@ -419,17 +430,11 @@ class WorkspaceWriteOrchestrator:
                 logger.warning("[WorkspaceWrites:%s] reserve alert failed: %s",
                                workspace_name, e)
 
-        deficit = effective_live_target - current_live
-        if deficit <= 0:
-            return  # at or above target — nothing to do
-
-        candidates = await pick_promotion_candidates(self.db, workspace_id, deficit)
-        if not candidates:
-            # Deficit exists but no candidates — runway is exhausted.
-            # The reserve alert above already fired if we're below minimum.
+        # Deficit-but-no-reserves alert.
+        if result['no_candidates'] and result['deficit_at_decision'] > 0:
             logger.warning(
                 "[WorkspaceWrites:%s] threshold deficit=%d but no promotable reserves",
-                workspace_name, deficit,
+                workspace_name, result['deficit_at_decision'],
             )
             if self.alerter:
                 try:
@@ -437,7 +442,7 @@ class WorkspaceWriteOrchestrator:
                         level="critical",
                         title=f"Live capacity deficit, no promotable reserves: {workspace_name}",
                         message=(
-                            f"Need to promote {deficit} more inboxes to reach "
+                            f"Need to promote {result['deficit_at_decision']} more inboxes to reach "
                             f"effective_live_target={effective_live_target}, but "
                             f"no eligible reserve inboxes are available. Workspace "
                             f"is below contracted capacity."
@@ -446,9 +451,8 @@ class WorkspaceWriteOrchestrator:
                             'workspace_id': str(workspace_id),
                             'workspace_name': workspace_name,
                             'effective_live_target': effective_live_target,
-                            'current_live': current_live,
-                            'deficit': deficit,
-                            'current_reserve': current_reserve,
+                            'deficit': result['deficit_at_decision'],
+                            'current_reserve': result['reserve_count'],
                         },
                     )
                 except Exception as e:
@@ -456,36 +460,9 @@ class WorkspaceWriteOrchestrator:
                                    workspace_name, e)
             return
 
-        promoted = 0
-        for c in candidates:
-            ok = await promote_inbox_to_deployed(
-                db=self.db,
-                inbox_id=c['id'],
-                workspace_id=workspace_id,
-                reason=(
-                    f"threshold_maintenance: live={current_live}+{promoted+1} "
-                    f"target={effective_live_target}, "
-                    f"source domain={c['domain_name']} "
-                    f"(deployed_count={c['deployed_count']}, "
-                    f"reserve_count={c['reserve_count']})"
-                ),
-                triggered_by='orchestrator',
-                rotation_type='threshold_promotion',
-                metadata={
-                    'effective_live_target': effective_live_target,
-                    'current_live_before': current_live,
-                    'deficit': deficit,
-                    'source_domain': c['domain_name'],
-                    'source_domain_deployed_count': c['deployed_count'],
-                    'source_domain_reserve_count': c['reserve_count'],
-                },
-            )
-            if ok:
-                promoted += 1
-
-        if promoted > 0:
+        if result['promoted'] > 0:
             logger.info(
-                "[WorkspaceWrites:%s] promoted %d/%d (target=%d, was %d, reserve runway %d)",
-                workspace_name, promoted, deficit,
-                effective_live_target, current_live, current_reserve,
+                "[WorkspaceWrites:%s] promoted %d/%d (target=%d, reserve runway %d)",
+                workspace_name, result['promoted'], result['deficit_at_decision'],
+                effective_live_target, result['reserve_count'],
             )

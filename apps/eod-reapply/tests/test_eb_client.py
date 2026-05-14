@@ -411,10 +411,15 @@ class TestRemoveSenders:
 # =============================================================================
 
 class TestListSendersWithTag:
+    # Helper: build a row that carries the tag (so the filter-honored guard passes).
+    @staticmethod
+    def _row(sid: int, tag_id: int = 7) -> dict:
+        return {"id": sid, "tags": [{"id": tag_id, "name": "live"}]}
+
     @respx.mock
     async def test_single_page_with_meta(self, client_factory):
         body = {
-            "data": [{"id": 1}, {"id": 2}, {"id": 3}],
+            "data": [self._row(1), self._row(2), self._row(3)],
             "meta": {"last_page": 1, "current_page": 1},
         }
         route = respx.get(f"{BASE_URL}/api/sender-emails").mock(return_value=_resp(200, body))
@@ -433,9 +438,9 @@ class TestListSendersWithTag:
         # Three responses in sequence — respx side_effect supports a list
         respx.get(f"{BASE_URL}/api/sender-emails").mock(
             side_effect=[
-                _resp(200, {"data": [{"id": 1}, {"id": 2}], "meta": {"last_page": 3, "current_page": 1}}),
-                _resp(200, {"data": [{"id": 3}, {"id": 4}], "meta": {"last_page": 3, "current_page": 2}}),
-                _resp(200, {"data": [{"id": 5}], "meta": {"last_page": 3, "current_page": 3}}),
+                _resp(200, {"data": [self._row(1), self._row(2)], "meta": {"last_page": 3, "current_page": 1}}),
+                _resp(200, {"data": [self._row(3), self._row(4)], "meta": {"last_page": 3, "current_page": 2}}),
+                _resp(200, {"data": [self._row(5)], "meta": {"last_page": 3, "current_page": 3}}),
             ]
         )
         async with client_factory() as c:
@@ -446,7 +451,7 @@ class TestListSendersWithTag:
     async def test_bare_list_response_terminates(self, client_factory):
         # Some EB endpoints return a bare list with no meta — treat as single page
         respx.get(f"{BASE_URL}/api/sender-emails").mock(
-            return_value=_resp(200, [{"id": 1}, {"id": 2}])
+            return_value=_resp(200, [self._row(1), self._row(2)])
         )
         async with client_factory() as c:
             result = await c.list_senders_with_tag(7)
@@ -456,11 +461,30 @@ class TestListSendersWithTag:
     async def test_missing_meta_terminates_after_one_page(self, client_factory):
         # Defense against infinite loop on malformed responses
         respx.get(f"{BASE_URL}/api/sender-emails").mock(
-            return_value=_resp(200, {"data": [{"id": 1}]})
+            return_value=_resp(200, {"data": [self._row(1)]})
         )
         async with client_factory() as c:
             result = await c.list_senders_with_tag(7)
         assert len(result) == 1
+
+    @respx.mock
+    async def test_filter_silently_ignored_raises(self, client_factory):
+        # If EB returns rows that don't carry the requested tag, the filter
+        # wasn't honored. Catches the 2026-05-13 Charm bug class where
+        # `filters[tag_ids][]=<id>` returned the workspace total (437) and
+        # the operator over-attached 157 senders to a campaign.
+        respx.get(f"{BASE_URL}/api/sender-emails").mock(
+            return_value=_resp(200, {
+                "data": [
+                    {"id": 1, "tags": [{"id": 7, "name": "live"}]},
+                    {"id": 2, "tags": [{"id": 99, "name": "other"}]},  # WRONG tag
+                ],
+                "meta": {"last_page": 1, "current_page": 1},
+            })
+        )
+        async with client_factory() as c:
+            with pytest.raises(EmailBisonAPIError, match="filter was silently ignored"):
+                await c.list_senders_with_tag(7)
 
     @respx.mock
     async def test_empty_data_on_page_1_with_last_page_1_terminates(self, client_factory):

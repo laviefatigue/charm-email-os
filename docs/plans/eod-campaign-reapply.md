@@ -1,29 +1,103 @@
 ---
 title: EOD Campaign Reapply Service
-status: scoping
+status: v1 SHIPPED + L5 ATTACH validated (2026-05-13). v2 PR 1 SHIPPED (daemon scaffold, dry-run-only, 243 tests passing). PR 2 (apply-mode + crash recovery + alerting) NEXT.
 created: 2026-04-29
-tags: [plan, emailbison, campaign, reapply, timezone, kill-triggers, scope]
+updated: 2026-05-13 (v2 PR 1 scaffold landed: migration 111, daemon module, CLI subcommand, deploy pattern C)
+tags: [plan, emailbison, campaign, reapply, timezone, kill-triggers, scope, event-driven]
+related-plans:
+  - INBOX-INTEGRITY-PROGRAM.md (master tracker)
+  - event-driven-architecture.md (Tier 1+2 LIVE — affects how live tag is applied)
 ---
 
 # EOD Campaign Reapply Service
 
 A small, independent app that reapplies the `live` inbox tag set to every active EmailBison campaign once per local-day, after that campaign's send window closes. Its only job is to keep each active campaign's attached senders in sync with the current `live` set, so kill-triggered inboxes drop off the next sending day automatically.
 
+## Status (as of 2026-05-13)
+
+| Layer | State |
+|---|---|
+| **v1 — operator-invoked CLI** | ✅ SHIPPED at [`apps/eod-reapply/`](../../apps/eod-reapply/). 243 tests passing. Tested through L4 (mocked unit + integration). |
+| **L5 — real-EB staging gate** | ✅ ATTACH path validated 2026-05-13 against Charm Test-Campaign 271. Two latent bugs found + fixed during staging (filter-shape silent-ignore, async-delete false-negative). See [`apps/eod-reapply/docs/staging-results.md`](../../apps/eod-reapply/docs/staging-results.md). REMOVE path validation deferred — needs a fresh active test campaign. |
+| **v2 PR 1 — daemon scaffold (dry-run-only)** | ✅ SHIPPED 2026-05-13. Migration 111 adds `campaign_reapply_jobs` + `workspaces.eod_reapply_enabled` flag (default FALSE). New CLI subcommand `eod-reapply daemon` runs a long-lived process with two coroutines: enqueuer (walks enabled workspaces × active campaigns, fetches schedules from EB, computes per-tz `trigger_at`, inserts pending jobs) + worker (claims due jobs via SELECT FOR UPDATE SKIP LOCKED, emits past-tense audit row in `event_log` as `campaign_reapply_due`, runs orchestrator with `apply=False` hard-locked, finalizes both rows). 18 new tests. |
+| **v2 PR 2 — apply-mode + crash recovery + alerting** | ⏳ NEXT. Flip `dry_run_only=False`, add startup-scan that resumes campaigns paused-by-us, Slack alert on `FAILED_LEFT_PAUSED`. ~half day. |
+| **v2 PR 3 — validation audit** | ⏳ AFTER PR 2. Daily check that killed inboxes don't show sends from a campaign after that campaign's `T_eod`. Writes outcomes; Slack alert on mismatch. ~half day. |
+
 ## Purpose
 
 Today, when an inbox dies:
 
-- `kill_processor` sets `inbox_state='dead'` in our DB and strips the `live` tag in EmailBison ([sync_modules/kill_processor.py:444-459](../../sync_modules/kill_processor.py#L444-L459)).
-- The dead inbox is **not** detached from the EB campaigns it was already attached to. It just stops sending because the team manually re-runs "filter by `live` tag → attach to campaign" — or doesn't, and the dead inbox sits there.
+- The kill cascade sets `inbox_state='dead'` in our DB and removes the `live` tag in EmailBison.
+- **Post event-driven cutover (2026-05-05):** the live tag removal happens via [`sync_modules/event_handlers/kill_chain.py`](../../sync_modules/event_handlers/kill_chain.py) — `kill_queued_handler` enqueues a `tag_op_remove` event for the `live` tag. The Tier 2 `TagOpWorker` ([`sync_modules/tag_op_worker.py`](../../sync_modules/tag_op_worker.py)) drains the queue every 30 min and calls EB's bulk untag endpoint. `set_tag_sync` co-executes as the reconciler safety net (per Gate 5 of event-driven plan).
+- (Pre-cutover this happened in `kill_processor.py` only; the path is now event-driven with set_tag_sync as backup.)
+- The dead inbox is **not** automatically detached from the EB campaigns it was already attached to. It stops sending **campaigns** because the team manually re-runs "filter by `live` tag → attach to campaign" — or doesn't, and the dead inbox sits there sending in-flight or queued emails.
+- Critically, the dead inbox **also keeps doing warmup sends** if `warmup_enabled=true` in EB — that's a separate mechanism EOD reapply does NOT address (see "Sister mechanism: warmup-disable on kill" below).
 
-The comment at [kill_processor.py:443](../../sync_modules/kill_processor.py#L443) (`"Strip both pool tags from the dead inbox so it cannot be re-included in a campaign reapply by tag filter."`) is a TODO for the orchestrator that does the reapply. This service is that orchestrator.
+This service is the orchestrator that closes the campaign-attachment half of that loop. The warmup half is closed by the warmup-disable-on-kill mechanism designed elsewhere in this doc.
 
 ## Non-goals
 
 - Not a campaign creator. Campaign creation stays in [api/routes/strategy.py](../../api/routes/strategy.py).
-- Not a tag manager. `lifecycle_tag_sync` and `kill_processor` still own the `live`/`reserve`/`incubating` lifecycle.
-- Not a kill-trigger evaluator. `health_checks` + `kill_processor` keep that responsibility.
+- Not a tag manager. The `live`/`reserve`/`incubating` lifecycle is owned by `lifecycle_tag_sync` (incubation) + the event-driven kill chain (`kill_queued_handler` enqueueing `tag_op_*` events drained by Tier 2 `TagOpWorker`) + `set_tag_sync` (reconciler).
+- Not a kill-trigger evaluator. `health_checks` + the event-driven `bounce_observed_handler` keep that responsibility.
+- Not a warmup manager. Warmup-disable-on-kill is a sibling event-driven mechanism (see "Sister mechanism" below); EOD reapply only touches campaign sender attachments.
 - Not a replacement for `emailbison_sync_worker`. This service consumes data the sync worker writes (workspaces, campaigns, API keys).
+
+## Relationship to event-driven architecture
+
+The event-driven cutover (2026-05-05) didn't change the EOD design but did change two things adjacent to it:
+
+1. **The `live` tag in EB is now updated faster.** Pre-cutover, `set_tag_sync` was the only writer of the live tag (every ~30s polling). Post-cutover, the event-driven Tier 2 `TagOpWorker` writes it ~real-time (within 30 min of any kill / pool change), with `set_tag_sync` continuing as reconciler. When EOD reads "senders with the `live` tag", it gets a more current snapshot than before.
+2. **Tag drift is operationally close to zero.** `audit_tags_fleet.py` (post-2026-05-06 split) reports drift in two buckets: actionable (Connected inboxes) and informational (disconnected inboxes; preserved for resume-on-reconnect per ADR D-N). Actionable drift has been 0 since the cutover. EOD can trust the live-tag set in EB without an additional reconciliation pass.
+
+**Net:** EOD's design is unchanged. It still uses the EB live tag as authority and reconciles campaign attachments to it. The cutover just made that source-of-truth more accurate.
+
+## Sister mechanism: warmup-disable on kill (event-driven, designed 2026-05-08)
+
+Audit on 2026-05-08 found **318 dead inboxes still receiving bounces, some on inboxes killed 3+ months ago**. Root cause: kill cascade marks DB state and applies `flagged_*` tag, but does NOT disable warmup. EB's warmup daemon keeps sending warmup mail from dead inboxes, tarnishing the reputation of their domain neighbors.
+
+EOD reapply addresses **only the campaign-attachment half** of the bleed:
+- ✅ Dead inbox detached from active campaigns → no more campaign sends
+- ❌ Dead inbox still warming → still sending warmup mail
+
+The warmup half is closed by an **event-driven warmup-disable mechanism** designed alongside this plan:
+
+```
+KILL CASCADE (today):
+  bounce_observed → kill_queued → kill_queued_handler:
+    1. UPDATE sender_accounts: inbox_state=dead, kill_trigger=…, killed_at=NOW(),
+                               inventory_pool_status=NULL,
+                               inventory_lifecycle_status=dead
+    2. enqueue tag_op_attach (flagged_*)
+    3. enqueue tag_op_remove (live)
+
+KILL CASCADE (proposed addition):
+    1. (same UPDATE, plus) warmup_enabled=FALSE
+    4. enqueue warmup_disable event   ← NEW
+                                       ↓
+WARMUP_DISABLE EVENT (Tier 2 drain, per-workspace):
+    Handler calls EB API to disable warmup on the inbox
+    Marks event completed; idempotent (re-running on already-disabled is OK)
+```
+
+**Why event-driven (not procedural):**
+- Same partitioning rules: workspace-scoped EB key (per ADR-006). The event_log CHECK constraint already enforces `workspace_id NOT NULL` for `tag_op_*` events; same will apply to `warmup_disable`.
+- Same Tier 2 batching infrastructure: drain pending warmup_disable events per workspace, call EB in bulk if endpoint supports it (or per-inbox if not).
+- Same retry/watchdog semantics: failed → retry with exponential backoff; orphan threshold; status tracking.
+- Idempotent by design: setting warmup_enabled=FALSE on already-disabled is safe.
+
+**Sequencing:** the kill_queued_handler runs in a single transaction, so the DB updates (inbox_state=dead AND warmup_enabled=FALSE) commit atomically. Tier 2 then drains the queued events on its 30-min cycle. Order between tag_op_remove (live) and warmup_disable doesn't matter because EB's flagged_* tag and warmup state are independent.
+
+**Engineering scope (sketch — needs operator OK before building):**
+1. Add `warmup_enabled = FALSE` to the UPDATE in `kill_queued_handler` (one line)
+2. Add `enqueue_warmup_disable(...)` helper alongside `enqueue_tag_op(...)` in `_common.py`
+3. Add `warmup_disable` to the event_type enum in `event_log` (or extend the CHECK constraint)
+4. Either: extend `TagOpWorker` to handle `warmup_disable` events (simpler, reuses bulk batching), or create sibling `WarmupOpWorker` (cleaner separation, more code)
+5. Add EB API method to `EmailBisonClient`: `disable_warmup(account_id)` or `set_warmup(account_id, enabled=false)` — needs OpenAPI lookup
+6. Tests: handler logic, idempotency, partitioning enforcement
+7. Backfill script (one-shot): for the existing 318 dead-with-bouncing inboxes, run warmup_disable retroactively
+
+This is sized at ~1 day engineering + ~1 day backfill + tests.
 
 ## Why a separate app, not a module in charm-email-os
 
@@ -38,6 +112,243 @@ The comment at [kill_processor.py:443](../../sync_modules/kill_processor.py#L443
 **Recommendation:** new app, **shared DB**. Subdir of the charm-email-os monorepo at first (`apps/eod-reapply/`) for shared CI + migration tooling, with a module boundary that makes a future repo split a no-op.
 
 ## Architecture
+
+### v2 design — fully event-driven (2026-05-12 revision per operator direction)
+
+The original v2 design (preserved below for history) used a 5-minute polling
+loop. **Per operator direction 2026-05-12, v2 is being redesigned to lean
+into event-driven architecture** consistent with the rest of the inbox
+state machine (event_log + LISTEN/NOTIFY + Tier 1+2 cutover already live
+since 2026-05-05). No polling.
+
+```
+                  ┌────────────────────────────────────────────────┐
+                  │ EOD Campaign Reapply Service v2                │
+                  │ (apps/eod-reapply/ daemon mode)                │
+                  └────────────────────────────────────────────────┘
+
+CAMPAIGN CREATED OR SCHEDULE UPDATED IN EB
+        │  sync_campaigns / EB webhook / manual operator action
+        ▼
+┌─────────────────────────────────────┐
+│ DB trigger on emailbison_campaigns  │
+│ INSERT or UPDATE of schedule fields │
+│                                     │
+│ compute next_eod_at =               │
+│   today_local_end_time              │
+│   + reapply_buffer_min              │
+│   in campaign.timezone              │
+│                                     │
+│ INSERT INTO campaign_reapply_jobs   │
+│   (workspace_id, campaign_id,       │
+│    scheduled_for, status='pending') │
+│ ON CONFLICT (campaign_id,           │
+│   run_local_date) DO NOTHING        │
+└─────────────────────────────────────┘
+        │  pg_notify 'reapply_job_added'
+        ▼
+┌─────────────────────────────────────┐
+│ EOD scheduler component             │
+│ (lives inside apps/eod-reapply/     │
+│  daemon, NOT inside emailbison-sync)│
+│                                     │
+│ LOOP:                               │
+│   1. SELECT MIN(scheduled_for)      │
+│      FROM campaign_reapply_jobs     │
+│      WHERE status='pending'         │
+│   2. pg_sleep_until(MIN) OR wake on │
+│      NOTIFY 'reapply_job_added'     │
+│   3. When MIN time arrives:         │
+│      claim due rows with            │
+│        FOR UPDATE SKIP LOCKED       │
+│      UPDATE status='flagged'        │
+│      emit one campaign_reapply_due  │
+│      event per claimed row          │
+└─────────────────────────────────────┘
+        │  pg_notify per event (existing event_log + LISTEN/NOTIFY infra)
+        ▼
+┌─────────────────────────────────────┐
+│ Listener in apps/eod-reapply/       │
+│ (subscribes to 'campaign_reapply_   │
+│  due' channel)                      │
+│                                     │
+│ For each notification:              │
+│   asyncio.create_task(handle(evt))  │
+│   Fresh pool conn per handler       │
+│   (Phase 3 architecture)            │
+└─────────────────────────────────────┘
+        │
+        ▼
+┌─────────────────────────────────────┐
+│ campaign_reapply_due_handler        │
+│ (per-workspace asyncio.Lock to      │
+│  serialize same-workspace campaigns)│
+│                                     │
+│ 1. acquire workspace_lock           │
+│ 2. open EB session (scoped key)     │
+│ 3. PATCH /campaigns/{id}/pause      │
+│ 4. GET current sender attachments   │
+│ 5. GET senders with 'live' tag      │
+│ 6. compute attach_set, remove_set   │
+│ 7. POST attach-sender-emails        │
+│ 8. DELETE remove-sender-emails      │
+│ 9. verify set == target             │
+│ 10. PATCH resume (in finally block) │
+│ 11. mark event_log 'completed'      │
+│ 12. mark job row 'completed'        │
+└─────────────────────────────────────┘
+        │
+        ▼
+   workspace_locks per workspace_id keep
+   same-workspace campaigns sequential.
+   Different-workspace campaigns run in
+   parallel under SYNC_WORKSPACE_CONCURRENCY=3
+   semaphore (same proven pattern as Tier 2
+   TagOpWorker).
+```
+
+**What's truly event-driven vs the one unavoidable thing**
+
+| Layer | Event-driven? | Notes |
+|---|---|---|
+| Job creation (campaign scheduled → job INSERTed) | ✅ DB trigger | fires only on state change |
+| Notification of new job → sleeper wakes immediately | ✅ pg_notify | no polling |
+| Time arrival → event emission | ⚠️ scheduler sleeps `pg_sleep_until(MIN)` | fundamental — wall-clock time has to come from somewhere |
+| Event consumption | ✅ existing event_log + LISTEN/NOTIFY | Phase 1-5 infra |
+| Handler dispatch | ✅ asyncio task per notification, fresh pool conn | Phase 3 architecture |
+| Per-workspace EB API call | ✅ workspace-scoped per ADR-006 | proven in Tier 2 |
+
+The scheduler does NOT poll every N minutes. It sleeps exactly until next due time. If a new job lands sooner, `NOTIFY 'reapply_job_added'` wakes it immediately. So wake-ups = `(number of distinct EOD times across all active campaigns)`, typically a handful per day — not 288 wake-ups/day like a 5-min poll.
+
+### Concurrency model — multiple workspaces with simultaneous EOD events
+
+When N campaigns are due at the same wall-clock instant (e.g., 6 PM Pacific:
+3 Spout campaigns ending in Sydney time, 2 Selery, 1 Charm), this is the
+data flow:
+
+**Step 1: Scheduler wake-up (handles same-second collisions atomically)**
+
+```sql
+-- Single transaction:
+UPDATE campaign_reapply_jobs
+SET status = 'flagged'
+WHERE id IN (
+  SELECT id FROM campaign_reapply_jobs
+  WHERE scheduled_for <= NOW() AND status = 'pending'
+  ORDER BY scheduled_for
+  FOR UPDATE SKIP LOCKED
+)
+RETURNING id, workspace_id, campaign_id;
+
+-- For each returned row, INSERT a campaign_reapply_due event into event_log.
+-- One pg_notify per event (the existing trigger on event_log handles this).
+```
+
+Six events fire in one DB transaction. Six pg_notify calls. All six listener
+tasks spawn immediately on the consuming side.
+
+**Step 2: Per-workspace serialization**
+
+Inside `campaign_reapply_due_handler`:
+
+```python
+async with _workspace_locks[workspace_id]:
+    async with EmailBisonClient(api_key=ws_key, is_workspace_scoped=True) as client:
+        await reapply_campaign(client, db_conn, campaign_id, ...)
+```
+
+The 3 Spout handlers acquire the SAME lock and serialize. The Selery + Charm
+handlers acquire DIFFERENT locks and run in parallel with Spout. This is
+required because EB rate-limits per workspace key — three concurrent reapplies
+on the same key would interfere.
+
+**Step 3: Cross-workspace parallelism**
+
+Wrap the entire handler dispatch in `asyncio.Semaphore(EOD_REAPPLY_WORKSPACE_CONCURRENCY)`
+(default 3). At any moment, at most 3 distinct workspaces are processing.
+Same pattern as `TagOpWorker._drain_workspace` already running in production.
+
+**Step 4: Failure isolation**
+
+Per-event try/except in the handler. The `pause → mutate → resume` cycle
+has a `finally` block (already in v1's `reapply_campaign`) that guarantees
+the campaign is resumed even if the body raises. A failure on Spout/c-201
+doesn't touch Spout/c-202 (different event, different task), Selery
+campaigns (different workspace), or anything else.
+
+**Visual: 6 campaigns due at 18:00:00 UTC**
+
+```
+Time →
+Spout/c-201    [pause→mutate→resume                          ]
+Spout/c-202                                  [pause→mutate→resume]   ← waits for c-201
+Spout/c-203                                                       [pause→mutate→resume]
+Selery/c-101   [pause→mutate→resume]                                                   ← parallel
+Selery/c-102                       [pause→mutate→resume]
+Charm/c-301    [pause→mutate→resume]                                                   ← parallel
+```
+
+Total elapsed time = `max(time(Spout), time(Selery), time(Charm))` ≈ 90s
+for the slowest workspace, not `sum(times)` ≈ 240s.
+
+**Step 5: What the operator sees in event_log**
+
+```
+event_log
+─────────
+id   event_type              status      workspace_id  emitted_at  completed_at
+─────────────────────────────────────────────────────────────────────────────
+A    campaign_reapply_due    completed   spout         18:00:00    18:00:32
+B    campaign_reapply_due    completed   spout         18:00:00    18:01:02
+C    campaign_reapply_due    completed   spout         18:00:00    18:01:32
+D    campaign_reapply_due    completed   selery        18:00:00    18:00:29
+E    campaign_reapply_due    completed   selery        18:00:00    18:00:58
+F    campaign_reapply_due    completed   charm         18:00:00    18:00:25
+```
+
+Per-campaign visibility, failure isolation traceable per row, audit log
+permanent. Anything `failed` carries its `error_message`. The watchdog
+re-emits failed events with exponential backoff.
+
+### Schema discipline — what we add and what we deliberately don't
+
+**Goal:** lean into event_log where possible. Add new tables only where the
+data shape doesn't fit event_log.
+
+**What we MUST add (justified):**
+
+| New artifact | Why it can't be event_log |
+|---|---|
+| `campaign_reapply_jobs` table | event_log records what HAPPENED (emitted_at = past tense). Jobs record what SHOULD happen (scheduled_for = future). Different semantics; conflating them muddles the model. |
+| ONE DB trigger on `emailbison_campaigns` | Fires job creation atomically with campaign change. No daemon polling EB. |
+| ONE partial index for scheduler MIN scan | `(scheduled_for) WHERE status='pending'` — single-column, partial. Cheap. |
+| Broaden `event_log_workspace_scoped_requires_workspace` CHECK | Extend to cover `campaign_reapply_due` (same way 109 did for `warmup_disable`). 1-line ALTER. |
+| ONE new event_type `campaign_reapply_due` | Reuses existing event_log table — no schema change. |
+| ONE new handler in `event_handlers/` | Reuses existing HANDLER_REGISTRY pattern. |
+
+**What we deliberately DON'T add:**
+
+| Considered but skipped | Why |
+|---|---|
+| `campaign_schedules` cache table (v1 design) | EB's `/campaigns/{id}/schedule` is the source of truth. Caching it adds a sync layer that drifts. The DB trigger on `emailbison_campaigns` recomputes `next_eod_at` from the campaign row directly. |
+| `campaign_reapply_runs` history table (v1 design) | Redundant with event_log. Every reapply attempt already produces a `campaign_reapply_due` row in event_log with status + emitted_at + handler_completed_at + error_message. That IS the run history. |
+| New columns on `emailbison_campaigns` (e.g., `next_reapply_at`) | Would need backfill on every schedule change. The `campaign_reapply_jobs` table holds this without cross-table writes. |
+| pg_cron / pgAgent extension | Not installed on production Postgres (verified 2026-05-12). Would require ops change to install. Pure asyncpg LISTEN + pg_sleep_until is sufficient. |
+| Separate `EmailBisonClient` pool for the EOD daemon | Reuses the existing client class with workspace-scoped key per ADR-006. |
+| New Slack alerter or audit logger | Reuses existing SlackAlerter + AuditLogger. |
+
+**Net schema delta:**
+- 1 new table (`campaign_reapply_jobs`)
+- 1 new partial index
+- 1 ALTER on event_log CHECK constraint
+- 1 new DB trigger
+- 0 new columns on existing widely-used tables
+- 0 new event_log row shape changes (just a new event_type value)
+
+**Compare to original v1 plan**: was 2 new tables + new columns + new audit
+log + new alerter. v2-event-driven cuts ~60% of the schema surface.
+
+### Historical: v1 polling design (preserved for context)
 
 ```
 ┌────────────────────────────────────────────────────────────────┐
@@ -60,7 +371,7 @@ The comment at [kill_processor.py:443](../../sync_modules/kill_processor.py#L443
 │              └─ reapply_orchestrator (per campaign)             │
 │                    1. PATCH /campaigns/{id}/pause               │
 │                    2. GET  /campaigns/{id}/sender-emails  ──┐   │
-│                    3. GET  /sender-emails?tag_ids[]=live  ──┤   │
+│                    3. GET  /sender-emails?tag_ids[0]={id} ──┤   │
 │                    4. diff: target − current = attach_set    │   │
 │                            current − target = remove_set    │   │
 │                    5. POST /campaigns/{id}/attach-sender-…   │   │
@@ -73,76 +384,87 @@ The comment at [kill_processor.py:443](../../sync_modules/kill_processor.py#L443
 │  All EB calls use workspace-scoped API key from                 │
 │  workspace_api_keys table (Sanctum tokens).                     │
 └────────────────────────────────────────────────────────────────┘
-                            │
-                            ▼
-                ┌──────────────────────┐
-                │ Shared Postgres      │
-                │  (charm-email-os DB) │
-                ├──────────────────────┤
-                │ READ:                │
-                │  workspaces          │
-                │  workspace_api_keys  │
-                │  emailbison_campaigns│
-                │  sender_accounts (for cross-check only)
-                │                      │
-                │ WRITE (own tables):  │
-                │  campaign_schedules  │
-                │  campaign_reapply_runs│
-                └──────────────────────┘
 ```
 
-## Schema additions
+This design was sound but introduced a polling cadence inconsistent with
+the rest of the system. v2 keeps the orchestration steps (pause→mutate→
+resume) and the workspace-scoped key rule; replaces the polling layer
+with event-driven scheduling.
 
-Two new tables, owned by this service. Migrations live in `apps/eod-reapply/migrations/`.
+## Schema additions (v2 — event-driven, 2026-05-12 revision)
+
+**One new table** + the standard event-driven primitives (CHECK
+constraint broaden + new event_type, both reusing migration 109's
+pattern). Net schema delta is ~60% smaller than the v1 design.
+
+### What we add (justified)
 
 ```sql
--- Pulled fresh from EB each cycle. Source of truth is EB; this is a cache.
-CREATE TABLE campaign_schedules (
-    campaign_id        UUID PRIMARY KEY REFERENCES emailbison_campaigns(id) ON DELETE CASCADE,
-    eb_schedule_id     INTEGER,
-    monday             BOOLEAN NOT NULL,
-    tuesday            BOOLEAN NOT NULL,
-    wednesday          BOOLEAN NOT NULL,
-    thursday           BOOLEAN NOT NULL,
-    friday             BOOLEAN NOT NULL,
-    saturday           BOOLEAN NOT NULL,
-    sunday             BOOLEAN NOT NULL,
-    start_time         TIME    NOT NULL,
-    end_time           TIME    NOT NULL,
-    timezone           TEXT    NOT NULL,         -- IANA name, e.g. 'Australia/Sydney'
-    reapply_buffer_min INTEGER NOT NULL DEFAULT 60,  -- minutes after end_time before we act
-    eb_created_at      TIMESTAMPTZ,
-    eb_updated_at      TIMESTAMPTZ,
-    synced_at          TIMESTAMPTZ NOT NULL,
-    CONSTRAINT campaign_schedules_tz_iana CHECK (timezone ~ '^[A-Za-z_]+/[A-Za-z_]+(/[A-Za-z_]+)?$')
-);
-CREATE INDEX idx_campaign_schedules_synced_at ON campaign_schedules(synced_at);
+-- ─────────────────────────────────────────────────────────────────
+-- Migration 111 (or next sequence): campaign_reapply_jobs
+-- ─────────────────────────────────────────────────────────────────
 
--- Idempotency table: at most one row per campaign per local-day.
-CREATE TABLE campaign_reapply_runs (
+-- Job queue: future work. Distinct from event_log (past tense audit).
+CREATE TABLE campaign_reapply_jobs (
     id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    campaign_id         UUID NOT NULL REFERENCES emailbison_campaigns(id) ON DELETE CASCADE,
     workspace_id        UUID NOT NULL REFERENCES workspaces(id),
-    run_local_date      DATE NOT NULL,
-    run_local_tz        TEXT NOT NULL,
-    started_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    campaign_id         UUID NOT NULL REFERENCES emailbison_campaigns(id) ON DELETE CASCADE,
+    -- When the scheduler should wake up to fire the campaign_reapply_due event
+    scheduled_for       TIMESTAMPTZ NOT NULL,
+    run_local_date      DATE NOT NULL,        -- idempotency key (campaign tz)
+    run_local_tz        TEXT NOT NULL,        -- preserved for audit/debug
+    status              TEXT NOT NULL DEFAULT 'pending',
+                        -- 'pending' / 'flagged' (claimed by scheduler) /
+                        -- 'completed' / 'failed' / 'skipped'
+    triggered_event_id  UUID,                 -- event_log row emitted on claim
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     completed_at        TIMESTAMPTZ,
-    status              TEXT NOT NULL,           -- see status enum below
-    target_sender_ids   INTEGER[] NOT NULL DEFAULT '{}',
-    prior_sender_ids    INTEGER[] NOT NULL DEFAULT '{}',
-    attached_ids        INTEGER[] NOT NULL DEFAULT '{}',
-    removed_ids         INTEGER[] NOT NULL DEFAULT '{}',
-    final_sender_ids    INTEGER[] NOT NULL DEFAULT '{}',
-    verify_passed       BOOLEAN,
     error_message       TEXT,
-    error_step          TEXT,
-    is_dry_run          BOOLEAN NOT NULL DEFAULT FALSE,
-    CONSTRAINT campaign_reapply_runs_unique_local_day
-        UNIQUE (campaign_id, run_local_date, is_dry_run)
+    CONSTRAINT campaign_reapply_jobs_unique_local_day
+        UNIQUE (campaign_id, run_local_date)
 );
-CREATE INDEX idx_campaign_reapply_runs_status ON campaign_reapply_runs(status, started_at DESC);
-CREATE INDEX idx_campaign_reapply_runs_workspace ON campaign_reapply_runs(workspace_id, run_local_date DESC);
+
+-- Partial index for the scheduler's MIN(scheduled_for) scan
+CREATE INDEX idx_campaign_reapply_jobs_pending
+    ON campaign_reapply_jobs (scheduled_for)
+    WHERE status = 'pending';
+
+-- ─────────────────────────────────────────────────────────────────
+-- Broaden event_log CHECK constraint to cover the new event_type
+-- (same pattern as migration 109 did for warmup_disable)
+-- ─────────────────────────────────────────────────────────────────
+
+ALTER TABLE event_log DROP CONSTRAINT IF EXISTS event_log_workspace_scoped_requires_workspace;
+ALTER TABLE event_log ADD CONSTRAINT event_log_workspace_scoped_requires_workspace
+    CHECK (
+        (event_type NOT LIKE 'tag_op_%'
+         AND event_type <> 'warmup_disable'
+         AND event_type <> 'campaign_reapply_due')
+        OR workspace_id IS NOT NULL
+    );
+
+-- ─────────────────────────────────────────────────────────────────
+-- DB trigger on emailbison_campaigns: when a campaign's schedule
+-- changes or is created, compute next_eod_at + INSERT/UPDATE the
+-- job row. Trigger function uses ON CONFLICT (campaign_id,
+-- run_local_date) DO NOTHING so re-running today's schedule sync
+-- doesn't double-enqueue. pg_notify wakes the scheduler immediately.
+-- ─────────────────────────────────────────────────────────────────
+
+-- Function omitted here for brevity; full SQL in the migration file.
 ```
+
+### Why no other tables
+
+| v1 plan had | v2 doesn't need | Rationale |
+|---|---|---|
+| `campaign_schedules` cache table | dropped | EB's `/campaigns/{id}/schedule` is the source of truth. The DB trigger reads from `emailbison_campaigns` directly (which `sync_campaigns` already keeps fresh). No cache means no cache-drift bug. |
+| `campaign_reapply_runs` history table | dropped | Every reapply already produces a `campaign_reapply_due` row in event_log with status + timestamps + error_message. That IS the audit log. Adding a parallel runs table creates two sources of truth. |
+| Big status enum (`started/paused/diffed/attaching/...`) | simplified to 4 | `pending` / `flagged` / `completed` / `failed`. The fine-grained sub-statuses (paused/attaching/etc.) were operational-time-only state — they don't survive a process crash anyway. Use logs + event_log error_message for diagnosis. |
+
+### Sub-status simplification
+
+The v1 design had 13 statuses to track per-step progress (started, paused, diffed, attaching, ...). These were useful for crash-recovery diagnostics but mostly redundant — the handler is a single transaction with a `finally` block that guarantees campaign resume. If the daemon dies mid-handler, the event_log row stays in `processing` and the watchdog re-emits. The DB doesn't need to know which step we were on; the next attempt starts fresh from step 1 (pause is idempotent — pausing a paused campaign is a 200 no-op in EB).
 
 Status enum (text, validated in app layer):
 
@@ -173,7 +495,7 @@ All workspace-scoped via `workspace_api_keys`. From [openapi spec](https://spell
 | 2 | `GET` | `/api/campaigns/{id}/schedule` | Pull schedule (read-only — never write) |
 | 3 | `PATCH` | `/api/campaigns/{id}/pause` | Pause before mutation |
 | 4 | `GET` | `/api/campaigns/{id}/sender-emails` | Current attachment set |
-| 5 | `GET` | `/api/sender-emails?filters.tag_ids[]={live_tag_id}` | Target set (paginated) |
+| 5 | `GET` | `/api/sender-emails?tag_ids[0]={live_tag_id}` | Target set (paginated). **NOT** `filters[tag_ids][]=...` — that shape is silently ignored by EB and returns the whole workspace (2026-05-13 incident: over-attached 157 senders to Test-Campaign 271). Client verifies every returned sender carries the requested tag in `tags[]` as a defense. |
 | 6 | `POST` | `/api/campaigns/{id}/attach-sender-emails` | Attach `attach_set` |
 | 7 | `DELETE` | `/api/campaigns/{id}/remove-sender-emails` | Detach `remove_set` |
 | 8 | `PATCH` | `/api/campaigns/{id}/resume` | Resume |
@@ -266,21 +588,22 @@ This is the load-bearing concern. The Sammy/Australia case is the canonical exam
 
 ## Configuration
 
-Environment variables only. No on-disk config files.
+Environment variables only. No on-disk config files. **No `POLL_INTERVAL_SECONDS` —
+v2 is event-driven; scheduler sleeps until next due time via `pg_sleep_until` +
+NOTIFY wake.**
 
 | Var | Default | Purpose |
 |---|---|---|
 | `DATABASE_URL` | (required) | Same Postgres as charm-email-os |
 | `EMAILBISON_API_URL` | `https://spellcast.hirecharm.com/api` | EB base URL |
-| `POLL_INTERVAL_SECONDS` | `300` | How often to evaluate windows |
-| `WORKSPACE_CONCURRENCY` | `3` | Parallel workspaces |
-| `CAMPAIGN_CONCURRENCY_PER_WORKSPACE` | `1` | Sequential within workspace |
+| `EOD_REAPPLY_WORKSPACE_CONCURRENCY` | `3` | Parallel workspaces (matches Tier 2 pattern) |
 | `WORKSPACE_ALLOWLIST` | (unset = all) | Comma-sep workspace names; phased rollout gate |
 | `WORKSPACE_DENYLIST` | (unset) | Inverse — explicit opt-outs |
 | `DRY_RUN` | `false` | Compute and log but don't mutate EB |
-| `DEFAULT_REAPPLY_BUFFER_MIN` | `60` | Fallback when schedule row has NULL |
+| `DEFAULT_REAPPLY_BUFFER_MIN` | `60` | Fallback when emailbison_campaigns row has NULL buffer |
 | `SLACK_WEBHOOK_URL` | (required) | Alerts |
 | `MAX_RESUME_RETRIES` | `3` | Before giving up and paging |
+| `SCHEDULER_MAX_SLEEP_SECONDS` | `3600` | Cap on pg_sleep_until to avoid sleeping past schedule drift; will wake at most once per hour even if no jobs are due (sanity floor) |
 
 ## Deployment (Coolify)
 
@@ -307,40 +630,53 @@ Deploys as a new Coolify service alongside the existing workers ([production/coo
 
 **Add to `services.md`** when the service goes live (not before — keeps the doc reflecting actual reality).
 
-## Project layout
+## Project layout (v2 event-driven addition)
+
+v1 (operator-invoked CLI) is already shipped — see `apps/eod-reapply/` tree
+in the README. The v2 daemon adds these files on top:
 
 ```
 apps/eod-reapply/
-├── pyproject.toml
-├── Dockerfile
-├── README.md
+├── pyproject.toml                  (existing, unchanged)
+├── Dockerfile                      (existing, unchanged)
+├── README.md                       (existing)
 ├── src/eod_reapply/
-│   ├── __init__.py
-│   ├── main.py                # entrypoint: build pool, start poll loop
-│   ├── config.py              # env loading + validation (pydantic-settings)
-│   ├── db.py                  # asyncpg pool factory
-│   ├── eb_client.py           # subset of EmailBisonClient: only the 8 endpoints we use
-│   ├── tag_resolver.py        # cache live_tag_id per workspace
-│   ├── schedule_sync.py       # GET /schedule → upsert campaign_schedules
-│   ├── window.py              # tz-aware predicate (PURE FN, fully testable)
-│   ├── live_set.py            # paginated GET /sender-emails?tag=live
-│   ├── reapply.py             # orchestrator (pause→diff→…→resume)
-│   ├── audit.py               # campaign_reapply_runs writer with state transitions
-│   ├── recovery.py            # startup scan for stuck rows + auto-resume
-│   ├── alerts.py              # Slack
-│   └── poll_loop.py           # the periodic tick
-├── migrations/
-│   ├── 001_campaign_schedules.sql
-│   └── 002_campaign_reapply_runs.sql
+│   ├── window.py                   (existing — pure tz predicate, reused)
+│   ├── eb_client.py                (existing — reused)
+│   ├── reapply.py                  (existing — reapply_campaign() reused as-is)
+│   ├── check.py                    (existing — read-only diagnostic)
+│   ├── db.py                       (existing)
+│   ├── cli.py                      (existing — v1 CLI entrypoint preserved)
+│   │
+│   ├── daemon.py                   (NEW v2 — entrypoint: pool + scheduler + listener)
+│   ├── scheduler.py                (NEW v2 — pg_sleep_until loop, claims due jobs)
+│   ├── handler.py                  (NEW v2 — campaign_reapply_due_handler)
+│   └── workspace_locks.py          (NEW v2 — asyncio.Lock per workspace_id)
+│
 └── tests/
-    ├── test_window.py                 # tz math, DST, IDL, frozen clocks
-    ├── test_reapply_orchestrator.py   # full happy path + every failure mode
-    ├── test_live_set.py               # pagination, empty, partial
-    ├── test_idempotency.py            # double-fire, advisory lock
-    ├── test_recovery.py               # crashed mid-run scenarios
-    └── fixtures/
-        └── eb_responses/              # canned responses, golden files
+    ├── test_window.py, test_eb_client.py, ...  (existing 209 tests)
+    ├── test_daemon.py              (NEW v2 — sleeper wake-on-notify, claim race)
+    ├── test_handler.py             (NEW v2 — handler dispatch + workspace lock)
+    └── test_scheduler.py           (NEW v2 — atomic claim, multiple-due ordering)
+
+charm-email-os repo (NOT under apps/eod-reapply/):
+└── migrations/
+    └── 111_campaign_reapply_jobs.sql  (NEW — job queue table + trigger + CHECK broaden)
+└── sync_modules/event_handlers/
+    └── campaign_reapply.py            (NEW — campaign_reapply_due_handler is in the
+                                        shared event-driven module so the listener
+                                        registers it via HANDLER_REGISTRY)
 ```
+
+**Why the handler lives in `sync_modules/event_handlers/`, not in `apps/eod-reapply/`:**
+The handler runs INSIDE the event listener (which is in `emailbison-sync` worker
+or its successor). It dispatches the work — actual EB API calls happen via the
+`reapply_campaign()` library function which IS in `apps/eod-reapply/`. Two-stage:
+listener → dispatcher → reapply library. Same pattern as Tier 2 TagOpWorker.
+
+**Alternative:** put the entire daemon (listener + scheduler + handler) in
+`apps/eod-reapply/` as its own Coolify service. Cleaner blast radius. Decide
+during implementation.
 
 ## Pre-requisites in charm-email-os (must land first)
 

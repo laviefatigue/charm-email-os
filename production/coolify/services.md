@@ -111,18 +111,19 @@ Each active workspace has a scoped EB API token stored in the `workspace_api_key
 - **Purpose**: Domain lifecycle management
 
 ### eod-reapply
-- **Type**: CLI / on-demand container
+- **Type**: CLI / on-demand container (v1) AND long-lived daemon (PR 1, dry-run-only)
 - **Purpose**: Reapply a campaign's `live`-tagged sender set as its EmailBison sender attachment. Closes the loop that `kill_processor` leaves open: dead inboxes lose the `live` tag in EB but stay attached to active campaigns until something reconciles them.
-- **Status**: v1 — operator-invoked, not a continuous service. v2 (the scheduler) is documented in [docs/plans/eod-campaign-reapply.md](../../docs/plans/eod-campaign-reapply.md).
-- **Source**: [apps/eod-reapply/](../../apps/eod-reapply/) — see README + STAGING-RUNBOOK.
+- **Status**: v1 (CLI) is operator-invoked. PR 1 of v2 (event-driven scheduler) ships the daemon in **dry-run-only** mode — enqueues per-campaign EOD jobs at `end_time + buffer` in the campaign's IANA tz, runs the orchestrator against prod EB, but forces `apply=False`. Apply-mode + crash recovery + alerting land in PR 2. See [docs/plans/eod-campaign-reapply.md](../../docs/plans/eod-campaign-reapply.md).
+- **Source**: [apps/eod-reapply/](../../apps/eod-reapply/) — see README + STAGING-RUNBOOK + `docs/staging-results.md`.
 
 #### Subcommands
 - `eod-reapply check --workspace <name> [--campaign-id N]` — read-only pre-flight (DB + EB auth + campaign + tag + expected diff). Never mutates. Run before any `--apply`.
 - `eod-reapply reapply --workspace <name> --campaign-id N [--apply]` — pause → diff → attach → remove → verify → resume. Default dry-run; `--apply` is opt-in.
+- `eod-reapply daemon [--buffer-minutes N] [--enqueue-interval-seconds N]` — long-lived process. Walks `workspaces.eod_reapply_enabled=TRUE` rows, enqueues per-campaign EOD jobs into `campaign_reapply_jobs`, consumes them at fire time, and writes outcomes to `event_log` (`event_type='campaign_reapply_due'`). **PR 1 hard-locks `apply=False` regardless of any flag.** Idempotent across restarts.
 
 #### Deployment patterns
 
-**Pattern A — sleeping container, exec on demand** (recommended for v1):
+**Pattern A — sleeping container, exec on demand** (for v1 CLI usage):
 - Build context: `apps/eod-reapply/`
 - Dockerfile: `apps/eod-reapply/Dockerfile`
 - Service type: "Dockerfile" (not docker-compose)
@@ -135,6 +136,15 @@ Each active workspace has a scoped EB API token stored in the `workspace_api_key
 **Pattern B — Run as needed** (no continuous resource use):
 - Build the image and push to a registry, OR build on the operator's host
 - Operator runs `docker run --rm -e DATABASE_URL=... <image> reapply ...` from a host with prod DB access (e.g. a jumphost or one of the existing worker containers via exec)
+
+**Pattern C — daemon mode** (PR 1 of v2, dry-run-only):
+- Build context: `apps/eod-reapply/` (same Dockerfile as Patterns A/B)
+- Override CMD: `["daemon"]` (the `eod-reapply` ENTRYPOINT is already in place)
+- Env vars: `DATABASE_URL`, `EMAILBISON_API_URL` (same as above)
+- Restart policy: `unless-stopped`
+- No public URL. No health endpoint in PR 1 — readiness signal is "daemon log line `enqueue: pass complete`" appearing in stdout within `enqueue_interval_seconds + 60s` of boot.
+- Resource ceiling: daemon idle is ~30MB RSS + 2-6 DB connections. Per-fire load is dominated by EB API calls (paginated sender-emails fetches).
+- Initial rollout: deploy with no `workspaces.eod_reapply_enabled=TRUE` rows → daemon idles. Then flip Charm's flag (`UPDATE workspaces SET eod_reapply_enabled = TRUE WHERE workspace_name = 'Charm'`) and observe `campaign_reapply_jobs` + `event_log` rows accumulate.
 
 #### Exit codes (load-bearing for any future scheduler)
 | Code | Subcommand | Meaning |

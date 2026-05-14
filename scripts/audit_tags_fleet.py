@@ -89,7 +89,22 @@ def fetch_eb_accounts(api_key, workspace_name):
 
 
 def categorize(db_row, eb_tags_list):
-    """Return list of issue codes for this inbox."""
+    """Return list of issue codes for this inbox.
+
+    Skips tag-drift checks for disconnected inboxes — pool membership
+    and connection status are orthogonal axes (the inbox keeps its
+    pool_status across disconnects so it can resume role on reconnect),
+    and `set_tag_sync` deliberately doesn't push tag changes to
+    disconnected inboxes (line 467 of set_tag_sync.py: "we cannot tag
+    them in EB"). Reporting those as drift produces unactionable noise.
+
+    Returns a single-element list ['_disconnected_skip'] for connection-
+    health bucketing; caller routes those to a separate summary.
+    """
+    conn_status = db_row.get("conn_status")
+    if conn_status != "Connected":
+        return ["_disconnected_skip"]
+
     issues = []
     tags = set(eb_tags_list)
     pool = db_row["inventory_pool_status"]
@@ -176,6 +191,7 @@ def main():
                 sa.inventory_lifecycle_status,
                 sa.is_active,
                 sa.inbox_state,
+                sa.status AS conn_status,
                 d.pool_status AS domain_pool,
                 d.domain_name
             FROM sender_accounts sa
@@ -212,6 +228,18 @@ def main():
                 continue
 
             issues = categorize(db_row, tags)
+
+            # Disconnected inboxes are bucketed separately as connection-
+            # health info, not drift. set_tag_sync deliberately skips
+            # them; pool membership stays valid across disconnects so the
+            # inbox can resume role on reconnect (EB triggers reconnect
+            # automatically).
+            if issues == ["_disconnected_skip"]:
+                pool_label = db_row["inventory_pool_status"] or "null"
+                ws_issues[f"_disconnected_{pool_label}"] += 1
+                fleet_summary[f"_disconnected_{pool_label}"] += 1
+                continue
+
             for code in issues:
                 ws_issues[code] += 1
                 fleet_summary[code] += 1
@@ -256,14 +284,34 @@ def main():
         for code, n in sorted(w["issues"].items(), key=lambda x: -x[1]):
             print(f"    {code:50s} {n}")
 
+    # Split the fleet summary into real drift vs connection-health info.
+    # Connection health is bucketed under codes starting with "_disconnected_"
+    # — these are NOT tag drift, they're just inboxes EB can't reach right
+    # now. set_tag_sync correctly skips them; pool membership is preserved
+    # for resume-on-reconnect.
+    drift_summary = {k: v for k, v in fleet_summary.items() if not k.startswith("_disconnected_")}
+    conn_summary = {k: v for k, v in fleet_summary.items() if k.startswith("_disconnected_")}
+
     print("\n" + "=" * 80)
-    print("FLEET TOTAL ISSUE BREAKDOWN")
+    print("FLEET TAG DRIFT (Connected inboxes only — actionable)")
     print("=" * 80)
-    if not fleet_summary:
-        print("  CLEAN — no tag mismatches found ✓")
+    if not drift_summary:
+        print("  CLEAN — no tag drift on connected inboxes ✓")
     else:
-        for code, n in sorted(fleet_summary.items(), key=lambda x: -x[1]):
+        for code, n in sorted(drift_summary.items(), key=lambda x: -x[1]):
             print(f"  {code:55s} {n}")
+
+    print("\n" + "=" * 80)
+    print("CONNECTION HEALTH (informational — disconnected inboxes by pool)")
+    print("=" * 80)
+    if not conn_summary:
+        print("  All inboxes Connected ✓")
+    else:
+        for code, n in sorted(conn_summary.items(), key=lambda x: -x[1]):
+            label = code.replace("_disconnected_", "disconnected pool=")
+            print(f"  {label:55s} {n}")
+        print("  (these inboxes will resume role on reconnect — EB triggers")
+        print("   reconnect automatically; investigate only if persistent)")
 
     # Sample 10 mismatches per category to disk for review
     out_path = "scripts/backfill_snapshots/2026-04-28_tag_audit_results.json"

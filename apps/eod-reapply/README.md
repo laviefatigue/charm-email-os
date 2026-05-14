@@ -23,9 +23,13 @@ For a single (workspace, campaign) pair:
 ```
 eod-reapply check    # read-only pre-flight (DB + EB auth + campaign + tag)
 eod-reapply reapply  # the actual reapply (default dry-run; --apply to mutate)
+eod-reapply daemon   # long-lived process: enqueues + runs per-campaign EOD jobs
+                     # (PR 1 of v2 — hard-locked to apply=False)
 ```
 
 `check` is the safest first step — it never makes a mutating EB call. Run it before any `reapply --apply`.
+
+`daemon` is the v2 entry point. PR 1 ships it in **dry-run-only** mode: it walks `workspaces` with `eod_reapply_enabled=TRUE`, enqueues per-campaign EOD jobs (`scheduled_for = end_time + buffer` in the campaign's IANA tz), and at each fire time calls the orchestrator with `apply=False`. Outcomes are written to `event_log` (`event_type='campaign_reapply_due'`). Apply-mode + crash recovery + Slack alerting land in PR 2. See `docs/plans/eod-campaign-reapply.md`.
 
 ## Run (locally)
 

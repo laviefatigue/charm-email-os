@@ -76,6 +76,7 @@ POLL_INTERVAL_ENGAGEMENT = int(os.getenv('SYNC_INTERVAL_ENGAGEMENT', 86400))  # 
 POLL_INTERVAL_OAUTH_QUEUE = int(os.getenv('SYNC_INTERVAL_OAUTH_QUEUE', 300))  # 5 min  (queue processing)
 POLL_INTERVAL_OAUTH_VERIFY = int(os.getenv('SYNC_INTERVAL_OAUTH_VERIFY', 30 * 24 * 3600))  # 30 days
 POLL_INTERVAL_WORKSPACE_DISCOVERY = int(os.getenv('SYNC_INTERVAL_WORKSPACE_DISCOVERY', 300))  # 5 min
+POLL_INTERVAL_TAG_OP_DRAIN = int(os.getenv('SYNC_INTERVAL_TAG_OP_DRAIN', 1800))  # 30 min — Tier 2 batch tag worker
 
 # Concurrent workspace processing — how many workspaces run in parallel per batch
 SYNC_WORKSPACE_CONCURRENCY = int(os.getenv('SYNC_WORKSPACE_CONCURRENCY', '3'))
@@ -92,6 +93,11 @@ SLACK_WEBHOOK_URL = os.getenv('SLACK_WEBHOOK_URL', '')
 # Set these to 'false' in local .env to disable EmailBison writes
 ENABLE_KILL_PROCESSING = os.getenv('ENABLE_KILL_PROCESSING', 'true').lower() == 'true'
 ENABLE_LIFECYCLE_TAGGING = os.getenv('ENABLE_LIFECYCLE_TAGGING', 'true').lower() == 'true'
+
+# Event-driven architecture (Tier 1 listener + watchdog).
+# Default OFF — flipping to true activates LISTEN/NOTIFY consumption + handlers.
+# Plan: docs/plans/event-driven-architecture.md
+EVENT_DRIVEN_ENABLED = os.getenv('EVENT_DRIVEN_ENABLED', 'false').lower() in ('true', '1', 'yes')
 
 
 class SyncOrchestrator:
@@ -125,6 +131,18 @@ class SyncOrchestrator:
         # per-workspace structured audit. Runs daily; persists to inbox_audits
         # table with workspace_id + inbox_id_set + audit_data populated.
         self.last_inbox_audit: Optional[datetime] = None
+        # Tag Op Worker — Tier 2 of event-driven architecture. Drains pending
+        # tag_op_* events from event_log per workspace using workspace-scoped
+        # EB API keys. See docs/plans/event-driven-architecture.md.
+        # No-op until event_log accumulates rows (which only happens when
+        # listener handlers are active — i.e., EVENT_DRIVEN_ENABLED=true).
+        self.last_tag_op_drain: Optional[datetime] = None
+
+        # Event-driven Tier 1 background tasks. Spawned in start() iff
+        # EVENT_DRIVEN_ENABLED=true. The listener owns its own connection
+        # (LISTEN/NOTIFY); the watchdog uses the shared pool.
+        self.event_listener = None  # type: Optional[object]
+        self._event_tasks: list = []
 
     async def start(self, single_pass: bool = False):
         """Initialize connections and start the sync worker."""
@@ -133,6 +151,7 @@ class SyncOrchestrator:
         print(f"  Slack alerts: {'Enabled' if SLACK_WEBHOOK_URL else 'Disabled'}")
         print(f"  Kill processing: {'Enabled' if ENABLE_KILL_PROCESSING else 'DISABLED'}")
         print(f"  Lifecycle tagging: {'Enabled' if ENABLE_LIFECYCLE_TAGGING else 'DISABLED'}")
+        print(f"  Event-driven (Tier 1 listener): {'ON' if EVENT_DRIVEN_ENABLED else 'OFF'}")
         print(f"  Intervals: events={POLL_INTERVAL_EVENTS}s, full={POLL_INTERVAL_FULL}s, health={POLL_INTERVAL_HEALTH}s, kill={POLL_INTERVAL_KILL}s, warmup={POLL_INTERVAL_WARMUP}s, oauth_queue={POLL_INTERVAL_OAUTH_QUEUE}s")
         print(f"  Workspace concurrency: {SYNC_WORKSPACE_CONCURRENCY} parallel | Priority poll: {POLL_INTERVAL_PRIORITY}s")
 
@@ -170,6 +189,13 @@ class SyncOrchestrator:
                 version = await conn.fetchval("SELECT version()")
                 print(f"  Connected to: {version[:50]}...")
 
+            # Spawn event-driven Tier 1 tasks (listener + watchdog) when
+            # EVENT_DRIVEN_ENABLED=true. Both modules early-return when the
+            # flag is off, so this is safe to call unconditionally — the
+            # explicit guard here just avoids the import + extra task overhead.
+            if EVENT_DRIVEN_ENABLED:
+                await self._start_event_driven()
+
             print(f"[{datetime.now()}] Worker initialized successfully")
 
             if single_pass:
@@ -187,8 +213,65 @@ class SyncOrchestrator:
             raise
 
         finally:
+            await self._stop_event_driven()
             if self.db:
                 await self.db.close()
+
+    async def _start_event_driven(self) -> None:
+        """Spawn Tier 1 listener + watchdog as background asyncio tasks.
+
+        Imports inside the method so the module is only loaded when the
+        feature flag is on (keeps startup fast when off). Failures here
+        are non-fatal — the listener crashing shouldn't take down the
+        polling worker. Errors get logged + alerted, polling continues.
+        """
+        try:
+            from sync_modules.event_listener import EventListener, run_watchdog
+            from sync_modules.event_handlers import HANDLER_REGISTRY
+
+            dsn = (
+                f"postgres://{POSTGRES_USER}:{POSTGRES_PASSWORD}"
+                f"@{POSTGRES_HOST}:{POSTGRES_PORT}/{POSTGRES_DB}"
+            )
+            listener = EventListener(db_dsn=dsn, db_pool=self.db)
+            for event_type, handler in HANDLER_REGISTRY.items():
+                listener.register(event_type, handler)
+
+            self.event_listener = listener
+            self._event_tasks = [
+                asyncio.create_task(listener.run(), name='event_listener'),
+                asyncio.create_task(run_watchdog(self.db), name='event_watchdog'),
+            ]
+            print(
+                f"  Event-driven: listener registered "
+                f"{len(HANDLER_REGISTRY)} handlers, watchdog spawned"
+            )
+        except Exception as exc:
+            print(f"[ERROR] Failed to start event-driven tasks: {exc}")
+            if self.alerter:
+                await self.alerter.alert_sync_failure(
+                    module='event_driven_startup',
+                    error=str(exc),
+                )
+
+    async def _stop_event_driven(self) -> None:
+        """Cancel listener + watchdog tasks on shutdown."""
+        if not self._event_tasks:
+            return
+        if self.event_listener is not None:
+            try:
+                await self.event_listener.stop()
+            except Exception:
+                pass
+        for task in self._event_tasks:
+            task.cancel()
+        for task in self._event_tasks:
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):
+                pass
+        self._event_tasks = []
+        self.event_listener = None
 
     async def poll_loop(self):
         """Main polling loop with staggered sync schedules."""
@@ -304,6 +387,20 @@ class SyncOrchestrator:
                         print(f"[ERROR] OAuth queue failed: {e}")
                     self.last_oauth_queue_check = now
 
+                # Tag Op Worker — Tier 2 of event-driven architecture (every 30 min).
+                # Drains pending tag_op_* events from event_log per workspace and
+                # bulk-applies to EB. Coexists with set_tag_sync during the rollout
+                # — both are idempotent so duplicate writes are 200 OK no-ops.
+                # No-op when event_log has no pending rows (i.e., when the listener
+                # isn't running and handlers aren't producing tag_op events).
+                # Plan: docs/plans/event-driven-architecture.md
+                if self._should_run(self.last_tag_op_drain, POLL_INTERVAL_TAG_OP_DRAIN):
+                    try:
+                        await self.run_tag_op_drain()
+                    except Exception as e:
+                        print(f"[ERROR] Tag op drain failed: {e}")
+                    self.last_tag_op_drain = now
+
                 # OAuth monthly verification - every 30 days
                 if self._should_run(self.last_oauth_verify, POLL_INTERVAL_OAUTH_VERIFY):
                     try:
@@ -389,6 +486,31 @@ class SyncOrchestrator:
         (via WorkspaceSyncQueue.request_force_refresh).
         """
         await self.sync_queue.process_priority_batch()
+
+    async def run_tag_op_drain(self):
+        """Drain pending tag_op_* events from event_log per workspace.
+
+        Tier 2 of the event-driven architecture
+        (docs/plans/event-driven-architecture.md). Runs every 30 min.
+
+        Each workspace processed with its own scoped EB API key (per
+        ADR-006). Workspace-level failures are isolated.
+
+        No-op when event_log has no pending tag_op rows. With
+        EVENT_DRIVEN_ENABLED=false, the listener never produces tag_op
+        events, so this is just a daily empty SELECT — cheap.
+        """
+        from sync_modules.tag_op_worker import TagOpWorker
+        print(f"[{datetime.now()}] Tag op drain (Tier 2 batch worker)...")
+
+        worker = TagOpWorker(
+            db=self.db,
+            audit_logger=self.audit_logger,
+            alerter=self.alerter,
+        )
+        result = await worker.run_once()
+        status = 'OK' if result.success else 'FAILED'
+        print(f"  Tag ops: {result.records_processed} workspaces touched [{status}]")
 
     async def run_health_checks(self):
         """Run health checks and kill trigger detection."""

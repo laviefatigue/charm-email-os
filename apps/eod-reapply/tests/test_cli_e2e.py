@@ -166,7 +166,7 @@ class TestEndToEndDryRun:
         )
         # target = {10, 11}
         respx.get(f"{EB_BASE}/api/sender-emails").mock(
-            return_value=_resp(200, {"data": [{"id": 10}, {"id": 11}], "meta": {"last_page": 1}})
+            return_value=_resp(200, {"data": [{"id": 10, "tags": [{"id": 5, "name": "live"}]}, {"id": 11, "tags": [{"id": 5, "name": "live"}]}], "meta": {"last_page": 1}})
         )
         # prior = {11, 99} → attach 10, remove 99 (50% removal — at the boundary, should pass)
         respx.get(f"{EB_BASE}/api/campaigns/{CAMPAIGN_ID}/sender-emails").mock(
@@ -209,7 +209,7 @@ class TestEndToEndDryRun:
             return_value=_resp(200, {"data": [{"id": 5, "name": "live"}]})
         )
         respx.get(f"{EB_BASE}/api/sender-emails").mock(
-            return_value=_resp(200, {"data": [{"id": 10}, {"id": 11}], "meta": {"last_page": 1}})
+            return_value=_resp(200, {"data": [{"id": 10, "tags": [{"id": 5, "name": "live"}]}, {"id": 11, "tags": [{"id": 5, "name": "live"}]}], "meta": {"last_page": 1}})
         )
 
         # Two GETs to /campaigns/{id}/sender-emails — first is prior, second is verify
@@ -278,7 +278,7 @@ class TestEndToEndDryRun:
         )
         # target = {10, 11, 12}; prior = {11, 12, 99} — 1/3 = 33% removal, passes guard
         respx.get(f"{EB_BASE}/api/sender-emails").mock(
-            return_value=_resp(200, {"data": [{"id": 10}, {"id": 11}, {"id": 12}], "meta": {"last_page": 1}})
+            return_value=_resp(200, {"data": [{"id": 10, "tags": [{"id": 5, "name": "live"}]}, {"id": 11, "tags": [{"id": 5, "name": "live"}]}, {"id": 12, "tags": [{"id": 5, "name": "live"}]}], "meta": {"last_page": 1}})
         )
         respx.get(f"{EB_BASE}/api/campaigns/{CAMPAIGN_ID}/sender-emails").mock(
             side_effect=[

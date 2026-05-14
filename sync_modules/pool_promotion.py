@@ -229,3 +229,125 @@ async def count_pool_state(
           AND sa.inventory_pool_status = $3
           AND d.pool_status NOT IN ('burned', 'cancelled')
     """, workspace_id, esp, pool) or 0
+
+
+async def count_pool_state_conn(
+    conn: asyncpg.Connection,
+    workspace_id: UUID,
+    pool: str,
+    esp: str = 'gmail',
+) -> int:
+    """Same as count_pool_state but takes a Connection (for use inside handlers
+    that already hold a pool-acquired conn). Avoids the double-acquire pattern."""
+    return await conn.fetchval("""
+        SELECT COUNT(*)
+        FROM sender_accounts sa
+        JOIN domains d ON sa.domain_id = d.id
+        WHERE sa.workspace_id = $1
+          AND sa.esp = $2
+          AND sa.is_active = TRUE
+          AND sa.inbox_state = 'live'
+          AND sa.status = 'Connected'
+          AND sa.inventory_pool_status = $3
+          AND d.pool_status NOT IN ('burned', 'cancelled')
+    """, workspace_id, esp, pool) or 0
+
+
+async def promote_to_target(
+    db: asyncpg.Pool,
+    workspace_id: UUID,
+    target_live_count: int,
+    *,
+    triggered_by: str = 'event_driven',
+    rotation_type: str = 'threshold_promotion',
+    reason: str = 'event_driven_threshold_fill',
+) -> Dict[str, Any]:
+    """Promote Google reserves until current_live reaches target_live_count.
+
+    Single-row entry point shared by:
+      - WorkspaceWriteOrchestrator._maintain_pool_thresholds (per-workspace
+        polling cycle, every 60s)
+      - sync_modules.event_handlers.kill_chain.inbox_died_handler (event-
+        driven, fires immediately when an inbox dies)
+      - sync_modules.event_handlers.workspace.package_assigned_handler
+        (event-driven, fires when a workspace gets a package)
+
+    Returns a dict with:
+      'promoted'           — count of inboxes promoted (≤ deficit)
+      'deficit_at_decision' — target - current_live at start
+      'reserve_count'      — Google reserves available at start
+      'no_candidates'      — True if deficit > 0 but pick returned empty
+
+    Caller decides whether to alert on insufficient reserves
+    (`no_candidates=True`). This function never alerts; it just promotes
+    or no-ops.
+
+    Per ADR-006: only Google inboxes are promoted (Microsoft is ride-to-
+    death). pick_promotion_candidates handles that filter.
+    """
+    current_live = await count_pool_state(db, workspace_id, 'live', esp='gmail')
+    deficit = target_live_count - current_live
+    reserve_count = await count_pool_state(db, workspace_id, 'reserve', esp='gmail')
+
+    if deficit <= 0:
+        return {
+            'promoted': 0, 'deficit_at_decision': deficit,
+            'reserve_count': reserve_count, 'no_candidates': False,
+        }
+
+    candidates = await pick_promotion_candidates(db, workspace_id, deficit)
+    if not candidates:
+        return {
+            'promoted': 0, 'deficit_at_decision': deficit,
+            'reserve_count': reserve_count, 'no_candidates': True,
+        }
+
+    promoted = 0
+    for cand in candidates:
+        ok = await promote_inbox_to_deployed(
+            db, cand['id'], workspace_id,
+            reason=reason,
+            triggered_by=triggered_by,
+            rotation_type=rotation_type,
+            metadata={
+                'target_live_count': target_live_count,
+                'deficit_at_decision': deficit,
+                'domain_id': str(cand.get('domain_id')) if cand.get('domain_id') else None,
+            },
+        )
+        if ok:
+            promoted += 1
+
+    return {
+        'promoted': promoted, 'deficit_at_decision': deficit,
+        'reserve_count': reserve_count, 'no_candidates': False,
+    }
+
+
+async def get_workspace_promotion_target(
+    conn: asyncpg.Connection,
+    workspace_id: UUID,
+) -> Optional[int]:
+    """Resolve a workspace's effective live target.
+
+    Returns:
+      target_live_count_override if set,
+      else package.target_live_count,
+      else None (no package = no proactive promotion).
+
+    Honors workspace.pause_pool_transitions: returns None when paused.
+    """
+    row = await conn.fetchrow("""
+        SELECT
+            w.target_live_count_override,
+            COALESCE(w.pause_pool_transitions, FALSE) AS paused,
+            p.target_live_count AS package_target
+        FROM workspaces w
+        LEFT JOIN workspace_packages p ON p.id = w.package_id
+        WHERE w.id = $1
+    """, workspace_id)
+
+    if not row or row['paused']:
+        return None
+
+    return row['target_live_count_override'] or row['package_target']

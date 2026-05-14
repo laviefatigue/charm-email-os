@@ -18,6 +18,8 @@ state where the campaign is left in a non-running condition without intent.
 """
 from __future__ import annotations
 
+import asyncio
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, time
 from enum import StrEnum
@@ -128,6 +130,9 @@ async def reapply_campaign(
     last_run_local_date: date | None = None,
     min_target_size: int = 1,
     max_removal_pct: float = 50.0,
+    verify_settle_attempts: int = 4,
+    verify_settle_seconds: float = 5.0,
+    sleep_func: Callable[[float], Awaitable[None]] | None = None,
 ) -> ReapplyResult:
     """Reapply the live-tagged sender set to a campaign's attachment list.
 
@@ -139,6 +144,7 @@ async def reapply_campaign(
 
     if now_utc is None:
         now_utc = datetime.now(UTC)
+    _sleep = sleep_func if sleep_func is not None else asyncio.sleep
 
     result = ReapplyResult(
         status=ReapplyStatus.FAILED_PRE_PAUSE,
@@ -309,15 +315,29 @@ async def reapply_campaign(
                 result.error_step = "remove"
                 return result
 
-        # Step 8: Verify by re-fetching
-        try:
-            final_senders = await eb.get_campaign_senders(campaign_id)
-        except EmailBisonAPIError as e:
-            result.error_message = f"verify fetch failed: {e}"
-            result.error_step = "verify_fetch"
-            return result
+        # Step 8: Verify by re-fetching (with settle-wait).
+        # EB's /remove-sender-emails is async — observed response message is
+        # "Sender emails sent for deletion. This may take a moment." A single
+        # immediate verify can false-negative. Retry up to verify_settle_attempts
+        # times with verify_settle_seconds between attempts; converge as soon
+        # as the campaign-senders set matches target.
+        final_ids: list[int] = []
+        attempts_made = 0
+        for attempt in range(1, max(1, verify_settle_attempts) + 1):
+            attempts_made = attempt
+            try:
+                final_senders = await eb.get_campaign_senders(campaign_id)
+            except EmailBisonAPIError as e:
+                result.error_message = f"verify fetch failed (attempt {attempt}): {e}"
+                result.error_step = "verify_fetch"
+                return result
 
-        final_ids = sorted({int(s["id"]) for s in final_senders if "id" in s})
+            final_ids = sorted({int(s["id"]) for s in final_senders if "id" in s})
+            if set(final_ids) == target_set:
+                break  # converged
+            if attempt < max(1, verify_settle_attempts):
+                await _sleep(verify_settle_seconds)
+
         result.final_set = final_ids
         result.verify_passed = set(final_ids) == target_set
 
@@ -325,8 +345,12 @@ async def reapply_campaign(
             result.status = ReapplyStatus.SUCCEEDED
         else:
             result.status = ReapplyStatus.FAILED_POST_RESUME
+            extra = sorted(set(final_ids) - target_set)
+            missing = sorted(target_set - set(final_ids))
             result.error_message = (
-                f"verify mismatch: final={final_ids}, expected={sorted(target_set)}"
+                f"verify mismatch after {attempts_made} attempts "
+                f"({verify_settle_seconds}s settle each): "
+                f"extra={extra[:20]}, missing={missing[:20]}"
             )
             result.error_step = "verify"
     finally:
