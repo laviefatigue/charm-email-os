@@ -140,10 +140,27 @@ The false-negative VERIFY at 15:05:30 is what motivated Bug 2's fix.
 
 ---
 
+## Apply-mode validation — SPUI campaign 101 (2026-05-14)
+
+After the v2 daemon shipped (PR 1 scaffold + PR 2 apply-mode + crash recovery) and apply-mode was cut over (`EOD_APPLY_MODE=true` on the Coolify daemon), the first real apply-run was driven **through the actual daemon job path** — reset SPUI's `campaign_reapply_jobs` row to `pending`, restarted the daemon, let the worker claim → run → finalize. This is the faithful "what runs automatically" path, not a hand-rolled script.
+
+**Result — the mutation was correct:**
+- Daemon executed `pause → DELETE remove (8 senders) → verify → resume` against production EB.
+- Campaign 101: 95 → 87 attached, all 8 kill-flagged senders detached, campaign resumed to `active`.
+- **EB-API correctness proof** (independent post-run query): `attached == live` exactly — all 87 attached senders carry the `live` tag (id 342), zero non-live senders attached, zero live senders missing. The campaign's sender attachment now mirrors the `live` tag authority, which is the entire point of the system.
+
+**The run surfaced a real bug — `outcome=failed` despite the mutation succeeding:**
+- EB's async DELETE leaves pagination metadata transiently inconsistent. The post-remove verify fetch of `/campaigns/{id}/sender-emails` returned the correct 87 rows but `meta.total` still said 95 — tripping `eb_client`'s pagination-consistency guard (raises rather than return possibly-truncated data; the guard that catches silent truncation).
+- The verify loop's settle-wait retry only covered **set mismatch**; a fetch **exception** bailed immediately on attempt 1. Same async-delete root cause as the settle-wait already shipped, second manifestation path.
+- **Fixed** (commit `89e58a0`): verify loop now treats a `get_campaign_senders` exception the same as a set mismatch — settle and retry; only a fetch failing on the *final* attempt is a real failure. Truncation guard left strict (retry around it). `verify_fetch` bail now sets `FAILED_POST_RESUME` (was wrongly leaving the `FAILED_PRE_PAUSE` default). Re-ran SPUI 101 post-fix → `skipped_no_diff`, `verify_passed=true` (campaign already at target).
+- **Lesson**: this bug lived specifically in the post-mutation verify path — code that only runs when an actual mutation happens. Dry-run and unit tests structurally could not catch it; a controlled real apply-run did.
+
 ## What this exercise taught us
 
 1. **"It accepts your request" ≠ "it honored your request."** EB returns `200 OK` with a wrong-but-plausible payload for unknown filter params. The defense is a per-response semantic check that the response matches the intent (every row carries the filter tag), not a contract test against a frozen mock.
 
-2. **`200` on async endpoints is a promise, not a fact.** When EB says "this may take a moment", verify must be retried, not assumed. The L1/L2 mocks all return synchronous state — only L5 against prod uncovered this.
+2. **`200` on async endpoints is a promise, not a fact.** When EB says "this may take a moment", verify must be retried, not assumed — and the retry must cover *both* a set mismatch *and* a fetch exception (the async lag manifests as both). The L1/L2 mocks all return synchronous state — only real-EB runs uncovered this.
 
-3. **Hand-rolled probe scripts ≠ production code.** The CLI uses the right filter. The reason the bug surfaced is that I rewrote the orchestration in `d:\tmp\eod_reapply_test271.py` to work around a missing DB tunnel. Cost: 157 over-attached senders + a revert run. Going forward, drive L5 through the actual CLI binary (even if it means setting up a DB tunnel or container exec path) rather than reproducing logic.
+3. **Hand-rolled probe scripts ≠ production code.** The CLI uses the right filter. The reason the filter bug surfaced is that the L5 orchestration was rewritten in `d:\tmp\eod_reapply_test271.py` to work around a missing DB tunnel. Cost: 157 over-attached senders + a revert run. The apply-mode validation (above) corrected for this — it ran through the actual daemon job path, not a reproduction.
+
+4. **A real apply-run proves what dry-run + tests cannot.** The verify-loop fetch-retry bug only existed in the post-mutation path. Dry-run never mutates, so it never reaches that code; unit tests mocked synchronous responses. The controlled real apply-run on SPUI 101 was the only thing that could expose it.

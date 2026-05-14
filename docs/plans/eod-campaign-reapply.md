@@ -1,8 +1,8 @@
 ---
 title: EOD Campaign Reapply Service
-status: v1 SHIPPED + L5 ATTACH validated. v2 daemon SHIPPED + DEPLOYED — PR 1 (scaffold) + PR 2 (apply-mode + crash recovery) both live. 248 tests passing.
+status: v2 daemon LIVE IN APPLY-MODE. Validated end-to-end against SPUI campaign 101 — real mutation + EB-API correctness proof. 249 tests passing.
 created: 2026-04-29
-updated: 2026-05-14 (v2 PR 2 landed: apply-mode wired, startup crash-recovery scan, --apply CLI flag)
+updated: 2026-05-14 (apply-mode cutover + first real apply-run on SPUI 101; verify-loop fetch-retry bug found & fixed)
 tags: [plan, emailbison, campaign, reapply, timezone, kill-triggers, scope, event-driven]
 related-plans:
   - INBOX-INTEGRITY-PROGRAM.md (master tracker)
@@ -17,11 +17,21 @@ A small, independent app that reapplies the `live` inbox tag set to every active
 
 | Layer | State |
 |---|---|
-| **v1 — operator-invoked CLI** | ✅ SHIPPED at [`apps/eod-reapply/`](../../apps/eod-reapply/). Tested through L4 (mocked unit + integration). |
-| **L5 — real-EB staging gate** | ✅ ATTACH path validated 2026-05-13 against Charm Test-Campaign 271. Two latent bugs found + fixed during staging (filter-shape silent-ignore, async-delete false-negative). See [`apps/eod-reapply/docs/staging-results.md`](../../apps/eod-reapply/docs/staging-results.md). |
-| **v2 PR 1 — daemon scaffold** | ✅ SHIPPED + DEPLOYED 2026-05-13. Migration 111 adds `campaign_reapply_jobs` + `workspaces.eod_reapply_enabled` flag (default FALSE). `eod-reapply daemon` runs a long-lived process: enqueuer (walks enabled workspaces × active campaigns, fetches schedules from EB, computes per-tz `trigger_at`, inserts pending jobs) + worker (claims due jobs via SELECT FOR UPDATE SKIP LOCKED, emits `campaign_reapply_due` event_log row, runs orchestrator, finalizes both rows). Deployed as Coolify `eod-reapply-daemon` (Dockerfile.daemon). Dry-run validated against SPUI campaign 101 (8 to remove, 0 to attach). |
-| **v2 PR 2 — apply-mode + crash recovery** | ✅ SHIPPED 2026-05-14. `--apply` CLI flag flips `dry_run_only`; daemon-wide. Startup `recover_orphaned_jobs` scan: any job stuck in `flagged` state from a prior crash has its campaign checked and resumed if left paused mid-reapply; also sweeps stuck `processing` event_log rows. 248 tests passing. **Slack alerting deliberately skipped** — `event_log` rows (status + error_message + metadata) plus loud daemon logs are the observability layer; revisit only if event_log proves insufficient in practice. |
-| **v2 PR 3 — validation audit** | ⏳ OPTIONAL / DEFERRED. Daily check that killed inboxes don't show sends from a campaign after that campaign's `T_eod`. Not blocking — the `event_log` outcomes already give per-run visibility. Build if/when an automated closed-loop check is wanted. |
+| **v1 — operator-invoked CLI** | ✅ SHIPPED at [`apps/eod-reapply/`](../../apps/eod-reapply/). |
+| **L5 — real-EB staging gate** | ✅ ATTACH path validated 2026-05-13 against Charm Test-Campaign 271. Two latent bugs found + fixed (filter-shape silent-ignore, async-delete false-negative). See [`apps/eod-reapply/docs/staging-results.md`](../../apps/eod-reapply/docs/staging-results.md). |
+| **v2 PR 1 — daemon scaffold** | ✅ SHIPPED + DEPLOYED 2026-05-13. Migration 111 adds `campaign_reapply_jobs` + `workspaces.eod_reapply_enabled` flag (default FALSE). `eod-reapply daemon`: enqueuer (walks enabled workspaces × active campaigns, fetches schedules from EB, computes per-tz `trigger_at`, inserts pending jobs) + worker (claims due jobs via SELECT FOR UPDATE SKIP LOCKED, emits `campaign_reapply_due` event_log row, runs orchestrator, finalizes). Deployed as Coolify `eod-reapply-daemon` (Dockerfile.daemon). |
+| **v2 PR 2 — apply-mode + crash recovery** | ✅ SHIPPED 2026-05-14. Apply-mode toggled by the `EOD_APPLY_MODE` env var (Coolify ignores CMD-overrides for Dockerfile builds, so apply-mode is env-var-driven, not a flag baked into the image). Startup `recover_orphaned_jobs` scan: any job stuck in `flagged` from a prior crash has its campaign checked and resumed if left paused mid-reapply; also sweeps stuck `processing` event_log rows. **Slack alerting deliberately skipped** — `event_log` rows + loud daemon logs are the observability layer. |
+| **APPLY-MODE CUTOVER** | ✅ LIVE 2026-05-14. `EOD_APPLY_MODE=true` set on the Coolify daemon; startup log confirms `MODE: APPLY`. Per-workspace scope: `workspaces.eod_reapply_enabled` — currently **Charm + SPUI** enabled. |
+| **First real apply-run** | ✅ VALIDATED 2026-05-14 on SPUI campaign 101. Daemon executed pause → DELETE 8 stale senders → verify → resume against production EB. Campaign went 95 → 87 attached, all 8 kill-flagged senders detached, campaign resumed to `active`. **EB-API correctness proof**: post-run query confirms `attached == live` exactly (all 87 attached senders carry the `live` tag id 342; zero non-live senders attached; zero live senders missing). The run also surfaced a real verify-loop bug — see below. |
+| **v2 PR 3 — validation audit** | ⏳ OPTIONAL / DEFERRED. Daily check that killed inboxes don't show sends from a campaign after `T_eod`. Not blocking — `event_log` outcomes already give per-run visibility. |
+
+### Verify-loop fetch-retry bug (found & fixed 2026-05-14, commit `89e58a0`)
+
+The first real apply-run on SPUI 101 mutated correctly but the daemon reported `outcome=failed` — a **false failure**. Root cause: EB's async DELETE leaves pagination metadata transiently inconsistent — the post-remove verify fetch of `/campaigns/{id}/sender-emails` returned the correct 87 rows but `meta.total` still said 95, tripping `eb_client`'s pagination-consistency guard (which raises rather than return possibly-truncated data — the guard that catches silent truncation, Sammy #63). The verify loop's settle-wait retry only covered **set mismatch**; a fetch **exception** bailed immediately. Same async-delete root cause as the settle-wait already shipped, second manifestation path.
+
+**Fix**: the verify loop now treats a `get_campaign_senders` exception the same as a set mismatch — settle and retry; only a fetch failing on the *final* attempt is a real failure. The truncation guard in `eb_client` is left strict (retry around it, don't loosen). The `verify_fetch` bail now also sets `FAILED_POST_RESUME` (was wrongly leaving the `FAILED_PRE_PAUSE` default — the campaign was already mutated + resumed by that point).
+
+**Lesson**: this bug lived specifically in the post-mutation verify path — code that only executes when an actual mutation happens. Dry-run and unit tests structurally could not catch it; the real apply-run did. Validates doing a controlled real apply-run rather than trusting dry-run + tests alone.
 
 ## Purpose
 
