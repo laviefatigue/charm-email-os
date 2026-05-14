@@ -321,21 +321,46 @@ async def reapply_campaign(
         # immediate verify can false-negative. Retry up to verify_settle_attempts
         # times with verify_settle_seconds between attempts; converge as soon
         # as the campaign-senders set matches target.
+        #
+        # The async delete leaves EB's pagination metadata transiently
+        # inconsistent too: observed 2026-05-14 on SPUI campaign 101 — the
+        # campaign-senders endpoint returned the correct 87 rows but
+        # `meta.total` still said 95, which trips eb_client's pagination
+        # consistency guard (it raises rather than return possibly-truncated
+        # data). That guard exists to catch silent truncation, so we don't
+        # loosen it — instead the verify loop treats a fetch exception the
+        # same as a set mismatch: settle and retry. Only a fetch that fails
+        # on the FINAL attempt is a real failure.
         final_ids: list[int] = []
         attempts_made = 0
         for attempt in range(1, max(1, verify_settle_attempts) + 1):
             attempts_made = attempt
+            is_last = attempt >= max(1, verify_settle_attempts)
             try:
                 final_senders = await eb.get_campaign_senders(campaign_id)
             except EmailBisonAPIError as e:
-                result.error_message = f"verify fetch failed (attempt {attempt}): {e}"
-                result.error_step = "verify_fetch"
-                return result
+                # Transient post-mutation inconsistency (stale meta.total,
+                # rows still settling). Retry like a mismatch; only bail if
+                # this was the last attempt.
+                if is_last:
+                    # Mutations + resume already happened by this point
+                    # (resume runs in the finally below). Verification just
+                    # couldn't complete — that's FAILED_POST_RESUME, not the
+                    # FAILED_PRE_PAUSE default.
+                    result.status = ReapplyStatus.FAILED_POST_RESUME
+                    result.error_message = (
+                        f"verify fetch failed after {attempts_made} attempts "
+                        f"({verify_settle_seconds}s settle each): {e}"
+                    )
+                    result.error_step = "verify_fetch"
+                    return result
+                await _sleep(verify_settle_seconds)
+                continue
 
             final_ids = sorted({int(s["id"]) for s in final_senders if "id" in s})
             if set(final_ids) == target_set:
                 break  # converged
-            if attempt < max(1, verify_settle_attempts):
+            if not is_last:
                 await _sleep(verify_settle_seconds)
 
         result.final_set = final_ids

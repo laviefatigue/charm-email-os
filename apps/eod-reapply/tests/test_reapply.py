@@ -573,15 +573,17 @@ class TestFailureInjection:
         # attach should have been called (it precedes remove)
         assert "attach_senders" in eb.methods_called()
 
-    async def test_verify_fetch_failure_resume_still_called(self):
-        # Make get_campaign_senders fail on its 2nd call (the verify call)
+    async def test_verify_fetch_failure_all_attempts_resume_still_called(self):
+        # get_campaign_senders fails on EVERY verify call (call 2 onward).
+        # The verify loop retries each, and only after all attempts throw
+        # does it bail with verify_fetch. Resume must still happen.
         eb = FakeEBClient()
         original = eb.get_campaign_senders
         call_count = {"n": 0}
 
         async def flaky(campaign_id):
             call_count["n"] += 1
-            if call_count["n"] == 2:
+            if call_count["n"] >= 2:  # every verify attempt fails
                 eb.calls.append(("get_campaign_senders", (campaign_id,)))
                 raise EmailBisonAPIError(500, "verify fetch failed")
             return await original(campaign_id)
@@ -589,6 +591,35 @@ class TestFailureInjection:
         eb.get_campaign_senders = flaky
         result, eb = await _run(eb=eb)
         assert result.error_step == "verify_fetch"
+        assert result.status == ReapplyStatus.FAILED_POST_RESUME
+        assert "after 4 attempts" in (result.error_message or "")
+        _assert_resume_called_after_pause(eb)
+
+    async def test_verify_fetch_transient_error_retries_and_recovers(self):
+        # The 2026-05-14 SPUI bug: the async DELETE leaves EB's pagination
+        # metadata transiently inconsistent, so the first verify fetch
+        # raises (eb_client's consistency guard). The verify loop must
+        # treat that like a mismatch — settle and retry — not bail.
+        eb = FakeEBClient()
+        original = eb.get_campaign_senders
+        call_count = {"n": 0}
+
+        async def flaky(campaign_id):
+            call_count["n"] += 1
+            # call 1 = compute prior; call 2 = verify attempt 1 (raises);
+            # call 3 = verify attempt 2 (succeeds, matches target).
+            if call_count["n"] == 2:
+                eb.calls.append(("get_campaign_senders", (campaign_id,)))
+                raise EmailBisonAPIError(
+                    0, "pagination collected 87 senders but meta.total=95"
+                )
+            return await original(campaign_id)
+
+        eb.get_campaign_senders = flaky
+        result, eb = await _run(eb=eb)
+        # Recovered: the retry after the transient error succeeded.
+        assert result.status == ReapplyStatus.SUCCEEDED
+        assert result.verify_passed is True
         _assert_resume_called_after_pause(eb)
 
     async def test_verify_mismatch_marks_failed_post_resume(self):
