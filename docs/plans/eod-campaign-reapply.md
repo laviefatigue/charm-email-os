@@ -1,8 +1,8 @@
 ---
 title: EOD Campaign Reapply Service
-status: v2 daemon LIVE IN APPLY-MODE. Validated end-to-end against SPUI campaign 101 — real mutation + EB-API correctness proof. 249 tests passing.
+status: v2 daemon LIVE IN APPLY-MODE — FLEET ROLLOUT COMPLETE. All 10 active workspaces (except Sammy) enabled; 30 jobs queued across 7 with active campaigns. 249 tests passing.
 created: 2026-04-29
-updated: 2026-05-14 (apply-mode cutover + first real apply-run on SPUI 101; verify-loop fetch-retry bug found & fixed)
+updated: 2026-05-14 (fleet rollout — all active workspaces enabled after SPUI 101 end-to-end validation)
 tags: [plan, emailbison, campaign, reapply, timezone, kill-triggers, scope, event-driven]
 related-plans:
   - INBOX-INTEGRITY-PROGRAM.md (master tracker)
@@ -21,7 +21,8 @@ A small, independent app that reapplies the `live` inbox tag set to every active
 | **L5 — real-EB staging gate** | ✅ ATTACH path validated 2026-05-13 against Charm Test-Campaign 271. Two latent bugs found + fixed (filter-shape silent-ignore, async-delete false-negative). See [`apps/eod-reapply/docs/staging-results.md`](../../apps/eod-reapply/docs/staging-results.md). |
 | **v2 PR 1 — daemon scaffold** | ✅ SHIPPED + DEPLOYED 2026-05-13. Migration 111 adds `campaign_reapply_jobs` + `workspaces.eod_reapply_enabled` flag (default FALSE). `eod-reapply daemon`: enqueuer (walks enabled workspaces × active campaigns, fetches schedules from EB, computes per-tz `trigger_at`, inserts pending jobs) + worker (claims due jobs via SELECT FOR UPDATE SKIP LOCKED, emits `campaign_reapply_due` event_log row, runs orchestrator, finalizes). Deployed as Coolify `eod-reapply-daemon` (Dockerfile.daemon). |
 | **v2 PR 2 — apply-mode + crash recovery** | ✅ SHIPPED 2026-05-14. Apply-mode toggled by the `EOD_APPLY_MODE` env var (Coolify ignores CMD-overrides for Dockerfile builds, so apply-mode is env-var-driven, not a flag baked into the image). Startup `recover_orphaned_jobs` scan: any job stuck in `flagged` from a prior crash has its campaign checked and resumed if left paused mid-reapply; also sweeps stuck `processing` event_log rows. **Slack alerting deliberately skipped** — `event_log` rows + loud daemon logs are the observability layer. |
-| **APPLY-MODE CUTOVER** | ✅ LIVE 2026-05-14. `EOD_APPLY_MODE=true` set on the Coolify daemon; startup log confirms `MODE: APPLY`. Per-workspace scope: `workspaces.eod_reapply_enabled` — currently **Charm + SPUI** enabled. |
+| **APPLY-MODE CUTOVER** | ✅ LIVE 2026-05-14. `EOD_APPLY_MODE=true` set on the Coolify daemon; startup log confirms `MODE: APPLY`. |
+| **FLEET ROLLOUT** | ✅ COMPLETE 2026-05-14. `eod_reapply_enabled = TRUE` for all 10 active workspaces except Sammy (off EmailBison — would only generate `SKIPPED_EMPTY_LIVE` noise). First fleet enqueue pass: 30 jobs across 7 workspaces with active campaigns (Spout 13, Search Atlas 6, SKMR 4, Selery 3, Stable Kernel 2, Hello Hero 1, SPUI 1), each scheduled at its campaign's EOD in its own IANA tz. Charm/Barrena/Linkgraph enabled but idle (no active campaigns). Steady-state operation from here. |
 | **First real apply-run** | ✅ VALIDATED 2026-05-14 on SPUI campaign 101. Daemon executed pause → DELETE 8 stale senders → verify → resume against production EB. Campaign went 95 → 87 attached, all 8 kill-flagged senders detached, campaign resumed to `active`. **EB-API correctness proof**: post-run query confirms `attached == live` exactly (all 87 attached senders carry the `live` tag id 342; zero non-live senders attached; zero live senders missing). The run also surfaced a real verify-loop bug — see below. |
 | **v2 PR 3 — validation audit** | ⏳ OPTIONAL / DEFERRED. Daily check that killed inboxes don't show sends from a campaign after `T_eod`. Not blocking — `event_log` outcomes already give per-run visibility. |
 
