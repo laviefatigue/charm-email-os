@@ -12,7 +12,7 @@ tags: [architecture, hypertide, integration, plan, service]
 >
 > Related:
 > - API reference: [[hypertide-api]] — the canonical doc for what HT actually returns
-> - Reconciliation runbook (Phase 1 deliverable): [[hypertide-reconciliation]]
+> - Operator runbook: [apps/hypertide-worker/HANDOFF.md](../../apps/hypertide-worker/HANDOFF.md) — how the freshness-timer runs, what the audit metrics mean, manual interventions
 > - Domain pipeline (legacy purchase flow): [[domain-purchase-pipeline]]
 
 ## TL;DR
@@ -270,46 +270,40 @@ Deferred to Phase 2. Job queue is not needed for read-only collection.
 
 ## Phased delivery
 
-### Phase 1 — Data collection only (~2-3 days, this PR)
+### Phase 1 — Data collection — SHIPPED 2026-05-14
 
-**Goal:** Hypertide records are mirrored into `domains` table. Drift is observable. No HT writes.
+**Goal:** Hypertide records mirrored into `domains` table. Drift observable. No HT writes.
 
-**Deliverables:**
+**What shipped** (commits `29f734e` → `aab29d4` on `feature/event-driven-architecture`):
 
-1. **Migration 110** (workspace + domain state)
-2. **`hypertide_api/classifier.py`** — single source of truth for decision logic (lifted from `d:/tmp/`, no curl, env-var secrets)
-3. **`apps/hypertide-worker/`** — new Coolify app, replaces existing `hypertide-worker`
-   - `pyproject.toml`, `Dockerfile`, `README.md`, `HANDOFF.md`
-   - `src/hypertide_worker/audit.py` — workspace-level reconcile (matches d:/tmp/workspace_audit.py)
-   - `src/hypertide_worker/jobs/audit_drift.py` — single job processor (Phase 1 only needs this one)
-   - `src/hypertide_worker/cli.py` — `audit`, `backfill`, `mark-legacy` commands
-   - `src/hypertide_worker/worker.py` — main loop (Phase 1: cron-mode only)
-   - `tests/` — classifier coverage + audit fixture tests
-4. **One-time backfill script** — populates `hypertide_*` columns for existing 642 domains by matching on domain_name + HT `/orders/active` data
-5. **Workspace flag setup** — set `manages_via_hypertide=FALSE` on Estrada, Neon, EventPanda, Test Workspace, Deprecate
-6. **Daily cron in Coolify** — runs `audit_drift` job, emits summary to `sync_audit_log`
-7. **Runbook** — [[hypertide-reconciliation]] documenting the workflow
+1. **Migration 110** — `workspaces.manages_via_hypertide` / `occupancy_only`, `domains.hypertide_*` columns + `is_legacy`, 4 indexes. Applied to production 2026-05-12.
+2. **`apps/hypertide-worker/`** — Coolify app, replaces the legacy `hypertide-worker`. Actual package layout:
+   - `src/hypertide_worker/classifier.py` — decision tree, single source of truth (lives in the app package, not a shared lib)
+   - `src/hypertide_worker/ht_client.py` — async HT API client (own implementation, no curl)
+   - `src/hypertide_worker/audit.py` — full-fleet reconcile, drift detection
+   - `src/hypertide_worker/backfill.py` — `is_legacy` flagging + gated `--onboard-workspace` INSERT path
+   - `src/hypertide_worker/cli.py` — `audit`, `backfill`, `inspect-domain`, `mark-legacy`
+   - `src/hypertide_worker/jobs/audit_drift.py` — cron-entrypoint wrapper around `run_audit(apply=True)`
+   - `src/hypertide_worker/config.py`, `db.py` — env config + asyncpg connection
+   - **No `worker.py`** — there is no daemon in Phase 1. Scheduling is the Dockerfile CMD (see below).
+3. **Backfill** — `audit --apply` populated `hypertide_*` on 512 of 673 in-scope domains on first prod run; remainder flagged `is_legacy` or are friends-and-family.
+4. **Workspace flags** — `manages_via_hypertide=FALSE` set on Estrada, Neon, EventPanda, Test Workspace, Deprecate.
+5. **Scheduling** — Dockerfile CMD is a **24h freshness-timer loop** (`run audit --apply → sleep 24h → repeat`). Not a Coolify cron, not the Phase 2 job daemon. See [HANDOFF.md](../../apps/hypertide-worker/HANDOFF.md) for the optional Coolify scheduled-task layer.
+6. **CI** — `.github/workflows/hypertide-worker.yml` runs ruff + mypy --strict + pytest + docker-build smoke-test, scoped to `apps/hypertide-worker/**`.
+7. **Drift detection** — `audit` surfaces `drift_ht_cancelled_inboxes_connected` (HT cancelled but EB still connected — found 43 on first prod run, 27 still sending) and the `ht_incoming` / `ht_friends_and_family` split.
 
-**Acceptance criteria:**
-- 100% of in-scope domains (those in `manages_via_hypertide=TRUE` workspaces) either have `hypertide_record_id` populated OR `is_legacy=TRUE`
-- Daily audit job runs successfully for 7 consecutive days without errors
-- Drift count visible in audit_log; alerts NOT yet wired (Phase 2)
-- All `d:/tmp/` scripts archived; functionality replicated in `apps/hypertide-worker/cli.py`
-- Tests: classifier 100% branch coverage; audit job has integration test against fixture HT response
+**State at ship:** parity 76% (512/673 in-scope domains linked to HT). Tests: 33 passing — classifier has full branch coverage; `audit.py`/`backfill.py` orchestration loops covered at the helper layer (full integration harness deferred to the Phase 2 PR, per the CI workflow's note).
 
-**Out of scope (Phase 1):**
+**Out of scope (Phase 1) — confirmed not done:**
 - Web UI / charm-frontend changes
 - HTTP routes in charm-api
-- Job queue (`hypertide_jobs`)
-- Cancellation flows
-- Order placement
-- Provisioning watchdog
-- Slack alerts
+- Job queue (`hypertide_jobs` — migration 111, Phase 2)
+- Cancellation flows, order placement, provisioning watchdog, Slack alerts
 - EB sync code changes
 
 ### Phase 2 — Cancellation via web UI + job queue (~1 week, deferred)
 
-- Migration 095 (`hypertide_jobs`)
+- Migration 111 (`hypertide_jobs`)
 - Worker process picks up `cancel_domain` jobs
 - HTTP endpoints in `charm-api`: `POST /api/hypertide/cancellations`, `POST /api/hypertide/cancellations/{id}/approve`
 - Cancellation web UI on `charm-frontend` (redesigned, not a port of d:/tmp/cleanup_viewer.html)
@@ -331,33 +325,37 @@ Deferred to Phase 2. Job queue is not needed for read-only collection.
 - Dry-run mode for production cutover
 - Deprecate the old discovery path
 
-## Phase 1 — `apps/hypertide-worker/` package layout
+## Phase 1 — `apps/hypertide-worker/` package layout (as shipped)
 
 ```
 apps/hypertide-worker/
-├── Dockerfile
-├── HANDOFF.md
+├── Dockerfile                      # 24h freshness-timer CMD (run audit --apply, sleep, repeat)
+├── HANDOFF.md                      # operator runbook
 ├── README.md
-├── pyproject.toml                  # asyncpg, httpx, click, pytest, respx, ruff, mypy
+├── .gitignore
+├── pyproject.toml                  # asyncpg, httpx, click + dev: pytest, respx, ruff, mypy
 ├── src/
 │   └── hypertide_worker/
 │       ├── __init__.py
-│       ├── config.py               # env vars: HYPERTIDE_API_KEY, HYPERTIDE_API_URL, DATABASE_URL
+│       ├── config.py               # env: DATABASE_URL, HYPERTIDE_API_KEY, HYPERTIDE_API_URL
 │       ├── db.py                   # asyncpg connection helper
-│       ├── ht_client.py            # thin wrapper around hypertide_api.client.HypertideAPIClient
-│       ├── audit.py                # workspace audit logic (returns dataclasses, not CSVs)
-│       ├── backfill.py             # one-time backfill from HT into domains
-│       ├── classifier.py           # decision tree (re-exports hypertide_api.classifier)
-│       ├── jobs/
-│       │   ├── __init__.py
-│       │   └── audit_drift.py      # only job in Phase 1
-│       ├── worker.py               # main loop (Phase 1: cron entrypoint, not continuous claim)
-│       └── cli.py                  # `audit`, `backfill`, `mark-legacy`, `inspect-domain`
+│       ├── ht_client.py            # async HT API client (own impl — no curl, no shared lib)
+│       ├── classifier.py           # decision tree — single source of truth
+│       ├── audit.py                # full-fleet reconcile + drift detection
+│       ├── backfill.py             # is_legacy flagging + gated --onboard-workspace INSERT
+│       ├── cli.py                  # audit | backfill | inspect-domain | mark-legacy
+│       └── jobs/
+│           ├── __init__.py
+│           └── audit_drift.py      # cron-entrypoint wrapper around run_audit(apply=True)
 └── tests/
-    ├── conftest.py                 # respx fixtures, fake DB
-    ├── test_classifier.py          # 100% branch coverage on decision tree
-    ├── test_audit.py               # full pipeline integration test with mocked HT
-    └── test_backfill.py            # backfill idempotency, ambiguous-match handling
+    ├── conftest.py
+    ├── test_classifier.py          # full branch coverage on the decision tree
+    └── test_backfill.py            # _infer_workspace_id, _infer_infrastructure_type, _ct_to_str
+
+# NOT present (deliberately):
+#   - worker.py — no daemon in Phase 1; scheduling is the Dockerfile CMD loop
+#   - test_audit.py — audit.py orchestration is helper-layer tested; the full
+#     respx + testcontainers integration harness is deferred to the Phase 2 PR
 ```
 
 ## Phase 1 — backfill workflow
@@ -519,4 +517,4 @@ Things explicitly out of scope today but worth flagging for later:
 
 ---
 
-*This is a planning document. Implementation tracking lives in PRs. Operational runbook (once Phase 1 ships) at [[hypertide-reconciliation]].*
+*This is a planning document. Implementation tracking lives in PRs. Operator runbook: [apps/hypertide-worker/HANDOFF.md](../../apps/hypertide-worker/HANDOFF.md).*

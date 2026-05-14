@@ -17,7 +17,7 @@ tags: [integration, hypertide, api, reference, vendor]
 > - **Service architecture & roadmap**: [[hypertide-service]] — bounded responsibilities, phased plan, schema design
 > - Pipeline architecture: [[domain-purchase-pipeline]]
 > - Operations: [[domain-pipeline-runbook]]
-> - **Reconciliation runbook** (Phase 1 deliverable): [[hypertide-reconciliation]] — workflow for HT ↔ DB drift audits and cleanup
+> - **Operator runbook**: [apps/hypertide-worker/HANDOFF.md](../../apps/hypertide-worker/HANDOFF.md) — how the audit runs, what the metrics mean, manual interventions
 > - Warmup playbook (separate doc, not API): [hypertide_api/Hypertide Latest and Greatest Recommendation.md](../../hypertide_api/Hypertide%20Latest%20and%20Greatest%20Recommendation.md)
 
 ## Conventions
@@ -760,20 +760,28 @@ Hypertide records can be mapped to two places in our schema:
 | `orders[].subscriptionId` (sub_*) | `domain_pipeline_queue.hypertide_subscription_id` |
 | `orders[].productId` (prod_*) | not currently stored |
 
-**Live `domains` table — the actual operational join target.** The pipeline tables are scoped to in-flight purchase orders; ongoing domains live in `public.domains`. **The only available join key is `domains.domain_name`** — there are no `hypertide_*` columns on `domains` today (a future migration is queued to add them; see [[hypertide-reconciliation]]).
+**Live `domains` table — the actual operational join target.** The pipeline tables (`domain_pipeline_*`) are scoped to in-flight purchase orders and are empty in production; ongoing domains live in `public.domains`. **Migration 110 (applied 2026-05-12) added `hypertide_*` columns directly to `domains`** — they are populated by the `apps/hypertide-worker` audit. The join key is still `domains.domain_name` (case-insensitive); there is no stored HT record ID *foreign key* relationship, the columns are a denormalized mirror refreshed by the daily audit.
 
-| Hypertide field | `domains` column (current state) |
+| Hypertide field | `domains` column (post-migration-110) |
 |---|---|
-| `orders[].domain` | `domains.domain_name` (case-insensitive join) |
-| `orders[].id` | not stored — must be re-fetched per reconcile |
-| `orders[].subscriptionId` | not stored |
-| `orders[].cancellationType` (from verify-revert) | not stored — must be re-computed per reconcile |
+| `orders[].domain` | `domains.domain_name` (case-insensitive join key) |
+| `orders[].id` | `domains.hypertide_record_id` |
+| `orders[].subscriptionId` | `domains.hypertide_subscription_id` |
+| `orders[].productId` | `domains.hypertide_product_id` |
+| `orders[].status` | `domains.hypertide_status` |
+| `orders[].paymentStatus` | `domains.hypertide_payment_status` |
+| `orders[].sendingTool` | `domains.hypertide_sending_tool` |
+| `cancellationType` (from verify-revert) | `domains.hypertide_cancellation_type` |
+| `toBeCancelled` (from verify-revert) | `domains.hypertide_to_be_cancelled` |
+| (audit run timestamp) | `domains.hypertide_last_synced_at` / `hypertide_last_seen_at` |
 
 ## Reconciliation strategy (read-only)
+
+Implemented by `apps/hypertide-worker` (see [[hypertide-service]] and the app's HANDOFF.md). The mechanism:
 
 1. `GET /orders/active` + `GET /orders/pending` → full Hypertide truth.
 2. `POST /subscriptions/verify-revert` per `subscriptionId` to enrich each record with `cancellationType` (the only reliable "is HT still billing right now" signal).
 3. Join HT records to `domains` on `domain_name` (lowercased).
-4. Per-domain decision matrix in [[hypertide-reconciliation]].
+4. UPDATE the `hypertide_*` columns on matched rows; flag unmatched in-scope rows `is_legacy`; classify HT-only records as `incoming` (status Todo/In progress — domains we ordered) vs `friends-and-family` (status Done — vendor-side, ignored).
 
-**Tooling:** see `scripts/hypertide_reconcile.py` for the read-only fetch+match. The full audit/apply workflow used in May 2026 lived in `d:/tmp/ht_match/` (per-workspace decision CSVs + `apply_unkill.py` + `cleanup_candidates.py`); promote to `scripts/` if it becomes recurring.
+Runs as a 24h freshness-timer loop inside the `hypertide-worker` container. The earlier ad-hoc tooling (`d:/tmp/ht_match/` per-workspace CSVs) is superseded by the app's `audit` / `backfill` / `inspect-domain` CLI.
