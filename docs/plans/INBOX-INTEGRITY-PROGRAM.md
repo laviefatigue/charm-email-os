@@ -219,11 +219,13 @@ Status keys: ✅ done · 🚧 in progress · ⏳ pending · 🔒 blocked · 👤
 
 | # | Phase | Status | Blocker | Notes |
 |:-:|-------|:------:|---------|-------|
-| 1 | v1 CLI: per-(workspace, campaign) reapply tool | ✅ | — | Shipped at `apps/eod-reapply/`. 209 tests, 99% coverage, L4 complete. Library function `reapply_campaign(...)` ready for v2 import. |
-| 2 | L5 real-EB staging gate | ⏳ NEXT | operator runs against throwaway test campaign | See `apps/eod-reapply/STAGING-RUNBOOK.md`. **Pilot candidate: Barrena** (2 active campaigns, 35 live inboxes — smallest blast radius). |
-| 3a | v2 event-driven scheduler design | ✅ | — | 2026-05-12: revised v2 architecture to event-driven (pg_sleep_until + NOTIFY-wake, no polling). Per-workspace asyncio.Lock for same-workspace serialization. Schema discipline: 1 new table (`campaign_reapply_jobs`), no cache table, no parallel runs table. Reuses event_log + HANDLER_REGISTRY. See `eod-campaign-reapply.md` § "Architecture v2". |
-| 3b | v2 event-driven daemon build | ⏳ | L5 passes | Migration 111 (campaign_reapply_jobs + trigger + CHECK broaden). New `campaign_reapply_due_handler` in `sync_modules/event_handlers/`. Scheduler component (pg_sleep_until + NOTIFY consumer). |
-| 4 | Workspace allowlist phased rollout | ⏳ | v2 ships | Per plan §"Rollout plan" — start with smallest workspace, add one at a time |
+| 1 | v1 CLI: per-(workspace, campaign) reapply tool | ✅ | — | Shipped at `apps/eod-reapply/`. 243 tests now (post PR 1). Library function `reapply_campaign(...)` consumed by v2 daemon unchanged. |
+| 2 | L5 real-EB staging gate | ✅ ATTACH validated 2026-05-13 | REMOVE path needs fresh test campaign | Ran against Charm Test-Campaign 271. Two latent bugs found+fixed during staging: filter-shape silent-ignore (`tag_ids[0]` is correct; `filters[tag_ids][]` silently returns workspace total) and async-delete false-negative (verify needs settle-retry). See `apps/eod-reapply/docs/staging-results.md`. |
+| 3a | v2 event-driven scheduler design | ✅ | — | 2026-05-12: revised v2 architecture to event-driven (no polling). Per-workspace asyncio.Lock for same-workspace serialization. Schema discipline: 1 new table, no cache table, no parallel runs table. Reuses event_log. See `eod-campaign-reapply.md` § "Architecture v2". |
+| 3b-PR1 | v2 daemon scaffold (dry-run-only) | ✅ SHIPPED 2026-05-13 | — | Migration 111 adds `campaign_reapply_jobs` + `workspaces.eod_reapply_enabled` flag (default FALSE). `apps/eod-reapply/src/eod_reapply/daemon.py` provides enqueuer + worker coroutines. CLI subcommand `eod-reapply daemon`. **`apply=False` hard-locked in PR 1.** 18 new tests. Deploy via Coolify Pattern C (services.md). |
+| 3b-PR2 | apply-mode + crash recovery + alerting | ⏳ NEXT | PR 1 deployed + dry-run-validated | Flip `dry_run_only=False`, add startup-scan resume-by-us, Slack alert on `FAILED_LEFT_PAUSED`. ~half day. |
+| 3b-PR3 | validation audit (killed-inbox-no-sends-post-EOD) | ⏳ | PR 2 in apply-mode | Daily check: for kill events with `T_kill`, ensure no campaign sends from that inbox after that campaign's `T_eod`. Closes the loop without operator scrutiny. ~half day. |
+| 4 | Workspace allowlist phased rollout | ⏳ | PR 2 ships | Start with Charm (flag flips from FALSE→TRUE in DB); add one workspace at a time per plan §"Rollout plan". |
 
 ### 3.5c Warmup-disable on kill (Plan F — designed 2026-05-08)
 
@@ -436,27 +438,33 @@ PENDING — operator-driven (no system code work)
        subscription state visibility once landed)
 
 
-PENDING — system code, shippable next session (ranked, updated 2026-05-08)
+PENDING — system code, shippable next session (ranked, updated 2026-05-13)
 ─────────────────────────────────────────────────────────────────────
-   1. Plan F: warmup-disable-on-kill (event-driven) — closes the 318-inbox
-      post-kill bleed found 2026-05-08. Sketch in eod-campaign-reapply.md
-      §"Sister mechanism". ~1d engineering + 1d backfill.
-   2. Plan E Phase 2: EOD reapply L5 staging gate (Barrena pilot, 2 active
-      campaigns, 35 live inboxes). Run `apps/eod-reapply/STAGING-RUNBOOK.md`.
-      Operator-invoked.
-   3. Plan E Phase 3: v2 EOD scheduler/daemon — table additions, poll loop,
-      timezone-aware predicate. Gated on L5 passing.
-   4. Kill-rule Phase 5 cleanup — drop legacy `_24h`/`_7d` columns + obsolete
+   1. ~~Plan F: warmup-disable-on-kill~~ ✅ SHIPPED 2026-04-13 (709/709 events
+      drained: 706 backfill + 3 organic).
+   2. ~~Plan E Phase 2: EOD reapply L5 ATTACH staging~~ ✅ SHIPPED 2026-05-13
+      against Charm Test-Campaign 271. Two latent bugs found+fixed mid-staging
+      (filter-shape silent-ignore; async-delete false-negative). See
+      apps/eod-reapply/docs/staging-results.md.
+   3. ~~Plan E PR 1: v2 daemon scaffold (dry-run-only)~~ ✅ SHIPPED 2026-05-13.
+      Migration 111 + workspaces.eod_reapply_enabled flag + daemon module + CLI
+      subcommand + 18 new tests. apply=False hard-locked. Deploy via Coolify
+      Pattern C; flip Charm's flag to validate dry-run output.
+   4. Plan E PR 2: apply-mode + crash recovery + alerting. ~half day.
+   5. Plan E PR 3: validation audit (killed-inbox-no-sends-post-EOD). ~half day.
+   6. Plan E REMOVE-path validation (needs fresh active test campaign — operator
+      action).
+   7. Kill-rule Phase 5 cleanup — drop legacy `_24h`/`_7d` columns + obsolete
       code paths + `@_OBSOLETE_COUNT_RULE` tests (release cycle elapsed)
-   5. Inbox-audit Phase 5 (Slack restructure) — rebuild daily Slack post around
+   8. Inbox-audit Phase 5 (Slack restructure) — rebuild daily Slack post around
       the I-* sections + the new operator-queue UI (commit 35e538c)
-   6. Inbox-audit Phase 6 — SLA enforcement (24h escalate, 7d page)
-   7. Plan D Pass 6 — sync_campaigns + sync_engagement silent-error pattern
-   8. Decomposition Phase 4a — incubation-watcher v2 daemon mode
-   9. Decomposition Phase 4 — watcher cutover (independent timeline; runs to its
+   9. Inbox-audit Phase 6 — SLA enforcement (24h escalate, 7d page)
+  10. Plan D Pass 6 — sync_campaigns + sync_engagement silent-error pattern
+  11. Decomposition Phase 4a — incubation-watcher v2 daemon mode
+  12. Decomposition Phase 4 — watcher cutover (independent timeline; runs to its
       own clock per pool/conn lessons)
-  10. Plan D Pass 3 alert→kill flip (gated on 7 days of clean alert data)
-  11. Engagement decay detection — proxy reputation signal
+  13. Plan D Pass 3 alert→kill flip (gated on 7 days of clean alert data)
+  14. Engagement decay detection — proxy reputation signal
 
    ❌ Removed: "disconnect report section" — already shipped as
       `/reports/disconnects` page in the 7-page operator queue UI

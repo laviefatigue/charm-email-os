@@ -30,6 +30,8 @@ from .check import (
     report_to_dict,
     run_checks,
 )
+from .daemon import DaemonConfig
+from .daemon import run as run_daemon
 from .db import fetch_workspace_context
 from .eb_client import EBClient
 from .reapply import ReapplyResult, ReapplyStatus, reapply_campaign
@@ -280,6 +282,69 @@ def check(
         click.echo(json.dumps(report_to_dict(report), indent=2))
 
     sys.exit(exit_code_for_check(report))
+
+
+@main.command()
+@click.option("--database-url", envvar="DATABASE_URL", help="Postgres URL (or env DATABASE_URL)")
+@click.option("--eb-base-url", envvar="EMAILBISON_API_URL",
+              default="https://spellcast.hirecharm.com/api", show_default=True)
+@click.option("--apply", "apply_mode", is_flag=True, default=False,
+              help="EXPERIMENTAL. Enable mutating mode (PR 2+). Without this flag the daemon "
+                   "is hard-locked to dry-run regardless of any per-workspace setting.")
+@click.option("--buffer-minutes", type=int, default=60, show_default=True,
+              help="Minutes after campaign end_time before reapply fires.")
+@click.option("--enqueue-interval-seconds", type=int, default=3600, show_default=True,
+              help="How often the enqueuer rescans enabled workspaces.")
+@click.option("--idle-seconds", type=int, default=3600, show_default=True,
+              help="Worst-case wake interval when no jobs are pending (worker also wakes on NOTIFY).")
+@click.option("--min-target-size", type=int, default=1, show_default=True)
+@click.option("--max-removal-pct", type=float, default=50.0, show_default=True)
+def daemon(
+    database_url: str | None,
+    eb_base_url: str,
+    apply_mode: bool,
+    buffer_minutes: int,
+    enqueue_interval_seconds: int,
+    idle_seconds: int,
+    min_target_size: int,
+    max_removal_pct: float,
+) -> None:
+    """Long-lived EOD reapply daemon (PR 1: dry-run-only scaffold).
+
+    Walks workspaces with eod_reapply_enabled=TRUE, enqueues per-campaign
+    EOD jobs (scheduled_for = end_time + buffer in campaign's tz),
+    consumes them at fire time, runs the orchestrator in dry-run mode,
+    and records outcomes in event_log.
+
+    PR 1 ships with --apply NOT supported in practice: even with --apply
+    the daemon currently emits a warning and runs dry-run-only because
+    the safety wiring (process-crash recovery, alerting) lands in PR 2.
+    """
+    if not database_url:
+        click.echo("ERROR: --database-url or DATABASE_URL env var is required", err=True)
+        sys.exit(2)
+
+    if apply_mode:
+        click.echo(
+            "WARNING: --apply is reserved for PR 2; daemon still runs dry-run-only in PR 1",
+            err=True,
+        )
+
+    cfg = DaemonConfig(
+        database_url=database_url,
+        eb_base_url=eb_base_url,
+        dry_run_only=True,  # PR 1: hard-locked
+        buffer_minutes=buffer_minutes,
+        enqueue_interval_seconds=enqueue_interval_seconds,
+        idle_seconds=idle_seconds,
+        min_target_size=min_target_size,
+        max_removal_pct=max_removal_pct,
+    )
+    try:
+        asyncio.run(run_daemon(cfg))
+    except KeyboardInterrupt:
+        click.echo("daemon: interrupted", err=True)
+        sys.exit(0)
 
 
 if __name__ == "__main__":

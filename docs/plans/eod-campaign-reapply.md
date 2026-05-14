@@ -1,8 +1,8 @@
 ---
 title: EOD Campaign Reapply Service
-status: v1 SHIPPED (operator-invoked CLI, 209 tests passing) — awaiting L5 real-EB staging gate; v2 scheduler still scoped
+status: v1 SHIPPED + L5 ATTACH validated (2026-05-13). v2 PR 1 SHIPPED (daemon scaffold, dry-run-only, 243 tests passing). PR 2 (apply-mode + crash recovery + alerting) NEXT.
 created: 2026-04-29
-updated: 2026-05-08 (post event-driven cutover refresh; warmup-disable-on-kill design added)
+updated: 2026-05-13 (v2 PR 1 scaffold landed: migration 111, daemon module, CLI subcommand, deploy pattern C)
 tags: [plan, emailbison, campaign, reapply, timezone, kill-triggers, scope, event-driven]
 related-plans:
   - INBOX-INTEGRITY-PROGRAM.md (master tracker)
@@ -13,13 +13,15 @@ related-plans:
 
 A small, independent app that reapplies the `live` inbox tag set to every active EmailBison campaign once per local-day, after that campaign's send window closes. Its only job is to keep each active campaign's attached senders in sync with the current `live` set, so kill-triggered inboxes drop off the next sending day automatically.
 
-## Status (as of 2026-05-12)
+## Status (as of 2026-05-13)
 
 | Layer | State |
 |---|---|
-| **v1 — operator-invoked CLI** | ✅ SHIPPED at [`apps/eod-reapply/`](../../apps/eod-reapply/). 209 tests passing (99% coverage). Tested through L4 (mocked unit + integration). |
-| **L5 — real-EB staging gate** | ⏳ NOT YET RUN. Mandatory before any production use. See [`apps/eod-reapply/STAGING-RUNBOOK.md`](../../apps/eod-reapply/STAGING-RUNBOOK.md). Pilot candidate: Barrena (2 active campaigns, 35 live inboxes, smallest blast radius). |
-| **v2 — event-driven scheduler / daemon** | ⏳ NOT YET BUILT. **Architecture revised 2026-05-12** per operator direction to lean into event_log + LISTEN/NOTIFY (no polling). Reuses existing event-driven infrastructure (Phase 1-5 live since 2026-05-05). The library function `reapply_campaign(...)` already supports being called from the v2 handler unchanged. See "Architecture" below. |
+| **v1 — operator-invoked CLI** | ✅ SHIPPED at [`apps/eod-reapply/`](../../apps/eod-reapply/). 243 tests passing. Tested through L4 (mocked unit + integration). |
+| **L5 — real-EB staging gate** | ✅ ATTACH path validated 2026-05-13 against Charm Test-Campaign 271. Two latent bugs found + fixed during staging (filter-shape silent-ignore, async-delete false-negative). See [`apps/eod-reapply/docs/staging-results.md`](../../apps/eod-reapply/docs/staging-results.md). REMOVE path validation deferred — needs a fresh active test campaign. |
+| **v2 PR 1 — daemon scaffold (dry-run-only)** | ✅ SHIPPED 2026-05-13. Migration 111 adds `campaign_reapply_jobs` + `workspaces.eod_reapply_enabled` flag (default FALSE). New CLI subcommand `eod-reapply daemon` runs a long-lived process with two coroutines: enqueuer (walks enabled workspaces × active campaigns, fetches schedules from EB, computes per-tz `trigger_at`, inserts pending jobs) + worker (claims due jobs via SELECT FOR UPDATE SKIP LOCKED, emits past-tense audit row in `event_log` as `campaign_reapply_due`, runs orchestrator with `apply=False` hard-locked, finalizes both rows). 18 new tests. |
+| **v2 PR 2 — apply-mode + crash recovery + alerting** | ⏳ NEXT. Flip `dry_run_only=False`, add startup-scan that resumes campaigns paused-by-us, Slack alert on `FAILED_LEFT_PAUSED`. ~half day. |
+| **v2 PR 3 — validation audit** | ⏳ AFTER PR 2. Daily check that killed inboxes don't show sends from a campaign after that campaign's `T_eod`. Writes outcomes; Slack alert on mismatch. ~half day. |
 
 ## Purpose
 
@@ -369,7 +371,7 @@ log + new alerter. v2-event-driven cuts ~60% of the schema surface.
 │              └─ reapply_orchestrator (per campaign)             │
 │                    1. PATCH /campaigns/{id}/pause               │
 │                    2. GET  /campaigns/{id}/sender-emails  ──┐   │
-│                    3. GET  /sender-emails?tag_ids[]=live  ──┤   │
+│                    3. GET  /sender-emails?tag_ids[0]={id} ──┤   │
 │                    4. diff: target − current = attach_set    │   │
 │                            current − target = remove_set    │   │
 │                    5. POST /campaigns/{id}/attach-sender-…   │   │
@@ -493,7 +495,7 @@ All workspace-scoped via `workspace_api_keys`. From [openapi spec](https://spell
 | 2 | `GET` | `/api/campaigns/{id}/schedule` | Pull schedule (read-only — never write) |
 | 3 | `PATCH` | `/api/campaigns/{id}/pause` | Pause before mutation |
 | 4 | `GET` | `/api/campaigns/{id}/sender-emails` | Current attachment set |
-| 5 | `GET` | `/api/sender-emails?filters.tag_ids[]={live_tag_id}` | Target set (paginated) |
+| 5 | `GET` | `/api/sender-emails?tag_ids[0]={live_tag_id}` | Target set (paginated). **NOT** `filters[tag_ids][]=...` — that shape is silently ignored by EB and returns the whole workspace (2026-05-13 incident: over-attached 157 senders to Test-Campaign 271). Client verifies every returned sender carries the requested tag in `tags[]` as a defense. |
 | 6 | `POST` | `/api/campaigns/{id}/attach-sender-emails` | Attach `attach_set` |
 | 7 | `DELETE` | `/api/campaigns/{id}/remove-sender-emails` | Detach `remove_set` |
 | 8 | `PATCH` | `/api/campaigns/{id}/resume` | Resume |
