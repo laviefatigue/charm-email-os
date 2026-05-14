@@ -4,7 +4,6 @@ from __future__ import annotations
 import pytest
 
 from hypertide_worker.classifier import (
-    Classification,
     HTState,
     classify,
     expected_inbox_count,

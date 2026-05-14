@@ -16,7 +16,7 @@ class Config:
     hypertide_api_url: str
 
     @classmethod
-    def from_env(cls) -> "Config":
+    def from_env(cls) -> Config:
         missing = []
         db = os.getenv("DATABASE_URL", "")
         if not db:

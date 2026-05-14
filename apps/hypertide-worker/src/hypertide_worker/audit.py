@@ -16,12 +16,12 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import asyncpg
 
-from .classifier import Classification, classify, expected_inbox_count
+from .classifier import Classification, HTState, classify, expected_inbox_count
 from .ht_client import HypertideClient
 
 logger = logging.getLogger(__name__)
@@ -40,7 +40,9 @@ class AuditResult:
     db_in_scope_count: int = 0              # OUR universe — what we manage
     matched: int = 0                        # subset linked to a known HT record
     db_only: int = 0                        # DB rows without an HT match (legacy or pre-HT)
-    ht_friends_and_family: int = 0          # HT records without a DB match — informational
+    ht_friends_and_family: int = 0          # HT-only, status Done — vendor-side, informational
+    ht_incoming_count: int = 0             # HT-only, status Todo/In progress — domains we ordered, provisioning
+    ht_incoming_examples: list[dict[str, Any]] = field(default_factory=list)
     drift_to_be_cancelled: int = 0
     drift_cancelled_db_alive: int = 0       # HT cancelled, DB row not killed_at — concerning
     drift_ht_cancelled_inboxes_connected: int = 0   # HT cancelled BUT EB shows ≥1 connected inbox
@@ -71,7 +73,7 @@ async def run_audit(
     apply=True:  UPDATE matched DB rows; INSERT into sync_audit_log.
     """
     result = AuditResult()
-    sync_started_at = datetime.now(timezone.utc)
+    sync_started_at = datetime.now(UTC)
 
     # --- 1. Pull HT side ---
     logger.info("Fetching HT /orders/active...")
@@ -116,10 +118,30 @@ async def run_audit(
             matched_records.append((db_row, ht_rec, cls))
 
     result.matched = len(matched_records)
-    result.ht_friends_and_family = len(ht_only_records)   # vendor-side, not drift
+
+    # Split HT-only records into two buckets:
+    #   - incoming: status Todo/In progress. Almost certainly a domain WE
+    #     ordered, still in the 24-48h provisioning window. Not yet in our DB
+    #     because EmailBison hasn't seen its inboxes land. Surfacing these
+    #     gives HT-side visibility during the gap before EB discovery.
+    #   - friends-and-family: status Done, no DB row. Vendor-side
+    #     subscriptions outside our GTM work. Genuinely ignored.
+    for entry in ht_only_records:
+        if entry["cls"].state is HTState.IN_FLIGHT:
+            result.ht_incoming_count += 1
+            ht_rec = entry["ht"]   # NOTE: not the `ht` client param — a record dict
+            result.ht_incoming_examples.append({
+                "domain": ht_rec.get("domain"),
+                "status": ht_rec.get("status"),
+                "organization": ht_rec.get("organizationName"),
+                "forwarding_domain": ht_rec.get("forwardingDomain"),
+                "created_at": ht_rec.get("createdAt"),
+            })
+        else:
+            result.ht_friends_and_family += 1
 
     # --- 4. Per-workspace tallies + drift counts ---
-    for db_row, ht_rec, cls in matched_records:
+    for db_row, _ht_rec, cls in matched_records:
         ws = db_row["workspace_name"] or "<no-workspace>"
         slot = result.by_workspace.setdefault(ws, {})
         slot[cls.state.value] = slot.get(cls.state.value, 0) + 1
@@ -203,7 +225,9 @@ async def _apply_updates(
 
     updates = []
     for db_row, ht_rec, cls in matched:
-        rev = ht_rec.get("_revert", {})  # populated by classify path? — fetch directly
+        # cancellation_type is derived from the classification (see
+        # _cancellation_type_from_classification) — the state taxonomy
+        # carries the same granularity we persist.
         updates.append(
             (
                 ht_rec["id"],
@@ -309,6 +333,8 @@ def _to_metadata_json(result: AuditResult) -> str:
             "parity_pct": result.parity_pct,
             "db_only": result.db_only,
             "ht_friends_and_family": result.ht_friends_and_family,
+            "ht_incoming_count": result.ht_incoming_count,
+            "ht_incoming_examples": result.ht_incoming_examples,
             "drift_to_be_cancelled": result.drift_to_be_cancelled,
             "drift_cancelled_db_alive": result.drift_cancelled_db_alive,
             "drift_ht_cancelled_inboxes_connected": result.drift_ht_cancelled_inboxes_connected,

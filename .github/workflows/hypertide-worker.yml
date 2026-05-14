@@ -1,0 +1,79 @@
+name: hypertide-worker
+
+# Scoped CI for the apps/hypertide-worker/ subdir only — runs on changes to
+# that tree or to this workflow file. Mirrors the eod-reapply workflow shape.
+on:
+  push:
+    branches: [master]
+    paths:
+      - "apps/hypertide-worker/**"
+      - ".github/workflows/hypertide-worker.yml"
+  pull_request:
+    paths:
+      - "apps/hypertide-worker/**"
+      - ".github/workflows/hypertide-worker.yml"
+
+concurrency:
+  group: hypertide-worker-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: lint + typecheck + test
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/hypertide-worker
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: "pip"
+
+      - name: Install dev dependencies
+        run: pip install -e ".[dev]"
+
+      - name: ruff (lint)
+        run: ruff check src tests
+
+      - name: mypy --strict (typecheck)
+        run: mypy --strict src/hypertide_worker
+
+      - name: pytest
+        # Phase 1 coverage is at the classifier + backfill-helper layer.
+        # audit.py / backfill.py orchestration loops need a testcontainers
+        # + respx integration harness — deferred to the Phase 2 PR that
+        # also adds the job-queue worker.
+        run: pytest --strict-markers --strict-config
+
+  docker:
+    name: docker build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build image (no push)
+        uses: docker/build-push-action@v6
+        with:
+          context: apps/hypertide-worker
+          file: apps/hypertide-worker/Dockerfile
+          push: false
+          load: true
+          tags: hypertide-worker:ci-${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Smoke-test the built image
+        run: |
+          # Image should --help cleanly and show all four subcommands
+          docker run --rm hypertide-worker:ci-${{ github.sha }} hypertide-worker --help | grep -q "audit"
+          docker run --rm hypertide-worker:ci-${{ github.sha }} hypertide-worker --help | grep -q "backfill"
+          docker run --rm hypertide-worker:ci-${{ github.sha }} hypertide-worker --help | grep -q "inspect-domain"
+          docker run --rm hypertide-worker:ci-${{ github.sha }} hypertide-worker --help | grep -q "mark-legacy"
+          docker run --rm hypertide-worker:ci-${{ github.sha }} hypertide-worker audit --help | grep -q "apply"

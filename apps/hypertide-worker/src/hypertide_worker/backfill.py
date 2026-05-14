@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import asyncpg
@@ -67,7 +67,7 @@ async def run_backfill(
     flag is only set, never auto-cleared.
     """
     result = BackfillResult()
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
 
     active = await ht.get_active_orders()
     sub_ids = sorted({o["subscriptionId"] for o in active if o.get("subscriptionId")})

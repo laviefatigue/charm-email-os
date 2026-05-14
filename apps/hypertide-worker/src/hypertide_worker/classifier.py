@@ -12,11 +12,11 @@ should exercise every branch.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 
 
-class HTState(str, Enum):
+class HTState(StrEnum):
     """High-level state of a Hypertide record."""
 
     LIVE = "live"                          # Done, no cancellation

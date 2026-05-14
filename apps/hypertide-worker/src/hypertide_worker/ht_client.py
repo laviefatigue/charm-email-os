@@ -34,7 +34,7 @@ class HypertideClient:
         self._timeout = timeout
         self._client: httpx.AsyncClient | None = None
 
-    async def __aenter__(self) -> "HypertideClient":
+    async def __aenter__(self) -> HypertideClient:
         self._client = httpx.AsyncClient(
             base_url=self._base_url,
             headers={
@@ -127,7 +127,9 @@ def _parse_or_raise(response: httpx.Response) -> dict[str, Any]:
     try:
         body = response.json()
     except ValueError as e:
-        raise HypertideAPIError(f"Invalid JSON from Hypertide: {e}", status=response.status_code)
+        raise HypertideAPIError(
+            f"Invalid JSON from Hypertide: {e}", status=response.status_code
+        ) from e
     if response.status_code >= 400:
         raise HypertideAPIError(
             f"HTTP {response.status_code}: {body.get('error')} {body.get('message','')}",
@@ -142,4 +144,5 @@ def _parse_or_raise(response: httpx.Response) -> dict[str, Any]:
             status=response.status_code,
             body=body,
         )
+    assert isinstance(body, dict)
     return body

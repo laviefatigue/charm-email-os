@@ -47,9 +47,22 @@ ENV PATH="/opt/venv/bin:$PATH" \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1
 
-# v1 operator-invoked mode. On every container start, run audit-dry-run
-# once to surface any config/connectivity errors, then sleep so the
-# container stays up for ad-hoc command execution and scheduled tasks.
-# Audit is idempotent and read-only without --apply.
-# Phase 2 (daemon mode) will replace this with CMD = ["hypertide-worker", "daemon"].
-CMD ["bash", "-c", "echo '=== hypertide-worker container start ==='; hypertide-worker audit --apply 2>&1 || echo '=== AUDIT FAILED ==='; echo '=== container entering sleep mode ==='; sleep infinity"]
+# v1 freshness-timer mode. Unlike apps/eod-reapply and apps/incubation-watcher
+# (genuine operator tools invoked on demand), hypertide-worker's job is keeping
+# the DB mirror of Hypertide state current — that's background freshness, not
+# an operator action. So the container runs a simple 24h loop:
+#   run audit --apply  ->  sleep 24h  ->  repeat
+#
+# Properties:
+#   - audit --apply is idempotent + read-only toward Hypertide (only UPDATEs
+#     our own hypertide_* columns, never INSERTs, never calls HT write APIs)
+#   - a crashed audit does NOT crashloop: the loop sleeps 24h then retries
+#   - first iteration runs immediately on container start, so a deploy gives
+#     you a fresh audit right away
+#   - ad-hoc commands still work: `docker exec <c> hypertide-worker inspect-domain X`
+#
+# This is NOT the Phase 2 job-queue daemon (which claims rows from
+# hypertide_jobs). That replaces this loop entirely when Phase 2 ships.
+# For precise scheduling (e.g. exactly 06:00 UTC) a Coolify scheduled task
+# can be layered on; see HANDOFF.md.
+CMD ["bash", "-c", "while true; do echo \"=== hypertide audit run $(date -u +%FT%TZ) ===\"; hypertide-worker audit --apply 2>&1 || echo '=== AUDIT FAILED (retry next cycle) ==='; echo '=== sleeping 24h ==='; sleep 86400; done"]

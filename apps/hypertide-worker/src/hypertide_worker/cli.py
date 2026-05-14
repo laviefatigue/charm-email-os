@@ -5,6 +5,7 @@ import asyncio
 import json
 import logging
 import sys
+from typing import Any
 
 import click
 
@@ -118,7 +119,7 @@ async def _inspect(domain_name: str) -> None:
                 (o for o in active if o["domain"].lower() == domain_name.lower()),
                 None,
             )
-            rev_records: list[dict] = []
+            rev_records: list[dict[str, Any]] = []
             if ht_rec and ht_rec.get("subscriptionId"):
                 rev_records = await ht.verify_revert_subscription(ht_rec["subscriptionId"])
             rev = next(
@@ -186,6 +187,14 @@ def _print_audit_result(r: AuditResult, applied: bool) -> None:
     click.echo(f"  Matched to HT:                   {r.matched}  ({r.parity_pct}%)")
     click.echo(f"  DB-only (legacy / pre-HT):       {r.db_only}")
     click.echo(f"  HT friends-and-family (ignored): {r.ht_friends_and_family}")
+    click.echo(f"  HT incoming (ordered, provisioning): {r.ht_incoming_count}")
+    if r.ht_incoming_examples:
+        click.echo("    awaiting EmailBison inbox landing:")
+        for ex in r.ht_incoming_examples[:15]:
+            click.echo(
+                f"      {ex['domain']:<36} {ex['status']:<13} "
+                f"fwd={ex.get('forwarding_domain') or '-'}"
+            )
     click.echo("")
     click.echo("  --- drift signals ---")
     click.echo(f"  Scheduled-cancel queued:         {r.drift_to_be_cancelled}")
@@ -209,7 +218,7 @@ def _print_audit_result(r: AuditResult, applied: bool) -> None:
             )
 
 
-def _print_backfill_result(r: "BackfillResult", applied: bool, onboard_workspace: str | None) -> None:
+def _print_backfill_result(r: BackfillResult, applied: bool, onboard_workspace: str | None) -> None:
     click.echo("=" * 70)
     mode = "APPLIED" if applied else "DRY RUN"
     if onboard_workspace:
