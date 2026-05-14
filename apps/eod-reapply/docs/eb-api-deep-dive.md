@@ -159,6 +159,8 @@ This is the workspace-scoped paginated query. The target set comes from here.
 
 ⚠️ **Note**: spec example response is a bare list (no `meta`), but real API responses likely have `meta` because pagination is needed. L5 step 2 confirms.
 
+⚠️ **Silently-ignored filter shape (2026-05-13 incident).** EB will accept the wrong filter shape `?filters[tag_ids][]=N` (with the `filters[]` wrapper) and return `200 OK` with the **entire workspace** (no filter applied). Probed against Charm workspace: every shape with the `filters[]` wrapper returned `meta.total=437` (workspace total) regardless of tag id. Only `tag_ids[0]=N` (top-level, no wrapper) actually filters — returned `280` for the live tag, matching the EB UI's "280 email accounts selected" exactly. Our client uses the correct shape and now defensively rejects responses where any returned sender does not carry the requested tag in its `tags[]` array (`eb_client.py:list_senders_with_tag`). The incident over-attached 157 senders to a campaign before detection; never assume an unknown filter param is rejected — EB silently drops it.
+
 ### 2.7. `POST /api/campaigns/{id}/attach-sender-emails`
 
 **Request:**
@@ -189,11 +191,9 @@ This is the workspace-scoped paginated query. The target set comes from here.
 { "success": true, "message": "Sender emails sent for deletion. This may take a moment." }
 ```
 
-⚠️ **"This may take a moment"** message hints at **eventual consistency**. The remove call returns 200 immediately, but the senders may not be detached from the campaign until a background job processes. Our verify-by-refetch will fail in this case.
+⚠️ **"This may take a moment"** message means **eventual consistency**. The remove call returns 200 immediately, but the senders may not be detached from the campaign until a background job processes — observed empirically against Test-Campaign 271 (2026-05-13): immediate post-remove verify showed `280` matching the target count but a different membership; after a 15-second wait, the sets converged exactly.
 
-**Mitigation in v1**: if verify fails (set != target), we still resume and return `FAILED_POST_RESUME` (exit 2). Operator inspects.
-
-**Mitigation for v2**: add a configurable verify-poll-with-timeout (e.g. retry the verify fetch every 2s for up to 15s before giving up).
+**Mitigation shipped in v1 (2026-05-13)**: `reapply.py` verify step retries up to `verify_settle_attempts=4` times with `verify_settle_seconds=5.0` between attempts (configurable per call), short-circuiting on convergence. Only escalates to `FAILED_POST_RESUME` if the mismatch persists across all attempts. Resume is still always attempted in `finally`.
 
 ⚠️ **Spec description says "remove sender emails from a draft or paused campaign"** — confirming pause is mandatory before remove.
 

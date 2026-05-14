@@ -160,6 +160,11 @@ class FakeEBClient:
 # Helpers
 # =============================================================================
 
+async def _no_sleep(_seconds: float) -> None:
+    """No-op sleep so tests don't actually wait during verify settle-retry."""
+    return None
+
+
 async def _run(eb=None, **overrides):
     """Run reapply_campaign with sensible defaults. Returns (result, eb)."""
     if eb is None:
@@ -174,6 +179,7 @@ async def _run(eb=None, **overrides):
         buffer_minutes=60,
         now_utc=INSIDE_SYDNEY_WINDOW,
         last_run_local_date=None,
+        sleep_func=_no_sleep,
     )
     kwargs.update(overrides)
     return await reapply_campaign(**kwargs), eb
@@ -600,6 +606,47 @@ class TestFailureInjection:
         _assert_resume_called_after_pause(eb)
         # operator_action_required is False here — campaign is resumed, just diverged
         assert result.operator_action_required is False
+
+    async def test_verify_settle_converges_on_retry(self):
+        # EB's /remove-sender-emails is async ("Sender emails sent for deletion.
+        # This may take a moment."). First verify fetch can show the pre-remove
+        # state, second fetch shows post-remove. Reapply must retry, not fail.
+        eb = FakeEBClient()
+        eb.prior_senders_history = [
+            # 1st call: compute prior (pre-mutation). prior={11,99}, target={10,11,12}.
+            [{"id": 11}, {"id": 99}],
+            # 2nd call: verify attempt 1 — still pre-remove (id=99 not yet purged).
+            [{"id": 10}, {"id": 11}, {"id": 12}, {"id": 99}],
+            # 3rd call: verify attempt 2 — converged.
+            [{"id": 10}, {"id": 11}, {"id": 12}],
+        ]
+        sleeps: list[float] = []
+
+        async def record_sleep(seconds: float) -> None:
+            sleeps.append(seconds)
+
+        result, eb = await _run(eb=eb, sleep_func=record_sleep, verify_settle_seconds=0.5)
+        assert result.status == ReapplyStatus.SUCCEEDED
+        assert result.verify_passed is True
+        # get_campaign_senders called: 1 prior + 2 verify = 3 total.
+        assert eb.call_count("get_campaign_senders") == 3
+        # Exactly one sleep between verify attempts.
+        assert sleeps == [0.5]
+
+    async def test_verify_settle_succeeds_first_try_no_sleep(self):
+        # When mutations settle immediately, no sleep should be incurred.
+        eb = FakeEBClient()
+        # Default fake: prior={11,99}, target={10,11,12}; verify attempt 1 matches.
+        sleeps: list[float] = []
+
+        async def record_sleep(seconds: float) -> None:
+            sleeps.append(seconds)
+
+        result, eb = await _run(eb=eb, sleep_func=record_sleep)
+        assert result.status == ReapplyStatus.SUCCEEDED
+        # Only 2 calls: 1 prior + 1 verify. No retry.
+        assert eb.call_count("get_campaign_senders") == 2
+        assert sleeps == []
 
     async def test_resume_failure_marks_failed_left_paused(self):
         # Mutations succeed, verify passes, but resume itself fails

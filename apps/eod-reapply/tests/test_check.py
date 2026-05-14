@@ -167,7 +167,7 @@ class TestWorkspaceOnlyChecks:
             return_value=_resp(200, {"data": [{"id": 5, "name": "live"}]})
         )
         respx.get(f"{EB_BASE}/api/sender-emails").mock(
-            return_value=_resp(200, {"data": [{"id": 10}, {"id": 11}], "meta": {"last_page": 1}})
+            return_value=_resp(200, {"data": [{"id": 10, "tags": [{"id": 5, "name": "live"}]}, {"id": 11, "tags": [{"id": 5, "name": "live"}]}], "meta": {"last_page": 1}})
         )
         patcher, _ = _patch_asyncpg(row_data=workspace_row)
         with patcher:
@@ -229,7 +229,7 @@ class TestWorkspaceOnlyChecks:
             return_value=_resp(200, {"data": [{"id": 5, "name": "live"}]})
         )
         respx.get(f"{EB_BASE}/api/sender-emails").mock(
-            return_value=_resp(200, {"data": [{"id": 1}], "meta": {"last_page": 1}})
+            return_value=_resp(200, {"data": [{"id": 1, "tags": [{"id": 5, "name": "live"}]}], "meta": {"last_page": 1}})
         )
         patcher, _ = _patch_asyncpg(row_data=workspace_row)
         with patcher:
@@ -254,7 +254,7 @@ class TestCampaignChecks:
             return_value=_resp(200, {"data": [{"id": 5, "name": "live"}]})
         )
         respx.get(f"{EB_BASE}/api/sender-emails").mock(
-            return_value=_resp(200, {"data": [{"id": 10}, {"id": 11}, {"id": 12}], "meta": {"last_page": 1}})
+            return_value=_resp(200, {"data": [{"id": 10, "tags": [{"id": 5, "name": "live"}]}, {"id": 11, "tags": [{"id": 5, "name": "live"}]}, {"id": 12, "tags": [{"id": 5, "name": "live"}]}], "meta": {"last_page": 1}})
         )
         respx.get(f"{EB_BASE}/api/campaigns/{CAMPAIGN_ID}").mock(
             return_value=_resp(200, {"data": {"id": CAMPAIGN_ID, "name": "TestCamp", "status": "Active"}})
@@ -296,7 +296,7 @@ class TestCampaignChecks:
             return_value=_resp(200, {"data": [{"id": 5, "name": "live"}]})
         )
         respx.get(f"{EB_BASE}/api/sender-emails").mock(
-            return_value=_resp(200, {"data": [{"id": 1}], "meta": {"last_page": 1}})
+            return_value=_resp(200, {"data": [{"id": 1, "tags": [{"id": 5, "name": "live"}]}], "meta": {"last_page": 1}})
         )
         respx.get(f"{EB_BASE}/api/campaigns/{CAMPAIGN_ID}").mock(
             return_value=_resp(200, {"data": {"id": CAMPAIGN_ID, "name": "Paused", "status": "Paused"}})
@@ -329,7 +329,7 @@ class TestCampaignChecks:
             return_value=_resp(200, {"data": [{"id": 5, "name": "live"}]})
         )
         respx.get(f"{EB_BASE}/api/sender-emails").mock(
-            return_value=_resp(200, {"data": [{"id": 1}], "meta": {"last_page": 1}})
+            return_value=_resp(200, {"data": [{"id": 1, "tags": [{"id": 5, "name": "live"}]}], "meta": {"last_page": 1}})
         )
         respx.get(f"{EB_BASE}/api/campaigns/{CAMPAIGN_ID}").mock(
             return_value=_resp(404, {"error": "not found"})
@@ -353,7 +353,7 @@ class TestCampaignChecks:
             return_value=_resp(200, {"data": [{"id": 5, "name": "live"}]})
         )
         respx.get(f"{EB_BASE}/api/sender-emails").mock(
-            return_value=_resp(200, {"data": [{"id": 1}, {"id": 2}], "meta": {"last_page": 1}})
+            return_value=_resp(200, {"data": [{"id": 1, "tags": [{"id": 5, "name": "live"}]}, {"id": 2, "tags": [{"id": 5, "name": "live"}]}], "meta": {"last_page": 1}})
         )
         respx.get(f"{EB_BASE}/api/campaigns/{CAMPAIGN_ID}").mock(
             return_value=_resp(200, {"data": {"id": CAMPAIGN_ID, "status": "Active"}})
@@ -427,7 +427,7 @@ class TestCheckCli:
             return_value=_resp(200, {"data": [{"id": 5, "name": "live"}]})
         )
         respx.get(f"{EB_BASE}/api/sender-emails").mock(
-            return_value=_resp(200, {"data": [{"id": 1}], "meta": {"last_page": 1}})
+            return_value=_resp(200, {"data": [{"id": 1, "tags": [{"id": 5, "name": "live"}]}], "meta": {"last_page": 1}})
         )
 
         patcher, _ = _patch_asyncpg(row_data=workspace_row)
@@ -476,7 +476,7 @@ class TestCheckCli:
             return_value=_resp(200, {"data": [{"id": 5, "name": "live"}]})
         )
         respx.get(f"{EB_BASE}/api/sender-emails").mock(
-            return_value=_resp(200, {"data": [{"id": 1}], "meta": {"last_page": 1}})
+            return_value=_resp(200, {"data": [{"id": 1, "tags": [{"id": 5, "name": "live"}]}], "meta": {"last_page": 1}})
         )
 
         patcher, _ = _patch_asyncpg(row_data=workspace_row)

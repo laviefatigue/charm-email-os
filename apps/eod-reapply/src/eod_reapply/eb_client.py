@@ -423,6 +423,24 @@ class EBClient:
                 f"for tag_id={tag_id}; data may be incomplete or inconsistent",
             )
 
+        # Filter-honored guard. Observed 2026-05-13 against Charm workspace: the
+        # shape `filters[tag_ids][]=<id>` is silently ignored by EB and returns
+        # the entire workspace (437 senders) instead of just the tagged subset
+        # (280). We use the correct shape `tag_ids[0]=<id>` above, but a future
+        # API change or workspace permission quirk could re-introduce the bug.
+        # Every honored response carries the tag in each row's `tags[]`. If any
+        # returned sender lacks the requested tag, the filter wasn't applied —
+        # fail loud instead of letting the orchestrator wipe a campaign.
+        for s in all_senders:
+            tags = s.get("tags") or []
+            if not any(int(t.get("id", -1)) == tag_id for t in tags):
+                raise EmailBisonAPIError(
+                    0,
+                    f"sender id={s.get('id')} returned by tag_ids[0]={tag_id} filter "
+                    f"does not carry that tag (tags={[t.get('name') for t in tags]}); "
+                    f"the tag filter was silently ignored by EB",
+                )
+
         return all_senders
 
     # ========================================================================
