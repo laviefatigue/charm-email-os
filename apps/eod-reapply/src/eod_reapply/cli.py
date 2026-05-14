@@ -288,11 +288,13 @@ def check(
 @click.option("--database-url", envvar="DATABASE_URL", help="Postgres URL (or env DATABASE_URL)")
 @click.option("--eb-base-url", envvar="EMAILBISON_API_URL",
               default="https://spellcast.hirecharm.com/api", show_default=True)
-@click.option("--apply", "apply_mode", is_flag=True, default=False,
+@click.option("--apply", "apply_mode", is_flag=True, default=False, envvar="EOD_APPLY_MODE",
               help="Enable mutating mode: the daemon actually pauses/attaches/removes/resumes "
                    "campaigns. Without this flag the daemon runs dry-run-only (logs the diff, "
-                   "no EB mutations). Per-workspace participation is still gated on "
-                   "workspaces.eod_reapply_enabled regardless of this flag.")
+                   "no EB mutations). Also settable via the EOD_APPLY_MODE env var (truthy = "
+                   "apply) so deployments can toggle apply-mode without a CMD override. "
+                   "Per-workspace participation is still gated on workspaces.eod_reapply_enabled "
+                   "regardless of this flag.")
 @click.option("--buffer-minutes", type=int, default=60, show_default=True,
               help="Minutes after campaign end_time before reapply fires.")
 @click.option("--enqueue-interval-seconds", type=int, default=3600, show_default=True,
