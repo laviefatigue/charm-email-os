@@ -137,14 +137,17 @@ Each active workspace has a scoped EB API token stored in the `workspace_api_key
 - Build the image and push to a registry, OR build on the operator's host
 - Operator runs `docker run --rm -e DATABASE_URL=... <image> reapply ...` from a host with prod DB access (e.g. a jumphost or one of the existing worker containers via exec)
 
-**Pattern C — daemon mode** (PR 1 of v2, dry-run-only):
+**Pattern C — daemon mode**:
 - Build context: `apps/eod-reapply/`
 - Dockerfile: `apps/eod-reapply/Dockerfile.daemon` (NOT the base `Dockerfile` — daemon variant has `CMD ["daemon"]` baked in because Coolify's `start_command` field is ignored for Dockerfile builds; verified 2026-05-13)
 - Env vars: `DATABASE_URL`, `EMAILBISON_API_URL` (same as above)
 - Restart policy: `unless-stopped`
-- No public URL. No health endpoint in PR 1 — readiness signal is "daemon log line `enqueue: pass complete`" appearing in stdout within `enqueue_interval_seconds + 60s` of boot.
+- No public URL. No health endpoint — readiness signal is "daemon log line `enqueue: pass complete`" appearing in stdout within `enqueue_interval_seconds + 60s` of boot.
 - Resource ceiling: daemon idle is ~30MB RSS + 2-6 DB connections. Per-fire load is dominated by EB API calls (paginated sender-emails fetches).
-- Initial rollout: deploy with no `workspaces.eod_reapply_enabled=TRUE` rows → daemon idles. Then flip Charm's flag (`UPDATE workspaces SET eod_reapply_enabled = TRUE WHERE workspace_name = 'Charm'`) and observe `campaign_reapply_jobs` + `event_log` rows accumulate.
+- **Apply vs dry-run**: the daemon's `CMD ["daemon"]` runs dry-run by default. To enable apply-mode (real pause/attach/remove/resume), override CMD to `["daemon", "--apply"]` in the Coolify config. The deployed daemon's mode is visible in its startup log: `MODE: APPLY` vs `MODE: DRY-RUN`.
+- **Two control axes**: (1) which workspaces participate — `workspaces.eod_reapply_enabled` per-workspace DB flag; (2) apply vs dry-run — the `--apply` CMD flag, daemon-wide.
+- **Crash recovery**: on every startup the daemon scans for jobs left in `flagged` status by a previous crash, checks each campaign's EB status, and resumes any left paused mid-reapply. Logged loudly (`recovery: ... was LEFT PAUSED — RESUMED`). No operator action needed for the common case.
+- Rollout: deploy with no `workspaces.eod_reapply_enabled=TRUE` rows → daemon idles. Flip per-workspace flags one at a time (`UPDATE workspaces SET eod_reapply_enabled = TRUE WHERE workspace_name = '...'`); restart the daemon or wait for the hourly enqueue pass to pick up the change.
 
 #### Exit codes (load-bearing for any future scheduler)
 | Code | Subcommand | Meaning |

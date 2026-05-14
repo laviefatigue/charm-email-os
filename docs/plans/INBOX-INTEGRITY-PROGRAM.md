@@ -222,10 +222,10 @@ Status keys: ✅ done · 🚧 in progress · ⏳ pending · 🔒 blocked · 👤
 | 1 | v1 CLI: per-(workspace, campaign) reapply tool | ✅ | — | Shipped at `apps/eod-reapply/`. 243 tests now (post PR 1). Library function `reapply_campaign(...)` consumed by v2 daemon unchanged. |
 | 2 | L5 real-EB staging gate | ✅ ATTACH validated 2026-05-13 | REMOVE path needs fresh test campaign | Ran against Charm Test-Campaign 271. Two latent bugs found+fixed during staging: filter-shape silent-ignore (`tag_ids[0]` is correct; `filters[tag_ids][]` silently returns workspace total) and async-delete false-negative (verify needs settle-retry). See `apps/eod-reapply/docs/staging-results.md`. |
 | 3a | v2 event-driven scheduler design | ✅ | — | 2026-05-12: revised v2 architecture to event-driven (no polling). Per-workspace asyncio.Lock for same-workspace serialization. Schema discipline: 1 new table, no cache table, no parallel runs table. Reuses event_log. See `eod-campaign-reapply.md` § "Architecture v2". |
-| 3b-PR1 | v2 daemon scaffold (dry-run-only) | ✅ SHIPPED 2026-05-13 | — | Migration 111 adds `campaign_reapply_jobs` + `workspaces.eod_reapply_enabled` flag (default FALSE). `apps/eod-reapply/src/eod_reapply/daemon.py` provides enqueuer + worker coroutines. CLI subcommand `eod-reapply daemon`. **`apply=False` hard-locked in PR 1.** 18 new tests. Deploy via Coolify Pattern C (services.md). |
-| 3b-PR2 | apply-mode + crash recovery + alerting | ⏳ NEXT | PR 1 deployed + dry-run-validated | Flip `dry_run_only=False`, add startup-scan resume-by-us, Slack alert on `FAILED_LEFT_PAUSED`. ~half day. |
-| 3b-PR3 | validation audit (killed-inbox-no-sends-post-EOD) | ⏳ | PR 2 in apply-mode | Daily check: for kill events with `T_kill`, ensure no campaign sends from that inbox after that campaign's `T_eod`. Closes the loop without operator scrutiny. ~half day. |
-| 4 | Workspace allowlist phased rollout | ⏳ | PR 2 ships | Start with Charm (flag flips from FALSE→TRUE in DB); add one workspace at a time per plan §"Rollout plan". |
+| 3b-PR1 | v2 daemon scaffold | ✅ SHIPPED + DEPLOYED 2026-05-13 | — | Migration 111 (`campaign_reapply_jobs` + `workspaces.eod_reapply_enabled` flag). `daemon.py` enqueuer + worker. CLI `eod-reapply daemon`. Deployed as Coolify `eod-reapply-daemon` (Dockerfile.daemon). Dry-run validated vs SPUI campaign 101 (8 to remove). |
+| 3b-PR2 | apply-mode + crash recovery | ✅ SHIPPED 2026-05-14 | — | `--apply` CLI flag flips `dry_run_only` (daemon-wide). Startup `recover_orphaned_jobs` scan resumes campaigns left paused by a crash + sweeps stuck event_log rows. 248 tests. Slack alerting deliberately skipped — `event_log` + daemon logs are the observability layer (per operator: don't add gates/theater beyond proven need). |
+| 3b-PR3 | validation audit (killed-inbox-no-sends-post-EOD) | ⏳ OPTIONAL | — | Daily closed-loop check. Deferred — not blocking; `event_log` outcomes already give per-run visibility. Build if/when wanted. |
+| 4 | Workspace allowlist phased rollout | 🔄 IN PROGRESS | — | `eod_reapply_enabled` flipped per-workspace. Charm + SPUI enabled (dry-run validated). Two control axes: per-workspace DB flag + daemon-wide `--apply`. |
 
 ### 3.5c Warmup-disable on kill (Plan F — designed 2026-05-08)
 
@@ -446,14 +446,16 @@ PENDING — system code, shippable next session (ranked, updated 2026-05-13)
       against Charm Test-Campaign 271. Two latent bugs found+fixed mid-staging
       (filter-shape silent-ignore; async-delete false-negative). See
       apps/eod-reapply/docs/staging-results.md.
-   3. ~~Plan E PR 1: v2 daemon scaffold (dry-run-only)~~ ✅ SHIPPED 2026-05-13.
-      Migration 111 + workspaces.eod_reapply_enabled flag + daemon module + CLI
-      subcommand + 18 new tests. apply=False hard-locked. Deploy via Coolify
-      Pattern C; flip Charm's flag to validate dry-run output.
-   4. Plan E PR 2: apply-mode + crash recovery + alerting. ~half day.
-   5. Plan E PR 3: validation audit (killed-inbox-no-sends-post-EOD). ~half day.
-   6. Plan E REMOVE-path validation (needs fresh active test campaign — operator
-      action).
+   3. ~~Plan E PR 1: v2 daemon scaffold~~ ✅ SHIPPED + DEPLOYED 2026-05-13.
+      Migration 111 + daemon module + CLI subcommand. Deployed as Coolify
+      eod-reapply-daemon. Dry-run validated vs SPUI campaign 101.
+   4. ~~Plan E PR 2: apply-mode + crash recovery~~ ✅ SHIPPED 2026-05-14.
+      --apply flag + startup recover_orphaned_jobs scan. 248 tests.
+   5. Plan E Phase 4: workspace allowlist rollout (IN PROGRESS — Charm + SPUI
+      enabled). Flip remaining workspaces' eod_reapply_enabled as confidence
+      builds; deploy daemon with --apply when ready to mutate.
+   6. Plan E PR 3 (OPTIONAL): validation audit (killed-inbox-no-sends-post-EOD).
+      Deferred — event_log outcomes already give per-run visibility.
    7. Kill-rule Phase 5 cleanup — drop legacy `_24h`/`_7d` columns + obsolete
       code paths + `@_OBSOLETE_COUNT_RULE` tests (release cycle elapsed)
    8. Inbox-audit Phase 5 (Slack restructure) — rebuild daily Slack post around

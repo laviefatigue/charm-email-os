@@ -21,15 +21,20 @@ For a single (workspace, campaign) pair:
 ## Subcommands
 
 ```
-eod-reapply check    # read-only pre-flight (DB + EB auth + campaign + tag)
-eod-reapply reapply  # the actual reapply (default dry-run; --apply to mutate)
-eod-reapply daemon   # long-lived process: enqueues + runs per-campaign EOD jobs
-                     # (PR 1 of v2 — hard-locked to apply=False)
+eod-reapply check            # read-only pre-flight (DB + EB auth + campaign + tag)
+eod-reapply reapply          # one-shot reapply (default dry-run; --apply to mutate)
+eod-reapply daemon           # long-lived scheduler (default dry-run; --apply to mutate)
 ```
 
 `check` is the safest first step — it never makes a mutating EB call. Run it before any `reapply --apply`.
 
-`daemon` is the v2 entry point. PR 1 ships it in **dry-run-only** mode: it walks `workspaces` with `eod_reapply_enabled=TRUE`, enqueues per-campaign EOD jobs (`scheduled_for = end_time + buffer` in the campaign's IANA tz), and at each fire time calls the orchestrator with `apply=False`. Outcomes are written to `event_log` (`event_type='campaign_reapply_due'`). Apply-mode + crash recovery + Slack alerting land in PR 2. See `docs/plans/eod-campaign-reapply.md`.
+`daemon` is the v2 scheduler. It walks `workspaces` with `eod_reapply_enabled=TRUE`, enqueues per-campaign EOD jobs (`scheduled_for = end_time + buffer` in the campaign's IANA tz), and at each fire time runs the orchestrator. Outcomes are written to `event_log` (`event_type='campaign_reapply_due'`).
+
+Two independent control axes:
+- **Which workspaces** participate — `workspaces.eod_reapply_enabled` (per-workspace DB flag, default `FALSE`).
+- **Apply vs dry-run** — the `--apply` flag (daemon-wide). Without `--apply` the daemon logs the diff but makes no EB mutations.
+
+On startup the daemon runs a crash-recovery scan: any job left in `flagged` state from a previous crash has its campaign checked and resumed if it was left paused mid-reapply. See `docs/plans/eod-campaign-reapply.md`.
 
 ## Run (locally)
 

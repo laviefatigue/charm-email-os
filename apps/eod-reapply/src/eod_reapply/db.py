@@ -286,6 +286,54 @@ async def claim_due_job(conn: asyncpg.Connection, now: datetime) -> PendingJob |
     )
 
 
+async def fetch_orphaned_jobs(conn: asyncpg.Connection) -> list[PendingJob]:
+    """Jobs claimed (status='flagged') but never finalized — crash victims.
+
+    `claim_due_job` sets status to 'flagged'; `finalize_job` is the only thing
+    that moves it off. A job stuck in 'flagged' means the daemon claimed it
+    and died before finalizing — and the campaign may have been left paused
+    mid-reapply. The startup recovery scan resumes those campaigns.
+
+    Returns the same PendingJob shape claim_due_job returns, so the recovery
+    path can reuse the EB-client + orchestrator wiring.
+    """
+    rows = await conn.fetch(
+        """
+        SELECT
+            j.id AS job_id,
+            j.workspace_id,
+            j.campaign_id,
+            j.scheduled_for,
+            j.run_local_date,
+            j.run_local_tz,
+            w.workspace_name,
+            k.key_token AS api_key,
+            ec.emailbison_campaign_id
+        FROM campaign_reapply_jobs j
+        JOIN workspaces w ON w.id = j.workspace_id
+        JOIN workspace_api_keys k
+            ON k.workspace_id = w.id AND k.is_active = TRUE
+        JOIN emailbison_campaigns ec ON ec.id = j.campaign_id
+        WHERE j.status = 'flagged'
+        ORDER BY j.scheduled_for
+        """,
+    )
+    return [
+        PendingJob(
+            job_id=r["job_id"],
+            workspace_id=r["workspace_id"],
+            workspace_name=r["workspace_name"],
+            api_key=r["api_key"],
+            campaign_id=r["campaign_id"],
+            emailbison_campaign_id=int(r["emailbison_campaign_id"]),
+            scheduled_for=r["scheduled_for"],
+            run_local_date=r["run_local_date"],
+            run_local_tz=r["run_local_tz"],
+        )
+        for r in rows
+    ]
+
+
 async def emit_event_log_due(
     conn: asyncpg.Connection,
     *,
@@ -318,6 +366,55 @@ async def emit_event_log_due(
     )
     assert isinstance(val, UUID)
     return val
+
+
+async def mark_job_recovered(
+    conn: asyncpg.Connection,
+    *,
+    job_id: UUID,
+    note: str,
+) -> None:
+    """Close out an orphaned (crash-victim) job with a recovery note.
+
+    Distinct from finalize_job: the orphan has no clean event_log id to
+    update (the daemon died before finalize_job ran), so this is a
+    standalone job-row UPDATE. Status goes to 'failed' — the reapply did
+    not complete; a future enqueue pass will re-create a fresh job if the
+    campaign is still due.
+    """
+    await conn.execute(
+        """
+        UPDATE campaign_reapply_jobs
+        SET status = 'failed', completed_at = NOW(), error_message = $2
+        WHERE id = $1
+        """,
+        job_id, note,
+    )
+
+
+async def sweep_stuck_event_log(conn: asyncpg.Connection) -> int:
+    """Close out campaign_reapply_due event_log rows stuck in 'processing'.
+
+    The daemon is single-instance, so any 'processing' row at startup is a
+    crash victim — the handler never finished. Mark them 'failed' so the
+    audit log doesn't carry phantom in-flight rows forever. Returns count.
+    """
+    result = await conn.execute(
+        """
+        UPDATE event_log
+        SET status = 'failed',
+            handler_completed_at = NOW(),
+            error_message = COALESCE(error_message, '')
+                || ' [recovery: daemon restarted; handler did not complete]'
+        WHERE event_type = 'campaign_reapply_due'
+          AND status = 'processing'
+        """,
+    )
+    # asyncpg returns "UPDATE <n>"
+    try:
+        return int(result.split()[-1])
+    except (ValueError, IndexError):
+        return 0
 
 
 async def finalize_job(

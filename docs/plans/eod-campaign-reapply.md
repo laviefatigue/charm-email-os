@@ -1,8 +1,8 @@
 ---
 title: EOD Campaign Reapply Service
-status: v1 SHIPPED + L5 ATTACH validated (2026-05-13). v2 PR 1 SHIPPED (daemon scaffold, dry-run-only, 243 tests passing). PR 2 (apply-mode + crash recovery + alerting) NEXT.
+status: v1 SHIPPED + L5 ATTACH validated. v2 daemon SHIPPED + DEPLOYED — PR 1 (scaffold) + PR 2 (apply-mode + crash recovery) both live. 248 tests passing.
 created: 2026-04-29
-updated: 2026-05-13 (v2 PR 1 scaffold landed: migration 111, daemon module, CLI subcommand, deploy pattern C)
+updated: 2026-05-14 (v2 PR 2 landed: apply-mode wired, startup crash-recovery scan, --apply CLI flag)
 tags: [plan, emailbison, campaign, reapply, timezone, kill-triggers, scope, event-driven]
 related-plans:
   - INBOX-INTEGRITY-PROGRAM.md (master tracker)
@@ -13,15 +13,15 @@ related-plans:
 
 A small, independent app that reapplies the `live` inbox tag set to every active EmailBison campaign once per local-day, after that campaign's send window closes. Its only job is to keep each active campaign's attached senders in sync with the current `live` set, so kill-triggered inboxes drop off the next sending day automatically.
 
-## Status (as of 2026-05-13)
+## Status (as of 2026-05-14)
 
 | Layer | State |
 |---|---|
-| **v1 — operator-invoked CLI** | ✅ SHIPPED at [`apps/eod-reapply/`](../../apps/eod-reapply/). 243 tests passing. Tested through L4 (mocked unit + integration). |
-| **L5 — real-EB staging gate** | ✅ ATTACH path validated 2026-05-13 against Charm Test-Campaign 271. Two latent bugs found + fixed during staging (filter-shape silent-ignore, async-delete false-negative). See [`apps/eod-reapply/docs/staging-results.md`](../../apps/eod-reapply/docs/staging-results.md). REMOVE path validation deferred — needs a fresh active test campaign. |
-| **v2 PR 1 — daemon scaffold (dry-run-only)** | ✅ SHIPPED 2026-05-13. Migration 111 adds `campaign_reapply_jobs` + `workspaces.eod_reapply_enabled` flag (default FALSE). New CLI subcommand `eod-reapply daemon` runs a long-lived process with two coroutines: enqueuer (walks enabled workspaces × active campaigns, fetches schedules from EB, computes per-tz `trigger_at`, inserts pending jobs) + worker (claims due jobs via SELECT FOR UPDATE SKIP LOCKED, emits past-tense audit row in `event_log` as `campaign_reapply_due`, runs orchestrator with `apply=False` hard-locked, finalizes both rows). 18 new tests. |
-| **v2 PR 2 — apply-mode + crash recovery + alerting** | ⏳ NEXT. Flip `dry_run_only=False`, add startup-scan that resumes campaigns paused-by-us, Slack alert on `FAILED_LEFT_PAUSED`. ~half day. |
-| **v2 PR 3 — validation audit** | ⏳ AFTER PR 2. Daily check that killed inboxes don't show sends from a campaign after that campaign's `T_eod`. Writes outcomes; Slack alert on mismatch. ~half day. |
+| **v1 — operator-invoked CLI** | ✅ SHIPPED at [`apps/eod-reapply/`](../../apps/eod-reapply/). Tested through L4 (mocked unit + integration). |
+| **L5 — real-EB staging gate** | ✅ ATTACH path validated 2026-05-13 against Charm Test-Campaign 271. Two latent bugs found + fixed during staging (filter-shape silent-ignore, async-delete false-negative). See [`apps/eod-reapply/docs/staging-results.md`](../../apps/eod-reapply/docs/staging-results.md). |
+| **v2 PR 1 — daemon scaffold** | ✅ SHIPPED + DEPLOYED 2026-05-13. Migration 111 adds `campaign_reapply_jobs` + `workspaces.eod_reapply_enabled` flag (default FALSE). `eod-reapply daemon` runs a long-lived process: enqueuer (walks enabled workspaces × active campaigns, fetches schedules from EB, computes per-tz `trigger_at`, inserts pending jobs) + worker (claims due jobs via SELECT FOR UPDATE SKIP LOCKED, emits `campaign_reapply_due` event_log row, runs orchestrator, finalizes both rows). Deployed as Coolify `eod-reapply-daemon` (Dockerfile.daemon). Dry-run validated against SPUI campaign 101 (8 to remove, 0 to attach). |
+| **v2 PR 2 — apply-mode + crash recovery** | ✅ SHIPPED 2026-05-14. `--apply` CLI flag flips `dry_run_only`; daemon-wide. Startup `recover_orphaned_jobs` scan: any job stuck in `flagged` state from a prior crash has its campaign checked and resumed if left paused mid-reapply; also sweeps stuck `processing` event_log rows. 248 tests passing. **Slack alerting deliberately skipped** — `event_log` rows (status + error_message + metadata) plus loud daemon logs are the observability layer; revisit only if event_log proves insufficient in practice. |
+| **v2 PR 3 — validation audit** | ⏳ OPTIONAL / DEFERRED. Daily check that killed inboxes don't show sends from a campaign after that campaign's `T_eod`. Not blocking — the `event_log` outcomes already give per-run visibility. Build if/when an automated closed-loop check is wanted. |
 
 ## Purpose
 

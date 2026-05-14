@@ -208,30 +208,30 @@ def cfg() -> DaemonConfig:
     )
 
 
+class _FakeEB:
+    """Minimal EBClient stand-in: async context manager, no real session."""
+
+    def __init__(self, **_kwargs: Any) -> None:
+        pass
+
+    async def __aenter__(self) -> _FakeEB:
+        return self
+
+    async def __aexit__(self, *_exc: Any) -> bool:
+        return False
+
+
 class TestRunOneJob:
-    async def test_dry_run_lock_passes_apply_false(self, cfg, monkeypatch):
-        """PR 1 invariant: regardless of cfg.dry_run_only / future flags,
-        the orchestrator is called with apply=False in this scaffold."""
+    async def test_dry_run_passes_apply_false(self, cfg, monkeypatch):
+        """dry_run_only=True → orchestrator called with apply=False."""
         captured: dict[str, Any] = {}
 
         async def fake_reapply_campaign(**kwargs: Any) -> FakeReapplyResult:
             captured.update(kwargs)
             return FakeReapplyResult(ReapplyStatus.SKIPPED_NO_DIFF)
 
-        # Patch the orchestrator the daemon module imported.
         monkeypatch.setattr("eod_reapply.daemon.reapply_campaign", fake_reapply_campaign)
-
-        # Patch the EBClient async context manager so we don't open a real session.
-        class FakeEB:
-            def __init__(self, **_kwargs: Any) -> None:
-                pass
-
-            async def __aenter__(self) -> FakeEB:
-                return self
-
-            async def __aexit__(self, *_exc: Any) -> bool:
-                return False
-        monkeypatch.setattr("eod_reapply.daemon.EBClient", FakeEB)
+        monkeypatch.setattr("eod_reapply.daemon.EBClient", _FakeEB)
 
         conn = FakeConn()
         await _run_one_job(cfg, conn, _make_job())  # type: ignore[arg-type]
@@ -244,6 +244,29 @@ class TestRunOneJob:
         assert len(conn.fetchval_calls) == 1  # emit_event_log_due
         # finalize_job does 2 UPDATEs in one transaction
         assert len(conn.execute_calls) == 2
+
+    async def test_apply_mode_passes_apply_true(self, monkeypatch):
+        """dry_run_only=False → orchestrator called with apply=True."""
+        captured: dict[str, Any] = {}
+
+        async def fake_reapply_campaign(**kwargs: Any) -> FakeReapplyResult:
+            captured.update(kwargs)
+            return FakeReapplyResult(ReapplyStatus.SUCCEEDED)
+
+        monkeypatch.setattr("eod_reapply.daemon.reapply_campaign", fake_reapply_campaign)
+        monkeypatch.setattr("eod_reapply.daemon.EBClient", _FakeEB)
+
+        apply_cfg = DaemonConfig(
+            database_url="postgresql://fake/test",
+            eb_base_url="https://eb.example.com",
+            dry_run_only=False,
+            now_fn=lambda: datetime(2026, 5, 12, 1, 5, tzinfo=UTC),
+        )
+        conn = FakeConn()
+        await _run_one_job(apply_cfg, conn, _make_job())  # type: ignore[arg-type]
+
+        assert captured["apply"] is True
+        assert captured["skip_time_check"] is True
 
     async def test_succeeded_maps_to_completed_job_status(self, cfg, monkeypatch):
         async def fake_reapply_campaign(**kwargs: Any) -> FakeReapplyResult:
@@ -347,6 +370,163 @@ class TestRunOneJob:
 
         job_update_sql, job_update_args = conn.execute_calls[0]
         assert job_update_args[1] == expected_job_status
+
+
+# ============================================================================
+# recover_orphaned_jobs — startup crash recovery
+# ============================================================================
+
+class _FakePool:
+    """Minimal asyncpg.Pool stand-in: acquire() yields a dummy conn.
+
+    recover_orphaned_jobs only uses the conn to pass to db helpers, which
+    the tests monkeypatch — so the conn object itself is never touched.
+    """
+
+    def acquire(self) -> Any:
+        class _Acq:
+            async def __aenter__(self) -> object:
+                return object()
+
+            async def __aexit__(self, *_exc: Any) -> bool:
+                return False
+
+        return _Acq()
+
+
+class _RecoveryFakeEB:
+    """EBClient stand-in for recovery tests. Scripts get_campaign status and
+    records whether resume_campaign was called."""
+
+    def __init__(self, *, status: str, resume_raises: bool = False) -> None:
+        self._status = status
+        self._resume_raises = resume_raises
+        self.resumed: list[int] = []
+
+    def __call__(self, **_kwargs: Any) -> _RecoveryFakeEB:
+        # daemon does `EBClient(base_url=..., api_key=...)` — instance is callable
+        # so the same object can stand in for the class.
+        return self
+
+    async def __aenter__(self) -> _RecoveryFakeEB:
+        return self
+
+    async def __aexit__(self, *_exc: Any) -> bool:
+        return False
+
+    async def get_campaign(self, campaign_id: int) -> dict[str, Any]:
+        return {"id": campaign_id, "status": self._status}
+
+    async def resume_campaign(self, campaign_id: int) -> dict[str, Any]:
+        if self._resume_raises:
+            from eod_reapply.eb_client import EmailBisonAPIError
+            raise EmailBisonAPIError(500, "resume failed in recovery")
+        self.resumed.append(campaign_id)
+        return {"id": campaign_id, "status": "queued"}
+
+
+class TestRecoverOrphanedJobs:
+    async def test_no_orphans_clean_startup(self, cfg, monkeypatch):
+        async def fake_fetch(_conn: Any) -> list[Any]:
+            return []
+
+        async def fake_sweep(_conn: Any) -> int:
+            return 0
+
+        monkeypatch.setattr("eod_reapply.daemon.fetch_orphaned_jobs", fake_fetch)
+        monkeypatch.setattr("eod_reapply.daemon.sweep_stuck_event_log", fake_sweep)
+
+        from eod_reapply.daemon import recover_orphaned_jobs
+        n = await recover_orphaned_jobs(cfg, _FakePool())  # type: ignore[arg-type]
+        assert n == 0
+
+    async def test_paused_campaign_is_resumed(self, cfg, monkeypatch):
+        """The load-bearing case: a crash left the campaign paused → resume it."""
+        job = _make_job(eb_campaign_id=555)
+        marked: list[tuple[Any, str]] = []
+
+        async def fake_fetch(_conn: Any) -> list[Any]:
+            return [job]
+
+        async def fake_sweep(_conn: Any) -> int:
+            return 1
+
+        async def fake_mark(_conn: Any, *, job_id: Any, note: str) -> None:
+            marked.append((job_id, note))
+
+        fake_eb = _RecoveryFakeEB(status="paused")
+
+        monkeypatch.setattr("eod_reapply.daemon.fetch_orphaned_jobs", fake_fetch)
+        monkeypatch.setattr("eod_reapply.daemon.sweep_stuck_event_log", fake_sweep)
+        monkeypatch.setattr("eod_reapply.daemon.mark_job_recovered", fake_mark)
+        monkeypatch.setattr("eod_reapply.daemon.EBClient", fake_eb)
+
+        from eod_reapply.daemon import recover_orphaned_jobs
+        n = await recover_orphaned_jobs(cfg, _FakePool())  # type: ignore[arg-type]
+
+        assert n == 1
+        assert fake_eb.resumed == [555]  # campaign was resumed
+        assert len(marked) == 1
+        assert marked[0][0] == job.job_id
+        assert "LEFT PAUSED" in marked[0][1] and "resumed" in marked[0][1]
+
+    async def test_non_paused_campaign_not_resumed(self, cfg, monkeypatch):
+        """Crash victim whose campaign is NOT paused → no resume, still marked."""
+        job = _make_job(eb_campaign_id=556)
+        marked: list[tuple[Any, str]] = []
+
+        async def fake_fetch(_conn: Any) -> list[Any]:
+            return [job]
+
+        async def fake_sweep(_conn: Any) -> int:
+            return 0
+
+        async def fake_mark(_conn: Any, *, job_id: Any, note: str) -> None:
+            marked.append((job_id, note))
+
+        fake_eb = _RecoveryFakeEB(status="active")
+
+        monkeypatch.setattr("eod_reapply.daemon.fetch_orphaned_jobs", fake_fetch)
+        monkeypatch.setattr("eod_reapply.daemon.sweep_stuck_event_log", fake_sweep)
+        monkeypatch.setattr("eod_reapply.daemon.mark_job_recovered", fake_mark)
+        monkeypatch.setattr("eod_reapply.daemon.EBClient", fake_eb)
+
+        from eod_reapply.daemon import recover_orphaned_jobs
+        n = await recover_orphaned_jobs(cfg, _FakePool())  # type: ignore[arg-type]
+
+        assert n == 1
+        assert fake_eb.resumed == []  # NOT resumed — wasn't paused
+        assert "not paused" in marked[0][1]
+
+    async def test_recovery_failure_still_marks_job(self, cfg, monkeypatch):
+        """If the recovery attempt itself throws, the job is still marked
+        failed with the error captured — recovery never silently drops a job."""
+        job = _make_job(eb_campaign_id=557)
+        marked: list[tuple[Any, str]] = []
+
+        async def fake_fetch(_conn: Any) -> list[Any]:
+            return [job]
+
+        async def fake_sweep(_conn: Any) -> int:
+            return 0
+
+        async def fake_mark(_conn: Any, *, job_id: Any, note: str) -> None:
+            marked.append((job_id, note))
+
+        # Campaign is paused, but resume_campaign raises.
+        fake_eb = _RecoveryFakeEB(status="paused", resume_raises=True)
+
+        monkeypatch.setattr("eod_reapply.daemon.fetch_orphaned_jobs", fake_fetch)
+        monkeypatch.setattr("eod_reapply.daemon.sweep_stuck_event_log", fake_sweep)
+        monkeypatch.setattr("eod_reapply.daemon.mark_job_recovered", fake_mark)
+        monkeypatch.setattr("eod_reapply.daemon.EBClient", fake_eb)
+
+        from eod_reapply.daemon import recover_orphaned_jobs
+        n = await recover_orphaned_jobs(cfg, _FakePool())  # type: ignore[arg-type]
+
+        assert n == 1
+        assert len(marked) == 1
+        assert "recovery attempt failed" in marked[0][1]
 
 
 # ============================================================================

@@ -1,6 +1,14 @@
-"""EOD reapply daemon — PR 1 of 3, dry-run-only scaffold.
+"""EOD reapply daemon — event-driven scheduler for campaign sender reapply.
 
-Long-lived process. Two cooperating coroutines:
+Long-lived process. Startup crash-recovery scan, then two cooperating
+coroutines:
+
+  - `recover_orphaned_jobs` (startup, once): any job left in 'flagged'
+    state is a crash victim — the previous daemon instance claimed it and
+    died before finalizing. The orchestrator pauses before mutating, so
+    the campaign may be left paused. The scan checks each orphan's EB
+    status and resumes it if paused. Runs before the loops so recovery
+    completes before new work begins.
 
   - `enqueuer_loop`: every `enqueue_interval_seconds` (default 1h),
     walks `eod_reapply_enabled=TRUE` workspaces, fetches each active
@@ -17,18 +25,12 @@ Long-lived process. Two cooperating coroutines:
     to be woken when the enqueuer inserts an earlier-`scheduled_for`
     row mid-sleep.
 
-Safety in PR 1:
-  - `dry_run_only=True` is the default and is enforced by passing
-    `apply=False` to every orchestrator call regardless of any other
-    config. This protects against accidentally flipping the daemon
-    into apply-mode before PR 2's safety work is in place.
-  - The migration ships with `workspaces.eod_reapply_enabled DEFAULT FALSE`,
-    so no enqueue happens until an operator explicitly flips a workspace.
-
-Note: this is the SCAFFOLD. PR 2 adds:
-  - Apply-mode (the `dry_run_only` toggle becomes a real lever)
-  - Process-crash recovery (resume campaigns paused-by-us at startup)
-  - Slack alerting on `FAILED_LEFT_PAUSED`
+Two independent axes of control:
+  - WHICH workspaces participate: `workspaces.eod_reapply_enabled`
+    (per-workspace DB flag, default FALSE — frontend-toggleable).
+  - APPLY vs DRY-RUN: `DaemonConfig.dry_run_only` (daemon-wide deploy
+    setting, set from the CLI's `--apply` flag). Dry-run computes and
+    logs the diff but makes no EB mutations.
 """
 from __future__ import annotations
 
@@ -47,18 +49,24 @@ from .db import (
     emit_event_log_due,
     enqueue_job,
     fetch_next_scheduled_at,
+    fetch_orphaned_jobs,
     finalize_job,
     list_active_campaigns,
     list_enabled_workspaces,
+    mark_job_recovered,
+    sweep_stuck_event_log,
 )
 from .eb_client import EBClient, EmailBisonAPIError
 from .reapply import ReapplyStatus, reapply_campaign
 
+# EB campaign statuses that mean "paused by us, needs resume". The orchestrator
+# pauses before mutating; a crash mid-reapply leaves the campaign here.
+_PAUSED_STATUSES = {"paused"}
+
 logger = logging.getLogger("eod_reapply.daemon")
 
 # Default sleep ceiling when no jobs are pending. The daemon also wakes
-# on LISTEN/NOTIFY, so this is a worst-case wake interval. 1h is fine
-# for PR 1 — we're not in a hot loop.
+# on LISTEN/NOTIFY, so this is a worst-case wake interval — not a hot loop.
 _DEFAULT_IDLE_SECONDS = 3600
 
 # Enqueue cadence. 1h is conservative — schedules don't change often,
@@ -283,10 +291,9 @@ async def _run_one_job(
 ) -> None:
     """Execute a single claimed job.
 
-    PR 1 enforces dry-run regardless of cfg.dry_run_only:
-      - `apply=cfg.dry_run_only is False` collapses to `apply=False` when True
-      - That's the entire point of "scaffold + dry-run-only" — we exercise
-        all the wiring against prod EB without mutating campaign state.
+    `apply` is `not cfg.dry_run_only`: in dry-run mode the orchestrator
+    computes and logs the diff but makes no EB mutations; in apply-mode it
+    runs the full pause/attach/remove/verify/resume sequence.
     """
     payload = {
         "campaign_id": str(job.campaign_id),
@@ -317,11 +324,14 @@ async def _run_one_job(
                 workspace_name=job.workspace_name,
                 campaign_id=job.emailbison_campaign_id,
                 live_tag_name="live",
-                apply=(not cfg.dry_run_only),  # PR 1: always False
+                apply=(not cfg.dry_run_only),
                 skip_time_check=True,          # daemon already gated on scheduled_for
                 buffer_minutes=cfg.buffer_minutes,
                 now_utc=now_utc,
-                last_run_local_date=None,      # PR 1 has no cross-day idempotency yet
+                # Cross-day idempotency is the job table's UNIQUE
+                # (campaign_id, run_local_date) — not the orchestrator's
+                # internal time-gate, which the daemon bypasses anyway.
+                last_run_local_date=None,
                 min_target_size=cfg.min_target_size,
                 max_removal_pct=cfg.max_removal_pct,
                 verify_settle_attempts=cfg.verify_settle_attempts,
@@ -455,6 +465,88 @@ async def worker_loop(
 
 
 # ============================================================================
+# Crash recovery
+# ============================================================================
+
+async def recover_orphaned_jobs(cfg: DaemonConfig, pool: asyncpg.Pool) -> int:
+    """Startup crash-recovery scan.
+
+    A job stuck in status='flagged' means the daemon claimed it and died
+    before finalize_job ran — the campaign may be PAUSED mid-reapply
+    (the orchestrator pauses before mutating). For each orphan:
+      1. Fetch the campaign's current EB status.
+      2. If paused → resume it (this is the load-bearing recovery — a
+         paused campaign sends nothing until resumed).
+      3. Mark the job 'failed' with a recovery note either way.
+
+    Also sweeps any event_log rows stuck in 'processing' (the daemon is
+    single-instance, so those are always crash victims).
+
+    Returns the number of orphaned jobs handled. Runs before the enqueuer
+    and worker loops start, so recovery completes before new work begins.
+    """
+    async with pool.acquire() as conn:
+        orphans = await fetch_orphaned_jobs(conn)
+        stuck_events = await sweep_stuck_event_log(conn)
+
+    if stuck_events:
+        logger.warning("recovery: swept %d stuck event_log row(s) to failed", stuck_events)
+
+    if not orphans:
+        if stuck_events == 0:
+            logger.info("recovery: no orphaned jobs — clean startup")
+        return 0
+
+    logger.warning(
+        "recovery: found %d orphaned job(s) (claimed but never finalized) — checking campaigns",
+        len(orphans),
+    )
+    recovered = 0
+    for job in orphans:
+        note: str
+        try:
+            async with EBClient(base_url=cfg.eb_base_url, api_key=job.api_key) as eb:
+                campaign = await eb.get_campaign(job.emailbison_campaign_id)
+                status = (campaign.get("status") or "").lower()
+                if status in _PAUSED_STATUSES:
+                    await eb.resume_campaign(job.emailbison_campaign_id)
+                    note = (
+                        f"recovered on startup: campaign was LEFT PAUSED by a crash "
+                        f"mid-reapply (eb status={status!r}); resumed"
+                    )
+                    logger.error(
+                        "recovery: job_id=%s workspace=%s campaign_eb_id=%s was LEFT PAUSED — RESUMED",
+                        job.job_id, job.workspace_name, job.emailbison_campaign_id,
+                    )
+                else:
+                    note = (
+                        f"recovered on startup: crash victim, campaign not paused "
+                        f"(eb status={status!r}); no resume needed"
+                    )
+                    logger.warning(
+                        "recovery: job_id=%s workspace=%s campaign_eb_id=%s crash victim, "
+                        "campaign status=%s — no resume needed",
+                        job.job_id, job.workspace_name, job.emailbison_campaign_id, status,
+                    )
+        except Exception as e:
+            # Recovery itself failed — log loud and leave a breadcrumb. The
+            # job is still marked failed; an operator can inspect via the note.
+            note = f"recovery attempt failed: {type(e).__name__}: {e}"
+            logger.exception(
+                "recovery: job_id=%s campaign_eb_id=%s — recovery attempt itself failed; "
+                "OPERATOR: verify campaign is not paused",
+                job.job_id, job.emailbison_campaign_id,
+            )
+
+        async with pool.acquire() as conn:
+            await mark_job_recovered(conn, job_id=job.job_id, note=note)
+        recovered += 1
+
+    logger.warning("recovery: handled %d orphaned job(s)", recovered)
+    return recovered
+
+
+# ============================================================================
 # Entrypoint
 # ============================================================================
 
@@ -474,6 +566,16 @@ async def run(cfg: DaemonConfig) -> None:
     pool = await asyncpg.create_pool(cfg.database_url, min_size=2, max_size=6)
     assert pool is not None
     stop_event = asyncio.Event()
+
+    # Crash recovery FIRST — before any new work. A previous daemon instance
+    # may have died mid-reapply, leaving a campaign paused. Resume it before
+    # the loops start so we never stack new work on top of a degraded state.
+    try:
+        await recover_orphaned_jobs(cfg, pool)
+    except Exception:
+        # Recovery is best-effort; a failure here must not block startup.
+        # Individual job failures are already logged inside the function.
+        logger.exception("daemon: crash-recovery scan failed; continuing startup")
 
     # SIGINT/SIGTERM → stop_event.set(). On Windows the signal API is
     # limited; we wrap in try/except so dev-laptop runs don't crash.

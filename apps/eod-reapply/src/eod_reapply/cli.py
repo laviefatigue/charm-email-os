@@ -289,8 +289,10 @@ def check(
 @click.option("--eb-base-url", envvar="EMAILBISON_API_URL",
               default="https://spellcast.hirecharm.com/api", show_default=True)
 @click.option("--apply", "apply_mode", is_flag=True, default=False,
-              help="EXPERIMENTAL. Enable mutating mode (PR 2+). Without this flag the daemon "
-                   "is hard-locked to dry-run regardless of any per-workspace setting.")
+              help="Enable mutating mode: the daemon actually pauses/attaches/removes/resumes "
+                   "campaigns. Without this flag the daemon runs dry-run-only (logs the diff, "
+                   "no EB mutations). Per-workspace participation is still gated on "
+                   "workspaces.eod_reapply_enabled regardless of this flag.")
 @click.option("--buffer-minutes", type=int, default=60, show_default=True,
               help="Minutes after campaign end_time before reapply fires.")
 @click.option("--enqueue-interval-seconds", type=int, default=3600, show_default=True,
@@ -309,31 +311,37 @@ def daemon(
     min_target_size: int,
     max_removal_pct: float,
 ) -> None:
-    """Long-lived EOD reapply daemon (PR 1: dry-run-only scaffold).
+    """Long-lived EOD reapply daemon.
 
     Walks workspaces with eod_reapply_enabled=TRUE, enqueues per-campaign
     EOD jobs (scheduled_for = end_time + buffer in campaign's tz),
-    consumes them at fire time, runs the orchestrator in dry-run mode,
-    and records outcomes in event_log.
+    consumes them at fire time, runs the orchestrator, and records
+    outcomes in event_log.
 
-    PR 1 ships with --apply NOT supported in practice: even with --apply
-    the daemon currently emits a warning and runs dry-run-only because
-    the safety wiring (process-crash recovery, alerting) lands in PR 2.
+    Two independent axes of control:
+      - WHICH workspaces: workspaces.eod_reapply_enabled (per-workspace DB
+        flag — frontend-toggleable).
+      - APPLY vs DRY-RUN: the --apply flag (daemon-wide deploy setting).
+        Default is dry-run — the daemon computes and logs the diff but
+        makes no EB mutations.
+
+    On startup the daemon runs a crash-recovery scan: any job left in
+    'flagged' state from a previous crash has its campaign checked and
+    resumed if it was left paused mid-reapply.
     """
     if not database_url:
         click.echo("ERROR: --database-url or DATABASE_URL env var is required", err=True)
         sys.exit(2)
 
     if apply_mode:
-        click.echo(
-            "WARNING: --apply is reserved for PR 2; daemon still runs dry-run-only in PR 1",
-            err=True,
-        )
+        click.echo("MODE: APPLY — daemon will mutate EB campaign state", err=True)
+    else:
+        click.echo("MODE: DRY-RUN — daemon logs diffs only, no EB mutations", err=True)
 
     cfg = DaemonConfig(
         database_url=database_url,
         eb_base_url=eb_base_url,
-        dry_run_only=True,  # PR 1: hard-locked
+        dry_run_only=not apply_mode,
         buffer_minutes=buffer_minutes,
         enqueue_interval_seconds=enqueue_interval_seconds,
         idle_seconds=idle_seconds,
