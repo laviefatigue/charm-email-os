@@ -1,0 +1,40 @@
+# Daemon variant of the eod-reapply image.
+#
+# Same as the base Dockerfile in this directory, but the default CMD is
+# `daemon` instead of `--help`, so this image is suitable for direct
+# `docker run` (and Coolify) without needing CMD overrides.
+#
+# Coolify deploys (Pattern C in production/coolify/services.md) point at
+# this Dockerfile. The base Dockerfile remains the canonical CLI image
+# (Patterns A/B — operator-invoked one-shots).
+
+FROM python:3.13-slim AS builder
+
+WORKDIR /build
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY pyproject.toml ./
+COPY src ./src
+
+RUN python -m venv /opt/venv \
+    && /opt/venv/bin/pip install --no-cache-dir --upgrade pip \
+    && /opt/venv/bin/pip install --no-cache-dir .
+
+
+# ---------- runtime stage ----------
+FROM python:3.13-slim AS runtime
+
+RUN useradd --create-home --shell /bin/bash --uid 1000 reapply
+USER reapply
+
+COPY --from=builder --chown=reapply:reapply /opt/venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH" \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1
+
+ENTRYPOINT ["eod-reapply"]
+# Daemon mode by default. Override at run-time only for one-shot debug.
+CMD ["daemon"]

@@ -13,8 +13,15 @@ Usage:
     py scripts/coolify.py stop APP_NAME
     py scripts/coolify.py start APP_NAME
     py scripts/coolify.py logs APP_NAME [--lines=100]
+    py scripts/coolify.py create-app NAME --dockerfile=PATH [--cmd=CMD]
+                                          [--base-dir=DIR] [--branch=master]
+                                          [--copy-env-from=APP] [--description=TEXT]
 
 APP_NAME can be the full name or a shorthand (e.g., "sync" matches "emailbison-sync").
+
+create-app creates a new application in the "Charm Email OS / production"
+project from the HireCharm/charm-email-os GitHub App source. Defaults are
+suitable for background workers (no public port, no health check, unless-stopped).
 """
 import sys
 import json
@@ -90,19 +97,50 @@ def api(method, path, body=None):
 
 
 def resolve_app(name):
-    """Resolve app name/alias to UUID."""
+    """Resolve app name/alias to UUID.
+
+    Order:
+      1. Static ALIASES dict
+      2. Static APP_UUIDS dict (exact match)
+      3. Static APP_UUIDS dict (substring fuzzy match)
+      4. Live /applications API lookup (catches apps created since the
+         static dict was last updated — e.g. via create-app)
+
+    The static dict still wins on match for performance; the live lookup
+    is a fallback so freshly-created apps work without code edits.
+    """
     name = name.lower().strip()
     if name in ALIASES:
         name = ALIASES[name]
     if name in APP_UUIDS:
         return name, APP_UUIDS[name]
-    # Fuzzy match
     for app_name, uuid in APP_UUIDS.items():
         if name in app_name:
             return app_name, uuid
-    print(f"Unknown app: {name}")
-    print(f"Available: {', '.join(APP_UUIDS.keys())}")
-    sys.exit(1)
+
+    # Fallback: live lookup. The /applications endpoint returns the full
+    # list; match by exact name then substring.
+    try:
+        live = api("GET", "/applications")
+        live_list = live if isinstance(live, list) else live.get("data", [])
+        # Build {name: uuid}
+        lookup = {a.get("name", "").lower(): a.get("uuid") for a in live_list if a.get("name") and a.get("uuid")}
+        if name in lookup:
+            return name, lookup[name]
+        for live_name, uuid in lookup.items():
+            if name in live_name:
+                return live_name, uuid
+        # No match anywhere
+        all_names = sorted(set(APP_UUIDS.keys()) | set(lookup.keys()))
+        print(f"Unknown app: {name}")
+        print(f"Available: {', '.join(all_names)}")
+        sys.exit(1)
+    except SystemExit:
+        raise
+    except Exception as e:
+        print(f"Unknown app: {name} (live lookup failed: {e})")
+        print(f"Available (static): {', '.join(APP_UUIDS.keys())}")
+        sys.exit(1)
 
 
 def cmd_list_apps():
@@ -269,6 +307,120 @@ def cmd_start(app_name):
     print(f"Start triggered for {name}")
 
 
+# =====================================================================
+# create-app — discovered 2026-05-13:
+#
+#   POST /applications/private-github-app
+#
+# Required body fields (Coolify v4):
+#   project_uuid, server_uuid, environment_name OR environment_uuid,
+#   github_app_uuid, git_repository (owner/repo), git_branch,
+#   build_pack ("dockerfile"|"nixpacks"|"static"|"dockercompose"),
+#   ports_exposes (string, "" for background workers),
+#   name
+#
+# Useful optional fields:
+#   description, base_directory, dockerfile_location,
+#   custom_docker_run_options (e.g. for --restart policy overrides),
+#   destination_uuid (defaults to the only one available),
+#   instant_deploy (bool; defaults false — we leave creation cold and
+#     trigger deploy as a separate step so failed builds don't auto-restart).
+#
+# The "Charm Email OS" project + production environment + HireCharm GitHub
+# App + localhost server are hard-coded below; this script is single-project.
+# =====================================================================
+
+_PROJECT_UUID = "xccs4w0csw0kwwksc0wocgc4"          # Charm Email OS
+_ENV_NAME = "production"                             # environment name (id=4)
+_SERVER_UUID = "asw4ws8cck48ckwscs0owcgo"           # localhost
+_DESTINATION_UUID = "msocw800wcs4wccosgkks88o"      # coolify network destination
+_GITHUB_APP_UUID = "d5c84ce1-d54b-4f6a-ab6d-98fa2cde3102"  # HireCharm
+_GIT_REPOSITORY = "HireCharm/charm-email-os"
+
+
+def cmd_create_app(name, *, dockerfile, cmd=None, base_dir=None,
+                   branch="master", copy_env_from=None, description=None):
+    """Create a new Dockerfile-based application in the Charm Email OS project.
+
+    The resulting app is left cold (no instant deploy). Caller can env-set
+    additional vars and `coolify deploy APP` when ready.
+    """
+    if not dockerfile.startswith("/"):
+        dockerfile = "/" + dockerfile
+    if base_dir is None:
+        # Default: same dir the Dockerfile lives in.
+        base_dir = "/" + dockerfile.lstrip("/").rsplit("/", 1)[0] if "/" in dockerfile.lstrip("/") else "/"
+    elif not base_dir.startswith("/"):
+        base_dir = "/" + base_dir
+
+    body = {
+        "project_uuid": _PROJECT_UUID,
+        "server_uuid": _SERVER_UUID,
+        "environment_name": _ENV_NAME,
+        "destination_uuid": _DESTINATION_UUID,
+        "github_app_uuid": _GITHUB_APP_UUID,
+        "git_repository": _GIT_REPOSITORY,
+        "git_branch": branch,
+        "build_pack": "dockerfile",
+        # Coolify requires a non-empty string. For background workers there's
+        # nothing real to expose; pick a placeholder port that won't conflict.
+        # No traefik labels or public route is added when there's no fqdn.
+        "ports_exposes": "3000",
+        "name": name,
+        "description": description or f"Auto-created via scripts/coolify.py create-app",
+        "dockerfile_location": dockerfile,
+        "base_directory": base_dir,
+        "instant_deploy": False,
+    }
+    if cmd:
+        # Coolify lets you override the container CMD via custom_docker_run_options
+        # — passing `--entrypoint` doesn't help here because our Dockerfile already
+        # has the right ENTRYPOINT (eod-reapply). The clean way is start_command.
+        body["start_command"] = cmd
+
+    print(f"Creating app {name!r}:")
+    for k in ("git_repository","git_branch","build_pack","dockerfile_location",
+              "base_directory","start_command","ports_exposes"):
+        if k in body:
+            print(f"  {k}: {body[k]!r}")
+
+    result = api("POST", "/applications/private-github-app", body)
+    if not isinstance(result, dict):
+        print(f"Unexpected response: {result}")
+        sys.exit(1)
+
+    new_uuid = result.get("uuid") or (result.get("data") or {}).get("uuid")
+    if not new_uuid:
+        print(f"Could not extract uuid from response: {result}")
+        sys.exit(1)
+    print(f"Created. uuid={new_uuid}")
+    print(f"Add to APP_UUIDS:  {name!r}: {new_uuid!r}")
+
+    if copy_env_from:
+        src_name, src_uuid = resolve_app(copy_env_from)
+        print(f"Copying env vars from {src_name}...")
+        envs = api("GET", f"/applications/{src_uuid}/envs")
+        env_list = envs if isinstance(envs, list) else envs.get("data", [])
+        copied = 0
+        skipped = 0
+        # POST /applications/{uuid}/envs accepts only key+value (matching
+        # cmd_env_set's pattern at L211); is_build_time / is_preview from the
+        # GET response are read-only metadata, rejected on POST.
+        for env in env_list:
+            key = env.get("key")
+            value = env.get("value")
+            if not key or value is None:
+                continue
+            try:
+                api("POST", f"/applications/{new_uuid}/envs", {"key": key, "value": value})
+                copied += 1
+            except SystemExit:
+                skipped += 1
+        print(f"Copied {copied} env vars (skipped {skipped}).")
+
+    print(f"\nNext: `py scripts/coolify.py deploy {name}` when ready.")
+
+
 def cmd_logs(app_name, lines=100):
     """Get application logs."""
     name, uuid = resolve_app(app_name)
@@ -342,6 +494,34 @@ def main():
             print("Usage: coolify.py start APP_NAME")
             sys.exit(1)
         cmd_start(args[0])
+    elif cmd in ("create-app", "create"):
+        if not args:
+            print("Usage: coolify.py create-app NAME --dockerfile=PATH "
+                  "[--cmd=CMD] [--base-dir=DIR] [--branch=master] "
+                  "[--copy-env-from=APP] [--description=TEXT]")
+            sys.exit(1)
+        name = args[0]
+        kwargs = {}
+        for a in args[1:]:
+            if a.startswith("--dockerfile="):
+                kwargs["dockerfile"] = a.split("=", 1)[1]
+            elif a.startswith("--cmd="):
+                kwargs["cmd"] = a.split("=", 1)[1]
+            elif a.startswith("--base-dir="):
+                kwargs["base_dir"] = a.split("=", 1)[1]
+            elif a.startswith("--branch="):
+                kwargs["branch"] = a.split("=", 1)[1]
+            elif a.startswith("--copy-env-from="):
+                kwargs["copy_env_from"] = a.split("=", 1)[1]
+            elif a.startswith("--description="):
+                kwargs["description"] = a.split("=", 1)[1]
+            else:
+                print(f"Unknown flag: {a}")
+                sys.exit(1)
+        if "dockerfile" not in kwargs:
+            print("Missing required --dockerfile=PATH")
+            sys.exit(1)
+        cmd_create_app(name, **kwargs)
     elif cmd == "logs":
         if not args:
             print("Usage: coolify.py logs APP_NAME [--lines=N]")

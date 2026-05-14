@@ -138,8 +138,8 @@ Each active workspace has a scoped EB API token stored in the `workspace_api_key
 - Operator runs `docker run --rm -e DATABASE_URL=... <image> reapply ...` from a host with prod DB access (e.g. a jumphost or one of the existing worker containers via exec)
 
 **Pattern C — daemon mode** (PR 1 of v2, dry-run-only):
-- Build context: `apps/eod-reapply/` (same Dockerfile as Patterns A/B)
-- Override CMD: `["daemon"]` (the `eod-reapply` ENTRYPOINT is already in place)
+- Build context: `apps/eod-reapply/`
+- Dockerfile: `apps/eod-reapply/Dockerfile.daemon` (NOT the base `Dockerfile` — daemon variant has `CMD ["daemon"]` baked in because Coolify's `start_command` field is ignored for Dockerfile builds; verified 2026-05-13)
 - Env vars: `DATABASE_URL`, `EMAILBISON_API_URL` (same as above)
 - Restart policy: `unless-stopped`
 - No public URL. No health endpoint in PR 1 — readiness signal is "daemon log line `enqueue: pass complete`" appearing in stdout within `enqueue_interval_seconds + 60s` of boot.
