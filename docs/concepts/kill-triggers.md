@@ -9,6 +9,12 @@ tags: [concept, health, kill-triggers, infrastructure, rate-rewrite-2026-05-04]
 
 Automated inbox termination system that protects domain reputation by detecting and removing problematic inboxes.
 
+> **Before analyzing any rate/ratio metric on this page, read
+> [ESP-Aware Data Interpretation](esp-aware-data-interpretation.md).**
+> Google (3 inboxes/domain) and Microsoft (52 inboxes/domain) produce
+> structurally different signals from the same raw numbers. Treating
+> them uniformly produces wrong conclusions.
+
 > **2026-05-04 — RATE-BASED REWRITE (load-bearing).** All windowed-count
 > rules (`hard_blocked_24h ≥ N`, `hard_unknown_24h ≥ N`, `hard_bounces_24h
 > ≥ N`, `hard_bounce_rate_7d > 2%`, `bounce_rate_all_7d > 5%`) are

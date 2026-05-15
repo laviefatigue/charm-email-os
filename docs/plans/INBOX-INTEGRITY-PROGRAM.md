@@ -51,6 +51,7 @@ Plus the foundational records:
 
 | Document | Type | Status |
 |----------|------|--------|
+| **[docs/concepts/esp-aware-data-interpretation.md](../concepts/esp-aware-data-interpretation.md)** | **Concept (handoff-critical)** | **Read before analyzing any rate/ratio metric. Google ≠ Microsoft.** |
 | [docs/adr/adr-009-connection-state-separated-from-kill-state-2026-04-30.md](../adr/adr-009-connection-state-separated-from-kill-state-2026-04-30.md) | ADR | accepted |
 | [docs/adr/adr-010-lifetime-rate-kill-rule-2026-05-04.md](../adr/adr-010-lifetime-rate-kill-rule-2026-05-04.md) | ADR | accepted (2026-05-04) |
 | [docs/work-logs/2026-05-04-kill-rule-rate-rewrite-and-revival.md](../work-logs/2026-05-04-kill-rule-rate-rewrite-and-revival.md) | Work log | Phase 1-4 shipped: 307 revivals + 63 kills + post-mortem on two deploy-side bugs |
