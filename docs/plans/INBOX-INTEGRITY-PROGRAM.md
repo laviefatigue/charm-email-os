@@ -228,10 +228,28 @@ Status keys: ✅ done · 🚧 in progress · ⏳ pending · 🔒 blocked · 👤
 | 3b-PR3 | validation audit (killed-inbox-no-sends-post-EOD) | ⏳ OPTIONAL | — | Daily closed-loop check. Deferred — not blocking; `event_log` outcomes already give per-run visibility. Build if/when wanted. |
 | 4 | Workspace allowlist phased rollout | ✅ COMPLETE 2026-05-14 | — | `eod_reapply_enabled = TRUE` for all 10 active workspaces except Sammy (off EmailBison). First fleet enqueue pass: 30 jobs across 7 workspaces with active campaigns (Spout 13, Search Atlas 6, SKMR 4, Selery 3, Stable Kernel 2, Hello Hero 1, SPUI 1), each scheduled at its campaign's EOD in its own tz. Charm/Barrena/Linkgraph enabled but idle (no active campaigns). |
 
-### 3.5c Warmup-disable on kill (Plan F — ✅ SHIPPED)
+### 3.5c Warmup-disable on kill (Plan F — ✅ SHIPPED + REGRESSION FIX)
 
-All phases shipped. Migration 109 + commit `4f9fbac`. Validation: 709/709
-`warmup_disable` events drained (706 backfill + 3 organic), 0 failed.
+All phases shipped. Migration 109 + commit `4f9fbac`. Original backfill:
+709/709 `warmup_disable` events drained, 0 failed.
+
+**Regression discovered + fixed 2026-05-15** (commit `af3c134`).
+[sync_warmup.py:auto_enable_warmup_for_connected](../../sync_modules/sync_warmup.py)
+was re-enabling EB warmup on every Connected inbox whose local
+`warmup_enabled` was FALSE — with no `inbox_state` filter. The kill chain
+correctly disabled warmup for dead inboxes (local UPDATE + Tier 2 EB
+call), then the very next `sync_warmup` cycle re-enabled it. Net: 672
+dead inboxes were still actively warming on EB, including 90-day-old
+kills, despite 713 `warmup_disable` events all reporting completed.
+Discovered via direct EB API spot-check ("status" query session
+2026-05-15) — same "200 OK doesn't mean it worked" failure mode as the
+earlier filter-shape + verify-fetch bugs, just one layer deeper.
+
+Fix: one-line filter `AND inbox_state = 'live'` added to the auto-enable
+SELECT. Dead inboxes never auto-re-enable. Backfill: 672 fresh
+`warmup_disable` events enqueued + drained 2026-05-15; all 8 spot-checked
+inboxes confirmed `EB warmup_enabled=False` post-drain (incl. 90-day
+Spout kills).
 
 | # | Phase | Status | Blocker | Notes |
 |:-:|-------|:------:|---------|-------|
