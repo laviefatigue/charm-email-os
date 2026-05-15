@@ -241,9 +241,15 @@ Field semantics:
 - `hypertide_last_seen_at` — timestamp of last reconcile pass where this `hypertide_record_id` appeared in `/orders/active`. If this stops advancing while the row exists, HT has purged the record vendor-side — flag for review (don't auto-delete).
 - `expected_inbox_count` — populated from HT plan (52 for entra, 3 for google). Used by Phase 2 provisioning watchdog.
 
-### Migration 111 — hypertide_jobs (Phase 2)
+### Migration 11N — hypertide_jobs (Phase 2)
 
 Deferred to Phase 2. Job queue is not needed for read-only collection.
+
+> **2026-05-15 — migration number collision note.** This plan originally
+> reserved **migration 111** for `hypertide_jobs`. That number is now
+> taken by `campaign_reapply_jobs` (EOD reapply v2 PR 1, shipped
+> 2026-05-13). When Phase 2 is built, use **migration 112+** instead.
+> Phase 1 (this doc + the shipped 110) is unaffected.
 
 ```sql
 -- Phase 2 — DO NOT INCLUDE IN PHASE 1
@@ -297,13 +303,13 @@ Deferred to Phase 2. Job queue is not needed for read-only collection.
 **Out of scope (Phase 1) — confirmed not done:**
 - Web UI / charm-frontend changes
 - HTTP routes in charm-api
-- Job queue (`hypertide_jobs` — migration 111, Phase 2)
+- Job queue (`hypertide_jobs` — migration 112+, Phase 2 (originally 111, but 111 taken by campaign_reapply_jobs 2026-05-13))
 - Cancellation flows, order placement, provisioning watchdog, Slack alerts
 - EB sync code changes
 
 ### Phase 2 — Cancellation via web UI + job queue (~1 week, deferred)
 
-- Migration 111 (`hypertide_jobs`)
+- Migration 112+ (`hypertide_jobs`) — was 111 in original plan; 111 now used by campaign_reapply_jobs
 - Worker process picks up `cancel_domain` jobs
 - HTTP endpoints in `charm-api`: `POST /api/hypertide/cancellations`, `POST /api/hypertide/cancellations/{id}/approve`
 - Cancellation web UI on `charm-frontend` (redesigned, not a port of d:/tmp/cleanup_viewer.html)
