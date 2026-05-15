@@ -292,12 +292,24 @@ class WarmupSyncModule:
             )
             workspace_name = row['workspace_name'] if row else str(workspace_id)
 
-        # Find connected inboxes without warmup enabled
+        # Find connected inboxes without warmup enabled.
+        #
+        # CRITICAL: `inbox_state = 'live'` filter is Plan F's missing piece
+        # (discovered 2026-05-14). Without it this query re-enabled warmup
+        # on dead-but-still-Connected inboxes — the kill_queued_handler
+        # would set warmup_enabled=FALSE + enqueue a warmup_disable event
+        # (which the Tier 2 worker drained against EB), and then the very
+        # next sync_warmup cycle would re-enable EB-side warmup on the
+        # dead inbox, undoing the kill's intent. Result: 672 dead inboxes
+        # still warming on EB (some 90 days post-kill), bleeding
+        # reputation onto domain neighbors — the original 2026-05-08 audit
+        # finding that Plan F was supposed to fix.
         accounts = await self.db.fetch("""
             SELECT id, email_address, emailbison_account_id
             FROM sender_accounts
             WHERE workspace_id = $1
             AND status = 'Connected'
+            AND inbox_state = 'live'
             AND (warmup_enabled = FALSE OR warmup_enabled IS NULL)
             AND emailbison_account_id IS NOT NULL
             AND is_active = TRUE
