@@ -340,3 +340,113 @@ async def report_capacity(format: str = Query("json", regex="^(json|csv)$")):
             "most_recent_event",
         ], rows)
     return _envelope("capacity", rows)
+
+
+@router.get("/burn-velocity")
+async def report_burn_velocity(
+    weeks: int = Query(8, ge=1, le=52),
+    format: str = Query("json", regex="^(json|csv)$"),
+):
+    """Weekly domain-burn counts — operator health signal.
+
+    Surfaces "how many domains are we burning per week" as a tracked
+    metric. Operator's stated healthy band is ≤5/week; sustained higher
+    counts mean reputation/list-quality work upstream.
+
+    Splits by ESP because Google (3 inboxes/dom) and Microsoft (52/dom)
+    have structurally different burn semantics — see
+    docs/concepts/esp-aware-data-interpretation.md.
+    """
+    rows = await fetch_all(
+        """
+        SELECT
+            week_start::date AS week_start,
+            esp,
+            COUNT(*) AS domains_burned
+        FROM (
+            SELECT
+                date_trunc('week', d.burned_at) AS week_start,
+                COALESCE(
+                    (SELECT sa.esp::text FROM sender_accounts sa
+                     WHERE sa.domain_id = d.id LIMIT 1),
+                    'unknown'
+                ) AS esp,
+                d.id
+            FROM domains d
+            WHERE d.burned_at IS NOT NULL
+              AND d.burned_at > NOW() - ($1::int || ' weeks')::interval
+        ) per_domain
+        GROUP BY week_start, esp
+        ORDER BY week_start DESC, esp
+        """,
+        weeks,
+    )
+    if format == "csv":
+        return _csv_response("burn-velocity", [
+            "week_start", "esp", "domains_burned",
+        ], rows)
+    return _envelope("burn-velocity", rows)
+
+
+@router.get("/burned-domain-attachments")
+async def report_burned_domain_attachments(
+    format: str = Query("json", regex="^(json|csv)$"),
+):
+    """Active campaigns with senders attached on burned domains.
+
+    The operational drift the EOD reapply daemon's 50%-removal guard
+    surfaces but refuses to act on. Per-campaign view:
+      - How many of the campaign's attached senders are on burned domains?
+      - What pct of attached?
+      - Is it over the EOD guard's threshold (would be SKIPPED)?
+
+    These senders don't carry the `live` tag, so EB doesn't actually
+    send from them — the attachment is cosmetic, not sending. But it
+    keeps EOD's guard tripped on those campaigns. Operator decides:
+    retire the campaign, do a one-shot detach, or let attrition handle.
+    """
+    rows = await fetch_all(
+        """
+        SELECT
+            w.workspace_name,
+            ec.emailbison_campaign_id AS campaign_id,
+            ec.campaign_name,
+            COUNT(DISTINCT ci.sender_account_id) AS attached_total,
+            COUNT(DISTINCT ci.sender_account_id)
+                FILTER (WHERE d.pool_status = 'burned') AS attached_on_burned,
+            ROUND(
+                100.0 * COUNT(DISTINCT ci.sender_account_id)
+                              FILTER (WHERE d.pool_status = 'burned')
+                / NULLIF(COUNT(DISTINCT ci.sender_account_id), 0),
+                1
+            ) AS burned_pct,
+            (
+                COUNT(DISTINCT ci.sender_account_id)
+                    FILTER (WHERE d.pool_status = 'burned') * 100.0
+                / NULLIF(COUNT(DISTINCT ci.sender_account_id), 0)
+            ) > 50 AS over_eod_guard,
+            COUNT(DISTINCT d.id)
+                FILTER (WHERE d.pool_status = 'burned') AS burned_domains_in_campaign
+        FROM emailbison_campaigns ec
+        JOIN workspaces w ON w.id = ec.workspace_id
+        JOIN campaign_inboxes ci ON ci.campaign_id = ec.id
+            AND ci.is_active = TRUE
+            AND ci.removed_at IS NULL
+        JOIN sender_accounts sa ON sa.id = ci.sender_account_id
+        LEFT JOIN domains d ON d.id = sa.domain_id
+        WHERE w.is_active = TRUE
+          AND ec.is_active = TRUE
+          AND LOWER(COALESCE(ec.campaign_status, '')) IN ('active', 'queued', 'sending')
+        GROUP BY w.workspace_name, ec.emailbison_campaign_id, ec.campaign_name
+        HAVING COUNT(DISTINCT ci.sender_account_id)
+                   FILTER (WHERE d.pool_status = 'burned') > 0
+        ORDER BY burned_pct DESC, w.workspace_name
+        """
+    )
+    if format == "csv":
+        return _csv_response("burned-domain-attachments", [
+            "workspace_name", "campaign_id", "campaign_name",
+            "attached_total", "attached_on_burned", "burned_pct",
+            "over_eod_guard", "burned_domains_in_campaign",
+        ], rows)
+    return _envelope("burned-domain-attachments", rows)

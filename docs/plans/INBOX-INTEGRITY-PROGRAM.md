@@ -500,6 +500,22 @@ PENDING — system code, shippable next session (ranked, updated 2026-05-14)
       `/reports/disconnects` page in the 7-page operator queue UI
       (commit 35e538c). Plan B Phase 2 now ✅ in §3.4.
 
+   ✅ Added 2026-05-15: two operational-drift report endpoints surfacing
+      signals the EOD reapply work exposed:
+        - `/api/reports/burn-velocity` — weekly domain-burn counts
+          split by ESP. Operator's healthy band: ≤5/week. Recent data
+          shows 14/wk peak in mid-April (mass MSFT burns), back to 0/wk
+          for past 4 weeks — natural MSFT attrition trend.
+        - `/api/reports/burned-domain-attachments` — active campaigns
+          with senders attached on burned domains, with burned_pct +
+          over_eod_guard flag. Surfaces the operational drift EOD's
+          50%-removal guard silently refuses on. Top hits: Stable
+          Kernel 174 (94.5%), 232 (89.1%), several Spout campaigns at
+          46-48% (close to tripping the guard).
+      These are read-only JSON endpoints; no frontend pages yet — the
+      operator can curl or read via JSON. Add UI pages if/when the
+      operator wants them.
+
 
 NEXT SPRINT (after current pending queue drains)
 ─────────────────────────────────────────────────────────────────────
