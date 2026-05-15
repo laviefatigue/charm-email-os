@@ -207,9 +207,46 @@ async def run_audit(
     # --- 5. Apply phase ---
     if apply:
         result.rows_updated = await _apply_updates(conn, matched_records, sync_started_at)
+        # Plan §"Parity model": "Flags DB rows without HT match as is_legacy=TRUE."
+        # The original Phase 1 ship computed db_only counts for reporting but
+        # never wrote the column. Fixed 2026-05-15: matched rows get
+        # is_legacy=FALSE (so a previously-legacy domain that gets HT-added
+        # reclassifies on the next audit pass), db_only rows get is_legacy=TRUE.
+        matched_ids = [r[0]["id"] for r in matched_records]
+        db_only_ids = [r["id"] for r in db_only_rows]
+        await _apply_legacy_flags(conn, matched_ids=matched_ids, db_only_ids=db_only_ids)
         await _record_audit_run(conn, result, sync_started_at)
 
     return result
+
+
+async def _apply_legacy_flags(
+    conn: asyncpg.Connection,
+    *,
+    matched_ids: list[Any],
+    db_only_ids: list[Any],
+) -> None:
+    """Set is_legacy on domains based on whether they matched an HT record this pass.
+
+    Two updates in one transaction so the column is internally consistent
+    after each audit. is_legacy oscillates correctly across runs as HT
+    membership changes.
+    """
+    if not matched_ids and not db_only_ids:
+        return
+    async with conn.transaction():
+        if matched_ids:
+            await conn.execute(
+                "UPDATE domains SET is_legacy = FALSE "
+                "WHERE id = ANY($1::uuid[]) AND is_legacy IS DISTINCT FROM FALSE",
+                matched_ids,
+            )
+        if db_only_ids:
+            await conn.execute(
+                "UPDATE domains SET is_legacy = TRUE "
+                "WHERE id = ANY($1::uuid[]) AND is_legacy IS DISTINCT FROM TRUE",
+                db_only_ids,
+            )
 
 
 async def _apply_updates(

@@ -57,13 +57,59 @@ class HypertideClient:
         return self._client
 
     async def _get(self, path: str) -> dict[str, Any]:
-        r = await self.client.get(path)
-        body = _parse_or_raise(r)
-        return body
+        r = await self._request_with_retry("GET", path)
+        return _parse_or_raise(r)
 
     async def _post(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
-        r = await self.client.post(path, json=payload)
+        r = await self._request_with_retry("POST", path, json=payload)
         return _parse_or_raise(r)
+
+    async def _request_with_retry(
+        self,
+        method: str,
+        path: str,
+        *,
+        json: dict[str, Any] | None = None,
+        max_attempts: int = 3,
+    ) -> httpx.Response:
+        """Retry transient network errors only — never on HTTP status codes.
+
+        Observed 2026-05-14/15: the HT API occasionally hits httpx.ReadTimeout
+        for individual GET calls. Without retry, a single transient timeout
+        fails the entire audit cycle, and the 24h freshness loop means stale
+        data for a full day. 3 attempts with exponential backoff covers
+        normal flakiness while not masking real outages.
+
+        Only retries on connection / read / write / pool / protocol errors.
+        HTTP 4xx/5xx responses are returned for `_parse_or_raise` to handle —
+        retrying a 401/403 would just burn API budget on the same auth
+        failure; 5xx is HT-side and probably won't resolve in seconds.
+        """
+        retriable = (
+            httpx.ReadTimeout,
+            httpx.ConnectTimeout,
+            httpx.WriteTimeout,
+            httpx.PoolTimeout,
+            httpx.RemoteProtocolError,
+            httpx.ConnectError,
+        )
+        last_exc: Exception | None = None
+        for attempt in range(1, max_attempts + 1):
+            try:
+                if method == "GET":
+                    return await self.client.get(path)
+                if method == "POST":
+                    return await self.client.post(path, json=json)
+                raise ValueError(f"unsupported method {method!r}")
+            except retriable as exc:
+                last_exc = exc
+                if attempt >= max_attempts:
+                    break
+                # 1s, 2s, 4s — total ~7s worst-case before giving up
+                await asyncio.sleep(2 ** (attempt - 1))
+        # All retries exhausted — re-raise the last transient error
+        assert last_exc is not None
+        raise last_exc
 
     async def get_active_orders(self) -> list[dict[str, Any]]:
         body = await self._get("/orders/active")

@@ -450,3 +450,86 @@ async def report_burned_domain_attachments(
             "over_eod_guard", "burned_domains_in_campaign",
         ], rows)
     return _envelope("burned-domain-attachments", rows)
+
+
+@router.get("/hypertide-drift")
+async def report_hypertide_drift(
+    format: str = Query("json", regex="^(json|csv)$"),
+):
+    """Hypertide ↔ EmailBison drift visibility.
+
+    Surfaces three kinds of state mismatch the hypertide-worker's daily
+    audit detects but doesn't act on (Phase 1 is read-only):
+
+      1. `ht_cancelled_eb_active` — HT subscription cancelled or flagged
+         to_be_cancelled, but the domain's inboxes are still active and
+         Connected in EB. When HT cancellation completes, DNS/auth dies
+         → sends will start failing. Operator needs to coordinate.
+      2. `ht_npc_eb_live` — HT subscription in NPC (non-payment /
+         cancellation pending), but the domain is still in `pool='live'`
+         actively sending. Reputation risk if HT auto-cancels mid-cycle.
+      3. `db_only_unlinked` — domain in our DB but no HT record after
+         the most recent audit. Either friends-and-family or genuinely
+         out-of-band; flagged `is_legacy=TRUE` post-audit.
+
+    All three are derivable from current `domains` columns; this endpoint
+    is a live SQL view (no dependency on the audit-log table). The
+    `hypertide_last_synced_at` column shows when the audit last
+    confirmed the underlying HT state — values older than 48h mean
+    the worker is unhealthy and the findings could be stale.
+    """
+    rows = await fetch_all(
+        """
+        WITH base AS (
+            SELECT
+                w.workspace_name,
+                d.domain_name,
+                d.pool_status,
+                d.hypertide_status::text AS ht_status,
+                d.hypertide_to_be_cancelled AS ht_to_be_cancelled,
+                d.is_legacy,
+                d.hypertide_last_synced_at,
+                (SELECT COUNT(*) FROM sender_accounts sa
+                 WHERE sa.domain_id = d.id AND sa.is_active = TRUE) AS inboxes_total,
+                (SELECT COUNT(*) FROM sender_accounts sa
+                 WHERE sa.domain_id = d.id AND sa.is_active = TRUE
+                   AND sa.status = 'Connected') AS inboxes_connected
+            FROM domains d
+            LEFT JOIN workspaces w ON w.id = d.workspace_id
+            WHERE w.is_active = TRUE
+              AND w.manages_via_hypertide = TRUE
+              AND d.pool_status IS DISTINCT FROM 'cancelled'
+        )
+        SELECT
+            CASE
+                WHEN (ht_status = 'cancelled' OR ht_to_be_cancelled = TRUE)
+                     AND inboxes_connected > 0 THEN 'ht_cancelled_eb_active'
+                WHEN ht_status = 'NPC' AND pool_status = 'live'
+                     THEN 'ht_npc_eb_live'
+                WHEN is_legacy = TRUE THEN 'db_only_unlinked'
+            END AS drift_type,
+            workspace_name,
+            domain_name,
+            pool_status,
+            ht_status,
+            ht_to_be_cancelled,
+            is_legacy,
+            inboxes_total,
+            inboxes_connected,
+            hypertide_last_synced_at
+        FROM base
+        WHERE
+            ((ht_status = 'cancelled' OR ht_to_be_cancelled = TRUE)
+             AND inboxes_connected > 0)
+            OR (ht_status = 'NPC' AND pool_status = 'live')
+            OR is_legacy = TRUE
+        ORDER BY drift_type, workspace_name, domain_name
+        """
+    )
+    if format == "csv":
+        return _csv_response("hypertide-drift", [
+            "drift_type", "workspace_name", "domain_name", "pool_status",
+            "ht_status", "ht_to_be_cancelled", "is_legacy",
+            "inboxes_total", "inboxes_connected", "hypertide_last_synced_at",
+        ], rows)
+    return _envelope("hypertide-drift", rows)
