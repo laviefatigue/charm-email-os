@@ -145,13 +145,48 @@ class HypertideClient:
 
         HT documents 20-30/min for /subscriptions/*. Default 2.5s sleep = 24/min,
         well inside the floor.
+
+        Per-subscription error tolerance (added 2026-05-15): a single
+        subscription's verify call failing after retries (transient HT
+        timeout, transient network error) should NOT kill the entire
+        audit. The retry wrapper handles ephemeral flakes; this
+        handles "this one record consistently fails." We log the
+        failed sub for operator visibility and continue with the rest.
+        The audit then completes with partial coverage instead of
+        zero progress (which was happening 2026-05-13 → 2026-05-15:
+        single subscription timing out → full audit fails → 24h until
+        next attempt → 2 days of staleness).
         """
         out: list[dict[str, Any]] = []
+        failed_subs: list[str] = []
         for sub in subscription_ids:
-            recs = await self.verify_revert_subscription(sub)
-            out.extend(recs)
+            try:
+                recs = await self.verify_revert_subscription(sub)
+                out.extend(recs)
+            except (
+                httpx.ReadTimeout, httpx.ConnectTimeout, httpx.WriteTimeout,
+                httpx.PoolTimeout, httpx.RemoteProtocolError, httpx.ConnectError,
+                HypertideAPIError,
+            ) as exc:
+                failed_subs.append(sub)
+                # Log loud so operators can see per-sub failures; full
+                # audit continues. Note: print, not logger, so it shows
+                # up in the deploy log stream where the rest of the
+                # audit output goes.
+                print(
+                    f"[ht_client] verify_revert sub={sub} failed after retries — "
+                    f"skipping ({type(exc).__name__}: {exc}); audit continues",
+                    flush=True,
+                )
             if sleep_between > 0:
                 await asyncio.sleep(sleep_between)
+        if failed_subs:
+            print(
+                f"[ht_client] verify-revert completed with {len(failed_subs)} "
+                f"failed subscription(s) out of {len(subscription_ids)}: "
+                f"{failed_subs[:10]}{'...' if len(failed_subs) > 10 else ''}",
+                flush=True,
+            )
         return out
 
 
