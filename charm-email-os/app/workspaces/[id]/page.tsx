@@ -10,7 +10,7 @@
 
 import * as React from "react";
 import Link from "next/link";
-import { notFound, useParams } from "next/navigation";
+import { useParams } from "next/navigation";
 import { ChevronRight, Sparkles, Bot, ScrollText } from "lucide-react";
 import {
   AgentCard,
@@ -18,17 +18,13 @@ import {
   RecommendationCard,
 } from "@/components/charm";
 import {
-  getWorkspace,
   getAgents,
   getRecommendations,
   getEvents,
-} from "@/lib/mock/charm";
+} from "@/lib/data/charm";
 
 export default function WorkspaceOverviewPage() {
   const { id } = useParams<{ id: string }>();
-  const workspace = getWorkspace(id);
-  if (!workspace) notFound();
-
   const recommendations = getRecommendations(id);
   const agents = getAgents(id);
   const events = getEvents(id).slice(0, 8);

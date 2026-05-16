@@ -12,13 +12,25 @@ import * as React from "react";
 import Link from "next/link";
 import { ChevronRight, Sparkles } from "lucide-react";
 import { RecommendationCard, PageHeader } from "@/components/charm";
-import { MOCK_WORKSPACES, getRecommendations } from "@/lib/mock/charm";
+import {
+  getWorkspaces,
+  getRecommendations,
+} from "@/lib/data/charm";
+import type { WorkspaceCardData, RecommendationCardData } from "@/components/charm";
 
 export default function GlobalRecommendationsPage() {
-  const byWorkspace = MOCK_WORKSPACES.map((ws) => ({
-    workspace: ws,
-    recommendations: getRecommendations(ws.id),
-  })).filter((entry) => entry.recommendations.length > 0);
+  const [workspaces, setWorkspaces] = React.useState<WorkspaceCardData[]>([]);
+
+  React.useEffect(() => {
+    getWorkspaces().then(setWorkspaces).catch(() => setWorkspaces([]));
+  }, []);
+
+  const byWorkspace: Array<{
+    workspace: WorkspaceCardData;
+    recommendations: RecommendationCardData[];
+  }> = workspaces
+    .map((ws) => ({ workspace: ws, recommendations: getRecommendations(ws.id) }))
+    .filter((entry) => entry.recommendations.length > 0);
 
   const total = byWorkspace.reduce(
     (sum, entry) => sum + entry.recommendations.length,

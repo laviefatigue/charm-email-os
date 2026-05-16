@@ -9,16 +9,13 @@
 "use client";
 
 import * as React from "react";
-import { notFound, useParams } from "next/navigation";
+import { useParams } from "next/navigation";
 import { Bot, Plus } from "lucide-react";
 import { AgentCard, PageHeader } from "@/components/charm";
-import { getWorkspace, getAgents } from "@/lib/mock/charm";
+import { getAgents } from "@/lib/data/charm";
 
 export default function WorkspaceAgentsPage() {
   const { id } = useParams<{ id: string }>();
-  const workspace = getWorkspace(id);
-  if (!workspace) notFound();
-
   const agents = getAgents(id);
   const activeCount = agents.filter((a) => a.status === "active" || a.status === "running").length;
   const totalSpend = agents.reduce((sum, a) => sum + a.spentMonthlyCents, 0);

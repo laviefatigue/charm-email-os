@@ -9,16 +9,13 @@
 "use client";
 
 import * as React from "react";
-import { notFound, useParams } from "next/navigation";
+import { useParams } from "next/navigation";
 import { Sparkles } from "lucide-react";
 import { RecommendationCard, PageHeader } from "@/components/charm";
-import { getWorkspace, getRecommendations } from "@/lib/mock/charm";
+import { getRecommendations } from "@/lib/data/charm";
 
 export default function WorkspaceRecommendationsPage() {
   const { id } = useParams<{ id: string }>();
-  const workspace = getWorkspace(id);
-  if (!workspace) notFound();
-
   const recommendations = getRecommendations(id);
 
   return (

@@ -8,10 +8,10 @@
 "use client";
 
 import * as React from "react";
-import { notFound, useParams } from "next/navigation";
+import { useParams } from "next/navigation";
 import { ScrollText } from "lucide-react";
 import { ActivityLogRow, PageHeader } from "@/components/charm";
-import { getWorkspace, getEvents } from "@/lib/mock/charm";
+import { getEvents } from "@/lib/data/charm";
 import { cn } from "@/lib/utils";
 import type { ActivityEvent, ActivityEventType } from "@/components/charm";
 
@@ -26,9 +26,6 @@ const FILTERS: { id: Filter; label: string }[] = [
 
 export default function WorkspaceEventsPage() {
   const { id } = useParams<{ id: string }>();
-  const workspace = getWorkspace(id);
-  if (!workspace) notFound();
-
   const [filter, setFilter] = React.useState<Filter>("all");
   const allEvents = React.useMemo(() => getEvents(id), [id]);
 

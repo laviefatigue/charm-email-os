@@ -15,7 +15,7 @@ import {
   ContextFreshnessPill,
   StatusPill,
 } from "@/components/charm";
-import { getWorkspace, getRecommendations } from "@/lib/mock/charm";
+import { getWorkspace, getRecommendations } from "@/lib/data/charm";
 
 const ATTENTION_TO_STATUS: Record<string, "live" | "drift" | "burned"> = {
   healthy: "live",
@@ -31,7 +31,7 @@ export default async function WorkspaceLayout({
   params: Promise<{ id: string }>;
 }) {
   const { id } = await params;
-  const workspace = getWorkspace(id);
+  const workspace = await getWorkspace(id);
   if (!workspace) notFound();
 
   const pendingCount = getRecommendations(id).length;

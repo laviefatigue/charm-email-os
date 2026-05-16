@@ -10,6 +10,7 @@
 "use client";
 
 import * as React from "react";
+import Link from "next/link";
 import { formatDistanceToNowStrict } from "date-fns";
 import { ChevronRight, Boxes, Calendar, Bot, Inbox, Plug } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -71,14 +72,24 @@ function formatUsd(cents: number): string {
   return `$${(dollars / 1000).toFixed(1)}k`;
 }
 
-export interface WorkspaceCardProps extends React.HTMLAttributes<HTMLDivElement> {
+export interface WorkspaceCardProps {
   workspace: WorkspaceCardData;
+  /** Imperative open callback (client components). */
   onOpen?: (workspaceId: string) => void;
+  /** Link href (server components). Renders as Next Link wrapper if provided. */
+  href?: string;
+  /** Override label for the primary count metric (default: "Inboxes"). */
+  metricLabel?: string;
+  className?: string;
 }
 
 const WorkspaceCard = React.forwardRef<HTMLDivElement, WorkspaceCardProps>(
-  ({ className, workspace, onOpen, ...props }, ref) => {
+  (
+    { className, workspace, onOpen, href, metricLabel = "Inboxes" },
+    ref
+  ) => {
     const needsAttention = workspace.attentionState !== "healthy";
+    const interactive = !!onOpen || !!href;
     const lastEventRel = workspace.lastEventAt
       ? formatDistanceToNowStrict(
           typeof workspace.lastEventAt === "string"
@@ -96,23 +107,17 @@ const WorkspaceCard = React.forwardRef<HTMLDivElement, WorkspaceCardProps>(
       }
     };
 
-    return (
-      <div
-        ref={ref}
-        role={onOpen ? "button" : undefined}
-        tabIndex={onOpen ? 0 : undefined}
-        onClick={onOpen ? handleClick : undefined}
-        onKeyDown={onOpen ? handleKey : undefined}
-        aria-label={onOpen ? `Open workspace ${workspace.name}` : undefined}
-        className={cn(
-          "group flex flex-col gap-5 p-6 rounded-lg bg-card text-card-foreground",
-          "border-[1.5px] border-border-bold",
-          needsAttention ? "shadow-flat" : "shadow-none",
-          onOpen && "cursor-pointer hover:shadow-flat focus-visible:shadow-flat transition-shadow",
-          className
-        )}
-        {...props}
-      >
+    const surfaceClass = cn(
+      "group flex flex-col gap-5 p-6 rounded-lg bg-card text-card-foreground",
+      "border-[1.5px] border-border-bold",
+      needsAttention ? "shadow-flat" : "shadow-none",
+      interactive &&
+        "cursor-pointer hover:shadow-flat focus-visible:shadow-flat transition-shadow",
+      className
+    );
+
+    const cardBody = (
+      <>
         {/* Header — name + attention indicator */}
         <header className="flex items-start justify-between gap-3">
           <div className="min-w-0">
@@ -134,7 +139,7 @@ const WorkspaceCard = React.forwardRef<HTMLDivElement, WorkspaceCardProps>(
               />
               {ATTENTION_LABEL[workspace.attentionState]}
             </span>
-            {onOpen && (
+            {interactive && (
               <ChevronRight
                 className="h-4 w-4 text-ink-soft transition-transform group-hover:translate-x-0.5"
                 aria-hidden="true"
@@ -147,7 +152,7 @@ const WorkspaceCard = React.forwardRef<HTMLDivElement, WorkspaceCardProps>(
         <div className="grid grid-cols-3 gap-4 text-sm">
           <div className="flex flex-col gap-0.5">
             <span className="text-xs text-ink-soft inline-flex items-center gap-1">
-              <Boxes className="h-3 w-3" aria-hidden="true" /> Live
+              <Boxes className="h-3 w-3" aria-hidden="true" /> {metricLabel}
             </span>
             <span className="text-foreground font-mono">
               {workspace.domainsLive}
@@ -230,6 +235,34 @@ const WorkspaceCard = React.forwardRef<HTMLDivElement, WorkspaceCardProps>(
             lastSyncedAt={workspace.contextSync.lastSyncedAt}
           />
         </footer>
+      </>
+    );
+
+    // Render as Link (server-component friendly) when href is provided
+    if (href && !onOpen) {
+      return (
+        <Link
+          href={href}
+          aria-label={`Open workspace ${workspace.name}`}
+          className={cn(surfaceClass, "no-underline")}
+        >
+          {cardBody}
+        </Link>
+      );
+    }
+
+    // Render as button-div (client component with onClick)
+    return (
+      <div
+        ref={ref}
+        role={onOpen ? "button" : undefined}
+        tabIndex={onOpen ? 0 : undefined}
+        onClick={onOpen ? handleClick : undefined}
+        onKeyDown={onOpen ? handleKey : undefined}
+        aria-label={interactive ? `Open workspace ${workspace.name}` : undefined}
+        className={surfaceClass}
+      >
+        {cardBody}
       </div>
     );
   }

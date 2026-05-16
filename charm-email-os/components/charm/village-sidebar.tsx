@@ -1,6 +1,7 @@
 /**
  * VillageSidebar — workspace-first top-level navigation for the Charm redesign.
  * Fixed left rail. Shows global nav + workspace switcher with attention dots.
+ * Fetches real workspaces from the Charm API (browser fetch via lib/data/charm).
  *
  * Tokens: --cream, --ink, --amber, --moss, --rust, --border-bold
  * See [[design-system/brand-brief]] §Mental Model — workspace-first
@@ -12,8 +13,8 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { Flame, Home, Inbox, Activity, Settings } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { MOCK_WORKSPACES, getGlobalSummary } from "@/lib/mock/charm";
-import type { AttentionState } from "./workspace-card";
+import { getWorkspaces } from "@/lib/data/charm";
+import type { WorkspaceCardData, AttentionState } from "./workspace-card";
 
 const ATTENTION_DOT: Record<AttentionState, string> = {
   healthy: "bg-moss",
@@ -45,7 +46,35 @@ const GLOBAL_LINKS = [
 
 export function VillageSidebar() {
   const pathname = usePathname();
-  const summary = getGlobalSummary();
+  const [workspaces, setWorkspaces] = React.useState<WorkspaceCardData[]>([]);
+  const [loaded, setLoaded] = React.useState(false);
+
+  React.useEffect(() => {
+    let cancelled = false;
+    getWorkspaces()
+      .then((ws) => {
+        if (!cancelled) {
+          setWorkspaces(ws);
+          setLoaded(true);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setLoaded(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const totalPending = workspaces.reduce(
+    (sum, w) => sum + w.pendingRecommendations,
+    0
+  );
+  const totalAgents = workspaces.reduce((sum, w) => sum + w.agentsActive, 0);
+  const totalLive = workspaces.reduce((sum, w) => sum + w.domainsLive, 0);
+  const needsAttention = workspaces.filter(
+    (w) => w.attentionState !== "healthy"
+  ).length;
 
   return (
     <aside
@@ -61,14 +90,13 @@ export function VillageSidebar() {
           href="/"
           className="inline-flex items-center gap-2 group focus-visible:outline-none"
         >
-          <span className="inline-flex items-center justify-center h-8 w-8 rounded-md bg-amber text-ink border-[1.5px] border-ink shadow-flat-sm transition-shadow group-hover:translate-x-[1px] group-hover:translate-y-[1px] group-hover:shadow-none">
+          <span className="inline-flex items-center justify-center h-8 w-8 rounded-md bg-amber text-ink border-[1.5px] border-ink shadow-flat-sm transition-shadow group-hover:translate-x-px group-hover:translate-y-px group-hover:shadow-none">
             <Flame className="h-4 w-4" aria-hidden="true" />
           </span>
           <span className="text-2xl">Charm</span>
         </Link>
         <p className="mt-1 text-xs text-ink-soft">
-          {summary.workspaceCount} workspaces ·{" "}
-          {summary.totalPendingRecommendations} pending
+          {loaded ? `${workspaces.length} workspaces · ${totalPending} pending` : "Loading…"}
         </p>
       </div>
 
@@ -76,8 +104,7 @@ export function VillageSidebar() {
       <nav className="px-3 py-4 space-y-1" aria-label="Global navigation">
         {GLOBAL_LINKS.map((link) => {
           const active = link.match(pathname);
-          const showBadge =
-            link.label === "Recommendations" && summary.totalPendingRecommendations > 0;
+          const showBadge = link.label === "Recommendations" && totalPending > 0;
           return (
             <Link
               key={link.href}
@@ -97,7 +124,7 @@ export function VillageSidebar() {
               </span>
               {showBadge && (
                 <span className="inline-flex items-center justify-center h-5 min-w-5 px-1 rounded-sm bg-amber text-ink text-xs font-semibold border-[1.5px] border-ink">
-                  {summary.totalPendingRecommendations}
+                  {totalPending}
                 </span>
               )}
             </Link>
@@ -106,12 +133,25 @@ export function VillageSidebar() {
       </nav>
 
       {/* Workspace switcher */}
-      <div className="px-3 mt-2 mb-2">
+      <div className="px-3 mt-2 mb-2 flex-1 min-h-0 flex flex-col">
         <div className="px-2 mb-2 text-xs font-medium uppercase tracking-wider text-ink-soft">
           Workspaces
         </div>
-        <nav className="space-y-0.5 overflow-y-auto" aria-label="Workspaces">
-          {MOCK_WORKSPACES.map((ws) => {
+        <nav
+          className="space-y-0.5 overflow-y-auto pr-1 custom-scrollbar"
+          aria-label="Workspaces"
+        >
+          {!loaded && (
+            <div className="px-3 py-2 text-sm text-ink-soft animate-pulse">
+              Fetching…
+            </div>
+          )}
+          {loaded && workspaces.length === 0 && (
+            <div className="px-3 py-2 text-sm text-ink-soft">
+              No workspaces (API unreachable)
+            </div>
+          )}
+          {workspaces.map((ws) => {
             const href = `/workspaces/${ws.id}`;
             const active = pathname === href || pathname.startsWith(`${href}/`);
             return (
@@ -148,14 +188,14 @@ export function VillageSidebar() {
         </nav>
       </div>
 
-      {/* Footer — quiet user / status row */}
-      <div className="mt-auto px-5 py-4 border-t border-border text-xs text-ink-soft">
+      {/* Footer — quiet stats */}
+      <div className="px-5 py-4 border-t border-border text-xs text-ink-soft">
         <div className="font-mono">
-          {summary.totalAgentsActive} agents · {summary.totalLiveDomains} live domains
+          {totalAgents} agents · {totalLive} inboxes
         </div>
-        {summary.needsAttention > 0 && (
+        {needsAttention > 0 && (
           <div className="mt-1 text-rust">
-            {summary.needsAttention} workspace{summary.needsAttention === 1 ? "" : "s"} need attention
+            {needsAttention} workspace{needsAttention === 1 ? "" : "s"} need attention
           </div>
         )}
       </div>
