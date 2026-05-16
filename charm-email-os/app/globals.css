@@ -3,157 +3,404 @@
 
 @custom-variant dark (&:is(.dark *));
 
+/* =====================================================================
+   Charm Village Design System
+   Lifted from paperclip's Village aesthetic (Howl's Moving Castle palette).
+   Token source-of-truth: docs/design-system/tokens/
+   Three non-negotiables:
+     1. Warm ink everywhere, never cold
+     2. Offset shadow as signature (hero surfaces only)
+     3. Outline carries hierarchy
+   ===================================================================== */
+
+/* =====================================================================
+   THEME REGISTRATION — exposes CSS vars as Tailwind v4 utilities
+   ===================================================================== */
 @theme inline {
+  /* Howl primitives — direct utility access (bg-amber, text-ink-soft, border-bold) */
+  --color-amber: var(--amber);
+  --color-honey: var(--honey);
+  --color-copper: var(--copper);
+  --color-rust: var(--rust);
+  --color-cream: var(--cream);
+  --color-cream-light: var(--cream-light);
+  --color-sage: var(--sage);
+  --color-moss: var(--moss);
+  --color-sky: var(--sky);
+  --color-blue-howl: var(--blue-howl);
+  --color-storm: var(--storm);
+  --color-rose: var(--rose);
+  --color-rose-deep: var(--rose-deep);
+  --color-ink: var(--ink);
+  --color-ink-soft: var(--ink-soft);
+
+  /* Semantic roles (shadcn-compatible names) */
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-  --color-sidebar-ring: var(--sidebar-ring);
-  --color-sidebar-border: var(--sidebar-border);
-  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
-  --color-sidebar-accent: var(--sidebar-accent);
-  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
-  --color-sidebar-primary: var(--sidebar-primary);
-  --color-sidebar-foreground: var(--sidebar-foreground);
-  --color-sidebar: var(--sidebar);
-  --color-chart-5: var(--chart-5);
-  --color-chart-4: var(--chart-4);
-  --color-chart-3: var(--chart-3);
-  --color-chart-2: var(--chart-2);
-  --color-chart-1: var(--chart-1);
-  --color-ring: var(--ring);
-  --color-input: var(--input);
-  --color-border: var(--border);
-  --color-destructive: var(--destructive);
-  --color-success: var(--success);
-  --color-accent-foreground: var(--accent-foreground);
-  --color-accent: var(--accent);
-  --color-muted-foreground: var(--muted-foreground);
-  --color-muted: var(--muted);
-  --color-secondary-foreground: var(--secondary-foreground);
-  --color-secondary: var(--secondary);
-  --color-primary-foreground: var(--primary-foreground);
-  --color-primary: var(--primary);
-  --color-popover-foreground: var(--popover-foreground);
-  --color-popover: var(--popover);
-  --color-card-foreground: var(--card-foreground);
   --color-card: var(--card);
-  --radius-sm: calc(var(--radius) - 4px);
-  --radius-md: calc(var(--radius) - 2px);
-  --radius-lg: var(--radius);
-  --radius-xl: calc(var(--radius) + 4px);
-  --radius-2xl: calc(var(--radius) + 8px);
-  --radius-3xl: calc(var(--radius) + 12px);
-  --radius-4xl: calc(var(--radius) + 16px);
-}
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-info: var(--info);
+  --color-border: var(--border);
+  --color-border-bold: var(--border-bold);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
 
-:root {
-  /* Charm Email OS Design System */
-  --radius: 0.5rem; /* 8px for cards, 6px for buttons */
-
-  /* Backgrounds */
-  --background: #ffffff;
-  --foreground: #1a1a1a;
-
-  /* Cards */
-  --card: #ffffff;
-  --card-foreground: #1a1a1a;
-
-  /* Popovers */
-  --popover: #ffffff;
-  --popover-foreground: #1a1a1a;
-
-  /* Primary - Warm Coral #E85D4C */
-  --primary: #E85D4C;
-  --primary-foreground: #ffffff;
-
-  /* Secondary */
-  --secondary: #f5f5f5;
-  --secondary-foreground: #1a1a1a;
-
-  /* Muted */
-  --muted: #f5f5f5;
-  --muted-foreground: #737373;
-
-  /* Accent */
-  --accent: #f5f5f5;
-  --accent-foreground: #1a1a1a;
-
-  /* Destructive - Red */
-  --destructive: #ef4444;
-
-  /* Success - Green */
-  --success: #22c55e;
-
-  /* Borders */
-  --border: #e5e5e5;
-  --input: #e5e5e5;
-  --ring: #E85D4C;
-
-  /* Charts */
-  --chart-1: #E85D4C;
-  --chart-2: #22c55e;
-  --chart-3: #3b82f6;
-  --chart-4: #f59e0b;
-  --chart-5: #8b5cf6;
+  /* Chart palette (5-rotation) */
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
 
   /* Sidebar */
-  --sidebar: #fafafa;
-  --sidebar-foreground: #1a1a1a;
-  --sidebar-primary: #E85D4C;
-  --sidebar-primary-foreground: #ffffff;
-  --sidebar-accent: #f5f5f5;
-  --sidebar-accent-foreground: #1a1a1a;
-  --sidebar-border: #e5e5e5;
-  --sidebar-ring: #E85D4C;
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+
+  /* Legacy Domain Engine V2 aliases (mapped to Howl, kept for backward compat) */
+  --color-healthy: var(--healthy);
+  --color-healthy-subtle: var(--healthy-subtle);
+  --color-healthy-text: var(--healthy-text);
+  --color-monitor: var(--monitor);
+  --color-monitor-subtle: var(--monitor-subtle);
+  --color-monitor-text: var(--monitor-text);
+  --color-rotate: var(--rotate);
+  --color-rotate-subtle: var(--rotate-subtle);
+  --color-rotate-text: var(--rotate-text);
+  --color-scored: var(--scored);
+  --color-scored-subtle: var(--scored-subtle);
+  --color-priced: var(--priced);
+  --color-priced-subtle: var(--priced-subtle);
+  --color-entra: var(--entra);
+  --color-entra-subtle: var(--entra-subtle);
+  --color-entra-text: var(--entra-text);
+  --color-google: var(--google);
+  --color-google-subtle: var(--google-subtle);
+  --color-google-text: var(--google-text);
+
+  /* Fonts */
+  --font-sans: var(--font-body), "Public Sans", "Atkinson Hyperlegible", system-ui, sans-serif;
+  --font-heading: var(--font-fraunces), Georgia, "Times New Roman", serif;
+  --font-mono: var(--font-geist-mono), "JetBrains Mono", "Fira Code", ui-monospace, monospace;
+
+  /* Type scale (8-step, 1.250 ratio) */
+  --text-xs: 0.75rem;
+  --text-xs--line-height: 1.5;
+  --text-sm: 0.875rem;
+  --text-sm--line-height: 1.5;
+  --text-base: 1rem;
+  --text-base--line-height: 1.6;
+  --text-lg: 1.125rem;
+  --text-lg--line-height: 1.5;
+  --text-xl: 1.25rem;
+  --text-xl--line-height: 1.4;
+  --text-2xl: 1.5rem;
+  --text-2xl--line-height: 1.3;
+  --text-3xl: 1.875rem;
+  --text-3xl--line-height: 1.2;
+  --text-4xl: 2.25rem;
+  --text-4xl--line-height: 1.15;
+  --text-5xl: 3rem;
+  --text-5xl--line-height: 1.05;
+
+  /* Border radius — Charm's 6/10/14/20 */
+  --radius-sm: 0.375rem;   /* 6px — pills, badges, tags */
+  --radius-md: 0.625rem;   /* 10px — buttons, inputs, dropdowns */
+  --radius-lg: 0.875rem;   /* 14px — cards, panels, popovers */
+  --radius-xl: 1.25rem;    /* 20px — modals, dialogs, hero surfaces */
+  --radius-2xl: 1.5rem;
+  --radius-3xl: 2rem;
+  --radius-4xl: 2.5rem;
+  --radius-full: 9999px;
+
+  /* Village shadows — the signature */
+  --shadow-flat: 4px 4px 0 var(--ink);
+  --shadow-flat-sm: 2px 2px 0 var(--ink);
+  --shadow-soft: 0 4px 16px hsl(28 18% 22% / 0.08);
+
+  /* Motion */
+  --animate-fade-in: fade-in 0.3s ease-out forwards;
+  --animate-accordion-down: accordion-down 0.2s ease-out;
+  --animate-accordion-up: accordion-up 0.2s ease-out;
 }
 
+/* =====================================================================
+   LIGHT MODE — "Morning Village"
+   ===================================================================== */
+:root {
+  /* Howl primitives (HSL — source palette) */
+  --amber: hsl(34 78% 56%);
+  --honey: hsl(38 65% 68%);
+  --copper: hsl(22 55% 48%);
+  --rust: hsl(14 55% 42%);
+  --cream: hsl(38 35% 88%);
+  --cream-light: hsl(40 40% 94%);
+  --sage: hsl(85 22% 58%);
+  --moss: hsl(95 25% 38%);
+  --sky: hsl(205 45% 72%);
+  --blue-howl: hsl(210 40% 38%);
+  --storm: hsl(220 18% 30%);
+  --rose: hsl(345 35% 78%);
+  --rose-deep: hsl(355 38% 58%);
+  --ink: hsl(28 18% 22%);
+  --ink-soft: hsl(28 14% 36%);
+
+  /* Semantic roles */
+  --background: var(--cream-light);
+  --foreground: var(--ink);
+  --card: var(--cream-light);
+  --card-foreground: var(--ink);
+  --popover: var(--cream-light);
+  --popover-foreground: var(--ink);
+  --primary: var(--amber);
+  --primary-foreground: var(--ink);
+  --secondary: var(--sage);
+  --secondary-foreground: var(--ink);
+  --muted: var(--cream);
+  --muted-foreground: var(--ink-soft);
+  --accent: var(--copper);
+  --accent-foreground: var(--cream-light);
+  --destructive: var(--rust);
+  --destructive-foreground: var(--cream-light);
+  --success: var(--moss);
+  --warning: var(--honey);
+  --info: var(--sky);
+  --border: var(--ink-soft);
+  --border-bold: var(--ink);
+  --input: var(--ink-soft);
+  --ring: var(--amber);
+
+  /* Chart 5-rotation: amber → sage → copper → sky → rose-deep */
+  --chart-1: var(--amber);
+  --chart-2: var(--sage);
+  --chart-3: var(--copper);
+  --chart-4: var(--sky);
+  --chart-5: var(--rose-deep);
+
+  /* Sidebar — slightly warmer than bg to define edge */
+  --sidebar: var(--cream);
+  --sidebar-foreground: var(--ink);
+  --sidebar-primary: var(--amber);
+  --sidebar-primary-foreground: var(--ink);
+  --sidebar-accent: var(--cream-light);
+  --sidebar-accent-foreground: var(--ink);
+  --sidebar-border: var(--ink-soft);
+  --sidebar-ring: var(--amber);
+
+  /* Charm radius default (matches --radius-lg) */
+  --radius: 0.875rem;
+
+  /* Legacy Domain Engine V2 aliases — mapped to Howl */
+  --healthy: var(--moss);
+  --healthy-subtle: var(--cream);
+  --healthy-text: var(--moss);
+  --monitor: var(--honey);
+  --monitor-subtle: var(--cream);
+  --monitor-text: var(--copper);
+  --rotate: var(--rust);
+  --rotate-subtle: var(--cream);
+  --rotate-text: var(--rust);
+  --scored: var(--sky);
+  --scored-subtle: var(--cream);
+  --priced: var(--copper);
+  --priced-subtle: var(--cream);
+  --entra: var(--blue-howl);
+  --entra-subtle: var(--cream);
+  --entra-text: var(--blue-howl);
+  --google: var(--rose-deep);
+  --google-subtle: var(--cream);
+  --google-text: var(--rose-deep);
+}
+
+/* =====================================================================
+   DARK MODE — "Evening Village"
+   Warm-dark interior, never corporate-grey. Inverted ink/cream pairing.
+   ===================================================================== */
 .dark {
-  --background: #0a0a0a;
-  --foreground: #fafafa;
-  --card: #171717;
-  --card-foreground: #fafafa;
-  --popover: #171717;
-  --popover-foreground: #fafafa;
-  --primary: #E85D4C;
-  --primary-foreground: #ffffff;
-  --secondary: #262626;
-  --secondary-foreground: #fafafa;
-  --muted: #262626;
-  --muted-foreground: #a3a3a3;
-  --accent: #262626;
-  --accent-foreground: #fafafa;
-  --destructive: #ef4444;
-  --success: #22c55e;
-  --border: #262626;
-  --input: #262626;
-  --ring: #E85D4C;
-  --chart-1: #E85D4C;
-  --chart-2: #22c55e;
-  --chart-3: #3b82f6;
-  --chart-4: #f59e0b;
-  --chart-5: #8b5cf6;
-  --sidebar: #171717;
-  --sidebar-foreground: #fafafa;
-  --sidebar-primary: #E85D4C;
-  --sidebar-primary-foreground: #ffffff;
-  --sidebar-accent: #262626;
-  --sidebar-accent-foreground: #fafafa;
-  --sidebar-border: #262626;
-  --sidebar-ring: #E85D4C;
+  --amber: hsl(38 70% 62%);
+  --honey: hsl(38 65% 68%);
+  --copper: hsl(22 55% 56%);
+  --rust: hsl(14 55% 52%);
+  --cream: hsl(28 14% 24%);
+  --cream-light: hsl(28 18% 18%);
+  --sage: hsl(85 22% 48%);
+  --moss: hsl(95 30% 52%);
+  --sky: hsl(205 50% 65%);
+  --blue-howl: hsl(210 40% 55%);
+  --storm: hsl(220 18% 50%);
+  --rose: hsl(345 35% 68%);
+  --rose-deep: hsl(355 38% 62%);
+  --ink: hsl(40 30% 92%);         /* inverted — cream-light text on dark */
+  --ink-soft: hsl(28 10% 65%);
+
+  --background: hsl(28 18% 14%);  /* deeper than cream-light dark */
+  --foreground: var(--ink);
+  --card: var(--cream-light);
+  --card-foreground: var(--ink);
+  --popover: var(--cream-light);
+  --popover-foreground: var(--ink);
+  --primary: var(--amber);
+  --primary-foreground: hsl(28 18% 14%);
+  --secondary: var(--sage);
+  --secondary-foreground: var(--ink);
+  --muted: var(--cream);
+  --muted-foreground: var(--ink-soft);
+  --accent: var(--copper);
+  --accent-foreground: hsl(28 18% 14%);
+  --destructive: var(--rust);
+  --destructive-foreground: hsl(28 18% 14%);
+  --success: var(--moss);
+  --warning: var(--honey);
+  --info: var(--sky);
+  --border: hsl(40 20% 50%);
+  --border-bold: var(--ink);
+  --input: hsl(40 20% 50%);
+  --ring: var(--amber);
+
+  --chart-1: var(--amber);
+  --chart-2: var(--sage);
+  --chart-3: var(--copper);
+  --chart-4: var(--sky);
+  --chart-5: var(--rose-deep);
+
+  --sidebar: var(--cream);
+  --sidebar-foreground: var(--ink);
+  --sidebar-primary: var(--amber);
+  --sidebar-primary-foreground: hsl(28 18% 14%);
+  --sidebar-accent: var(--cream-light);
+  --sidebar-accent-foreground: var(--ink);
+  --sidebar-border: hsl(40 20% 50%);
+  --sidebar-ring: var(--amber);
+
+  /* Legacy V2 aliases reinherit dark-mode primitives */
+  --healthy: var(--moss);
+  --healthy-subtle: var(--cream);
+  --healthy-text: var(--moss);
+  --monitor: var(--honey);
+  --monitor-subtle: var(--cream);
+  --monitor-text: var(--copper);
+  --rotate: var(--rust);
+  --rotate-subtle: var(--cream);
+  --rotate-text: var(--rust);
+  --scored: var(--sky);
+  --scored-subtle: var(--cream);
+  --priced: var(--copper);
+  --priced-subtle: var(--cream);
+  --entra: var(--blue-howl);
+  --entra-subtle: var(--cream);
+  --entra-text: var(--blue-howl);
+  --google: var(--rose-deep);
+  --google-subtle: var(--cream);
+  --google-text: var(--rose-deep);
 }
 
+/* =====================================================================
+   BASE LAYER
+   ===================================================================== */
 @layer base {
   * {
-    @apply border-border outline-ring/50;
+    border-color: var(--border);
   }
   body {
-    @apply bg-background text-foreground;
+    background-color: var(--background);
+    color: var(--foreground);
+    font-family: var(--font-sans);
+    font-feature-settings: "ss01", "cv11";
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  /* Fraunces headings with variable-font axes engaged */
+  h1, h2, h3, h4, h5, h6 {
+    font-family: var(--font-heading);
+    letter-spacing: -0.01em;
+  }
+  h1 {
+    font-weight: 800;
+    letter-spacing: -0.02em;
+    font-variation-settings: "opsz" 36, "SOFT" 100, "WONK" 1;
+  }
+  h2 {
+    font-weight: 700;
+    font-variation-settings: "opsz" 24, "SOFT" 75, "WONK" 0;
+  }
+  h3 {
+    font-weight: 600;
+    font-variation-settings: "opsz" 20, "SOFT" 75, "WONK" 0;
+  }
+  h4 {
+    font-weight: 600;
+    font-variation-settings: "opsz" 14, "SOFT" 50, "WONK" 0;
+  }
+
+  code, pre, kbd, samp {
+    font-family: var(--font-mono);
+  }
+
+  /* Calcifer's hearth-light focus ring */
+  :focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
   }
 }
 
-/* Custom utilities for Charm Email OS */
+/* =====================================================================
+   VILLAGE UTILITIES
+   ===================================================================== */
 @layer utilities {
+  /* The cartoon-idiom outline (1.5px ink) — cards, modals, primary CTAs */
+  .outline-bold {
+    border-width: 1.5px;
+    border-color: var(--border-bold);
+  }
+
+  /* Offset shadow signature — reserved for hero surfaces */
+  .shadow-flat {
+    box-shadow: var(--shadow-flat);
+  }
+  .shadow-flat-sm {
+    box-shadow: var(--shadow-flat-sm);
+  }
+  .shadow-soft {
+    box-shadow: var(--shadow-soft);
+  }
+
+  /* Display heading with WONK engaged (workspace name on detail page) */
+  .display-village {
+    font-family: var(--font-heading);
+    font-weight: 900;
+    font-variation-settings: "opsz" 60, "SOFT" 100, "WONK" 1;
+    letter-spacing: -0.02em;
+    line-height: 1.05;
+  }
+
+  /* Mono-tone text for IDs, timestamps, domain names */
+  .mono-tone {
+    font-family: var(--font-mono);
+    font-size: var(--text-sm);
+    letter-spacing: 0;
+  }
+
+  /* Legacy success utilities (preserved) */
   .text-success {
     color: var(--success);
   }
@@ -162,108 +409,92 @@
   }
 }
 
-/* Smooth transitions for interactive elements */
-@layer base {
-  button,
-  a,
-  [role="button"] {
-    @apply transition-all duration-200 ease-in-out;
-  }
-
-  /* Card hover effects */
-  .card-hover {
-    @apply transition-all duration-200 ease-in-out;
-  }
-
-  .card-hover:hover {
-    @apply shadow-md -translate-y-0.5;
-  }
-
-  /* Focus ring improvements */
-  :focus-visible {
-    @apply outline-2 outline-offset-2 outline-ring;
-  }
-
-  /* Smooth page transitions */
-  main {
-    @apply transition-opacity duration-200;
-  }
+/* =====================================================================
+   ANIMATIONS (preserved + extended)
+   ===================================================================== */
+@keyframes fade-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
 }
+.animate-fade-in { animation: fade-in 0.3s ease-out forwards; }
 
-/* Custom scrollbar */
+@keyframes accordion-down {
+  from { height: 0; }
+  to { height: var(--radix-accordion-content-height); }
+}
+@keyframes accordion-up {
+  from { height: var(--radix-accordion-content-height); }
+  to { height: 0; }
+}
+.animate-accordion-down { animation: accordion-down 0.2s ease-out; }
+.animate-accordion-up { animation: accordion-up 0.2s ease-out; }
+
+/* Legacy Domain Engine V2 animations (preserved) */
+@keyframes capacity-fill {
+  from { width: 0%; }
+}
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+@keyframes pulse-soft {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.7; }
+}
+.capacity-bar { animation: capacity-fill 800ms ease-out; }
+.checking-shimmer {
+  background: linear-gradient(90deg, var(--cream) 25%, var(--cream-light) 50%, var(--cream) 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.5s infinite;
+}
+.pulse-soft { animation: pulse-soft 2s ease-in-out infinite; }
+
+/* Custom scrollbar (warm, restrained) */
 @layer utilities {
-  .custom-scrollbar::-webkit-scrollbar {
-    width: 6px;
-    height: 6px;
-  }
-
-  .custom-scrollbar::-webkit-scrollbar-track {
-    background: transparent;
-  }
-
+  .custom-scrollbar::-webkit-scrollbar { width: 6px; height: 6px; }
+  .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
   .custom-scrollbar::-webkit-scrollbar-thumb {
     background: var(--border);
     border-radius: 3px;
   }
-
   .custom-scrollbar::-webkit-scrollbar-thumb:hover {
     background: var(--muted-foreground);
   }
 }
 
-/* Fade-in animation */
-@keyframes fade-in {
-  from {
-    opacity: 0;
-    transform: translateY(8px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
+/* Legacy Domain Engine V2 table styles (preserved) */
+.de-table th,
+.de-table td {
+  padding: 10px 12px;
+  vertical-align: middle;
+  white-space: nowrap;
 }
-
-.animate-fade-in {
-  animation: fade-in 0.3s ease-out forwards;
+.de-table td:nth-child(2) {
+  white-space: normal;
 }
-
-/* Pulse glow animation for primary actions */
-@keyframes pulse-glow {
-  0%, 100% {
-    box-shadow: 0 0 0 0 rgba(232, 93, 76, 0.4);
-  }
-  50% {
-    box-shadow: 0 0 0 8px rgba(232, 93, 76, 0);
-  }
+.issue-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
 }
-
-.pulse-glow {
-  animation: pulse-glow 2s infinite;
+.issue-chip svg { width: 12px; height: 12px; }
+.provider-badge {
+  display: inline-block;
+  min-width: 48px;
+  text-align: center;
 }
-
-/* Accordion animations */
-@keyframes accordion-down {
-  from {
-    height: 0;
-  }
-  to {
-    height: var(--radix-accordion-content-height);
-  }
+.score-bar {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--cream);
 }
-
-@keyframes accordion-up {
-  from {
-    height: var(--radix-accordion-content-height);
-  }
-  to {
-    height: 0;
-  }
-}
-
-.animate-accordion-down {
-  animation: accordion-down 0.2s ease-out;
-}
-
-.animate-accordion-up {
-  animation: accordion-up 0.2s ease-out;
+.score-bar-fill {
+  height: 100%;
+  border-radius: 2px;
+  transition: width 300ms ease;
 }

@@ -1,0 +1,7 @@
+{
+  "foam.edit.linkReferenceDefinitions": "withExtensions",
+  "foam.openDailyNote.directory": "docs",
+  "files.exclude": {
+    "node_modules": true
+  }
+}

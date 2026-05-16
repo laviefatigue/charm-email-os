@@ -1,0 +1,5 @@
+# Design artifacts — large binary files / local safety copies
+# Per design-system-skills convention.
+screenshots/
+reviews/
+snapshots/
