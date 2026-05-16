@@ -1,0 +1,1590 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Annotate — Design Review</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --chrome: #1a1a1a;
+      --chrome-hover: #2a2a2a;
+      --chrome-active: #333;
+      --chrome-border: #333;
+      --text: #ccc;
+      --text-dim: #777;
+      --accent: #5B8DEF;
+      --comment-color: #EF4444;
+    }
+
+    html, body {
+      height: 100%; overflow: hidden;
+      font-family: 'Inter', system-ui, sans-serif;
+      background: #111; color: var(--text);
+      user-select: none; -webkit-user-select: none;
+    }
+
+    body { display: flex; flex-direction: column; }
+
+    /* ── TOOLBAR ── */
+    #toolbar {
+      height: 44px; background: var(--chrome); border-bottom: 1px solid var(--chrome-border);
+      display: flex; align-items: center; padding: 0 12px; gap: 2px; flex-shrink: 0; z-index: 100;
+    }
+
+    .tool-group { display: flex; align-items: center; gap: 2px; padding: 0 4px; }
+    .tool-group + .tool-group { border-left: 1px solid var(--chrome-border); padding-left: 8px; margin-left: 4px; }
+
+    .tool-btn {
+      width: 32px; height: 32px; border: none; background: transparent; border-radius: 6px;
+      display: flex; align-items: center; justify-content: center;
+      cursor: pointer; color: var(--text-dim); transition: all 100ms; position: relative;
+    }
+    .tool-btn:hover { background: var(--chrome-hover); color: var(--text); }
+    .tool-btn.active { background: var(--accent); color: #fff; }
+    .tool-btn svg { width: 16px; height: 16px; }
+
+    .color-btn {
+      width: 18px; height: 18px; border-radius: 50%; border: 2px solid transparent;
+      cursor: pointer; transition: all 100ms; flex-shrink: 0;
+    }
+    .color-btn:hover { transform: scale(1.15); }
+    .color-btn.active { border-color: #fff; box-shadow: 0 0 0 1px var(--chrome); }
+
+    .size-btn {
+      width: 28px; height: 28px; border: none; background: transparent; border-radius: 6px;
+      display: flex; align-items: center; justify-content: center;
+      cursor: pointer; color: var(--text-dim); transition: all 100ms;
+    }
+    .size-btn:hover { background: var(--chrome-hover); }
+    .size-btn.active { background: var(--chrome-active); color: var(--text); }
+
+    .vp-btn {
+      height: 26px; padding: 0 8px; border: 1px solid var(--chrome-border); background: transparent;
+      border-radius: 4px; font-family: 'JetBrains Mono', monospace; font-size: 10px;
+      color: var(--text-dim); cursor: pointer; transition: all 100ms; white-space: nowrap;
+    }
+    .vp-btn:hover { background: var(--chrome-hover); color: var(--text); border-color: #555; }
+    .vp-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+    /* Mode toggle */
+    .mode-btn {
+      height: 28px; padding: 0 12px; border: 1px solid var(--chrome-border); background: transparent;
+      border-radius: 6px; font-family: inherit; font-size: 11px; font-weight: 600;
+      cursor: pointer; transition: all 100ms; display: flex; align-items: center; gap: 6px;
+      color: var(--text-dim);
+    }
+    .mode-btn:hover { background: var(--chrome-hover); color: var(--text); }
+    .mode-btn.annotate { background: #7C3AED; border-color: #7C3AED; color: #fff; }
+    .mode-btn.annotate:hover { background: #6D28D9; }
+    .mode-btn svg { width: 13px; height: 13px; }
+
+    .spacer { flex: 1; }
+
+    .action-btn {
+      height: 30px; padding: 0 14px; border: none; border-radius: 6px;
+      font-family: inherit; font-size: 12px; font-weight: 600;
+      cursor: pointer; transition: all 100ms; display: flex; align-items: center; gap: 6px;
+    }
+    .action-btn.secondary { background: var(--chrome-hover); color: var(--text); }
+    .action-btn.secondary:hover { background: var(--chrome-active); }
+    .action-btn.primary { background: var(--accent); color: #fff; }
+    .action-btn.primary:hover { background: #4A7CE0; }
+    .action-btn.close-btn { background: #EF4444; color: #fff; margin-left: 4px; }
+    .action-btn.close-btn:hover { background: #DC2626; }
+    .action-btn.close-btn:disabled { opacity: 0.5; pointer-events: none; }
+
+    .toolbar-label {
+      font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em;
+      color: var(--text-dim); margin-right: 6px;
+    }
+
+    /* ── MAIN LAYOUT ── */
+    #main-area { flex: 1; display: flex; min-height: 0; }
+
+    /* ── CANVAS AREA ── */
+    #canvas-wrap {
+      flex: 1; overflow: auto; display: flex; justify-content: center; align-items: flex-start;
+      padding: 24px; background: #0a0a0a;
+      background-image:
+        linear-gradient(45deg, #0f0f0f 25%, transparent 25%),
+        linear-gradient(-45deg, #0f0f0f 25%, transparent 25%),
+        linear-gradient(45deg, transparent 75%, #0f0f0f 75%),
+        linear-gradient(-45deg, transparent 75%, #0f0f0f 75%);
+      background-size: 20px 20px;
+      background-position: 0 0, 0 10px, 10px -10px, -10px 0;
+    }
+
+    #canvas-container {
+      position: relative; flex-shrink: 0; overflow: hidden;
+      box-shadow: 0 4px 24px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.05);
+    }
+
+    /* iframe renders at full viewport resolution, scaled down via transform in JS */
+    #page-frame {
+      display: block; border: none;
+      position: absolute; top: 0; left: 0;
+      transform-origin: top left;
+    }
+
+    /* Annotation canvas — overlays the iframe exactly */
+    #draw-canvas {
+      position: absolute; top: 0; left: 0;
+      pointer-events: none; /* interact mode: pass clicks through to iframe */
+    }
+    #draw-canvas.annotate-mode {
+      pointer-events: all;
+      cursor: crosshair;
+    }
+    #draw-canvas.annotate-mode.select-tool { cursor: default; }
+    #draw-canvas.annotate-mode.comment-tool { cursor: copy; }
+
+    /* ── COMMENT BUBBLE POPOVER ── */
+    #comment-popover {
+      position: absolute; z-index: 60; display: none;
+      width: 280px;
+      background: #1e1e1e; border: 1px solid #444; border-radius: 10px;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.6);
+      overflow: hidden;
+    }
+
+    .popover-header {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 8px 12px; border-bottom: 1px solid #333;
+      background: #252525;
+    }
+
+    .popover-header .badge {
+      width: 22px; height: 22px; border-radius: 50%; display: flex; align-items: center; justify-content: center;
+      font-size: 11px; font-weight: 700; color: #fff;
+    }
+
+    .popover-header .label {
+      font-size: 11px; font-weight: 600; color: var(--text); margin-left: 8px; flex: 1;
+    }
+
+    .popover-close {
+      width: 24px; height: 24px; border: none; background: transparent; color: var(--text-dim);
+      cursor: pointer; border-radius: 4px; display: flex; align-items: center; justify-content: center;
+    }
+    .popover-close:hover { background: #333; color: var(--text); }
+
+    .popover-body { padding: 10px 12px; }
+
+    .popover-body textarea {
+      width: 100%; min-height: 60px; max-height: 120px; resize: vertical;
+      background: #111; border: 1px solid #333; border-radius: 6px;
+      color: #eee; font-family: 'Inter', sans-serif; font-size: 13px; line-height: 1.5;
+      padding: 8px 10px; outline: none;
+    }
+    .popover-body textarea:focus { border-color: var(--accent); }
+    .popover-body textarea::placeholder { color: #555; }
+
+    .popover-footer {
+      display: flex; align-items: center; gap: 6px;
+      padding: 8px 12px; border-top: 1px solid #333;
+    }
+
+    .ai-btn {
+      height: 28px; padding: 0 10px; border: 1px solid #6B4FBB; background: rgba(107,79,187,0.1);
+      border-radius: 5px; font-family: inherit; font-size: 11px; font-weight: 600;
+      color: #A78BFA; cursor: pointer; transition: all 120ms;
+      display: flex; align-items: center; gap: 5px;
+    }
+    .ai-btn:hover { background: rgba(107,79,187,0.2); border-color: #8B6FDB; }
+    .ai-btn:disabled { opacity: 0.4; pointer-events: none; }
+    .ai-btn svg { width: 12px; height: 12px; }
+
+    .popover-save-btn {
+      height: 28px; padding: 0 12px; border: none; background: var(--accent);
+      border-radius: 5px; font-family: inherit; font-size: 11px; font-weight: 600;
+      color: #fff; cursor: pointer; margin-left: auto;
+    }
+    .popover-save-btn:hover { background: #4A7CE0; }
+
+    .popover-delete-btn {
+      height: 28px; padding: 0 8px; border: none; background: transparent;
+      border-radius: 5px; font-family: inherit; font-size: 11px;
+      color: #EF4444; cursor: pointer;
+    }
+    .popover-delete-btn:hover { background: rgba(239,68,68,0.1); }
+
+    .ai-status {
+      font-size: 10px; color: #A78BFA; padding: 4px 0 0;
+      font-family: 'JetBrains Mono', monospace;
+      display: none;
+    }
+    .ai-status.show { display: block; }
+
+    /* ── COMMENTS PANEL ── */
+    #comments-panel {
+      width: 260px; background: var(--chrome); border-left: 1px solid var(--chrome-border);
+      display: flex; flex-direction: column; overflow: hidden; flex-shrink: 0;
+    }
+
+    .panel-header {
+      padding: 12px 14px; border-bottom: 1px solid var(--chrome-border);
+      display: flex; align-items: center; justify-content: space-between;
+    }
+
+    .panel-header h3 {
+      font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em;
+      color: var(--text-dim);
+    }
+
+    .comment-count {
+      font-size: 10px; font-family: 'JetBrains Mono', monospace; color: var(--text-dim);
+      background: var(--chrome-active); padding: 2px 6px; border-radius: 4px;
+    }
+
+    #comments-list { flex: 1; overflow-y: auto; padding: 8px; }
+    #comments-list::-webkit-scrollbar { width: 4px; }
+    #comments-list::-webkit-scrollbar-thumb { background: #444; border-radius: 4px; }
+
+    .comment-item {
+      padding: 10px; border-radius: 8px; margin-bottom: 4px;
+      cursor: pointer; transition: background 100ms;
+      border: 1px solid transparent;
+    }
+    .comment-item:hover { background: var(--chrome-hover); }
+    .comment-item.active { background: var(--chrome-hover); border-color: var(--accent); }
+
+    .comment-item-header { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+
+    .comment-item-badge {
+      width: 20px; height: 20px; border-radius: 50%; display: flex; align-items: center; justify-content: center;
+      font-size: 10px; font-weight: 700; color: #fff; flex-shrink: 0;
+    }
+
+    .comment-item-meta { font-size: 10px; color: var(--text-dim); font-family: 'JetBrains Mono', monospace; }
+    .comment-item-text { font-size: 12px; color: var(--text); line-height: 1.5; white-space: pre-wrap; word-break: break-word; }
+    .comment-item-ai { font-size: 10px; color: #A78BFA; margin-top: 6px; padding-top: 6px; border-top: 1px solid #333; line-height: 1.5; white-space: pre-wrap; }
+
+    .empty-comments { padding: 24px 16px; text-align: center; color: var(--text-dim); font-size: 12px; line-height: 1.6; }
+
+    /* ── STATUS BAR ── */
+    #status {
+      height: 28px; background: var(--chrome); border-top: 1px solid var(--chrome-border);
+      display: flex; align-items: center; justify-content: space-between; padding: 0 12px; flex-shrink: 0;
+    }
+    #status span { font-size: 11px; font-family: 'JetBrains Mono', monospace; color: var(--text-dim); }
+
+    #save-toast {
+      position: fixed; bottom: 60px; left: 50%; transform: translateX(-50%) translateY(20px);
+      background: var(--accent); color: #fff; padding: 8px 20px; border-radius: 8px;
+      font-size: 13px; font-weight: 600; opacity: 0; transition: all 300ms ease;
+      pointer-events: none; z-index: 200;
+      box-shadow: 0 4px 16px rgba(91, 141, 239, 0.3);
+    }
+    #save-toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+    #loading-overlay {
+      position: fixed; inset: 0; background: rgba(0,0,0,0.6);
+      display: none; align-items: center; justify-content: center; z-index: 300;
+      flex-direction: column; gap: 12px;
+    }
+    #loading-overlay.show { display: flex; }
+    .spinner {
+      width: 32px; height: 32px; border: 3px solid #333; border-top-color: var(--accent);
+      border-radius: 50%; animation: spin 0.8s linear infinite;
+    }
+    .loading-label { font-size: 12px; color: var(--text-dim); font-family: 'JetBrains Mono', monospace; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    @keyframes pulse-ai { 0%, 100% { opacity: 0.5; } 50% { opacity: 1; } }
+    .ai-btn.loading { animation: pulse-ai 1s ease-in-out infinite; }
+
+    /* ── PAGE STRIP ── */
+    #page-strip {
+      height: 36px; background: #151515; border-bottom: 1px solid var(--chrome-border);
+      display: none; align-items: center; padding: 0 12px; gap: 4px; flex-shrink: 0;
+      overflow-x: auto;
+    }
+    #page-strip.show { display: flex; }
+
+    .page-tab {
+      height: 28px; padding: 0 14px; border: 1px solid transparent; background: transparent;
+      border-radius: 6px; font-family: 'Inter', sans-serif; font-size: 12px; font-weight: 500;
+      color: var(--text-dim); cursor: pointer; transition: all 100ms; white-space: nowrap;
+      display: flex; align-items: center; gap: 6px;
+    }
+    .page-tab:hover { background: var(--chrome-hover); color: var(--text); }
+    .page-tab.active { background: var(--chrome-active); color: #fff; border-color: var(--accent); }
+    .page-tab .dot { width: 6px; height: 6px; border-radius: 50%; background: #22C55E; display: none; flex-shrink: 0; }
+    .page-tab .dot.show { display: block; }
+
+    .page-strip-label {
+      font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em;
+      color: var(--text-dim); margin-right: 8px; flex-shrink: 0;
+    }
+
+    /* ── SAVE ALL PROGRESS ── */
+    #save-all-progress {
+      position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
+      background: #1e1e1e; border: 1px solid #444; border-radius: 12px;
+      padding: 24px 32px; z-index: 400; display: none; min-width: 320px;
+      box-shadow: 0 12px 48px rgba(0,0,0,0.6);
+    }
+    #save-all-progress.show { display: block; }
+    #save-all-progress h4 { font-size: 14px; font-weight: 600; color: var(--text); margin-bottom: 16px; }
+    .progress-bar-track { height: 6px; background: #333; border-radius: 3px; overflow: hidden; margin-bottom: 12px; }
+    .progress-bar-fill { height: 100%; background: var(--accent); border-radius: 3px; transition: width 300ms ease; width: 0%; }
+    #save-all-status { font-size: 12px; color: var(--text-dim); font-family: 'JetBrains Mono', monospace; }
+    #save-all-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 399; display: none; }
+    #save-all-overlay.show { display: block; }
+
+    /* ── NAV GUARD DIALOG ── */
+    #nav-guard {
+      position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
+      background: #1e1e1e; border: 1px solid #555; border-radius: 12px;
+      padding: 24px 28px; z-index: 500; display: none; min-width: 340px;
+      box-shadow: 0 12px 48px rgba(0,0,0,0.7);
+    }
+    #nav-guard.show { display: block; }
+    #nav-guard h4 { font-size: 14px; font-weight: 600; color: var(--text); margin-bottom: 8px; }
+    #nav-guard p { font-size: 12px; color: var(--text-dim); line-height: 1.6; margin-bottom: 20px; }
+    .nav-guard-btns { display: flex; gap: 8px; justify-content: flex-end; }
+    #nav-guard-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 499; display: none; }
+    #nav-guard-overlay.show { display: block; }
+  </style>
+</head>
+<body>
+
+  <!-- TOOLBAR -->
+  <div id="toolbar">
+    <div class="tool-group">
+      <span class="toolbar-label">Tools</span>
+      <button class="tool-btn active" data-tool="select" title="Select (V)">
+        <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M3 3l7.07 16.97 2.51-7.39 7.39-2.51L3 3z"/><path d="M13 13l6 6"/>
+        </svg>
+      </button>
+      <button class="tool-btn" data-tool="pen" title="Pen (P)">
+        <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 19l7-7 3 3-7 7-3-3z"/><path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z"/><path d="M2 2l7.586 7.586"/><circle cx="11" cy="11" r="2"/>
+        </svg>
+      </button>
+      <button class="tool-btn" data-tool="arrow" title="Arrow (A)">
+        <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M5 19L19 5M19 5v10M19 5H9"/>
+        </svg>
+      </button>
+      <button class="tool-btn" data-tool="rect" title="Rectangle (R)">
+        <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="3" y="3" width="18" height="18" rx="2"/>
+        </svg>
+      </button>
+      <button class="tool-btn" data-tool="comment" title="Comment (C)">
+        <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/>
+          <line x1="9" y1="9" x2="15" y2="9"/><line x1="9" y1="13" x2="12" y2="13"/>
+        </svg>
+      </button>
+    </div>
+
+    <div class="tool-group">
+      <span class="toolbar-label">Color</span>
+      <button class="color-btn active" data-color="#EF4444" style="background:#EF4444"></button>
+      <button class="color-btn" data-color="#F97316" style="background:#F97316"></button>
+      <button class="color-btn" data-color="#FACC15" style="background:#FACC15"></button>
+      <button class="color-btn" data-color="#3B82F6" style="background:#3B82F6"></button>
+      <button class="color-btn" data-color="#22C55E" style="background:#22C55E"></button>
+      <button class="color-btn" data-color="#FFFFFF" style="background:#FFFFFF"></button>
+      <button class="color-btn" data-color="#000000" style="background:#000000; border-color: #444;"></button>
+    </div>
+
+    <div class="tool-group">
+      <span class="toolbar-label">Size</span>
+      <button class="size-btn" data-size="2" title="Thin">
+        <svg width="16" height="16"><line x1="2" y1="8" x2="14" y2="8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+      </button>
+      <button class="size-btn active" data-size="4" title="Medium">
+        <svg width="16" height="16"><line x1="2" y1="8" x2="14" y2="8" stroke="currentColor" stroke-width="3" stroke-linecap="round"/></svg>
+      </button>
+      <button class="size-btn" data-size="8" title="Thick">
+        <svg width="16" height="16"><line x1="2" y1="8" x2="14" y2="8" stroke="currentColor" stroke-width="5" stroke-linecap="round"/></svg>
+      </button>
+    </div>
+
+    <div class="tool-group">
+      <span class="toolbar-label">Viewport</span>
+      <button class="vp-btn" data-vp="1024x768" title="Legacy / XGA">1024</button>
+      <button class="vp-btn" data-vp="1280x800" title="HD laptop">1280</button>
+      <button class="vp-btn" data-vp="1440x900" title="Design standard">1440</button>
+      <button class="vp-btn active" data-vp="1920x1080" title="1080p — most common">1920</button>
+      <button class="vp-btn" data-vp="2560x1440" title="1440p">2560</button>
+    </div>
+
+    <div class="tool-group">
+      <!-- Mode toggle: Interact ↔ Annotate -->
+      <button id="mode-btn" class="mode-btn" title="Switch between interacting with the page and annotating (Tab)">
+        <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M3 3l7.07 16.97 2.51-7.39 7.39-2.51L3 3z"/><path d="M13 13l6 6"/>
+        </svg>
+        Interact
+      </button>
+    </div>
+
+    <div class="spacer"></div>
+
+    <div class="tool-group">
+      <button class="action-btn secondary" id="undo-btn" title="Undo (Ctrl+Z)">
+        <svg width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>
+        Undo
+      </button>
+      <button class="action-btn secondary" id="clear-btn" title="Clear all annotations">Clear</button>
+      <button class="action-btn primary" id="save-btn" title="Save current view (Ctrl+S)">
+        <svg width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v11a2 2 0 01-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
+        Save
+      </button>
+      <button class="action-btn primary" id="save-all-btn" title="Save all annotated pages (Ctrl+Shift+S)" style="background:#22865a;">
+        <svg width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v11a2 2 0 01-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
+        Save All
+      </button>
+      <button class="action-btn close-btn" id="complete-btn" title="Close annotator (Ctrl+Enter)">
+        <svg width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6L6 18M6 6l12 12"/></svg>
+        Close
+      </button>
+    </div>
+  </div>
+
+  <!-- PAGE STRIP -->
+  <div id="page-strip">
+    <span class="page-strip-label">Pages</span>
+  </div>
+
+  <!-- MAIN LAYOUT -->
+  <div id="main-area">
+    <!-- CANVAS + IFRAME -->
+    <div id="canvas-wrap">
+      <div id="canvas-container">
+        <!-- Live page — interactable when in Interact mode -->
+        <iframe id="page-frame" frameborder="0" allowfullscreen></iframe>
+        <!-- Annotation overlay — active only in Annotate mode -->
+        <canvas id="draw-canvas"></canvas>
+        <!-- Comment popover -->
+        <div id="comment-popover">
+          <div class="popover-header">
+            <div class="badge" id="popover-badge">1</div>
+            <span class="label" id="popover-label">Comment</span>
+            <button class="popover-close" id="popover-close">
+              <svg width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
+            </button>
+          </div>
+          <div class="popover-body">
+            <textarea id="comment-text" placeholder="Describe what needs to change..."></textarea>
+            <div class="ai-status" id="ai-status">Processing...</div>
+          </div>
+          <div class="popover-footer">
+            <button class="ai-btn" id="ai-btn" title="Refine with AI">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+              AI Refine
+            </button>
+            <button class="popover-delete-btn" id="popover-delete">Delete</button>
+            <button class="popover-save-btn" id="popover-save">Done</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- COMMENTS PANEL -->
+    <div id="comments-panel">
+      <div class="panel-header">
+        <h3>Comments</h3>
+        <span class="comment-count" id="comment-count">0</span>
+      </div>
+      <div id="comments-list">
+        <div class="empty-comments" id="empty-comments">
+          Switch to Annotate mode (Tab), then use the comment tool (C) to add numbered feedback markers.
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- STATUS BAR -->
+  <div id="status">
+    <span id="status-text">Loading...</span>
+    <span id="status-right"></span>
+  </div>
+
+  <!-- OVERLAYS -->
+  <div id="save-toast"></div>
+  <div id="loading-overlay"><div class="spinner"></div><span class="loading-label" id="loading-label">Capturing...</span></div>
+  <div id="save-all-overlay"></div>
+  <div id="save-all-progress">
+    <h4>Saving annotated pages...</h4>
+    <div class="progress-bar-track"><div class="progress-bar-fill" id="progress-fill"></div></div>
+    <div id="save-all-status">Preparing...</div>
+  </div>
+
+  <!-- NAVIGATION GUARD -->
+  <div id="nav-guard-overlay"></div>
+  <div id="nav-guard">
+    <h4>Navigate away?</h4>
+    <p>You have unsaved annotations on this page. They'll be lost if you navigate away. Save first or discard.</p>
+    <div class="nav-guard-btns">
+      <button class="action-btn secondary" id="nav-guard-discard">Discard</button>
+      <button class="action-btn primary" id="nav-guard-save">Save first</button>
+    </div>
+  </div>
+
+  <script>
+    // ── STATE ──
+    let tool = 'select';
+    let color = '#EF4444';
+    let strokeWidth = 4;
+    let actions = [];
+    let comments = [];
+    let nextCommentId = 1;
+    let activeCommentId = null;
+    let currentAction = null;
+    let isDrawing = false;
+    let interactMode = true;          // true = interact with iframe; false = annotate on canvas
+    let currentViewport = '1920x1080';
+    let fitScale = 1;
+    let serverDpr = 2;               // DPR used by server for Playwright captures
+    let currentPageIframeUrl = '';   // current page's iframe URL (for capture)
+    let pendingNavUrl = null;        // nav guard: URL waiting to load after user confirms
+
+    // Select/move state
+    let selectedItem = null;
+    let isDragging = false;
+    let dragOffset = { x: 0, y: 0 };
+    let lastDragPos = null;
+
+    // ── MULTI-PAGE STATE ──
+    let allPages = [];
+    let activePageIndex = 0;
+    let currentPageName = '';
+    const pageStates = {};   // { name: { actions, comments, nextCommentId, viewport, scrollY, iframeUrl } }
+    let isMultiPage = false;
+
+    // ── DOM ──
+    const pageFrame  = document.getElementById('page-frame');
+    const canvas     = document.getElementById('draw-canvas');
+    const ctx        = canvas.getContext('2d');
+    const wrap       = document.getElementById('canvas-wrap');
+    const container  = document.getElementById('canvas-container');
+    const popover    = document.getElementById('comment-popover');
+    const popoverBadge  = document.getElementById('popover-badge');
+    const popoverLabel  = document.getElementById('popover-label');
+    const commentText   = document.getElementById('comment-text');
+    const aiBtn         = document.getElementById('ai-btn');
+    const aiStatus      = document.getElementById('ai-status');
+    const commentsList  = document.getElementById('comments-list');
+    const commentCount  = document.getElementById('comment-count');
+    const emptyComments = document.getElementById('empty-comments');
+    const statusText    = document.getElementById('status-text');
+    const statusRight   = document.getElementById('status-right');
+    const toast         = document.getElementById('save-toast');
+    const loadingOverlay = document.getElementById('loading-overlay');
+    const loadingLabel   = document.getElementById('loading-label');
+    const modeBtn        = document.getElementById('mode-btn');
+
+    // ── VIEWPORT DETECTION ──
+    // Returns largest preset ≤ browserW. Pure function — unit-testable.
+    function detectViewport(browserW) {
+      const presets = [1024, 1280, 1440, 1920, 2560];
+      const vpMap = { 1024:'1024x768', 1280:'1280x800', 1440:'1440x900', 1920:'1920x1080', 2560:'2560x1440' };
+      const match = [...presets].reverse().find(p => p <= browserW) ?? presets[0];
+      return vpMap[match];
+    }
+
+    // ── IFRAME SCROLL ──
+    function getIframeScrollY() {
+      try { return pageFrame.contentWindow?.scrollY ?? 0; } catch { return 0; }
+    }
+
+    // ── LAYOUT: size container, iframe, canvas to match viewport + fit ──
+    function applyViewportLayout(vp) {
+      const [vpW, vpH] = vp.split('x').map(Number);
+      const availableW = wrap.clientWidth - 48;
+      fitScale = Math.min(1, availableW / vpW);
+      const fittedW = Math.round(vpW * fitScale);
+      const fittedH = Math.round(vpH * fitScale);
+
+      // Container clips to visual size
+      container.style.width  = fittedW + 'px';
+      container.style.height = fittedH + 'px';
+
+      // iframe renders at full CSS-pixel viewport, scaled down visually
+      pageFrame.style.width  = vpW + 'px';
+      pageFrame.style.height = vpH + 'px';
+      pageFrame.style.transform = `scale(${fitScale})`;
+      pageFrame.style.transformOrigin = 'top left';
+
+      // Canvas overlays at same visual size, stores coords in server-dpr device pixels
+      canvas.width  = vpW * serverDpr;
+      canvas.height = vpH * serverDpr;
+      canvas.style.width  = fittedW + 'px';
+      canvas.style.height = fittedH + 'px';
+    }
+
+    // ── LOAD PAGE INTO IFRAME ──
+    function loadPage(iframeUrl) {
+      currentPageIframeUrl = iframeUrl;
+      applyViewportLayout(currentViewport);
+      pageFrame.src = iframeUrl;
+      updateStatus();
+      redraw();
+    }
+
+    // ── VIEWPORT CHANGE (instant — just resize, no Playwright round-trip) ──
+    function setViewport(vp) {
+      if (vp === currentViewport) return;
+      currentViewport = vp;
+      updateViewportButtons(vp);
+      // Clear annotations (different viewport = different layout context)
+      actions = []; comments = []; nextCommentId = 1;
+      activeCommentId = null; selectedItem = null;
+      closePopover(); renderCommentsList();
+      saveCurrentPageState();
+      applyViewportLayout(vp);
+      // Reload iframe so page re-renders at new width
+      pageFrame.src = currentPageIframeUrl;
+      updateStatus();
+    }
+
+    // ── INIT: fetch pages + auto-detect viewport ──
+    async function fetchPages() {
+      try {
+        const res = await fetch('/api/pages');
+        const data = await res.json();
+        allPages = data.pages;
+        activePageIndex = 0;
+        currentPageName = allPages[0].name;
+        isMultiPage = allPages.length > 1;
+        serverDpr = data.dpr ?? 2;
+
+        // Init empty state per page
+        for (const p of allPages) {
+          pageStates[p.name] = {
+            actions: [], comments: [], nextCommentId: 1,
+            viewport: currentViewport, scrollY: 0, iframeUrl: p.iframeUrl
+          };
+        }
+
+        if (isMultiPage) {
+          document.getElementById('page-strip').classList.add('show');
+          renderPageStrip();
+        }
+
+        // Auto-detect viewport from browser window width, seed all pages
+        const detected = detectViewport(window.innerWidth);
+        currentViewport = detected;
+        updateViewportButtons(detected);
+        for (const name of Object.keys(pageStates)) {
+          pageStates[name].viewport = detected;
+        }
+
+        loadPage(allPages[0].iframeUrl);
+      } catch (err) {
+        statusText.textContent = 'Failed to connect to server: ' + err.message;
+      }
+    }
+
+    fetchPages();
+
+    // ── STATUS BAR ──
+    function updateStatus() {
+      const [vpW, vpH] = currentViewport.split('x').map(Number);
+      const drawCount = actions.length;
+      const commentTotal = comments.length;
+      const modeLabel = interactMode ? 'interact' : 'annotate';
+      const pageLabel = isMultiPage ? ` · ${currentPageName}` : '';
+      const zoomLabel = fitScale < 1 ? ` @ ${Math.round(fitScale * 100)}%` : '';
+      statusText.textContent = `${drawCount} draw · ${commentTotal} comments · ${modeLabel}${pageLabel}`;
+      statusRight.textContent = `${currentViewport}${zoomLabel}`;
+      commentCount.textContent = commentTotal;
+      emptyComments.style.display = commentTotal > 0 ? 'none' : 'block';
+    }
+
+    // ── MODE TOGGLE ──
+    function setMode(annotate) {
+      interactMode = !annotate;
+      if (annotate) {
+        canvas.classList.add('annotate-mode');
+        modeBtn.classList.add('annotate');
+        modeBtn.querySelector('svg').innerHTML = '<path d="M12 19l7-7 3 3-7 7-3-3z"/><path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z"/><path d="M2 2l7.586 7.586"/><circle cx="11" cy="11" r="2"/>';
+        modeBtn.childNodes[modeBtn.childNodes.length - 1].textContent = 'Annotating';
+        updateCursorForTool();
+      } else {
+        canvas.classList.remove('annotate-mode');
+        canvas.classList.remove('select-tool', 'comment-tool');
+        modeBtn.classList.remove('annotate');
+        modeBtn.querySelector('svg').innerHTML = '<path d="M3 3l7.07 16.97 2.51-7.39 7.39-2.51L3 3z"/><path d="M13 13l6 6"/>';
+        modeBtn.childNodes[modeBtn.childNodes.length - 1].textContent = 'Interact';
+      }
+      updateStatus();
+    }
+
+    function updateCursorForTool() {
+      if (!canvas.classList.contains('annotate-mode')) return;
+      canvas.classList.remove('select-tool', 'comment-tool');
+      if (tool === 'select') canvas.classList.add('select-tool');
+      else if (tool === 'comment') canvas.classList.add('comment-tool');
+    }
+
+    modeBtn.addEventListener('click', () => setMode(interactMode));
+
+    // ── PAGE STRIP ──
+    function renderPageStrip() {
+      const strip = document.getElementById('page-strip');
+      strip.querySelectorAll('.page-tab').forEach(t => t.remove());
+      for (const p of allPages) {
+        const tab = document.createElement('button');
+        tab.className = 'page-tab' + (p.index === activePageIndex ? ' active' : '');
+        const state = pageStates[p.name];
+        const hasAnnotations = state && (state.actions.length > 0 || state.comments.length > 0);
+        tab.innerHTML = `<span class="dot ${hasAnnotations ? 'show' : ''}"></span>${p.name}`;
+        tab.addEventListener('click', () => switchToPage(p.index));
+        strip.appendChild(tab);
+      }
+    }
+
+    // ── PAGE STATE ──
+    function saveCurrentPageState() {
+      if (!currentPageName) return;
+      pageStates[currentPageName] = {
+        actions: JSON.parse(JSON.stringify(actions)),
+        comments: JSON.parse(JSON.stringify(comments)),
+        nextCommentId,
+        viewport: currentViewport,
+        scrollY: getIframeScrollY(),
+        iframeUrl: currentPageIframeUrl,
+      };
+    }
+
+    function updateViewportButtons(vp) {
+      document.querySelectorAll('.vp-btn').forEach(b => {
+        b.classList.toggle('active', b.dataset.vp === vp);
+      });
+    }
+
+    function restorePageState(pageName) {
+      const state = pageStates[pageName];
+      if (state) {
+        actions = JSON.parse(JSON.stringify(state.actions));
+        comments = JSON.parse(JSON.stringify(state.comments));
+        nextCommentId = state.nextCommentId;
+        currentViewport = state.viewport;
+        updateViewportButtons(state.viewport);
+      } else {
+        actions = []; comments = []; nextCommentId = 1;
+      }
+      activeCommentId = null; selectedItem = null;
+      closePopover(); renderCommentsList();
+    }
+
+    async function switchToPage(index) {
+      if (index === activePageIndex && currentPageName === allPages[index].name) return;
+      saveCurrentPageState();
+      activePageIndex = index;
+      currentPageName = allPages[index].name;
+      restorePageState(currentPageName);
+      renderPageStrip();
+      const targetState = pageStates[currentPageName];
+      applyViewportLayout(currentViewport);
+      loadPage(targetState?.iframeUrl || allPages[index].iframeUrl);
+    }
+
+    // ── NAVIGATION GUARD ──
+    // Fires when user navigates within the iframe (e.g. clicks a link)
+    let guardResolve = null;
+
+    pageFrame.addEventListener('load', () => {
+      const hasAnnotations = actions.length > 0 || comments.length > 0;
+      const newSrc = pageFrame.src;
+
+      // Ignore initial load and same-URL reloads
+      if (!currentPageIframeUrl || newSrc === currentPageIframeUrl) return;
+
+      if (hasAnnotations) {
+        // Show guard — ask user what to do
+        showNavGuard(newSrc);
+      }
+      // If no annotations, just update current URL silently
+      // (user may have navigated within a SPA or clicked a link)
+    });
+
+    function showNavGuard(newUrl) {
+      pendingNavUrl = newUrl;
+      document.getElementById('nav-guard').classList.add('show');
+      document.getElementById('nav-guard-overlay').classList.add('show');
+    }
+
+    function hideNavGuard() {
+      document.getElementById('nav-guard').classList.remove('show');
+      document.getElementById('nav-guard-overlay').classList.remove('show');
+      pendingNavUrl = null;
+    }
+
+    document.getElementById('nav-guard-discard').addEventListener('click', () => {
+      actions = []; comments = []; nextCommentId = 1; activeCommentId = null;
+      closePopover(); renderCommentsList(); redraw();
+      currentPageIframeUrl = pendingNavUrl;
+      hideNavGuard();
+    });
+
+    document.getElementById('nav-guard-save').addEventListener('click', async () => {
+      hideNavGuard();
+      await save();
+      // After save, the iframe has already navigated — update the tracked URL
+      currentPageIframeUrl = pageFrame.src;
+    });
+
+    // ── COORDINATE HELPERS ──
+    // getPos returns coordinates in canvas device pixels (serverDpr scale)
+    function getPos(e) {
+      const rect = canvas.getBoundingClientRect();
+      return {
+        x: (e.clientX - rect.left) * (canvas.width / rect.width),
+        y: (e.clientY - rect.top)  * (canvas.height / rect.height),
+      };
+    }
+
+    // Convert canvas device pixels → container CSS pixels (accounts for fitScale)
+    function canvasToCSS(x, y) {
+      return { x: (x / serverDpr) * fitScale, y: (y / serverDpr) * fitScale };
+    }
+
+    // ── DRAWING FUNCTIONS ──
+    function drawPenStroke(c, pts, col, w) {
+      if (pts.length < 2) return;
+      c.strokeStyle = col; c.lineWidth = w * serverDpr; c.lineCap = 'round'; c.lineJoin = 'round';
+      c.beginPath(); c.moveTo(pts[0].x, pts[0].y);
+      for (let i = 1; i < pts.length - 1; i++) {
+        const mx = (pts[i].x + pts[i+1].x) / 2, my = (pts[i].y + pts[i+1].y) / 2;
+        c.quadraticCurveTo(pts[i].x, pts[i].y, mx, my);
+      }
+      c.lineTo(pts[pts.length-1].x, pts[pts.length-1].y); c.stroke();
+    }
+
+    function drawArrow(c, from, to, col, w) {
+      const sw = w * serverDpr, headLen = Math.max(16 * serverDpr, sw * 4);
+      const angle = Math.atan2(to.y - from.y, to.x - from.x);
+      c.strokeStyle = col; c.fillStyle = col; c.lineWidth = sw; c.lineCap = 'round';
+      c.beginPath(); c.moveTo(from.x, from.y);
+      c.lineTo(to.x - headLen * 0.6 * Math.cos(angle), to.y - headLen * 0.6 * Math.sin(angle)); c.stroke();
+      c.beginPath(); c.moveTo(to.x, to.y);
+      c.lineTo(to.x - headLen * Math.cos(angle - Math.PI/7), to.y - headLen * Math.sin(angle - Math.PI/7));
+      c.lineTo(to.x - headLen * Math.cos(angle + Math.PI/7), to.y - headLen * Math.sin(angle + Math.PI/7));
+      c.closePath(); c.fill();
+    }
+
+    function drawRect(c, from, to, col, w) {
+      c.strokeStyle = col; c.lineWidth = w * serverDpr; c.lineJoin = 'round';
+      c.strokeRect(Math.min(from.x,to.x), Math.min(from.y,to.y), Math.abs(to.x-from.x), Math.abs(to.y-from.y));
+    }
+
+    function drawCommentBubble(c, comment, isActive) {
+      const r = 15 * serverDpr;
+      const x = comment.x, y = comment.y;
+      c.beginPath(); c.arc(x, y, r + 2*serverDpr, 0, Math.PI*2);
+      c.fillStyle = 'rgba(0,0,0,0.3)'; c.fill();
+      c.beginPath(); c.arc(x, y, r, 0, Math.PI*2);
+      c.fillStyle = comment.color; c.fill();
+      if (isActive) {
+        c.strokeStyle = '#fff'; c.lineWidth = 3 * serverDpr; c.stroke();
+      } else {
+        c.strokeStyle = 'rgba(255,255,255,0.6)'; c.lineWidth = 2 * serverDpr; c.stroke();
+      }
+      c.fillStyle = '#fff';
+      c.font = `700 ${12 * serverDpr}px Inter, sans-serif`;
+      c.textAlign = 'center'; c.textBaseline = 'middle';
+      c.fillText(comment.id.toString(), x, y + 1*serverDpr);
+      c.textAlign = 'start'; c.textBaseline = 'alphabetic';
+    }
+
+    function renderAction(c, a) {
+      switch (a.type) {
+        case 'pen':   drawPenStroke(c, a.points, a.color, a.width); break;
+        case 'arrow': drawArrow(c, a.from, a.to, a.color, a.width); break;
+        case 'rect':  drawRect(c, a.from, a.to, a.color, a.width); break;
+      }
+    }
+
+    function redraw() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      for (const a of actions) renderAction(ctx, a);
+      if (currentAction) renderAction(ctx, currentAction);
+      for (const c of comments) drawCommentBubble(ctx, c, c.id === activeCommentId);
+      if (selectedItem && tool === 'select') drawSelectionOutline(ctx, selectedItem);
+      updateStatus();
+    }
+
+    // ── COMMENT LEGEND ──
+    function drawCommentLegend(c, startY, cw, dp) {
+      if (comments.length === 0) return startY;
+      const padding = 20 * dp;
+      const lineH = 22 * dp;
+      const aiLineH = 18 * dp;
+      const fontSize = 13 * dp;
+      const aiFontSize = 11 * dp;
+      const maxTextWidth = cw - padding * 4;
+
+      c.font = `600 ${fontSize}px Inter, sans-serif`;
+      let totalMainLines = 0, totalAiLines = 0;
+      const commentData = comments.map(cm => {
+        const mainLines = wrapText(c, `${cm.id}. ${cm.text || '(no text)'}`, maxTextWidth);
+        let aiLines = [];
+        if (cm.aiText) {
+          c.font = `400 ${aiFontSize}px Inter, sans-serif`;
+          aiLines = wrapText(c, `AI: ${cm.aiText}`, maxTextWidth - 16*dp);
+          c.font = `600 ${fontSize}px Inter, sans-serif`;
+        }
+        totalMainLines += mainLines.length;
+        totalAiLines += aiLines.length;
+        return { cm, mainLines, aiLines };
+      });
+
+      const legendH = padding * 2 + totalMainLines * lineH + totalAiLines * aiLineH + 10*dp;
+      c.fillStyle = '#111'; c.fillRect(0, startY, cw, legendH);
+      c.fillStyle = '#222'; c.fillRect(padding/2, startY + padding/2, cw - padding, legendH - padding);
+      c.fillStyle = '#777';
+      c.font = `700 ${10 * dp}px Inter, sans-serif`;
+      c.fillText('DESIGN REVIEW NOTES', padding * 1.5, startY + padding + 4*dp);
+      let curY = startY + padding + lineH + 4*dp;
+      for (const { cm, mainLines, aiLines } of commentData) {
+        c.beginPath(); c.arc(padding * 1.5 + 8*dp, curY - 4*dp, 8*dp, 0, Math.PI*2);
+        c.fillStyle = cm.color; c.fill();
+        c.fillStyle = '#fff';
+        c.font = `700 ${9 * dp}px Inter, sans-serif`;
+        c.textAlign = 'center'; c.textBaseline = 'middle';
+        c.fillText(cm.id.toString(), padding * 1.5 + 8*dp, curY - 3*dp);
+        c.textAlign = 'start'; c.textBaseline = 'alphabetic';
+        c.fillStyle = '#ddd';
+        c.font = `500 ${fontSize}px Inter, sans-serif`;
+        for (const line of mainLines) {
+          c.fillText(line, padding * 1.5 + 22*dp, curY);
+          curY += lineH;
+        }
+        if (aiLines.length) {
+          c.fillStyle = '#A78BFA';
+          c.font = `400 ${aiFontSize}px Inter, sans-serif`;
+          for (const line of aiLines) { c.fillText(line, padding * 1.5 + 22*dp, curY); curY += aiLineH; }
+        }
+        curY += 4 * dp;
+      }
+      return startY + legendH;
+    }
+
+    function wrapText(c, text, maxW) {
+      const words = text.split(' ');
+      const lines = [];
+      let line = '';
+      for (const word of words) {
+        const test = line ? line + ' ' + word : word;
+        if (c.measureText(test).width > maxW && line) { lines.push(line); line = word; }
+        else { line = test; }
+      }
+      if (line) lines.push(line);
+      return lines;
+    }
+
+    // ── MOUSE EVENTS (only active in annotate mode via pointer-events CSS) ──
+    canvas.addEventListener('mousedown', (e) => {
+      const pos = getPos(e);
+      if (tool === 'select') {
+        const hit = findItemAt(pos);
+        if (hit) {
+          selectedItem = hit; isDragging = true; lastDragPos = pos;
+          canvas.style.cursor = 'grabbing';
+          if (hit.type === 'comment' && e.detail === 2) { isDragging = false; openPopover(hit.item); }
+        } else { selectedItem = null; closePopover(); }
+        redraw(); return;
+      }
+      if (tool === 'comment') {
+        const clickedComment = findCommentAt(pos);
+        if (clickedComment) { openPopover(clickedComment); return; }
+        const comment = { id: nextCommentId++, x: pos.x, y: pos.y, text: '', aiText: '', color };
+        comments.push(comment);
+        redraw(); renderCommentsList(); openPopover(comment);
+        return;
+      }
+      isDrawing = true;
+      if (tool === 'pen')   currentAction = { type: 'pen', points: [pos], color, width: strokeWidth };
+      else if (tool === 'arrow') currentAction = { type: 'arrow', from: pos, to: pos, color, width: strokeWidth };
+      else if (tool === 'rect')  currentAction = { type: 'rect',  from: pos, to: pos, color, width: strokeWidth };
+    });
+
+    canvas.addEventListener('mousemove', (e) => {
+      const pos = getPos(e);
+      if (tool === 'select' && isDragging && selectedItem && lastDragPos) {
+        const dx = pos.x - lastDragPos.x, dy = pos.y - lastDragPos.y;
+        if (selectedItem.type === 'comment') { selectedItem.item.x += dx; selectedItem.item.y += dy; }
+        else moveAction(selectedItem.item, dx, dy);
+        lastDragPos = pos; redraw(); return;
+      }
+      if (tool === 'select' && !isDragging) {
+        const hit = findItemAt(pos);
+        canvas.style.cursor = hit ? 'grab' : 'default'; return;
+      }
+      if (!isDrawing || !currentAction) return;
+      if (currentAction.type === 'pen') currentAction.points.push(pos);
+      else currentAction.to = pos;
+      redraw();
+    });
+
+    canvas.addEventListener('mouseup', () => {
+      if (tool === 'select' && isDragging) {
+        isDragging = false; lastDragPos = null;
+        canvas.style.cursor = selectedItem ? 'grab' : 'default';
+        redraw(); return;
+      }
+      if (!isDrawing || !currentAction) return;
+      isDrawing = false;
+      if (currentAction.type === 'pen' && currentAction.points.length > 1) actions.push(currentAction);
+      else if (currentAction.type !== 'pen') {
+        const dx = Math.abs(currentAction.to.x - currentAction.from.x);
+        const dy = Math.abs(currentAction.to.y - currentAction.from.y);
+        if (dx > 3 || dy > 3) actions.push(currentAction);
+      }
+      currentAction = null; redraw();
+    });
+
+    canvas.addEventListener('mouseleave', () => {
+      if (isDragging) { isDragging = false; lastDragPos = null; redraw(); }
+      if (isDrawing && currentAction) { actions.push(currentAction); currentAction = null; isDrawing = false; redraw(); }
+    });
+
+    // ── HIT TESTING ──
+    function findCommentAt(pos) {
+      const hitR = 18 * serverDpr;
+      for (let i = comments.length - 1; i >= 0; i--) {
+        const c = comments[i];
+        if ((pos.x-c.x)**2 + (pos.y-c.y)**2 < hitR**2) return c;
+      }
+      return null;
+    }
+
+    function pointToSegmentDist(px, py, x1, y1, x2, y2) {
+      const dx = x2-x1, dy = y2-y1, lenSq = dx*dx + dy*dy;
+      if (lenSq === 0) return Math.hypot(px-x1, py-y1);
+      const t = Math.max(0, Math.min(1, ((px-x1)*dx + (py-y1)*dy) / lenSq));
+      return Math.hypot(px-(x1+t*dx), py-(y1+t*dy));
+    }
+
+    function hitTestAction(pos, action) {
+      const threshold = Math.max(12 * serverDpr, (action.width || 4) * serverDpr * 2);
+      if (action.type === 'pen') {
+        for (let i = 0; i < action.points.length - 1; i++) {
+          if (pointToSegmentDist(pos.x, pos.y, action.points[i].x, action.points[i].y, action.points[i+1].x, action.points[i+1].y) < threshold) return true;
+        }
+      } else if (action.type === 'arrow') {
+        return pointToSegmentDist(pos.x, pos.y, action.from.x, action.from.y, action.to.x, action.to.y) < threshold;
+      } else if (action.type === 'rect') {
+        const x1=Math.min(action.from.x,action.to.x), y1=Math.min(action.from.y,action.to.y);
+        const x2=Math.max(action.from.x,action.to.x), y2=Math.max(action.from.y,action.to.y);
+        return pointToSegmentDist(pos.x,pos.y,x1,y1,x2,y1) < threshold ||
+               pointToSegmentDist(pos.x,pos.y,x2,y1,x2,y2) < threshold ||
+               pointToSegmentDist(pos.x,pos.y,x2,y2,x1,y2) < threshold ||
+               pointToSegmentDist(pos.x,pos.y,x1,y2,x1,y1) < threshold;
+      }
+      return false;
+    }
+
+    function findItemAt(pos) {
+      const comment = findCommentAt(pos);
+      if (comment) return { type: 'comment', index: comments.indexOf(comment), item: comment };
+      for (let i = actions.length - 1; i >= 0; i--) {
+        if (hitTestAction(pos, actions[i])) return { type: 'action', index: i, item: actions[i] };
+      }
+      return null;
+    }
+
+    function getBounds(action) {
+      if (action.type === 'pen') {
+        let minX=Infinity, minY=Infinity, maxX=-Infinity, maxY=-Infinity;
+        for (const p of action.points) { minX=Math.min(minX,p.x); minY=Math.min(minY,p.y); maxX=Math.max(maxX,p.x); maxY=Math.max(maxY,p.y); }
+        return { x:minX, y:minY, w:maxX-minX, h:maxY-minY };
+      } else if (action.type === 'arrow' || action.type === 'rect') {
+        return { x:Math.min(action.from.x,action.to.x), y:Math.min(action.from.y,action.to.y), w:Math.abs(action.to.x-action.from.x), h:Math.abs(action.to.y-action.from.y) };
+      }
+      return null;
+    }
+
+    function moveAction(action, dx, dy) {
+      if (action.type === 'pen') { for (const p of action.points) { p.x += dx; p.y += dy; } }
+      else if (action.type === 'arrow' || action.type === 'rect') {
+        action.from.x+=dx; action.from.y+=dy; action.to.x+=dx; action.to.y+=dy;
+      }
+    }
+
+    function drawSelectionOutline(c, item) {
+      if (!item) return;
+      const pad = 8 * serverDpr;
+      c.save(); c.setLineDash([6*serverDpr, 4*serverDpr]);
+      c.strokeStyle = '#5B8DEF'; c.lineWidth = 1.5 * serverDpr;
+      if (item.type === 'comment') {
+        c.beginPath(); c.arc(item.item.x, item.item.y, 20*serverDpr, 0, Math.PI*2); c.stroke();
+      } else {
+        const b = getBounds(item.item);
+        if (b) c.strokeRect(b.x-pad, b.y-pad, b.w+pad*2, b.h+pad*2);
+      }
+      c.restore();
+    }
+
+    // ── COMMENT POPOVER ──
+    function openPopover(comment) {
+      activeCommentId = comment.id;
+      popoverBadge.style.background = comment.color;
+      popoverBadge.textContent = comment.id;
+      popoverLabel.textContent = `Comment #${comment.id}`;
+      commentText.value = comment.text;
+
+      const css = canvasToCSS(comment.x, comment.y);
+      let left = css.x + 24, top = css.y - 20;
+      const contRect = container.getBoundingClientRect();
+      if (left + 280 > contRect.width) left = css.x - 304;
+      if (top < 0) top = 0;
+      if (top + 200 > contRect.height) top = contRect.height - 200;
+
+      popover.style.left = left + 'px';
+      popover.style.top  = top  + 'px';
+      popover.style.display = 'block';
+      setTimeout(() => { commentText.focus(); commentText.select(); }, 50);
+      redraw(); highlightCommentInList(comment.id);
+    }
+
+    function closePopover() {
+      popover.style.display = 'none';
+      if (activeCommentId) {
+        const comment = comments.find(c => c.id === activeCommentId);
+        if (comment) comment.text = commentText.value.trim();
+      }
+      activeCommentId = null;
+      aiStatus.classList.remove('show');
+      redraw(); renderCommentsList();
+    }
+
+    document.getElementById('popover-close').addEventListener('click', closePopover);
+    document.getElementById('popover-save').addEventListener('click', closePopover);
+
+    document.getElementById('popover-delete').addEventListener('click', () => {
+      comments = comments.filter(c => c.id !== activeCommentId);
+      comments.forEach((c, i) => c.id = i + 1);
+      nextCommentId = comments.length + 1;
+      activeCommentId = null;
+      popover.style.display = 'none';
+      redraw(); renderCommentsList();
+    });
+
+    // ── AI PROCESSING ──
+    aiBtn.addEventListener('click', async () => {
+      const text = commentText.value.trim();
+      if (!text) return;
+      aiBtn.classList.add('loading'); aiBtn.disabled = true;
+      aiStatus.textContent = 'Refining with AI...'; aiStatus.classList.add('show');
+      try {
+        const res = await fetch('/api/process', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text, commentId: activeCommentId }),
+        });
+        if (!res.ok) { const err = await res.json(); throw new Error(err.error || 'Processing failed'); }
+        const result = await res.json();
+        const comment = comments.find(c => c.id === activeCommentId);
+        if (comment && result.refined) comment.aiText = result.refined;
+        aiStatus.textContent = 'Refined';
+        setTimeout(() => aiStatus.classList.remove('show'), 1500);
+        renderCommentsList();
+      } catch (err) { aiStatus.textContent = 'Error: ' + err.message; }
+      aiBtn.classList.remove('loading'); aiBtn.disabled = false;
+    });
+
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && popover.style.display === 'block') { closePopover(); e.preventDefault(); }
+    });
+
+    // ── COMMENTS LIST ──
+    function renderCommentsList() {
+      const items = comments.map(c => `
+        <div class="comment-item ${c.id === activeCommentId ? 'active' : ''}" data-id="${c.id}">
+          <div class="comment-item-header">
+            <div class="comment-item-badge" style="background:${c.color}">${c.id}</div>
+            <span class="comment-item-meta">${c.text ? c.text.slice(0, 30) + (c.text.length > 30 ? '...' : '') : '(empty)'}</span>
+          </div>
+          ${c.text ? `<div class="comment-item-text">${escapeHtml(c.text)}</div>` : ''}
+          ${c.aiText && c.aiText !== c.text ? `<div class="comment-item-ai">${escapeHtml(c.aiText)}</div>` : ''}
+        </div>
+      `).join('');
+      commentsList.innerHTML = comments.length > 0 ? items
+        : '<div class="empty-comments">Switch to Annotate mode (Tab), then use the comment tool (C) to add feedback.</div>';
+      commentCount.textContent = comments.length;
+      commentsList.querySelectorAll('.comment-item').forEach(el => {
+        el.addEventListener('click', () => {
+          const comment = comments.find(c => c.id === parseInt(el.dataset.id));
+          if (comment) openPopover(comment);
+        });
+      });
+    }
+
+    function highlightCommentInList(id) {
+      commentsList.querySelectorAll('.comment-item').forEach(el => {
+        el.classList.toggle('active', parseInt(el.dataset.id) === id);
+      });
+    }
+
+    function escapeHtml(s) {
+      return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\n/g,'<br>');
+    }
+
+    // ── TOOLBAR EVENTS ──
+    document.querySelectorAll('.tool-btn[data-tool]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        document.querySelectorAll('.tool-btn[data-tool]').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        tool = btn.dataset.tool;
+        selectedItem = null;
+        updateCursorForTool();
+      });
+    });
+
+    document.querySelectorAll('.color-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        document.querySelectorAll('.color-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        color = btn.dataset.color;
+      });
+    });
+
+    document.querySelectorAll('.size-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        document.querySelectorAll('.size-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        strokeWidth = parseInt(btn.dataset.size);
+      });
+    });
+
+    document.getElementById('undo-btn').addEventListener('click', () => {
+      if (actions.length) { actions.pop(); redraw(); }
+      else if (comments.length) {
+        comments.pop(); nextCommentId = comments.length + 1;
+        renderCommentsList(); redraw();
+      }
+    });
+
+    document.getElementById('clear-btn').addEventListener('click', () => {
+      if ((actions.length || comments.length) && confirm('Clear all annotations?')) {
+        actions = []; comments = []; nextCommentId = 1; activeCommentId = null;
+        closePopover(); renderCommentsList(); redraw();
+      }
+    });
+
+    document.querySelectorAll('.vp-btn').forEach(btn => {
+      btn.addEventListener('click', () => setViewport(btn.dataset.vp));
+    });
+
+    // ── SAVE (current page, current scroll position) ──
+    async function save() {
+      if (popover.style.display === 'block') closePopover();
+
+      const scrollY = getIframeScrollY();
+      const [vpW, vpH] = currentViewport.split('x').map(Number);
+
+      loadingLabel.textContent = 'Capturing...';
+      loadingOverlay.classList.add('show');
+
+      try {
+        // Ask server to capture the page at current viewport + scroll
+        const captureRes = await fetch('/api/capture', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            pageIndex: activePageIndex,
+            viewport: currentViewport,
+            scrollY,
+            fullPage: false,
+          }),
+        });
+        if (!captureRes.ok) throw new Error('Capture failed');
+        const { image } = await captureRes.json();
+
+        // Composite: screenshot + annotation canvas
+        const capW = vpW * serverDpr;
+        const capH = vpH * serverDpr;
+
+        // Measure legend height
+        let legendHeight = 0;
+        if (comments.length > 0) {
+          const tmpC = document.createElement('canvas');
+          tmpC.width = capW; tmpC.height = 1;
+          const tmpCtx = tmpC.getContext('2d');
+          tmpCtx.font = `600 ${13 * serverDpr}px Inter, sans-serif`;
+          let mainLines = 2, aiLines = 0;
+          for (const cm of comments) {
+            mainLines += wrapText(tmpCtx, `${cm.id}. ${cm.text || '(no text)'}`, capW - 80*serverDpr).length;
+            if (cm.aiText) {
+              tmpCtx.font = `400 ${11 * serverDpr}px Inter, sans-serif`;
+              aiLines += wrapText(tmpCtx, `AI: ${cm.aiText}`, capW - 96*serverDpr).length;
+              tmpCtx.font = `600 ${13 * serverDpr}px Inter, sans-serif`;
+            }
+            mainLines += 0.5;
+          }
+          legendHeight = (mainLines * 22 * serverDpr) + (aiLines * 18 * serverDpr) + 40 * serverDpr;
+        }
+
+        const offscreen = document.createElement('canvas');
+        offscreen.width  = capW;
+        offscreen.height = capH + legendHeight;
+        const offCtx = offscreen.getContext('2d');
+
+        // Draw screenshot background
+        await new Promise((resolve, reject) => {
+          const bg = new Image();
+          bg.onload = () => { offCtx.drawImage(bg, 0, 0); resolve(); };
+          bg.onerror = reject;
+          bg.src = image;
+        });
+
+        // Draw annotation overlay (canvas coords already in capW×capH device pixels)
+        offCtx.drawImage(canvas, 0, 0);
+
+        // Draw comment legend
+        if (comments.length > 0) drawCommentLegend(offCtx, capH, capW, serverDpr);
+
+        const dataUrl = offscreen.toDataURL('image/png');
+
+        const reviewData = {
+          viewport: currentViewport,
+          scrollY,
+          dpr: serverDpr,
+          timestamp: new Date().toISOString(),
+          comments: comments.map(c => ({
+            id: c.id,
+            x: Math.round(c.x / serverDpr),
+            y: Math.round(c.y / serverDpr),
+            text: c.text,
+            aiText: c.aiText || null,
+          })),
+          drawingCount: actions.length,
+        };
+
+        const res = await fetch('/save', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ image: dataUrl, viewport: currentViewport, review: reviewData, pageName: currentPageName }),
+        });
+        const result = await res.json();
+        showToast(`Saved: ${result.saved}`);
+        saveCurrentPageState();
+        if (isMultiPage) renderPageStrip();
+      } catch (err) {
+        alert('Save failed: ' + err.message);
+      } finally {
+        loadingOverlay.classList.remove('show');
+      }
+    }
+
+    function showToast(msg) {
+      toast.textContent = msg;
+      toast.classList.add('show');
+      setTimeout(() => toast.classList.remove('show'), 2500);
+    }
+
+    document.getElementById('save-btn').addEventListener('click', save);
+
+    // ── SAVE ALL ──
+    async function saveAll() {
+      saveCurrentPageState();
+
+      const annotatedPages = allPages.filter(p => {
+        const s = pageStates[p.name];
+        return s && (s.actions.length > 0 || s.comments.length > 0);
+      });
+
+      if (annotatedPages.length === 0) { showToast('No annotated pages to save'); return; }
+
+      const overlay   = document.getElementById('save-all-overlay');
+      const progress  = document.getElementById('save-all-progress');
+      const fill      = document.getElementById('progress-fill');
+      const statusEl  = document.getElementById('save-all-status');
+
+      overlay.classList.add('show'); progress.classList.add('show');
+
+      const savedFiles = [];
+
+      for (let i = 0; i < annotatedPages.length; i++) {
+        const p = annotatedPages[i];
+        fill.style.width = Math.round((i / annotatedPages.length) * 90) + '%';
+        statusEl.textContent = `Capturing ${p.name}... (${i+1}/${annotatedPages.length})`;
+
+        const state = pageStates[p.name];
+        const [vpW, vpH] = state.viewport.split('x').map(Number);
+
+        try {
+          const captureRes = await fetch('/api/capture', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              pageIndex: p.index,
+              viewport: state.viewport,
+              scrollY: state.scrollY || 0,
+              fullPage: false,
+            }),
+          });
+          if (!captureRes.ok) throw new Error('Capture failed');
+          const { image } = await captureRes.json();
+
+          const capW = vpW * serverDpr, capH = vpH * serverDpr;
+
+          let legendHeight = 0;
+          if (state.comments.length > 0) {
+            const tmpC = document.createElement('canvas');
+            tmpC.width = capW; tmpC.height = 1;
+            const tmpCtx = tmpC.getContext('2d');
+            tmpCtx.font = `600 ${13 * serverDpr}px Inter, sans-serif`;
+            let mainLn = 2, aiLn = 0;
+            for (const cm of state.comments) {
+              mainLn += wrapText(tmpCtx, `${cm.id}. ${cm.text || '(no text)'}`, capW - 80*serverDpr).length;
+              if (cm.aiText) {
+                tmpCtx.font = `400 ${11 * serverDpr}px Inter, sans-serif`;
+                aiLn += wrapText(tmpCtx, `AI: ${cm.aiText}`, capW - 96*serverDpr).length;
+                tmpCtx.font = `600 ${13 * serverDpr}px Inter, sans-serif`;
+              }
+              mainLn += 0.5;
+            }
+            legendHeight = (mainLn * 22 * serverDpr) + (aiLn * 18 * serverDpr) + 40 * serverDpr;
+          }
+
+          const offC = document.createElement('canvas');
+          offC.width = capW; offC.height = capH + legendHeight;
+          const offCtx = offC.getContext('2d');
+
+          await new Promise((resolve, reject) => {
+            const bg = new Image();
+            bg.onload = () => { offCtx.drawImage(bg, 0, 0); resolve(); };
+            bg.onerror = reject;
+            bg.src = image;
+          });
+
+          // Render this page's annotations
+          for (const a of state.actions) renderAction(offCtx, a);
+          for (const c of state.comments) drawCommentBubble(offCtx, c, false);
+          if (state.comments.length > 0) drawCommentLegend(offCtx, capH, capW, serverDpr);
+
+          const dataUrl = offC.toDataURL('image/png');
+          const reviewData = {
+            viewport: state.viewport,
+            scrollY: state.scrollY || 0,
+            dpr: serverDpr,
+            timestamp: new Date().toISOString(),
+            comments: state.comments.map(c => ({
+              id: c.id, x: Math.round(c.x/serverDpr), y: Math.round(c.y/serverDpr),
+              text: c.text, aiText: c.aiText || null,
+            })),
+            drawingCount: state.actions.length,
+          };
+
+          statusEl.textContent = `Saving ${p.name}...`;
+          const saveRes = await fetch('/save', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ image: dataUrl, viewport: state.viewport, review: reviewData, pageName: p.name }),
+          });
+          const saveResult = await saveRes.json();
+          savedFiles.push({ page: p.name, file: saveResult.saved });
+        } catch (err) {
+          savedFiles.push({ page: p.name, error: err.message });
+        }
+      }
+
+      fill.style.width = '95%';
+      statusEl.textContent = 'Writing session manifest...';
+      try {
+        await fetch('/api/manifest', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            timestamp: new Date().toISOString(),
+            pages: savedFiles,
+            totalPages: allPages.length,
+            annotatedPages: annotatedPages.length,
+          }),
+        });
+      } catch { /* manifest is optional */ }
+
+      fill.style.width = '100%';
+      const successCount = savedFiles.filter(f => !f.error).length;
+      statusEl.textContent = `Done! Saved ${successCount}/${annotatedPages.length} pages.`;
+      setTimeout(() => {
+        overlay.classList.remove('show');
+        progress.classList.remove('show');
+        fill.style.width = '0%';
+        showToast(`Saved ${successCount} annotated page(s)`);
+      }, 1200);
+    }
+
+    document.getElementById('save-all-btn').addEventListener('click', saveAll);
+
+    // ── CLOSE ──
+    async function complete() {
+      const btn = document.getElementById('complete-btn');
+      btn.disabled = true; btn.textContent = 'Closing...';
+      try {
+        const annotatedPages = Object.entries(pageStates)
+          .filter(([_, s]) => s.actions.length > 0 || s.comments.length > 0)
+          .map(([name]) => name);
+        if (annotatedPages.length > 0) {
+          await fetch('/api/update-manifest', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ annotatedPages }),
+          });
+        }
+        await fetch('/api/shutdown', { method: 'POST' });
+      } catch (err) {
+        btn.disabled = false; btn.textContent = 'Close';
+        alert('Close failed: ' + err.message);
+      }
+    }
+
+    document.getElementById('complete-btn').addEventListener('click', complete);
+
+    // ── KEYBOARD SHORTCUTS ──
+    document.addEventListener('keydown', (e) => {
+      if (e.target.tagName === 'TEXTAREA' || e.target.tagName === 'INPUT') {
+        if (e.ctrlKey && e.shiftKey && e.key === 'S') { e.preventDefault(); if (isMultiPage) saveAll(); return; }
+        if (e.ctrlKey && e.key === 's') { e.preventDefault(); save(); }
+        return;
+      }
+      if (e.ctrlKey && e.key === 'Enter') { e.preventDefault(); complete(); return; }
+      if (e.ctrlKey && e.key === 'z') { e.preventDefault(); document.getElementById('undo-btn').click(); }
+      if (e.ctrlKey && e.shiftKey && e.key === 'S') { e.preventDefault(); if (isMultiPage) saveAll(); return; }
+      if (e.ctrlKey && e.key === 's') { e.preventDefault(); save(); return; }
+      if (e.key === 'Tab') { e.preventDefault(); setMode(interactMode); return; } // Tab toggles mode
+      if (isMultiPage && !e.ctrlKey && !e.altKey && !e.metaKey) {
+        if (e.key === '[' && activePageIndex > 0) { switchToPage(activePageIndex - 1); return; }
+        if (e.key === ']' && activePageIndex < allPages.length - 1) { switchToPage(activePageIndex + 1); return; }
+      }
+      if ((e.key === 'Delete' || e.key === 'Backspace') && selectedItem) {
+        e.preventDefault();
+        if (selectedItem.type === 'action') actions.splice(selectedItem.index, 1);
+        else if (selectedItem.type === 'comment') {
+          comments.splice(selectedItem.index, 1);
+          comments.forEach((c, i) => c.id = i + 1);
+          nextCommentId = comments.length + 1;
+          renderCommentsList();
+        }
+        selectedItem = null; redraw(); return;
+      }
+      if (!e.ctrlKey && !e.altKey && !e.metaKey) {
+        switch (e.key.toLowerCase()) {
+          case 'v': document.querySelector('[data-tool="select"]').click(); break;
+          case 'p': document.querySelector('[data-tool="pen"]').click(); break;
+          case 'a': document.querySelector('[data-tool="arrow"]').click(); break;
+          case 'r': document.querySelector('[data-tool="rect"]').click(); break;
+          case 'c': document.querySelector('[data-tool="comment"]').click(); break;
+          case '1': document.querySelectorAll('.color-btn')[0]?.click(); break;
+          case '2': document.querySelectorAll('.color-btn')[1]?.click(); break;
+          case '3': document.querySelectorAll('.color-btn')[2]?.click(); break;
+          case '4': document.querySelectorAll('.color-btn')[3]?.click(); break;
+          case '5': document.querySelectorAll('.color-btn')[4]?.click(); break;
+        }
+      }
+    });
+  </script>
+</body>
+</html>
