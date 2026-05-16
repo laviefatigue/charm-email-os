@@ -6,18 +6,16 @@
  * Design System: [[design-system/index]]
  * Components: [[design-system/components/recommendation-card]]
  */
+"use client";
+
 import * as React from "react";
-import { notFound } from "next/navigation";
+import { notFound, useParams } from "next/navigation";
 import { Sparkles } from "lucide-react";
 import { RecommendationCard, PageHeader } from "@/components/charm";
 import { getWorkspace, getRecommendations } from "@/lib/mock/charm";
 
-export default async function WorkspaceRecommendationsPage({
-  params,
-}: {
-  params: Promise<{ id: string }>;
-}) {
-  const { id } = await params;
+export default function WorkspaceRecommendationsPage() {
+  const { id } = useParams<{ id: string }>();
   const workspace = getWorkspace(id);
   if (!workspace) notFound();
 

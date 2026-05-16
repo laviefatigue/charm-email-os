@@ -6,18 +6,16 @@
  * Design System: [[design-system/index]]
  * Components: [[design-system/components/agent-card]]
  */
+"use client";
+
 import * as React from "react";
-import { notFound } from "next/navigation";
+import { notFound, useParams } from "next/navigation";
 import { Bot, Plus } from "lucide-react";
 import { AgentCard, PageHeader } from "@/components/charm";
 import { getWorkspace, getAgents } from "@/lib/mock/charm";
 
-export default async function WorkspaceAgentsPage({
-  params,
-}: {
-  params: Promise<{ id: string }>;
-}) {
-  const { id } = await params;
+export default function WorkspaceAgentsPage() {
+  const { id } = useParams<{ id: string }>();
   const workspace = getWorkspace(id);
   if (!workspace) notFound();
 

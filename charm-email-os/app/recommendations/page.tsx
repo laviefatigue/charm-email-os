@@ -6,6 +6,8 @@
  * Design System: [[design-system/index]]
  * Components: [[design-system/components/recommendation-card]]
  */
+"use client";
+
 import * as React from "react";
 import Link from "next/link";
 import { ChevronRight, Sparkles } from "lucide-react";

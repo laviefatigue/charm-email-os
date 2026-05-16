@@ -6,9 +6,11 @@
  * Design System: [[design-system/index]]
  * Components: [[design-system/components/recommendation-card]] · [[design-system/components/agent-card]] · [[design-system/components/activity-log-row]]
  */
+"use client";
+
 import * as React from "react";
 import Link from "next/link";
-import { notFound } from "next/navigation";
+import { notFound, useParams } from "next/navigation";
 import { ChevronRight, Sparkles, Bot, ScrollText } from "lucide-react";
 import {
   AgentCard,
@@ -22,12 +24,8 @@ import {
   getEvents,
 } from "@/lib/mock/charm";
 
-export default async function WorkspaceOverviewPage({
-  params,
-}: {
-  params: Promise<{ id: string }>;
-}) {
-  const { id } = await params;
+export default function WorkspaceOverviewPage() {
+  const { id } = useParams<{ id: string }>();
   const workspace = getWorkspace(id);
   if (!workspace) notFound();
 
