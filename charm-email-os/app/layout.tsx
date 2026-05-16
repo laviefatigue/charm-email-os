@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import { Fraunces, Manrope, Geist_Mono } from "next/font/google";
 import "./globals.css";
-import { Sidebar } from "@/components/layout";
+import { AppShell } from "@/components/charm";
 import { StoreProvider } from "@/components/providers/StoreProvider";
 import { UserProvider } from "@/lib/contexts/UserContext";
 import { Toaster } from "sonner";
@@ -42,12 +42,7 @@ export default function RootLayout({
       >
         <UserProvider>
           <StoreProvider>
-            <div className="flex h-screen bg-background">
-              <Sidebar />
-              <main className="flex-1 flex flex-col overflow-auto">
-                {children}
-              </main>
-            </div>
+            <AppShell>{children}</AppShell>
             <Toaster position="bottom-right" richColors />
           </StoreProvider>
         </UserProvider>

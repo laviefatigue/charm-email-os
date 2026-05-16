@@ -29,3 +29,10 @@ export {
   type ActivityEventType,
   type ActivityEventStatus,
 } from "./activity-log-row";
+
+// Shell + layout primitives for the redesign route group
+export { AppShell } from "./app-shell";
+export { VillageSidebar } from "./village-sidebar";
+export { WorkspaceSubnav, type WorkspaceSubnavProps } from "./workspace-subnav";
+export { ComingSoon, type ComingSoonProps } from "./coming-soon";
+export { PageHeader, type PageHeaderProps } from "./page-header";
