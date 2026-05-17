@@ -11,7 +11,7 @@
 import * as React from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Flame, Home, Inbox, Activity, Settings } from "lucide-react";
+import { Flame, Home, ScrollText, Bot, BarChart3, Settings } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { getWorkspaces } from "@/lib/data/charm";
 import type { WorkspaceCardData, AttentionState } from "./workspace-card";
@@ -23,18 +23,18 @@ const ATTENTION_DOT: Record<AttentionState, string> = {
 };
 
 const GLOBAL_LINKS = [
-  { href: "/", label: "Home", icon: Home, match: (p: string) => p === "/" },
+  { href: "/", label: "Dashboard", icon: BarChart3, match: (p: string) => p === "/" },
   {
-    href: "/recommendations",
-    label: "Recommendations",
-    icon: Inbox,
-    match: (p: string) => p === "/recommendations",
+    href: "/tasks",
+    label: "Tasks",
+    icon: ScrollText,
+    match: (p: string) => p === "/tasks" || p.startsWith("/tasks/"),
   },
   {
-    href: "/activity",
-    label: "Activity",
-    icon: Activity,
-    match: (p: string) => p === "/activity",
+    href: "/agents",
+    label: "Agents",
+    icon: Bot,
+    match: (p: string) => p === "/agents" || p.startsWith("/agents/"),
   },
   {
     href: "/settings",
@@ -104,7 +104,7 @@ export function VillageSidebar() {
       <nav className="px-3 py-4 space-y-1" aria-label="Global navigation">
         {GLOBAL_LINKS.map((link) => {
           const active = link.match(pathname);
-          const showBadge = link.label === "Recommendations" && totalPending > 0;
+          const showBadge = false; // legacy hook; total-pending badge will return when task counts wire up
           return (
             <Link
               key={link.href}

@@ -36,3 +36,7 @@ export { VillageSidebar } from "./village-sidebar";
 export { WorkspaceSubnav, type WorkspaceSubnavProps } from "./workspace-subnav";
 export { ComingSoon, type ComingSoonProps } from "./coming-soon";
 export { PageHeader, type PageHeaderProps } from "./page-header";
+
+// Task + agent surfaces
+export { TaskCard, type TaskCardProps } from "./task-card";
+export { NewTaskModal, type NewTaskModalProps } from "./new-task-modal";

@@ -85,7 +85,7 @@ app.add_middleware(
 
 
 # Import and include routers
-from routes import workspaces, clients, domains, inboxes, campaigns, leads, health, domain_sourcing, inbox_purchasing, onboarding, strategy, subscriptions, inventory, slack_webhooks, infrastructure, admin, suppression, sync, domains_purchase, reports
+from routes import workspaces, clients, domains, inboxes, campaigns, leads, health, domain_sourcing, inbox_purchasing, onboarding, strategy, subscriptions, inventory, slack_webhooks, infrastructure, admin, suppression, sync, domains_purchase, reports, agents, tasks
 
 app.include_router(workspaces.router, prefix=f"{settings.API_PREFIX}/workspaces", tags=["workspaces"])
 app.include_router(clients.router, prefix=f"{settings.API_PREFIX}/clients", tags=["clients"])
@@ -107,6 +107,8 @@ app.include_router(suppression.router, prefix=f"{settings.API_PREFIX}/suppressio
 app.include_router(sync.router, prefix=f"{settings.API_PREFIX}/sync", tags=["sync"])
 app.include_router(domains_purchase.router, prefix=f"{settings.API_PREFIX}/domains-purchase", tags=["domains-purchase"])
 app.include_router(reports.router, prefix=f"{settings.API_PREFIX}/reports", tags=["reports"])
+app.include_router(agents.router, prefix=f"{settings.API_PREFIX}/agents", tags=["agents"])
+app.include_router(tasks.router, prefix=f"{settings.API_PREFIX}/tasks", tags=["tasks"])
 
 
 @app.get("/")

@@ -277,6 +277,8 @@ export type OwnRBLKillTriggerType =
   | 'bounce_rate_7d'
   | 'total_bounce_rate'
   | 'fresh_inbox_bounce'
+  | 'fresh_inbox_blocked'
+  | 'fresh_inbox_unknown'
   | 'spam_complaint'
   | 'rbl_critical'
   | 'warmup_failed'
@@ -1293,4 +1295,294 @@ export interface CycleRegenerationResponse {
   status: 'queued' | 'processing' | 'completed' | 'failed';
   message?: string;
   estimatedDuration?: number;
+}
+
+// ===== SUPPRESSION MODULE =====
+
+export interface SuppressionConfig {
+  id: string;
+  clientId: string;
+  workspaceId?: string;
+  isEnabled: boolean;
+  apiToken: string;
+  tokenCreatedAt: string;
+  tokenLastUsedAt?: string;
+  domainCount: number;
+  lastImportAt?: string;
+  notes?: string;
+  createdAt: string;
+}
+
+export interface SuppressionDomain {
+  id: string;
+  clientId: string;
+  domain: string;
+  umbrellaDomain?: string;
+  addedBy: 'manual' | 'csv_import' | 'api';
+  notes?: string;
+  createdAt: string;
+}
+
+export interface SuppressionDomainListResponse {
+  items: SuppressionDomain[];
+  total: number;
+  page: number;
+  pageSize: number;
+}
+
+export interface SuppressionStats {
+  isEnabled: boolean;
+  domainCount: number;
+  lastImportAt?: string;
+  leadsSuppressedTotal: number;
+  leadsCheckedTotal: number;
+  checkCallsToday: number;
+  checkCalls7d: number;
+}
+
+export interface SuppressionBulkResult {
+  inserted: number;
+  skippedDuplicates: number;
+  rejectedInvalid: number;
+  invalidEntries: string[];
+  totalAfter: number;
+}
+
+export interface SuppressionScanResult {
+  scanned: number;
+  suppressed: number;
+  alreadyEvaluated: number;
+  durationMs: number;
+}
+
+// ===== AGENTS (paperclip-pattern analyst agents) =====
+
+export type AgentRole =
+  | "data_analyst"
+  | "researcher"
+  | "day_ai_reviewer"
+  | "github_admin"
+  | "general";
+
+export type AgentStatus =
+  | "active"
+  | "idle"
+  | "running"
+  | "error"
+  | "paused"
+  | "terminated";
+
+export type AdapterType = "claude_local" | "process" | "http";
+
+export interface HeartbeatPolicy {
+  enabled: boolean;
+  intervalSec: number;
+  wakeOnAssignment: boolean;
+  cooldownSec: number;
+}
+
+export interface AgentSkillSummary {
+  slug: string;
+  name: string;
+  description: string;
+}
+
+export interface AgentSkill extends AgentSkillSummary {
+  bodyMarkdown: string;
+  version: string;
+  isActive: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface Agent {
+  id: string;
+  name: string;
+  role: AgentRole;
+  title: string;
+  description?: string | null;
+  capabilities?: string | null;
+  adapterType: AdapterType;
+  adapterConfig: Record<string, unknown>;
+  budgetMonthlyCents: number;
+  spentMonthlyCents: number;
+  status: AgentStatus;
+  heartbeatPolicy: HeartbeatPolicy;
+  lastRunAt?: string | null;
+  lastError?: string | null;
+  isActive: boolean;
+  skills: AgentSkillSummary[];
+  pendingTaskCount: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AgentList {
+  items: Agent[];
+  total: number;
+}
+
+export interface AgentUpdate {
+  title?: string;
+  description?: string;
+  capabilities?: string;
+  adapterType?: AdapterType;
+  adapterConfig?: Record<string, unknown>;
+  budgetMonthlyCents?: number;
+  heartbeatPolicy?: HeartbeatPolicy;
+  status?: AgentStatus;
+  isActive?: boolean;
+  skillSlugs?: string[];
+}
+
+// ===== TASKS (paperclip-pattern issues, Charm-renamed) =====
+
+export type TaskStatus =
+  | "backlog"
+  | "todo"
+  | "in_progress"
+  | "in_review"
+  | "done"
+  | "blocked";
+
+export type TaskPriority = "low" | "medium" | "high" | "urgent";
+
+export type TaskSource = "operator" | "agent" | "inbound" | "system";
+
+export type ActorType = "operator" | "agent" | "system";
+
+export type DocumentFormat = "markdown" | "plain_text" | "json";
+
+export interface CitedContextItem {
+  path: string;
+  commitSha?: string | null;
+  relevance?: string | null;
+}
+
+export interface TaskComment {
+  id: string;
+  taskId: string;
+  actorType: ActorType;
+  actorAgentId?: string | null;
+  actorUserId?: string | null;
+  actorLabel?: string | null;
+  actorDisplay?: string | null;
+  bodyMarkdown: string;
+  mentionedAgentIds: string[];
+  createdAt: string;
+}
+
+export interface TaskDocument {
+  id: string;
+  taskId: string;
+  docKey: string;
+  title?: string | null;
+  format: DocumentFormat;
+  body: string;
+  latestRevisionNumber: number;
+  createdByAgentId?: string | null;
+  createdByUserId?: string | null;
+  updatedByAgentId?: string | null;
+  updatedByUserId?: string | null;
+  citedContext?: CitedContextItem[] | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface TaskDocumentRevision {
+  id: string;
+  revisionNumber: number;
+  body: string;
+  changeSummary?: string | null;
+  createdByAgentId?: string | null;
+  createdByUserId?: string | null;
+  createdAt: string;
+}
+
+export interface Task {
+  id: string;
+  title: string;
+  description?: string | null;
+  status: TaskStatus;
+  priority: TaskPriority;
+  workspaceId?: string | null;
+  assigneeAgentId?: string | null;
+  parentTaskId?: string | null;
+  dueAt?: string | null;
+  source: TaskSource;
+  inboundOrigin?: string | null;
+  createdByUserId?: string | null;
+  checkoutToken?: string | null;
+  checkoutAt?: string | null;
+  startedAt?: string | null;
+  closedAt?: string | null;
+  createdAt: string;
+  updatedAt: string;
+  // Joined display fields
+  assigneeAgentName?: string | null;
+  workspaceName?: string | null;
+  commentCount: number;
+  documentCount: number;
+}
+
+export interface TaskList {
+  items: Task[];
+  total: number;
+  page: number;
+  pageSize: number;
+}
+
+export interface TaskDetail extends Task {
+  comments: TaskComment[];
+  documents: TaskDocument[];
+  children: Task[];
+}
+
+export interface TaskCreate {
+  title: string;
+  description?: string;
+  status?: TaskStatus;
+  priority?: TaskPriority;
+  workspaceId?: string;
+  assigneeAgentId?: string;
+  parentTaskId?: string;
+  dueAt?: string;
+  source?: TaskSource;
+  inboundOrigin?: string;
+  createdByUserId?: string;
+  createdByLabel?: string;
+}
+
+export interface TaskUpdate {
+  title?: string;
+  description?: string;
+  status?: TaskStatus;
+  priority?: TaskPriority;
+  workspaceId?: string;
+  assigneeAgentId?: string | null;
+  parentTaskId?: string;
+  dueAt?: string;
+  comment?: string;
+  actorUserId?: string;
+  actorLabel?: string;
+}
+
+export interface TaskListFilters {
+  status?: TaskStatus | TaskStatus[];
+  assigneeAgentId?: string;
+  workspaceId?: string;
+  parentTaskId?: string;
+  includeClosed?: boolean;
+  page?: number;
+  pageSize?: number;
+}
+
+export interface TaskDocumentUpsert {
+  docKey: string;
+  title?: string;
+  format?: DocumentFormat;
+  body: string;
+  citedContext?: CitedContextItem[];
+  changeSummary?: string;
+  actorUserId?: string;
 }

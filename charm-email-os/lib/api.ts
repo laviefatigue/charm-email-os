@@ -38,6 +38,12 @@ import type {
   CycleVariable,
   CycleRegenerationRequest,
   CycleRegenerationResponse,
+  SuppressionConfig,
+  SuppressionDomain,
+  SuppressionDomainListResponse,
+  SuppressionStats,
+  SuppressionBulkResult,
+  SuppressionScanResult,
 } from './types';
 
 import type {
@@ -4298,6 +4304,236 @@ export const infrastructureApi = {
   },
 };
 
+// ===== SUPPRESSION API =====
+
+export const suppressionApi = {
+  async getConfig(clientId: string): Promise<SuppressionConfig> {
+    const response = await fetchApi<Record<string, unknown>>(
+      `/api/suppressions/clients/${clientId}/config`
+    );
+    return toCamelCase<SuppressionConfig>(response);
+  },
+
+  async updateConfig(
+    clientId: string,
+    data: { isEnabled?: boolean; notes?: string }
+  ): Promise<SuppressionConfig> {
+    const response = await fetchApi<Record<string, unknown>>(
+      `/api/suppressions/clients/${clientId}/config`,
+      { method: 'PATCH', body: JSON.stringify(toSnakeCase(data as Record<string, unknown>)) }
+    );
+    return toCamelCase<SuppressionConfig>(response);
+  },
+
+  async rotateToken(clientId: string): Promise<{ apiToken: string; tokenCreatedAt: string }> {
+    const response = await fetchApi<Record<string, unknown>>(
+      `/api/suppressions/clients/${clientId}/config/rotate-token`,
+      { method: 'POST' }
+    );
+    return toCamelCase<{ apiToken: string; tokenCreatedAt: string }>(response);
+  },
+
+  async listDomains(
+    clientId: string,
+    params?: { page?: number; pageSize?: number; search?: string }
+  ): Promise<SuppressionDomainListResponse> {
+    const searchParams = new URLSearchParams();
+    if (params?.page) searchParams.set('page', params.page.toString());
+    if (params?.pageSize) searchParams.set('page_size', params.pageSize.toString());
+    if (params?.search) searchParams.set('search', params.search);
+    const query = searchParams.toString();
+    const response = await fetchApi<{
+      items: Record<string, unknown>[];
+      total: number;
+      page: number;
+      page_size: number;
+    }>(`/api/suppressions/clients/${clientId}/domains${query ? `?${query}` : ''}`);
+    return {
+      items: response.items.map((item) => toCamelCase<SuppressionDomain>(item)),
+      total: response.total,
+      page: response.page,
+      pageSize: response.page_size,
+    };
+  },
+
+  async addDomain(
+    clientId: string,
+    data: { domain: string; umbrellaDomain?: string; notes?: string }
+  ): Promise<SuppressionDomain> {
+    const response = await fetchApi<Record<string, unknown>>(
+      `/api/suppressions/clients/${clientId}/domains`,
+      { method: 'POST', body: JSON.stringify(toSnakeCase(data as Record<string, unknown>)) }
+    );
+    return toCamelCase<SuppressionDomain>(response);
+  },
+
+  async bulkImport(
+    clientId: string,
+    data: {
+      domains: Array<{ domain: string; umbrellaDomain?: string }>;
+      source?: string;
+      replaceAll?: boolean;
+    }
+  ): Promise<SuppressionBulkResult> {
+    const response = await fetchApi<Record<string, unknown>>(
+      `/api/suppressions/clients/${clientId}/domains/bulk`,
+      { method: 'POST', body: JSON.stringify(toSnakeCase(data as Record<string, unknown>)) }
+    );
+    return toCamelCase<SuppressionBulkResult>(response);
+  },
+
+  async deleteDomain(clientId: string, domainId: string): Promise<void> {
+    await fetchApi<{ deleted: boolean }>(
+      `/api/suppressions/clients/${clientId}/domains/${domainId}`,
+      { method: 'DELETE' }
+    );
+  },
+
+  async clearDomains(clientId: string): Promise<void> {
+    await fetchApi<{ deleted: boolean }>(
+      `/api/suppressions/clients/${clientId}/domains?confirm=true`,
+      { method: 'DELETE' }
+    );
+  },
+
+  async getStats(clientId: string): Promise<SuppressionStats> {
+    const response = await fetchApi<Record<string, unknown>>(
+      `/api/suppressions/clients/${clientId}/stats`
+    );
+    return toCamelCase<SuppressionStats>(response);
+  },
+
+  async scan(clientId: string, campaignId?: string): Promise<SuppressionScanResult> {
+    const response = await fetchApi<Record<string, unknown>>(
+      `/api/suppressions/clients/${clientId}/scan`,
+      {
+        method: 'POST',
+        body: JSON.stringify(campaignId ? { campaign_id: campaignId } : {}),
+      }
+    );
+    return toCamelCase<SuppressionScanResult>(response);
+  },
+};
+
+// ===== AGENTS (paperclip-pattern) =====
+
+export const agentApi = {
+  async list(params?: { role?: string; activeOnly?: boolean }) {
+    const search = new URLSearchParams();
+    if (params?.role) search.set("role", params.role);
+    if (params?.activeOnly !== undefined) search.set("active_only", String(params.activeOnly));
+    const q = search.toString();
+    const response = await fetchApi<Record<string, unknown>>(
+      `/api/agents${q ? `?${q}` : ""}`
+    );
+    return toCamelCase<import("./types").AgentList>(response);
+  },
+
+  async get(agentId: string) {
+    const response = await fetchApi<Record<string, unknown>>(`/api/agents/${agentId}`);
+    return toCamelCase<import("./types").Agent>(response);
+  },
+
+  async update(agentId: string, body: import("./types").AgentUpdate) {
+    const response = await fetchApi<Record<string, unknown>>(
+      `/api/agents/${agentId}`,
+      {
+        method: "PATCH",
+        body: JSON.stringify(toSnakeCase(body as unknown as Record<string, unknown>)),
+      }
+    );
+    return toCamelCase<import("./types").Agent>(response);
+  },
+
+  async listSkills(activeOnly: boolean = true) {
+    const response = await fetchApi<Record<string, unknown>[]>(
+      `/api/agents/skills?active_only=${activeOnly}`
+    );
+    return (response as Record<string, unknown>[]).map((r) =>
+      toCamelCase<import("./types").AgentSkill>(r)
+    );
+  },
+};
+
+// ===== TASKS (paperclip-pattern) =====
+
+export const taskApi = {
+  async list(filters: import("./types").TaskListFilters = {}) {
+    const search = new URLSearchParams();
+    if (filters.status) {
+      const s = Array.isArray(filters.status) ? filters.status.join(",") : filters.status;
+      search.set("status", s);
+    }
+    if (filters.assigneeAgentId) search.set("assignee_agent_id", filters.assigneeAgentId);
+    if (filters.workspaceId) search.set("workspace_id", filters.workspaceId);
+    if (filters.parentTaskId) search.set("parent_task_id", filters.parentTaskId);
+    if (filters.includeClosed !== undefined) search.set("include_closed", String(filters.includeClosed));
+    if (filters.page) search.set("page", String(filters.page));
+    if (filters.pageSize) search.set("page_size", String(filters.pageSize));
+    const q = search.toString();
+    const response = await fetchApi<Record<string, unknown>>(
+      `/api/tasks${q ? `?${q}` : ""}`
+    );
+    return toCamelCase<import("./types").TaskList>(response);
+  },
+
+  async get(taskId: string) {
+    const response = await fetchApi<Record<string, unknown>>(`/api/tasks/${taskId}`);
+    return toCamelCase<import("./types").TaskDetail>(response);
+  },
+
+  async create(body: import("./types").TaskCreate) {
+    const response = await fetchApi<Record<string, unknown>>("/api/tasks", {
+      method: "POST",
+      body: JSON.stringify(toSnakeCase(body as unknown as Record<string, unknown>)),
+    });
+    return toCamelCase<import("./types").Task>(response);
+  },
+
+  async update(taskId: string, body: import("./types").TaskUpdate) {
+    const response = await fetchApi<Record<string, unknown>>(`/api/tasks/${taskId}`, {
+      method: "PATCH",
+      body: JSON.stringify(toSnakeCase(body as unknown as Record<string, unknown>)),
+    });
+    return toCamelCase<import("./types").Task>(response);
+  },
+
+  async addComment(taskId: string, body: { bodyMarkdown: string; actorLabel?: string }) {
+    const response = await fetchApi<Record<string, unknown>>(
+      `/api/tasks/${taskId}/comments`,
+      {
+        method: "POST",
+        body: JSON.stringify(toSnakeCase(body as unknown as Record<string, unknown>)),
+      }
+    );
+    return toCamelCase<import("./types").TaskComment>(response);
+  },
+
+  async upsertDocument(
+    taskId: string,
+    docKey: string,
+    body: Omit<import("./types").TaskDocumentUpsert, "docKey">
+  ) {
+    const response = await fetchApi<Record<string, unknown>>(
+      `/api/tasks/${taskId}/documents/${docKey}`,
+      {
+        method: "PUT",
+        body: JSON.stringify(toSnakeCase({ ...body, docKey } as unknown as Record<string, unknown>)),
+      }
+    );
+    return toCamelCase<import("./types").TaskDocument>(response);
+  },
+
+  async listDocumentRevisions(taskId: string, docKey: string) {
+    const response = await fetchApi<Record<string, unknown>[]>(
+      `/api/tasks/${taskId}/documents/${docKey}/revisions`
+    );
+    return (response as Record<string, unknown>[]).map((r) =>
+      toCamelCase<import("./types").TaskDocumentRevision>(r)
+    );
+  },
+};
+
 // ===== COMBINED API EXPORT =====
 
 export const api = {
@@ -4317,6 +4553,9 @@ export const api = {
   subscriptions: subscriptionApi,
   campaignDocuments: campaignDocumentApi,
   unifiedCycles: unifiedCycleApi,
+  suppression: suppressionApi,
+  agents: agentApi,
+  tasks: taskApi,
 };
 
 export default api;

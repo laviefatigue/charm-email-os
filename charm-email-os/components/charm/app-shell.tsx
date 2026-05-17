@@ -16,6 +16,8 @@ import { Sidebar as LegacySidebar } from "@/components/layout";
 const REDESIGN_PATTERNS: RegExp[] = [
   /^\/$/,
   /^\/workspaces(\/|$)/,
+  /^\/tasks(\/|$)/,
+  /^\/agents(\/|$)/,
   /^\/recommendations(\/|$)/,
   /^\/activity(\/|$)/,
   /^\/settings(\/|$)/,
