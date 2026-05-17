@@ -1506,9 +1506,12 @@ export interface Task {
   status: TaskStatus;
   priority: TaskPriority;
   workspaceId?: string | null;
+  projectId?: string | null;
   assigneeAgentId?: string | null;
   parentTaskId?: string | null;
   dueAt?: string | null;
+  startAt?: string | null;
+  estimatedHours?: number | null;
   source: TaskSource;
   inboundOrigin?: string | null;
   createdByUserId?: string | null;
@@ -1521,8 +1524,10 @@ export interface Task {
   // Joined display fields
   assigneeAgentName?: string | null;
   workspaceName?: string | null;
+  projectName?: string | null;
   commentCount: number;
   documentCount: number;
+  interactionPendingCount: number;
 }
 
 export interface TaskList {
@@ -1536,6 +1541,140 @@ export interface TaskDetail extends Task {
   comments: TaskComment[];
   documents: TaskDocument[];
   children: Task[];
+  interactions: TaskInteraction[];
+}
+
+// ===== TASK INTERACTIONS (paperclip request_confirmation) =====
+
+export type InteractionKind =
+  | "request_confirmation"
+  | "request_revision"
+  | "multi_choice"
+  | "data_input";
+
+export type InteractionStatus =
+  | "pending"
+  | "approved"
+  | "rejected"
+  | "superseded"
+  | "expired";
+
+export type ContinuationPolicy = "wake_assignee" | "update_status" | "none";
+
+export interface InteractionPayload {
+  version: number;
+  prompt: string;
+  summary?: string;
+  data?: Record<string, unknown>;
+  acceptLabel: string;
+  rejectLabel: string;
+  rejectRequiresReason: boolean;
+  supersedeOnUserComment: boolean;
+  citedContext?: CitedContextItem[];
+}
+
+export interface TaskInteraction {
+  id: string;
+  taskId: string;
+  kind: InteractionKind;
+  idempotencyKey: string;
+  continuationPolicy: ContinuationPolicy;
+  payload: Partial<InteractionPayload> & Record<string, unknown>;
+  status: InteractionStatus;
+  createdByAgentId?: string | null;
+  createdByUserId?: string | null;
+  decidedAt?: string | null;
+  decidedByUserId?: string | null;
+  decisionReason?: string | null;
+  expiresAt?: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface TaskInteractionCreate {
+  kind?: InteractionKind;
+  idempotencyKey: string;
+  continuationPolicy?: ContinuationPolicy;
+  payload: Partial<InteractionPayload> & Record<string, unknown>;
+  expiresAt?: string;
+  actorUserId?: string;
+  actorLabel?: string;
+}
+
+export interface TaskInteractionDecide {
+  decision: "approve" | "reject";
+  reason?: string;
+  actorUserId?: string;
+  actorLabel?: string;
+}
+
+// ===== PROJECTS =====
+
+export type ProjectStatus = "planning" | "active" | "paused" | "done" | "cancelled";
+export type ProjectPriority = "low" | "medium" | "high" | "urgent";
+
+export interface ProjectProgress {
+  totalTasks: number;
+  doneTasks: number;
+  inProgressTasks: number;
+  inReviewTasks: number;
+  blockedTasks: number;
+  overdueTasks: number;
+  percentDone: number;
+  earliestTaskStart?: string | null;
+  latestTaskEnd?: string | null;
+}
+
+export interface Project {
+  id: string;
+  name: string;
+  description?: string | null;
+  status: ProjectStatus;
+  priority: ProjectPriority;
+  color?: string | null;
+  workspaceId?: string | null;
+  ownerAgentId?: string | null;
+  ownerUserId?: string | null;
+  startAt?: string | null;
+  targetEndAt?: string | null;
+  actualEndAt?: string | null;
+  createdByUserId?: string | null;
+  createdAt: string;
+  updatedAt: string;
+  workspaceName?: string | null;
+  ownerAgentName?: string | null;
+  progress: ProjectProgress;
+}
+
+export interface ProjectList {
+  items: Project[];
+  total: number;
+}
+
+export interface ProjectCreate {
+  name: string;
+  description?: string;
+  status?: ProjectStatus;
+  priority?: ProjectPriority;
+  color?: string;
+  workspaceId?: string;
+  ownerAgentId?: string;
+  startAt?: string;
+  targetEndAt?: string;
+  createdByLabel?: string;
+}
+
+export interface ProjectUpdate {
+  name?: string;
+  description?: string;
+  status?: ProjectStatus;
+  priority?: ProjectPriority;
+  color?: string;
+  workspaceId?: string;
+  ownerAgentId?: string;
+  startAt?: string;
+  targetEndAt?: string;
+  actorLabel?: string;
 }
 
 export interface TaskCreate {
@@ -1571,6 +1710,7 @@ export interface TaskListFilters {
   status?: TaskStatus | TaskStatus[];
   assigneeAgentId?: string;
   workspaceId?: string;
+  projectId?: string;
   parentTaskId?: string;
   includeClosed?: boolean;
   page?: number;

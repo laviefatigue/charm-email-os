@@ -4466,6 +4466,7 @@ export const taskApi = {
     }
     if (filters.assigneeAgentId) search.set("assignee_agent_id", filters.assigneeAgentId);
     if (filters.workspaceId) search.set("workspace_id", filters.workspaceId);
+    if (filters.projectId) search.set("project_id", filters.projectId);
     if (filters.parentTaskId) search.set("parent_task_id", filters.parentTaskId);
     if (filters.includeClosed !== undefined) search.set("include_closed", String(filters.includeClosed));
     if (filters.page) search.set("page", String(filters.page));
@@ -4534,6 +4535,77 @@ export const taskApi = {
   },
 };
 
+// Interactions (extend taskApi pattern)
+export const taskInteractionApi = {
+  async list(taskId: string) {
+    const response = await fetchApi<Record<string, unknown>[]>(
+      `/api/tasks/${taskId}/interactions`
+    );
+    return (response as Record<string, unknown>[]).map((r) =>
+      toCamelCase<import("./types").TaskInteraction>(r)
+    );
+  },
+
+  async create(taskId: string, body: import("./types").TaskInteractionCreate) {
+    const response = await fetchApi<Record<string, unknown>>(
+      `/api/tasks/${taskId}/interactions`,
+      {
+        method: "POST",
+        body: JSON.stringify(toSnakeCase(body as unknown as Record<string, unknown>)),
+      }
+    );
+    return toCamelCase<import("./types").TaskInteraction>(response);
+  },
+
+  async decide(taskId: string, interactionId: string, body: import("./types").TaskInteractionDecide) {
+    const response = await fetchApi<Record<string, unknown>>(
+      `/api/tasks/${taskId}/interactions/${interactionId}/decide`,
+      {
+        method: "POST",
+        body: JSON.stringify(toSnakeCase(body as unknown as Record<string, unknown>)),
+      }
+    );
+    return toCamelCase<import("./types").TaskInteraction>(response);
+  },
+};
+
+// ===== PROJECTS =====
+
+export const projectApi = {
+  async list(filters: { workspaceId?: string; status?: string; includeClosed?: boolean } = {}) {
+    const search = new URLSearchParams();
+    if (filters.workspaceId) search.set("workspace_id", filters.workspaceId);
+    if (filters.status) search.set("status", filters.status);
+    if (filters.includeClosed !== undefined) search.set("include_closed", String(filters.includeClosed));
+    const q = search.toString();
+    const response = await fetchApi<Record<string, unknown>>(
+      `/api/projects${q ? `?${q}` : ""}`
+    );
+    return toCamelCase<import("./types").ProjectList>(response);
+  },
+
+  async get(projectId: string) {
+    const response = await fetchApi<Record<string, unknown>>(`/api/projects/${projectId}`);
+    return toCamelCase<import("./types").Project>(response);
+  },
+
+  async create(body: import("./types").ProjectCreate) {
+    const response = await fetchApi<Record<string, unknown>>("/api/projects", {
+      method: "POST",
+      body: JSON.stringify(toSnakeCase(body as unknown as Record<string, unknown>)),
+    });
+    return toCamelCase<import("./types").Project>(response);
+  },
+
+  async update(projectId: string, body: import("./types").ProjectUpdate) {
+    const response = await fetchApi<Record<string, unknown>>(`/api/projects/${projectId}`, {
+      method: "PATCH",
+      body: JSON.stringify(toSnakeCase(body as unknown as Record<string, unknown>)),
+    });
+    return toCamelCase<import("./types").Project>(response);
+  },
+};
+
 // ===== COMBINED API EXPORT =====
 
 export const api = {
@@ -4556,6 +4628,8 @@ export const api = {
   suppression: suppressionApi,
   agents: agentApi,
   tasks: taskApi,
+  taskInteractions: taskInteractionApi,
+  projects: projectApi,
 };
 
 export default api;

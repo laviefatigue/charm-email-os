@@ -26,14 +26,21 @@ import {
 import { Textarea } from "@/components/ui/textarea";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { PageHeader, StatusPill, type StatusKind } from "@/components/charm";
-import { taskApi, agentApi } from "@/lib/api";
+import {
+  PageHeader,
+  StatusPill,
+  type StatusKind,
+  InteractionCard,
+  NewTaskModal,
+} from "@/components/charm";
+import { taskApi, agentApi, taskInteractionApi } from "@/lib/api";
 import type {
   Agent,
   Task,
   TaskComment,
   TaskDetail,
   TaskDocument,
+  TaskInteraction,
   TaskPriority,
   TaskStatus,
 } from "@/lib/types";
@@ -216,6 +223,8 @@ export default function TaskDetailPage() {
             <ConversationTab
               taskId={detail.id}
               comments={detail.comments}
+              interactions={detail.interactions}
+              agents={agents}
               onPosted={refetch}
             />
           )}
@@ -306,23 +315,13 @@ export default function TaskDetailPage() {
             </RailField>
           </div>
 
-          {detail.children.length > 0 && (
-            <div className="rounded-lg border-[1.5px] border-border bg-card p-4">
-              <h4 className="text-sm font-medium mb-2">Child tasks ({detail.children.length})</h4>
-              <ul className="space-y-1">
-                {detail.children.map((c) => (
-                  <li key={c.id}>
-                    <Link
-                      href={`/tasks/${c.id}`}
-                      className="text-xs text-copper hover:underline"
-                    >
-                      {c.title}
-                    </Link>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
+          <ChildTasksRail
+            taskId={detail.id}
+            workspaceId={detail.workspaceId ?? undefined}
+            projectId={detail.projectId ?? undefined}
+            childTasks={detail.children}
+            onRefetch={refetch}
+          />
         </aside>
       </div>
     </div>
@@ -343,10 +342,14 @@ function RailField({ label, children }: { label: string; children: React.ReactNo
 function ConversationTab({
   taskId,
   comments,
+  interactions,
+  agents,
   onPosted,
 }: {
   taskId: string;
   comments: TaskComment[];
+  interactions: TaskInteraction[];
+  agents: Agent[];
   onPosted: () => void;
 }) {
   const [body, setBody] = React.useState("");
@@ -368,18 +371,74 @@ function ConversationTab({
     }
   };
 
+  const handleDecide = async (interactionId: string, decision: "approve" | "reject", reason?: string) => {
+    try {
+      await taskInteractionApi.decide(taskId, interactionId, {
+        decision,
+        reason,
+        actorLabel: "admin",
+      });
+      toast.success(decision === "approve" ? "Approved" : "Rejected");
+      onPosted();
+    } catch (err) {
+      console.error(err);
+      toast.error("Failed to record decision");
+    }
+  };
+
+  const agentNameById = new Map(agents.map((a) => [a.id, a.title]));
+  const pendingInteractions = interactions.filter((i) => i.status === "pending");
+  const resolvedInteractions = interactions.filter((i) => i.status !== "pending");
+
   return (
-    <div className="space-y-4">
-      {comments.length === 0 ? (
+    <div className="space-y-5">
+      {pendingInteractions.length > 0 && (
+        <section className="space-y-3" aria-label="Pending decisions">
+          <h3 className="text-xs uppercase tracking-wider font-medium text-ink-soft">
+            Pending decisions · {pendingInteractions.length}
+          </h3>
+          {pendingInteractions.map((it) => (
+            <InteractionCard
+              key={it.id}
+              interaction={it}
+              actorName={
+                it.createdByAgentId ? agentNameById.get(it.createdByAgentId) : "Operator"
+              }
+              onDecide={(decision, reason) => handleDecide(it.id, decision, reason)}
+            />
+          ))}
+        </section>
+      )}
+
+      {comments.length === 0 && pendingInteractions.length === 0 && resolvedInteractions.length === 0 ? (
         <div className="text-sm text-ink-soft text-center py-10 border border-dashed border-border rounded-md">
-          No comments yet. Start the conversation — use @AgentName to mention an agent.
+          No conversation yet. Use @AgentName to mention an agent — when the runtime ships, that wakes them.
         </div>
-      ) : (
+      ) : null}
+
+      {comments.length > 0 && (
         <ul className="space-y-3">
           {comments.map((c) => (
             <CommentRow key={c.id} comment={c} />
           ))}
         </ul>
+      )}
+
+      {resolvedInteractions.length > 0 && (
+        <section className="space-y-3 pt-3 border-t border-border" aria-label="Resolved decisions">
+          <h3 className="text-xs uppercase tracking-wider font-medium text-ink-soft">
+            Resolved · {resolvedInteractions.length}
+          </h3>
+          {resolvedInteractions.map((it) => (
+            <InteractionCard
+              key={it.id}
+              interaction={it}
+              actorName={
+                it.createdByAgentId ? agentNameById.get(it.createdByAgentId) : "Operator"
+              }
+            />
+          ))}
+        </section>
       )}
 
       <form onSubmit={handlePost} className="space-y-2 pt-4 border-t border-border">
@@ -775,5 +834,93 @@ function ActivityTab({ task }: { task: Task }) {
         </li>
       ))}
     </ul>
+  );
+}
+
+// ─── Child tasks rail ────────────────────────────────────────────────────────
+
+function ChildTasksRail({
+  taskId,
+  workspaceId,
+  projectId,
+  childTasks,
+  onRefetch,
+}: {
+  taskId: string;
+  workspaceId?: string;
+  projectId?: string;
+  childTasks: Task[];
+  onRefetch: () => void;
+}) {
+  const [newSubtaskOpen, setNewSubtaskOpen] = React.useState(false);
+
+  return (
+    <div className="rounded-lg border-[1.5px] border-border bg-card p-4">
+      <div className="flex items-center justify-between mb-2">
+        <h4 className="text-sm font-medium">
+          Subtasks{childTasks.length > 0 ? ` (${childTasks.length})` : ""}
+        </h4>
+        <button
+          type="button"
+          onClick={() => setNewSubtaskOpen(true)}
+          className="inline-flex items-center gap-1 text-xs text-copper hover:underline"
+        >
+          <Plus className="h-3 w-3" aria-hidden="true" />
+          Add
+        </button>
+      </div>
+      {childTasks.length === 0 ? (
+        <p className="text-xs text-ink-soft italic">No subtasks</p>
+      ) : (
+        <ul className="space-y-1.5">
+          {childTasks.map((c) => (
+            <li key={c.id} className="flex items-center gap-2 text-xs">
+              <span
+                className={cn(
+                  "h-1.5 w-1.5 rounded-full shrink-0",
+                  c.status === "done"
+                    ? "bg-moss"
+                    : c.status === "in_progress"
+                      ? "bg-amber"
+                      : c.status === "blocked"
+                        ? "bg-rust"
+                        : "bg-ink-soft"
+                )}
+                aria-label={c.status}
+              />
+              <Link
+                href={`/tasks/${c.id}`}
+                className="text-copper hover:underline truncate flex-1"
+                title={c.title}
+              >
+                {c.title}
+              </Link>
+              {c.assigneeAgentName && (
+                <span className="text-ink-soft shrink-0 truncate max-w-20">
+                  {c.assigneeAgentName}
+                </span>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+      <NewTaskModal
+        open={newSubtaskOpen}
+        onOpenChange={setNewSubtaskOpen}
+        defaultWorkspaceId={workspaceId}
+        onCreated={async (newId) => {
+          // Reparent the freshly-created task to be a child of this one.
+          try {
+            await taskApi.update(newId, {
+              parentTaskId: taskId,
+              ...(projectId ? { projectId } : {}),
+            });
+          } catch (err) {
+            console.error("Failed to reparent subtask", err);
+          }
+          onRefetch();
+        }}
+      />
+    </div>
   );
 }

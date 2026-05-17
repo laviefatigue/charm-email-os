@@ -22,6 +22,9 @@ from models.task import (
     TaskDocument,
     TaskDocumentUpsert,
     TaskDocumentRevision,
+    TaskInteraction,
+    TaskInteractionCreate,
+    TaskInteractionDecide,
     ActorType,
 )
 
@@ -56,9 +59,14 @@ def _row_to_task(row: dict) -> Task:
         status=row["status"],
         priority=row["priority"],
         workspace_id=row.get("workspace_id"),
+        project_id=row.get("project_id"),
         assignee_agent_id=row.get("assignee_agent_id"),
         parent_task_id=row.get("parent_task_id"),
         due_at=row.get("due_at"),
+        start_at=row.get("start_at"),
+        estimated_hours=(
+            float(row["estimated_hours"]) if row.get("estimated_hours") is not None else None
+        ),
         source=row["source"],
         inbound_origin=row.get("inbound_origin"),
         created_by_user_id=row.get("created_by_user_id"),
@@ -70,24 +78,31 @@ def _row_to_task(row: dict) -> Task:
         updated_at=row["updated_at"],
         assignee_agent_name=row.get("assignee_agent_name"),
         workspace_name=row.get("workspace_name"),
+        project_name=row.get("project_name"),
         comment_count=int(row.get("comment_count") or 0),
         document_count=int(row.get("document_count") or 0),
+        interaction_pending_count=int(row.get("interaction_pending_count") or 0),
     )
 
 
 _TASK_LIST_SELECT = """
 SELECT t.id, t.title, t.description, t.status, t.priority,
-       t.workspace_id, t.assignee_agent_id, t.parent_task_id, t.due_at,
+       t.workspace_id, t.project_id, t.assignee_agent_id, t.parent_task_id,
+       t.due_at, t.start_at, t.estimated_hours,
        t.source, t.inbound_origin, t.created_by_user_id,
        t.checkout_token, t.checkout_at, t.started_at, t.closed_at,
        t.created_at, t.updated_at,
        a.name AS assignee_agent_name,
        w.workspace_name AS workspace_name,
+       p.name AS project_name,
        (SELECT COUNT(*) FROM task_comments WHERE task_id = t.id) AS comment_count,
-       (SELECT COUNT(*) FROM task_documents WHERE task_id = t.id) AS document_count
+       (SELECT COUNT(*) FROM task_documents WHERE task_id = t.id) AS document_count,
+       (SELECT COUNT(*) FROM task_interactions
+        WHERE task_id = t.id AND status = 'pending') AS interaction_pending_count
 FROM tasks t
 LEFT JOIN agents a ON a.id = t.assignee_agent_id
 LEFT JOIN workspaces w ON w.id = t.workspace_id
+LEFT JOIN projects p ON p.id = t.project_id
 """
 
 
@@ -125,10 +140,10 @@ async def create_task(body: TaskCreate):
     row = await fetch_one(
         """
         INSERT INTO tasks
-            (title, description, status, priority, workspace_id,
+            (title, description, status, priority, workspace_id, project_id,
              assignee_agent_id, parent_task_id, source, inbound_origin,
-             created_by_user_id, due_at)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+             created_by_user_id, due_at, start_at, estimated_hours)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
         RETURNING id
         """,
         body.title,
@@ -136,12 +151,15 @@ async def create_task(body: TaskCreate):
         body.status,
         body.priority,
         body.workspace_id,
+        body.project_id,
         body.assignee_agent_id,
         body.parent_task_id,
         body.source,
         body.inbound_origin,
         body.created_by_user_id,
         body.due_at,
+        body.start_at,
+        body.estimated_hours,
     )
     new_id = row["id"]
 
@@ -169,6 +187,7 @@ async def list_tasks(
     status: Optional[str] = None,
     assignee_agent_id: Optional[UUID] = Query(default=None),
     workspace_id: Optional[UUID] = Query(default=None),
+    project_id: Optional[UUID] = Query(default=None),
     parent_task_id: Optional[UUID] = Query(default=None),
     include_closed: bool = Query(default=False),
     page: int = Query(default=1, ge=1),
@@ -196,6 +215,8 @@ async def list_tasks(
         add("t.assignee_agent_id = ?", assignee_agent_id)
     if workspace_id:
         add("t.workspace_id = ?", workspace_id)
+    if project_id:
+        add("t.project_id = ?", project_id)
     if parent_task_id:
         add("t.parent_task_id = ?", parent_task_id)
 
@@ -289,11 +310,27 @@ async def get_task(task_id: UUID):
     )
     children = [_row_to_task(dict(r)) for r in child_rows]
 
+    # Interactions
+    interaction_rows = await fetch_all(
+        """
+        SELECT id, task_id, kind, idempotency_key, continuation_policy,
+               payload, status, created_by_agent_id, created_by_user_id,
+               decided_at, decided_by_user_id, decision_reason,
+               expires_at, created_at, updated_at
+        FROM task_interactions
+        WHERE task_id = $1
+        ORDER BY created_at DESC
+        """,
+        task_id,
+    )
+    interactions = [TaskInteraction(**dict(r)) for r in interaction_rows]
+
     return TaskDetail(
         **task.model_dump(by_alias=False),
         comments=comments,
         documents=documents,
         children=children,
+        interactions=interactions,
     )
 
 
@@ -321,6 +358,12 @@ async def update_task(task_id: UUID, body: TaskUpdate):
         add("status", body.status)
     if body.priority is not None:
         add("priority", body.priority)
+    if body.project_id is not None:
+        add("project_id", body.project_id)
+    if body.start_at is not None:
+        add("start_at", body.start_at)
+    if body.estimated_hours is not None:
+        add("estimated_hours", body.estimated_hours)
     if body.workspace_id is not None:
         add("workspace_id", body.workspace_id)
     if body.assignee_agent_id is not None:
@@ -605,3 +648,183 @@ async def list_document_revisions(task_id: UUID, doc_key: str):
         doc["id"],
     )
     return [TaskDocumentRevision(**dict(r)) for r in rows]
+
+
+# ---------------------------------------------------------------------------
+# Interactions (paperclip request_confirmation surface)
+# ---------------------------------------------------------------------------
+
+@router.get("/{task_id}/interactions", response_model=list[TaskInteraction])
+async def list_interactions(task_id: UUID):
+    rows = await fetch_all(
+        """
+        SELECT id, task_id, kind, idempotency_key, continuation_policy,
+               payload, status, created_by_agent_id, created_by_user_id,
+               decided_at, decided_by_user_id, decision_reason,
+               expires_at, created_at, updated_at
+        FROM task_interactions
+        WHERE task_id = $1
+        ORDER BY created_at DESC
+        """,
+        task_id,
+    )
+    return [TaskInteraction(**dict(r)) for r in rows]
+
+
+@router.post("/{task_id}/interactions", response_model=TaskInteraction, status_code=201)
+async def create_interaction(task_id: UUID, body: TaskInteractionCreate):
+    task = await fetch_one(
+        "SELECT id, workspace_id FROM tasks WHERE id = $1", task_id
+    )
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    # Idempotency check (UNIQUE constraint will also enforce, but query is friendlier)
+    existing = await fetch_one(
+        """
+        SELECT id, task_id, kind, idempotency_key, continuation_policy,
+               payload, status, created_by_agent_id, created_by_user_id,
+               decided_at, decided_by_user_id, decision_reason,
+               expires_at, created_at, updated_at
+        FROM task_interactions
+        WHERE task_id = $1 AND idempotency_key = $2
+        """,
+        task_id,
+        body.idempotency_key,
+    )
+    if existing:
+        return TaskInteraction(**dict(existing))
+
+    row = await fetch_one(
+        """
+        INSERT INTO task_interactions
+            (task_id, kind, idempotency_key, continuation_policy, payload,
+             created_by_user_id, expires_at)
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
+        RETURNING id, task_id, kind, idempotency_key, continuation_policy,
+                  payload, status, created_by_agent_id, created_by_user_id,
+                  decided_at, decided_by_user_id, decision_reason,
+                  expires_at, created_at, updated_at
+        """,
+        task_id,
+        body.kind,
+        body.idempotency_key,
+        body.continuation_policy,
+        body.payload,
+        body.actor_user_id,
+        body.expires_at,
+    )
+
+    await _log_action(
+        action="task.interaction_create",
+        entity_type="interaction",
+        entity_id=row["id"],
+        workspace_id=task.get("workspace_id"),
+        actor_user_id=body.actor_user_id,
+        actor_label=body.actor_label,
+        details={"kind": body.kind, "idempotency_key": body.idempotency_key},
+    )
+
+    return TaskInteraction(**dict(row))
+
+
+@router.post("/{task_id}/interactions/{interaction_id}/decide", response_model=TaskInteraction)
+async def decide_interaction(
+    task_id: UUID, interaction_id: UUID, body: TaskInteractionDecide
+):
+    existing = await fetch_one(
+        """
+        SELECT id, status, continuation_policy, payload, task_id
+        FROM task_interactions
+        WHERE id = $1 AND task_id = $2
+        """,
+        interaction_id,
+        task_id,
+    )
+    if not existing:
+        raise HTTPException(status_code=404, detail="Interaction not found")
+    if existing["status"] != "pending":
+        raise HTTPException(
+            status_code=409,
+            detail=f"Interaction already {existing['status']}",
+        )
+
+    payload = existing["payload"] or {}
+    requires_reason = bool(payload.get("rejectRequiresReason", False))
+    if body.decision == "reject" and requires_reason and not (body.reason and body.reason.strip()):
+        raise HTTPException(
+            status_code=400,
+            detail="Rejection reason required for this interaction",
+        )
+
+    new_status = "approved" if body.decision == "approve" else "rejected"
+
+    row = await fetch_one(
+        """
+        UPDATE task_interactions
+        SET status = $1,
+            decided_by_user_id = $2,
+            decision_reason = $3
+        WHERE id = $4
+        RETURNING id, task_id, kind, idempotency_key, continuation_policy,
+                  payload, status, created_by_agent_id, created_by_user_id,
+                  decided_at, decided_by_user_id, decision_reason,
+                  expires_at, created_at, updated_at
+        """,
+        new_status,
+        body.actor_user_id,
+        body.reason,
+        interaction_id,
+    )
+
+    # Handle continuation
+    task_workspace_id = None
+    if existing["continuation_policy"] == "update_status":
+        # Approve → done, Reject → in_progress (back to work)
+        target_status = "done" if body.decision == "approve" else "in_progress"
+        await execute(
+            "UPDATE tasks SET status = $1 WHERE id = $2",
+            target_status,
+            task_id,
+        )
+    # wake_assignee: post a system comment that mentions the assignee (when runtime ships, this wakes them)
+    if existing["continuation_policy"] == "wake_assignee":
+        assignee = await fetch_one(
+            "SELECT assignee_agent_id, workspace_id FROM tasks WHERE id = $1", task_id
+        )
+        task_workspace_id = assignee.get("workspace_id") if assignee else None
+        if assignee and assignee.get("assignee_agent_id"):
+            agent = await fetch_one(
+                "SELECT name FROM agents WHERE id = $1", assignee["assignee_agent_id"]
+            )
+            if agent:
+                wake_body = (
+                    f"@{agent['name']} — interaction `{existing['payload'].get('prompt', existing['id'])}` "
+                    f"resolved: **{new_status}**"
+                    + (f"\n\nreason: {body.reason}" if body.reason else "")
+                )
+                await execute(
+                    """
+                    INSERT INTO task_comments
+                        (task_id, actor_type, actor_user_id, actor_label,
+                         body_markdown, mentioned_agent_ids)
+                    VALUES ($1, 'system', $2, $3, $4, $5)
+                    """,
+                    task_id,
+                    body.actor_user_id,
+                    "system",
+                    wake_body,
+                    [assignee["assignee_agent_id"]],
+                )
+
+    await _log_action(
+        action="task.interaction_decide",
+        entity_type="interaction",
+        entity_id=interaction_id,
+        workspace_id=task_workspace_id,
+        actor_user_id=body.actor_user_id,
+        actor_label=body.actor_label,
+        details={"decision": body.decision, "reason": body.reason},
+    )
+
+    return TaskInteraction(**dict(row))

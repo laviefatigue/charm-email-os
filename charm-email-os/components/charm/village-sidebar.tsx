@@ -11,7 +11,16 @@
 import * as React from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Flame, Home, ScrollText, Bot, BarChart3, Settings } from "lucide-react";
+import {
+  Flame,
+  Home,
+  ScrollText,
+  Bot,
+  BarChart3,
+  Settings,
+  FolderKanban,
+  CalendarRange,
+} from "lucide-react";
 import { cn } from "@/lib/utils";
 import { getWorkspaces } from "@/lib/data/charm";
 import type { WorkspaceCardData, AttentionState } from "./workspace-card";
@@ -25,10 +34,22 @@ const ATTENTION_DOT: Record<AttentionState, string> = {
 const GLOBAL_LINKS = [
   { href: "/", label: "Dashboard", icon: BarChart3, match: (p: string) => p === "/" },
   {
+    href: "/projects",
+    label: "Projects",
+    icon: FolderKanban,
+    match: (p: string) => p === "/projects" || p.startsWith("/projects/"),
+  },
+  {
     href: "/tasks",
     label: "Tasks",
     icon: ScrollText,
     match: (p: string) => p === "/tasks" || p.startsWith("/tasks/"),
+  },
+  {
+    href: "/timeline",
+    label: "Timeline",
+    icon: CalendarRange,
+    match: (p: string) => p === "/timeline" || p.startsWith("/timeline/"),
   },
   {
     href: "/agents",

@@ -124,9 +124,12 @@ class TaskBase(BaseModel):
     status: TaskStatus = "todo"
     priority: TaskPriority = "medium"
     workspace_id: Optional[UUID] = Field(default=None, alias="workspaceId")
+    project_id: Optional[UUID] = Field(default=None, alias="projectId")
     assignee_agent_id: Optional[UUID] = Field(default=None, alias="assigneeAgentId")
     parent_task_id: Optional[UUID] = Field(default=None, alias="parentTaskId")
     due_at: Optional[datetime] = Field(default=None, alias="dueAt")
+    start_at: Optional[datetime] = Field(default=None, alias="startAt")
+    estimated_hours: Optional[float] = Field(default=None, ge=0, alias="estimatedHours")
 
     class Config:
         populate_by_name = True
@@ -149,9 +152,12 @@ class TaskUpdate(BaseModel):
     status: Optional[TaskStatus] = None
     priority: Optional[TaskPriority] = None
     workspace_id: Optional[UUID] = Field(default=None, alias="workspaceId")
+    project_id: Optional[UUID] = Field(default=None, alias="projectId")
     assignee_agent_id: Optional[UUID] = Field(default=None, alias="assigneeAgentId")
     parent_task_id: Optional[UUID] = Field(default=None, alias="parentTaskId")
     due_at: Optional[datetime] = Field(default=None, alias="dueAt")
+    start_at: Optional[datetime] = Field(default=None, alias="startAt")
+    estimated_hours: Optional[float] = Field(default=None, ge=0, alias="estimatedHours")
     # Optional inline comment that posts alongside the update (paperclip pattern)
     comment: Optional[str] = None
     actor_user_id: Optional[UUID] = Field(default=None, alias="actorUserId")
@@ -188,8 +194,10 @@ class Task(TaskBase):
     # Joined / convenience fields populated by route
     assignee_agent_name: Optional[str] = Field(default=None, alias="assigneeAgentName")
     workspace_name: Optional[str] = Field(default=None, alias="workspaceName")
+    project_name: Optional[str] = Field(default=None, alias="projectName")
     comment_count: int = Field(default=0, alias="commentCount")
     document_count: int = Field(default=0, alias="documentCount")
+    interaction_pending_count: int = Field(default=0, alias="interactionPendingCount")
 
     class Config:
         populate_by_name = True
@@ -205,8 +213,82 @@ class TaskList(BaseModel):
         populate_by_name = True
 
 
+# ───────────────────────────────────────────────────────────────────────────────
+# Interactions — paperclip request_confirmation pattern
+# ───────────────────────────────────────────────────────────────────────────────
+
+InteractionKind = Literal[
+    "request_confirmation", "request_revision", "multi_choice", "data_input"
+]
+InteractionStatus = Literal["pending", "approved", "rejected", "superseded", "expired"]
+ContinuationPolicy = Literal["wake_assignee", "update_status", "none"]
+
+
+class InteractionPayload(BaseModel):
+    """Convention for request_confirmation payloads."""
+    version: int = 1
+    prompt: str
+    summary: Optional[str] = None
+    data: Optional[dict[str, Any]] = None
+    accept_label: str = Field(default="Approve", alias="acceptLabel")
+    reject_label: str = Field(default="Reject", alias="rejectLabel")
+    reject_requires_reason: bool = Field(default=False, alias="rejectRequiresReason")
+    supersede_on_user_comment: bool = Field(default=False, alias="supersedeOnUserComment")
+    cited_context: Optional[list[CitedContextItem]] = Field(default=None, alias="citedContext")
+
+    class Config:
+        populate_by_name = True
+
+
+class TaskInteractionCreate(BaseModel):
+    kind: InteractionKind = "request_confirmation"
+    idempotency_key: str = Field(..., min_length=1, max_length=200, alias="idempotencyKey")
+    continuation_policy: ContinuationPolicy = Field(
+        default="wake_assignee", alias="continuationPolicy"
+    )
+    payload: dict[str, Any]  # Validated loosely — frontend supplies the prompt/labels structure
+    expires_at: Optional[datetime] = Field(default=None, alias="expiresAt")
+    actor_user_id: Optional[UUID] = Field(default=None, alias="actorUserId")
+    actor_label: Optional[str] = Field(default=None, alias="actorLabel")
+
+    class Config:
+        populate_by_name = True
+
+
+class TaskInteractionDecide(BaseModel):
+    decision: Literal["approve", "reject"]
+    reason: Optional[str] = None
+    actor_user_id: Optional[UUID] = Field(default=None, alias="actorUserId")
+    actor_label: Optional[str] = Field(default=None, alias="actorLabel")
+
+    class Config:
+        populate_by_name = True
+
+
+class TaskInteraction(BaseModel):
+    id: UUID
+    task_id: UUID = Field(..., alias="taskId")
+    kind: InteractionKind
+    idempotency_key: str = Field(..., alias="idempotencyKey")
+    continuation_policy: ContinuationPolicy = Field(..., alias="continuationPolicy")
+    payload: dict[str, Any]
+    status: InteractionStatus
+    created_by_agent_id: Optional[UUID] = Field(default=None, alias="createdByAgentId")
+    created_by_user_id: Optional[UUID] = Field(default=None, alias="createdByUserId")
+    decided_at: Optional[datetime] = Field(default=None, alias="decidedAt")
+    decided_by_user_id: Optional[UUID] = Field(default=None, alias="decidedByUserId")
+    decision_reason: Optional[str] = Field(default=None, alias="decisionReason")
+    expires_at: Optional[datetime] = Field(default=None, alias="expiresAt")
+    created_at: datetime = Field(..., alias="createdAt")
+    updated_at: datetime = Field(..., alias="updatedAt")
+
+    class Config:
+        populate_by_name = True
+
+
 class TaskDetail(Task):
-    """GET /tasks/{id} — task + comments + documents inline."""
+    """GET /tasks/{id} — task + comments + documents + interactions inline."""
     comments: list[TaskComment] = Field(default_factory=list)
     documents: list[TaskDocument] = Field(default_factory=list)
     children: list[Task] = Field(default_factory=list)
+    interactions: list[TaskInteraction] = Field(default_factory=list)

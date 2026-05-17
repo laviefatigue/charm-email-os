@@ -40,3 +40,11 @@ export { PageHeader, type PageHeaderProps } from "./page-header";
 // Task + agent surfaces
 export { TaskCard, type TaskCardProps } from "./task-card";
 export { NewTaskModal, type NewTaskModalProps } from "./new-task-modal";
+export { InteractionCard, type InteractionCardProps } from "./interaction-card";
+
+// Project surfaces
+export { ProjectCard, type ProjectCardProps } from "./project-card";
+export { NewProjectModal, type NewProjectModalProps } from "./new-project-modal";
+
+// Gantt
+export { GanttStrip, type GanttStripProps, type GanttItem } from "./gantt-strip";

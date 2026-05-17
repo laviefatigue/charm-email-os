@@ -18,6 +18,8 @@ const REDESIGN_PATTERNS: RegExp[] = [
   /^\/workspaces(\/|$)/,
   /^\/tasks(\/|$)/,
   /^\/agents(\/|$)/,
+  /^\/projects(\/|$)/,
+  /^\/timeline(\/|$)/,
   /^\/recommendations(\/|$)/,
   /^\/activity(\/|$)/,
   /^\/settings(\/|$)/,
