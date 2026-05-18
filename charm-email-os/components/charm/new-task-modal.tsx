@@ -53,6 +53,10 @@ export interface NewTaskModalProps {
   defaultWorkspaceId?: string;
   /** Pre-fill assignee */
   defaultAssigneeAgentId?: string;
+  /** Pre-fill title (e.g. "Audit campaign: …") */
+  defaultTitle?: string;
+  /** Pre-fill description (e.g. campaign metrics snapshot) */
+  defaultDescription?: string;
   onCreated?: (taskId: string) => void;
 }
 
@@ -61,11 +65,13 @@ export function NewTaskModal({
   onOpenChange,
   defaultWorkspaceId,
   defaultAssigneeAgentId,
+  defaultTitle,
+  defaultDescription,
   onCreated,
 }: NewTaskModalProps) {
   const router = useRouter();
-  const [title, setTitle] = React.useState("");
-  const [description, setDescription] = React.useState("");
+  const [title, setTitle] = React.useState(defaultTitle ?? "");
+  const [description, setDescription] = React.useState(defaultDescription ?? "");
   const [workspaceId, setWorkspaceId] = React.useState<string>(defaultWorkspaceId ?? "");
   const [assigneeAgentId, setAssigneeAgentId] = React.useState<string>(
     defaultAssigneeAgentId ?? ""
@@ -100,8 +106,8 @@ export function NewTaskModal({
   }, [open]);
 
   const reset = () => {
-    setTitle("");
-    setDescription("");
+    setTitle(defaultTitle ?? "");
+    setDescription(defaultDescription ?? "");
     setWorkspaceId(defaultWorkspaceId ?? "");
     setAssigneeAgentId(defaultAssigneeAgentId ?? "");
     setPriority("medium");
@@ -109,6 +115,16 @@ export function NewTaskModal({
     setInboundOrigin("");
     setDueAt("");
   };
+
+  // Re-prime form when defaults change while the modal is opened from different campaigns
+  React.useEffect(() => {
+    if (open) {
+      if (defaultTitle !== undefined) setTitle(defaultTitle);
+      if (defaultDescription !== undefined) setDescription(defaultDescription);
+      if (defaultWorkspaceId !== undefined) setWorkspaceId(defaultWorkspaceId);
+      if (defaultAssigneeAgentId !== undefined) setAssigneeAgentId(defaultAssigneeAgentId);
+    }
+  }, [open, defaultTitle, defaultDescription, defaultWorkspaceId, defaultAssigneeAgentId]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();

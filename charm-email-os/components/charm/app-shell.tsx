@@ -20,6 +20,7 @@ const REDESIGN_PATTERNS: RegExp[] = [
   /^\/agents(\/|$)/,
   /^\/projects(\/|$)/,
   /^\/timeline(\/|$)/,
+  /^\/campaigns(\/|$)/,
   /^\/recommendations(\/|$)/,
   /^\/activity(\/|$)/,
   /^\/settings(\/|$)/,

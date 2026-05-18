@@ -26,6 +26,8 @@ import {
   GitBranch,
   ListTodo,
   ChevronDown,
+  Megaphone,
+  FileText,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { getWorkspaces } from "@/lib/data/charm";
@@ -55,6 +57,13 @@ const GLOBAL_LINKS = [
     icon: ScrollText,
     match: (p: string) =>
       (p === "/tasks" || p.startsWith("/tasks/")) && !p.startsWith("/workspaces/"),
+  },
+  {
+    href: "/campaigns",
+    label: "Campaigns",
+    icon: Megaphone,
+    match: (p: string) =>
+      (p === "/campaigns" || p.startsWith("/campaigns/")) && !p.startsWith("/workspaces/"),
   },
   {
     href: "/timeline",
@@ -97,7 +106,9 @@ const WORKSPACE_NAV_ITEMS: WorkspaceNavItem[] = [
   { segment: "", label: "Overview", icon: LayoutDashboard },
   { segment: "projects", label: "Projects", icon: FolderKanban },
   { segment: "tasks", label: "Tasks", icon: ListTodo },
+  { segment: "campaigns", label: "Campaigns", icon: Megaphone },
   { segment: "events", label: "Events", icon: ScrollText },
+  { segment: "assets", label: "Assets", icon: FileText },
   { segment: "infrastructure", label: "Infrastructure", icon: Server, comingSoon: true },
   { segment: "context", label: "Context", icon: GitBranch, comingSoon: true },
   { segment: "settings", label: "Settings", icon: Settings, comingSoon: true },

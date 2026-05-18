@@ -22,6 +22,7 @@ import {
   ChevronUp,
   Minus,
   ChevronDown,
+  Sparkles,
 } from "lucide-react";
 import { Textarea } from "@/components/ui/textarea";
 import { Input } from "@/components/ui/input";
@@ -32,6 +33,8 @@ import {
   type StatusKind,
   InteractionCard,
   NewTaskModal,
+  MarkdownView,
+  PrepareAgentRunModal,
 } from "@/components/charm";
 import { taskApi, agentApi, taskInteractionApi } from "@/lib/api";
 import type {
@@ -80,6 +83,7 @@ export default function TaskDetailPage() {
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState<string | null>(null);
   const [tab, setTab] = React.useState<Tab>("conversation");
+  const [prepareRunOpen, setPrepareRunOpen] = React.useState(false);
 
   const refetch = React.useCallback(async () => {
     setLoading(true);
@@ -181,6 +185,21 @@ export default function TaskDetailPage() {
               <priorityMeta.Icon className="h-4 w-4" aria-hidden="true" />
               {priorityMeta.label}
             </span>
+            {detail.assigneeAgentId && (
+              <button
+                type="button"
+                onClick={() => setPrepareRunOpen(true)}
+                className={cn(
+                  "inline-flex items-center gap-1.5 h-9 px-4 rounded-md text-sm font-medium ml-1",
+                  "bg-amber text-ink border-[1.5px] border-border-bold",
+                  "hover:shadow-flat-sm focus-visible:shadow-flat-sm transition-shadow"
+                )}
+                title="Assemble prompt for your local Claude (paperclip-semi-assisted run)"
+              >
+                <Sparkles className="h-4 w-4" aria-hidden="true" />
+                Prepare agent run
+              </button>
+            )}
           </div>
         }
       />
@@ -324,6 +343,13 @@ export default function TaskDetailPage() {
           />
         </aside>
       </div>
+
+      <PrepareAgentRunModal
+        open={prepareRunOpen}
+        onOpenChange={setPrepareRunOpen}
+        task={detail}
+        workspaceName={detail.workspaceName ?? undefined}
+      />
     </div>
   );
 }
@@ -582,13 +608,46 @@ function DocumentsTab({
                     {doc.docKey} · rev {doc.latestRevisionNumber}
                   </p>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => (isEditing ? setEditingKey(null) : startEdit(doc))}
-                  className="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium rounded-sm border border-border-bold hover:bg-muted transition-colors"
-                >
-                  {isEditing ? "Cancel" : "Edit"}
-                </button>
+                <div className="flex items-center gap-1.5 shrink-0">
+                  {!isEditing && doc.body && (
+                    <>
+                      <Link
+                        href={`/tasks/${taskId}/documents/${doc.docKey}/view`}
+                        target="_blank"
+                        className="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium rounded-sm border border-border text-ink-soft hover:border-border-bold hover:text-foreground transition-colors"
+                        title="Open report viewer (print / PDF)"
+                      >
+                        View
+                      </Link>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const titleHeader = doc.title ? `# ${doc.title}\n\n` : "";
+                          const blob = new Blob([titleHeader + doc.body], { type: "text/markdown" });
+                          const url = URL.createObjectURL(blob);
+                          const a = document.createElement("a");
+                          a.href = url;
+                          a.download = `${doc.docKey}-${doc.id.slice(0, 8)}.md`;
+                          document.body.appendChild(a);
+                          a.click();
+                          document.body.removeChild(a);
+                          URL.revokeObjectURL(url);
+                        }}
+                        className="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium rounded-sm border border-border text-ink-soft hover:border-border-bold hover:text-foreground transition-colors"
+                        title="Download .md"
+                      >
+                        .md
+                      </button>
+                    </>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => (isEditing ? setEditingKey(null) : startEdit(doc))}
+                    className="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium rounded-sm border border-border-bold hover:bg-muted transition-colors"
+                  >
+                    {isEditing ? "Cancel" : "Edit"}
+                  </button>
+                </div>
               </div>
               {isEditing ? (
                 <DocumentEditor
@@ -603,8 +662,12 @@ function DocumentsTab({
                   submitLabel="Save revision"
                 />
               ) : (
-                <div className="p-4 text-sm whitespace-pre-wrap font-mono leading-relaxed bg-card">
-                  {doc.body || <em className="text-ink-soft">Empty</em>}
+                <div className="p-4 bg-card">
+                  {doc.body ? (
+                    <MarkdownView body={doc.body} variant="compact" />
+                  ) : (
+                    <em className="text-sm text-ink-soft">Empty</em>
+                  )}
                 </div>
               )}
             </li>

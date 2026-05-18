@@ -4525,6 +4525,21 @@ export const taskApi = {
     return toCamelCase<import("./types").TaskDocument>(response);
   },
 
+  async listAllDocuments(filters: { workspaceId?: string; docKey?: string; since?: string; limit?: number } = {}) {
+    const search = new URLSearchParams();
+    if (filters.workspaceId) search.set("workspace_id", filters.workspaceId);
+    if (filters.docKey) search.set("doc_key", filters.docKey);
+    if (filters.since) search.set("since", filters.since);
+    if (filters.limit) search.set("limit", String(filters.limit));
+    const q = search.toString();
+    const response = await fetchApi<Record<string, unknown>[]>(
+      `/api/tasks/documents/all${q ? `?${q}` : ""}`
+    );
+    return (response as Record<string, unknown>[]).map((r) =>
+      toCamelCase<import("./types").TaskDocument & { taskTitle?: string; taskWorkspaceId?: string }>(r)
+    );
+  },
+
   async listDocumentRevisions(taskId: string, docKey: string) {
     const response = await fetchApi<Record<string, unknown>[]>(
       `/api/tasks/${taskId}/documents/${docKey}/revisions`

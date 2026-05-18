@@ -628,6 +628,46 @@ async def upsert_document(task_id: UUID, doc_key: str, body: TaskDocumentUpsert)
     return TaskDocument(**dict(doc_row))
 
 
+@router.get("/documents/all", response_model=list[TaskDocument])
+async def list_workspace_documents(
+    workspace_id: Optional[UUID] = Query(default=None),
+    doc_key: Optional[str] = Query(default=None),
+    since: Optional[str] = Query(default=None),
+    limit: int = Query(default=200, ge=1, le=500),
+):
+    """Flat list of task_documents across all tasks. Filterable by workspace + doc_key.
+    Used by the Assets surface to enumerate generated reports across a client."""
+    conditions: list[str] = []
+    params: list = []
+    if workspace_id:
+        params.append(workspace_id)
+        conditions.append(f"t.workspace_id = ${len(params)}")
+    if doc_key:
+        params.append(doc_key)
+        conditions.append(f"d.doc_key = ${len(params)}")
+    if since:
+        params.append(since)
+        conditions.append(f"d.updated_at >= ${len(params)}::timestamptz")
+    where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+    params.append(limit)
+    rows = await fetch_all(
+        f"""
+        SELECT d.id, d.task_id, d.doc_key, d.title, d.format, d.body,
+               d.latest_revision_number, d.created_by_agent_id, d.created_by_user_id,
+               d.updated_by_agent_id, d.updated_by_user_id, d.cited_context,
+               d.created_at, d.updated_at,
+               t.title AS task_title, t.workspace_id AS task_workspace_id
+        FROM task_documents d
+        JOIN tasks t ON t.id = d.task_id
+        {where}
+        ORDER BY d.updated_at DESC
+        LIMIT ${len(params)}
+        """,
+        *params,
+    )
+    return [TaskDocument(**dict(r)) for r in rows]
+
+
 @router.get("/{task_id}/documents/{doc_key}/revisions", response_model=list[TaskDocumentRevision])
 async def list_document_revisions(task_id: UUID, doc_key: str):
     doc = await fetch_one(
