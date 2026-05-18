@@ -11,11 +11,10 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { ChevronLeft } from "lucide-react";
 import {
-  WorkspaceSubnav,
   ContextFreshnessPill,
   StatusPill,
 } from "@/components/charm";
-import { getWorkspace, getRecommendations } from "@/lib/data/charm";
+import { getWorkspace } from "@/lib/data/charm";
 
 const ATTENTION_TO_STATUS: Record<string, "live" | "drift" | "burned"> = {
   healthy: "live",
@@ -34,7 +33,6 @@ export default async function WorkspaceLayout({
   const workspace = await getWorkspace(id);
   if (!workspace) notFound();
 
-  const pendingCount = getRecommendations(id).length;
   const attentionKind = ATTENTION_TO_STATUS[workspace.attentionState] ?? "live";
 
   return (
@@ -76,17 +74,9 @@ export default async function WorkspaceLayout({
         </div>
       </div>
 
-      {/* Sub-nav + content */}
-      <div className="flex flex-1 min-h-0">
-        <div className="shrink-0 w-56 border-r border-border p-4 overflow-y-auto">
-          <WorkspaceSubnav
-            workspaceId={id}
-            badges={{ recommendations: pendingCount }}
-          />
-        </div>
-        <div className="flex-1 overflow-auto">
-          <div className="px-8 py-8 max-w-6xl">{children}</div>
-        </div>
+      {/* Content (sub-nav now lives in the global VillageSidebar) */}
+      <div className="flex-1 overflow-auto">
+        <div className="px-8 py-8 max-w-6xl">{children}</div>
       </div>
     </div>
   );

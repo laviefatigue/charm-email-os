@@ -24,6 +24,8 @@ import {
   Plug,
   DollarSign,
   Settings,
+  FolderKanban,
+  ListTodo,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -36,11 +38,13 @@ interface SubnavItem {
 
 const ITEMS: SubnavItem[] = [
   { segment: "", label: "Overview", icon: LayoutDashboard },
+  { segment: "projects", label: "Projects", icon: FolderKanban },
+  { segment: "tasks", label: "Tasks", icon: ListTodo },
   { segment: "recommendations", label: "Recommendations", icon: Sparkles },
+  { segment: "events", label: "Events", icon: ScrollText },
   { segment: "agents", label: "Agents", icon: Bot },
   { segment: "domains", label: "Domains", icon: Boxes, comingSoon: true },
   { segment: "inboxes", label: "Inboxes", icon: Mail, comingSoon: true },
-  { segment: "events", label: "Events", icon: ScrollText },
   { segment: "pending-gates", label: "Pending Gates", icon: ShieldCheck, comingSoon: true },
   { segment: "routines", label: "Routines", icon: Clock, comingSoon: true },
   { segment: "context", label: "Context", icon: GitBranch, comingSoon: true },
