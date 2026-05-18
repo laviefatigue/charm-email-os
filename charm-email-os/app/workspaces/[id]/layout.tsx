@@ -9,7 +9,7 @@
 import * as React from "react";
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { ChevronLeft } from "lucide-react";
+import { ChevronLeft, Settings } from "lucide-react";
 import {
   ContextFreshnessPill,
   StatusPill,
@@ -70,6 +70,14 @@ export default async function WorkspaceLayout({
               status={workspace.contextSync.status}
               lastSyncedAt={workspace.contextSync.lastSyncedAt}
             />
+            <Link
+              href={`/workspaces/${id}/settings`}
+              aria-label="Workspace settings"
+              title="Workspace settings"
+              className="inline-flex items-center justify-center h-7 w-7 rounded-md border-[1.5px] border-border text-ink-soft hover:border-border-bold hover:text-foreground transition-colors"
+            >
+              <Settings className="h-3.5 w-3.5" aria-hidden="true" />
+            </Link>
           </div>
         </div>
       </div>
