@@ -128,6 +128,12 @@ function toWorkspaceCardData(c: ApiClient): WorkspaceCardData {
     // WorkspaceCard renders this with metricLabel="Inboxes" so the semantics fit.
     domainsLive: c.connected_inbox_count,
     domainsTotal: c.inbox_count,
+    realDomainCount: c.domain_count,
+    campaignCount: c.campaign_count,
+    packageName: c.package_name,
+    // Active = the orchestrator is managing this workspace AND it has actual infrastructure.
+    // Drives the sidebar active/inactive grouping.
+    isActive: c.sync_enabled && c.inbox_count > 0,
     lastEventAt: c.updated_at ? new Date(c.updated_at) : null,
     lastEventType: "Last sync",
     eodReapplyEnabled: c.sync_enabled,

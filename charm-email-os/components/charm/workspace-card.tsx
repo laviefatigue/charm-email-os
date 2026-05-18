@@ -33,6 +33,14 @@ export interface WorkspaceCardData {
   slug?: string;
   domainsLive: number;
   domainsTotal: number;
+  /** Real domain count (separate from inbox-as-domain metric). */
+  realDomainCount?: number;
+  /** Real campaign count from /api/clients (live). */
+  campaignCount?: number;
+  /** Package name from subscription, e.g. "Growth". */
+  packageName?: string | null;
+  /** True when the EmailBison sync daemon is managing this workspace + it has infra. */
+  isActive?: boolean;
   lastEventAt?: Date | string | null;
   lastEventType?: string;
   eodReapplyEnabled: boolean;
