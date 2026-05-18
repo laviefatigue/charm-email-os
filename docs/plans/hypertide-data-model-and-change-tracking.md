@@ -2,7 +2,7 @@
 title: Hypertide Data Model and Change Tracking
 created: 2026-05-18
 updated: 2026-05-18
-status: planning
+status: in-progress (schema step shipped 2026-05-18)
 tags: [hypertide, data-model, change-tracking, plan, schema-migration]
 ---
 
@@ -423,7 +423,7 @@ Recommend a follow-up migration to drop `manages_via_hypertide` after the new fi
 
 1. ~~Resolve OPEN #1, #2, #4, #5~~ — **done in this pass**; positions baked in.
 2. Ratify or push back on the revised DECISIONS 1-6 with operator owner.
-3. Schema migration (DECISION 1 revised) in dev environment first. Includes `clients.client_status`, `clients.primary_hypertide_organization_name`, `workspaces.client_id`, `workspaces.provider`, `client_hypertide_subscriptions` table, `v_operational_*` views.
+3. ~~Schema migration (DECISION 1 revised)~~ — **applied to prod 2026-05-18 as [`migrations/123_hypertide_data_model_rework.sql`](../../migrations/123_hypertide_data_model_rework.sql)**. Adds `clients.client_status` + `primary_hypertide_organization_name`, `workspaces.client_id` + `provider` + `forwarding_domain_pattern` + `workspaces_provider_check` CHECK, `client_hypertide_subscriptions` table, `v_operational_clients` / `_workspaces` / `_domains` views, and the DECISION 6 columns on `domains` (qualifies_for_cancellation_at + reason). Backfill landed 19/20 workspaces with `client_id`; the 1 unmatched is "Deprecate" (EB workspace_id=21, no parent client — correctly excluded by `v_operational_workspaces`). All 19 existing clients defaulted to `client_status='client'`; `v_operational_clients` returns the same 19. Schema is additive — no DROP COLUMN, follow-up migration cleans up `clients.workspace_id` + `workspaces.manages_via_hypertide` per step 10.
 4. **Manual seed step** — operator populates `client_hypertide_subscriptions` from current state. Bounded one-shot: ~211 unique sub IDs as of 2026-05-06; use `d:/tmp/ht_snapshot_2026-05-06T18-45-43Z.json` as starting point or pull fresh. Promote known-real clients to `client_status='client'` (the 15 in-scope workspaces' parent clients).
 5. Switch `apps/hypertide-worker` ingest to subscription-keyed sync; remove F&F-ignore branch. Apply revised RESOLVED #5 routing rule.
 6. Migrate operational reads to `v_operational_*` views. **Audit code-surface scope first** — this is the biggest risk item in the plan; grep + manual review of every `FROM clients`, `FROM workspaces`, `FROM domains` in `api/`, `sync_modules/`, and any worker apps.
