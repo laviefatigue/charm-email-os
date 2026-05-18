@@ -283,18 +283,25 @@ Deploying without protection makes every currently-cancelled domain look like a 
 
 Audit runs every 24h. If a domain goes `Done → ToBeCancelled → Cancelled` inside one window, we capture only the latest leg. The output is a daily-resolution change detector, not a true event stream. Document this in the runbook so nobody is surprised later.
 
-## DECISION 5 — Default `client_status='friends_and_family'` for new orgs (formerly OPEN #2)
+## DECISION 5 — Default `client_status` by `sending_tool` (revised 2026-05-18; formerly OPEN #2)
 
-**Position**: new HT subscriptions appearing in `/orders/active` without an existing `client_hypertide_subscriptions` binding default to a new `clients` row with `client_status='friends_and_family'`. Operator explicitly promotes to `'client'`.
+**Position**: new HT subscriptions appearing in `/orders/active` without an existing `client_hypertide_subscriptions` binding default by `sending_tool`:
 
-Rationale (calibrated to production data):
+| `sending_tool` | Default `client_status` | Reasoning |
+|---|---|---|
+| `Email Bison` | `client` | We run the EB account; F&F partners don't use it. Snapshot 2026-05-06: 127 unique subs, all real client orgs (Charm, Linkgraph, SPUI, Bridge, HH variants). |
+| `Instantly.ai` | `client` | We run the Instantly account too; partners don't use it. Snapshot: 42 unique subs, all ours (Inkd variants, Sammy, Stable Kernel Network HT, Stone Products Unlimited). Domain extraction lands later — the client row hangs dormant until then but is correctly classified for change-tracking. |
+| `Smartlead.ai` | `friends_and_family` | Operator decision 2026-05-18. Even Charm-prefixed orgs (Charm Node, Charm Orchestration, Charm Scaling system) running on Smartlead are not part of CharmOS-managed inbox infra and stay F&F. |
+| missing / other / unknown | `friends_and_family` | Safe failure for tools we haven't classified. |
 
-- First-audit observation showed 350 of 862 HT records had no matching DB row. If the default were `'client'`, kill triggers and rotation logic would have made decisions about F&F infrastructure for ~10 days before the operator caught up.
-- Onboarding a real client is a deliberate human act. F&F-on-first-sight is the safe failure: nothing leaks operationally; the row sits in `clients` with a flag the operator can flip when ready.
-- Promotion cost: one-line UPDATE per real new client. Recoverable from data; nothing irreversible.
-- Demotion-after-leakage cost (the opposite default): can't recover bad kill decisions or wrongly-paused campaigns.
+Applies in two places:
+- **Seed script** (one-shot operator-run) — binds the 19 existing clients by org-name match first, then classifies remainder by this rule.
+- **Hypertide-worker first-sync branch** — same rule when a new sub appears in a future audit.
 
-Asymmetric error cost → safe failure.
+Why revised from the original "always F&F" default:
+- Original rationale was correct (asymmetric error cost; F&F is the safe failure for *unknown* infra), but `sending_tool` is positive evidence of whose infrastructure the sub runs on. Treating an EB or Instantly sub as F&F would mean filtering Ink'd-on-Instantly out of every operational view — wrong in the opposite direction.
+- The asymmetric-cost argument still holds for unknown / non-EB-non-Instantly tools; that's where the F&F fallback applies.
+- Promotion of a mis-classified Smartlead sub to `'client'` is still one UPDATE; demotion of a mis-classified `'client'` is also recoverable since no kill decisions land until step 8 (kill-trigger wiring).
 
 ## DECISION 6 — Persist `qualifies_for_cancellation_at` at kill-evaluator time (formerly OPEN #4)
 
