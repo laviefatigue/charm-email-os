@@ -1,11 +1,15 @@
 ---
 title: HT Seed — Post-Seed Variant Merge Candidates
 created: 2026-05-18
-status: ready-for-operator-review
+status: applied (merges 1-3 done 2026-05-18; item 4 deferred to operator)
 tags: [hypertide, seed, merge, operator-action]
 ---
 
 # HT Seed — Post-Seed Variant Merge Candidates
+
+**Applied state (2026-05-18):** merges 1-3 below ran cleanly. Clients went 61 → 54; chs row count unchanged at 211 (no data lost). Ink'd consolidated to 11 chs subs, Root Access to 12, Sammy to 19. No duplicate names remain. `v_operational_clients` returns 28 (= 54 total - 26 F&F).
+
+Item 4 (`Stone Products Unlimited → SPUI`) is intentionally **not applied** — needs operator verification that they're the same Stripe customer.
 
 The 2026-05-18 seed of `client_hypertide_subscriptions` (per migration 123 + 124, scripted in [scripts/seed_client_hypertide_subscriptions.py](../../scripts/seed_client_hypertide_subscriptions.py)) deliberately **did not fuzzy-match** organization names. That avoided the failure mode where a wrong auto-merge silently buries a real new customer under an existing client. Result: a small number of duplicated client rows by design, listed below for one operator-driven cleanup pass.
 
