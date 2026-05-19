@@ -34,7 +34,6 @@ import {
   InteractionCard,
   NewTaskModal,
   MarkdownView,
-  PrepareAgentRunModal,
 } from "@/components/charm";
 import { taskApi, agentApi, taskInteractionApi } from "@/lib/api";
 import type {
@@ -83,7 +82,6 @@ export default function TaskDetailPage() {
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState<string | null>(null);
   const [tab, setTab] = React.useState<Tab>("conversation");
-  const [prepareRunOpen, setPrepareRunOpen] = React.useState(false);
 
   const refetch = React.useCallback(async () => {
     setLoading(true);
@@ -119,8 +117,8 @@ export default function TaskDetailPage() {
     return (
       <div className="px-8 py-8 max-w-6xl mx-auto">
         <p className="text-rust">{error ?? "Task not found"}</p>
-        <Link href="/tasks" className="text-copper hover:underline text-sm mt-2 inline-block">
-          ← Back to tasks
+        <Link href="/" className="text-copper hover:underline text-sm mt-2 inline-block">
+          ← Back to home
         </Link>
       </div>
     );
@@ -162,14 +160,17 @@ export default function TaskDetailPage() {
     }
   };
 
+  const backHref = detail.workspaceId ? `/workspaces/${detail.workspaceId}/tasks` : "/";
+  const backLabel = detail.workspaceId ? "Workspace tasks" : "Home";
+
   return (
     <div className="px-8 py-8 max-w-6xl mx-auto">
       <Link
-        href="/tasks"
+        href={backHref}
         className="inline-flex items-center gap-1 text-xs text-ink-soft hover:text-foreground mb-3 transition-colors"
       >
         <ChevronLeft className="h-3 w-3" aria-hidden="true" />
-        All tasks
+        {backLabel}
       </Link>
 
       <PageHeader
@@ -188,16 +189,15 @@ export default function TaskDetailPage() {
             {detail.assigneeAgentId && (
               <button
                 type="button"
-                onClick={() => setPrepareRunOpen(true)}
+                disabled
                 className={cn(
                   "inline-flex items-center gap-1.5 h-9 px-4 rounded-md text-sm font-medium ml-1",
-                  "bg-amber text-ink border-[1.5px] border-border-bold",
-                  "hover:shadow-flat-sm focus-visible:shadow-flat-sm transition-shadow"
+                  "bg-muted text-ink-soft border-[1.5px] border-border cursor-not-allowed opacity-70"
                 )}
-                title="Assemble prompt for your local Claude (paperclip-semi-assisted run)"
+                title="Agent runtime ships in Phase 1 (local helper daemon). See docs/architecture/charm-revamp-plan.md."
               >
                 <Sparkles className="h-4 w-4" aria-hidden="true" />
-                Prepare agent run
+                Run agent
               </button>
             )}
           </div>
@@ -343,13 +343,6 @@ export default function TaskDetailPage() {
           />
         </aside>
       </div>
-
-      <PrepareAgentRunModal
-        open={prepareRunOpen}
-        onOpenChange={setPrepareRunOpen}
-        task={detail}
-        workspaceName={detail.workspaceName ?? undefined}
-      />
     </div>
   );
 }
@@ -664,7 +657,7 @@ function DocumentsTab({
               ) : (
                 <div className="p-4 bg-card">
                   {doc.body ? (
-                    <MarkdownView body={doc.body} variant="compact" />
+                    <MarkdownView body={doc.body} variant="compact" citedContext={doc.citedContext} />
                   ) : (
                     <em className="text-sm text-ink-soft">Empty</em>
                   )}

@@ -52,8 +52,5 @@ export { GanttStrip, type GanttStripProps, type GanttItem } from "./gantt-strip"
 // Markdown rendering
 export { MarkdownView, type MarkdownViewProps } from "./markdown-view";
 
-// Agent run preparation (paperclip semi-assisted)
-export { PrepareAgentRunModal, type PrepareAgentRunModalProps } from "./prepare-agent-run-modal";
-
 // Campaigns
 export { CampaignsTable, type CampaignsTableProps } from "./campaigns-table";

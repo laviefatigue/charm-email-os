@@ -104,8 +104,8 @@ export default function ProjectDetailPage() {
     return (
       <div className="px-8 py-8 max-w-6xl mx-auto">
         <p className="text-rust">{error ?? "Project not found"}</p>
-        <Link href="/projects" className="text-copper hover:underline text-sm mt-2 inline-block">
-          ← Back to projects
+        <Link href="/" className="text-copper hover:underline text-sm mt-2 inline-block">
+          ← Back to home
         </Link>
       </div>
     );
@@ -121,14 +121,17 @@ export default function ProjectDetailPage() {
     return groups;
   })();
 
+  const backHref = project.workspaceId ? `/workspaces/${project.workspaceId}/projects` : "/";
+  const backLabel = project.workspaceId ? "Workspace projects" : "Home";
+
   return (
     <div className="px-8 py-8 max-w-7xl w-full mx-auto">
       <Link
-        href="/projects"
+        href={backHref}
         className="inline-flex items-center gap-1 text-xs text-ink-soft hover:text-foreground mb-3 transition-colors"
       >
         <ChevronLeft className="h-3 w-3" aria-hidden="true" />
-        All projects
+        {backLabel}
       </Link>
 
       <PageHeader

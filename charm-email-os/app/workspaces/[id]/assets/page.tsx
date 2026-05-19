@@ -10,7 +10,18 @@ import * as React from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { format, formatDistanceToNowStrict } from "date-fns";
-import { FileText, Download, ExternalLink } from "lucide-react";
+import {
+  FileText,
+  Download,
+  ExternalLink,
+  BarChart3,
+  FileSearch,
+  MessagesSquare,
+  GitBranch,
+  ClipboardList,
+  StickyNote,
+  type LucideIcon,
+} from "lucide-react";
 import { taskApi } from "@/lib/api";
 import { PageHeader } from "@/components/charm";
 import type { TaskDocument } from "@/lib/types";
@@ -18,23 +29,63 @@ import { cn } from "@/lib/utils";
 
 type DocumentRow = TaskDocument & { taskTitle?: string };
 
-const DOC_KEY_LABELS: Record<string, string> = {
-  analysis: "Analysis",
-  research_report: "Research report",
-  review_summary: "Review summary",
-  repo_op: "Repo op",
-  plan: "Plan",
-  notes: "Notes",
+/**
+ * Mirrors the canonical document_templates seed in migrations/120_document_templates.sql.
+ * When the backend ships a /api/document-templates endpoint, swap this constant for a
+ * fetch. Keeping it in-sync is enforced by docs/architecture/skill-outputs-contract.md.
+ */
+interface DocTemplate {
+  title: string;
+  description: string;
+  tone: string;
+  Icon: LucideIcon;
+}
+const DOC_TEMPLATES: Record<string, DocTemplate> = {
+  analysis: {
+    title: "Analysis Report",
+    description: "Data-grounded analysis from the Data Analyst. CharmDB queries with ESP-aware aggregation.",
+    tone: "border-amber text-amber",
+    Icon: BarChart3,
+  },
+  research_report: {
+    title: "Research Report",
+    description: "External research with verified citations from the Researcher.",
+    tone: "border-sky text-sky",
+    Icon: FileSearch,
+  },
+  review_summary: {
+    title: "Review Summary",
+    description: "Call transcript review from the Day AI Reviewer.",
+    tone: "border-sage text-sage",
+    Icon: MessagesSquare,
+  },
+  repo_op: {
+    title: "Repo Operations Log",
+    description: "Context-repo operations from the GitHub Admin. All mutations are operator-approved proposals.",
+    tone: "border-copper text-copper",
+    Icon: GitBranch,
+  },
+  plan: {
+    title: "Plan",
+    description: "Operator-authored work plan. Free-form structure.",
+    tone: "border-honey text-honey",
+    Icon: ClipboardList,
+  },
+  notes: {
+    title: "Notes",
+    description: "Free-form notes — anything that doesn't fit another template.",
+    tone: "border-ink-soft text-ink-soft",
+    Icon: StickyNote,
+  },
 };
 
-const DOC_KEY_TONE: Record<string, string> = {
-  analysis: "border-amber text-amber",
-  research_report: "border-sky text-sky",
-  review_summary: "border-sage text-sage",
-  repo_op: "border-copper text-copper",
-  plan: "border-honey text-honey",
-  notes: "border-ink-soft text-ink-soft",
+const FALLBACK_TEMPLATE: DocTemplate = {
+  title: "Custom",
+  description: "Document with a non-standard doc_key.",
+  tone: "border-border text-ink-soft",
+  Icon: FileText,
 };
+const getTemplate = (docKey: string): DocTemplate => DOC_TEMPLATES[docKey] ?? FALLBACK_TEMPLATE;
 
 export default function WorkspaceAssetsPage() {
   const { id } = useParams<{ id: string }>();
@@ -107,11 +158,13 @@ export default function WorkspaceAssetsPage() {
         {(["all", "analysis", "research_report", "review_summary", "repo_op", "plan", "notes"]).map((k) => {
           const count = keyCounts[k] ?? 0;
           const active = filterKey === k;
+          const tpl = k === "all" ? null : getTemplate(k);
           return (
             <button
               key={k}
               type="button"
               onClick={() => setFilterKey(k)}
+              title={tpl?.description}
               className={cn(
                 "inline-flex items-center gap-2 h-7 px-3 rounded-sm text-xs font-medium border-[1.5px] transition-colors",
                 active
@@ -119,7 +172,8 @@ export default function WorkspaceAssetsPage() {
                   : "bg-transparent text-ink-soft border-border hover:border-border-bold hover:text-foreground"
               )}
             >
-              {k === "all" ? "All" : DOC_KEY_LABELS[k] ?? k}
+              {tpl?.Icon && <tpl.Icon className="h-3 w-3" aria-hidden="true" />}
+              {k === "all" ? "All" : tpl?.title ?? k}
               <span className="font-mono">{count}</span>
             </button>
           );
@@ -142,18 +196,22 @@ export default function WorkspaceAssetsPage() {
         </div>
       ) : (
         <ul className="space-y-3">
-          {filtered.map((d) => (
+          {filtered.map((d) => {
+            const tpl = getTemplate(d.docKey);
+            return (
             <li
               key={d.id}
               className="flex items-start gap-3 p-4 rounded-lg border-[1.5px] border-border-bold bg-card hover:shadow-flat-sm transition-shadow"
             >
               <span
                 className={cn(
-                  "inline-flex items-center px-2 h-5 rounded-sm border-[1.5px] text-[10px] font-medium uppercase tracking-wider shrink-0 mt-0.5",
-                  DOC_KEY_TONE[d.docKey] ?? "border-border text-ink-soft"
+                  "inline-flex items-center gap-1 px-2 h-5 rounded-sm border-[1.5px] text-[10px] font-medium uppercase tracking-wider shrink-0 mt-0.5",
+                  tpl.tone
                 )}
+                title={tpl.description}
               >
-                {DOC_KEY_LABELS[d.docKey] ?? d.docKey}
+                <tpl.Icon className="h-3 w-3" aria-hidden="true" />
+                {tpl.title}
               </span>
               <div className="flex-1 min-w-0">
                 <Link
@@ -198,7 +256,8 @@ export default function WorkspaceAssetsPage() {
                 </button>
               </div>
             </li>
-          ))}
+            );
+          })}
         </ul>
       )}
     </div>

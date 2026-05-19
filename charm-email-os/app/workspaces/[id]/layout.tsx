@@ -54,6 +54,9 @@ export default async function WorkspaceLayout({
             <h1 className="display-village text-5xl truncate mt-1">
               {workspace.name}
             </h1>
+            <p className="mt-1.5 text-xs text-ink-soft">
+              You&apos;re the CEO of {workspace.name} &mdash; agents propose, you approve.
+            </p>
           </div>
           <div className="flex items-center gap-2 shrink-0 pb-2">
             <StatusPill

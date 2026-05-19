@@ -8,20 +8,31 @@
 import * as React from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { BookOpen } from "lucide-react";
 import { cn } from "@/lib/utils";
+import type { CitedContextItem } from "@/lib/types";
 
 export interface MarkdownViewProps {
   body: string;
   className?: string;
   /** "compact" tightens spacing for inline use (task detail). "article" is reading mode. */
   variant?: "compact" | "article";
+  /**
+   * Source citations from the agent that wrote this document. When provided
+   * and non-empty, renders a "Sources" rail alongside the body so the operator
+   * can audit what context the agent drew from. Drawn from task_documents.cited_context.
+   */
+  citedContext?: CitedContextItem[] | null;
 }
 
-export function MarkdownView({ body, className, variant = "compact" }: MarkdownViewProps) {
+export function MarkdownView({ body, className, variant = "compact", citedContext }: MarkdownViewProps) {
   const proseClass = variant === "article" ? "prose-article" : "prose-compact";
+  const sources = (citedContext ?? []).filter((c) => c.path);
+  const hasSources = sources.length > 0;
   return (
-    <div className={cn("markdown-view", proseClass, className)}>
-      <ReactMarkdown
+    <div className={cn("markdown-view-wrapper", hasSources && "grid grid-cols-[1fr_auto] gap-6 items-start", className)}>
+      <div className={cn("markdown-view", proseClass, "min-w-0")}>
+        <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         components={{
           h1: ({ children }) => (
@@ -104,6 +115,32 @@ export function MarkdownView({ body, className, variant = "compact" }: MarkdownV
       >
         {body}
       </ReactMarkdown>
+      </div>
+      {hasSources && (
+        <aside
+          aria-label="Sources cited by the agent"
+          className="w-64 shrink-0 rounded-lg border-[1.5px] border-border-bold bg-card p-3 sticky top-4"
+        >
+          <p className="text-xs uppercase tracking-wider text-ink-soft inline-flex items-center gap-1.5 mb-2">
+            <BookOpen className="h-3 w-3" aria-hidden="true" />
+            Sources
+            <span className="ml-auto font-mono text-foreground">{sources.length}</span>
+          </p>
+          <ul className="space-y-2">
+            {sources.map((src, i) => (
+              <li key={`${src.path}-${i}`} className="text-xs leading-relaxed">
+                <p className="font-mono text-foreground break-all">{src.path}</p>
+                {src.commitSha && (
+                  <p className="font-mono text-ink-soft mt-0.5">@{src.commitSha.slice(0, 7)}</p>
+                )}
+                {src.relevance && (
+                  <p className="text-ink-soft mt-0.5 italic">{src.relevance}</p>
+                )}
+              </li>
+            ))}
+          </ul>
+        </aside>
+      )}
     </div>
   );
 }

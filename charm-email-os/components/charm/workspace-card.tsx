@@ -39,6 +39,8 @@ export interface WorkspaceCardData {
   campaignCount?: number;
   /** Package name from subscription, e.g. "Growth". */
   packageName?: string | null;
+  /** Target live-inbox count from the assigned package (NULL if no package). */
+  packageInboxTarget?: number | null;
   /** True when the EmailBison sync daemon is managing this workspace + it has infra. */
   isActive?: boolean;
   lastEventAt?: Date | string | null;

@@ -131,6 +131,7 @@ function toWorkspaceCardData(c: ApiClient): WorkspaceCardData {
     realDomainCount: c.domain_count,
     campaignCount: c.campaign_count,
     packageName: c.package_name,
+    packageInboxTarget: c.package_inbox_target ?? null,
     // Active = the orchestrator is managing this workspace AND it has actual infrastructure.
     // Drives the sidebar active/inactive grouping.
     isActive: c.sync_enabled && c.inbox_count > 0,

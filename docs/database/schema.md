@@ -818,7 +818,7 @@ WHERE today.workspace_id = $1 AND today.snapshot_date = $2;
 
 See [docs/architecture/daily-volume-semantics.md](../architecture/daily-volume-semantics.md) for production-vs-total-capacity distinction and warmup-volume blindspot details.
 
-**Authoritative column comments**: Migration [041_daily_volume_snapshots.sql](../../migrations/041_daily_volume_snapshots.sql) originally wrote misleading COMMENTs; [133_daily_volume_semantic_comments.sql](../../migrations/133_daily_volume_semantic_comments.sql) rewrites them to match reality.
+**Authoritative column comments**: Migration [041_daily_volume_snapshots.sql](../../migrations/041_daily_volume_snapshots.sql) originally wrote misleading COMMENTs; [137_daily_volume_semantic_comments.sql](../../migrations/137_daily_volume_semantic_comments.sql) rewrites them to match reality.
 
 ## User & Activity Tables
 

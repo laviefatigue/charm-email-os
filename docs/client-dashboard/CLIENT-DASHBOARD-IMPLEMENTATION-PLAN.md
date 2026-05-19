@@ -1,10 +1,20 @@
 ---
 title: Client Dashboard Implementation Plan
 created: 2026-02-23
+updated: 2026-05-18
 project: Charm Email OS
 repository: /home/claw/work/charm-email-os
+status: superseded-in-parts
 tags: [implementation-plan, dashboard, client-facing]
 ---
+
+> **2026-05-18 NOTE — Partially superseded.** The internal operator Infrastructure dashboard (under [charm-email-os/app/workspaces/[id]/infrastructure](../../charm-email-os/app/workspaces/[id]/infrastructure)) has shipped and supersedes the chart sections of this plan. Specific corrections:
+>
+> - The "emails_sent stored as daily total" framing in this doc is **wrong** — the value is cumulative-to-date. Real semantics: [docs/architecture/daily-volume-semantics.md](../architecture/daily-volume-semantics.md).
+> - The "capacity_utilization_pct" column shown here is mathematically broken under the actual semantics. Don't build on it.
+> - The "daily_capacity_available = SUM(daily_limit) for all live inboxes" description is incomplete: in reality it's filtered to `status='Connected'` AND includes incubating inboxes whose quota mostly goes to warmup. The operator dashboard splits this into "production capacity" vs "total daily quota" — see the semantics doc.
+>
+> Sections of this plan still useful as reference: backfill script design (worked correctly), the high-level chart shape, the dashboard layout sketches. The implementation specifics for data model + column semantics are obsolete.
 
 # Client Dashboard Implementation Plan
 
