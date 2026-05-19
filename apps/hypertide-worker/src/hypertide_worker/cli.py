@@ -107,7 +107,11 @@ async def _inspect(domain_name: str) -> None:
     try:
         db_row = await conn.fetchrow(
             """
-            SELECT d.*, w.workspace_name, w.manages_via_hypertide
+            SELECT d.*, w.workspace_name,
+                   EXISTS (
+                       SELECT 1 FROM client_hypertide_subscriptions chs
+                       WHERE chs.client_id = w.client_id
+                   ) AS client_is_ht_tracked
             FROM domains d LEFT JOIN workspaces w ON w.id = d.workspace_id
             WHERE LOWER(d.domain_name) = LOWER($1)
             """,
@@ -147,7 +151,10 @@ async def _mark_legacy(ws_name: str | None, apply: bool) -> None:
         sql = """
             SELECT d.id, d.domain_name, w.workspace_name
             FROM domains d JOIN workspaces w ON w.id = d.workspace_id
-            WHERE w.manages_via_hypertide = TRUE
+            WHERE EXISTS (
+                  SELECT 1 FROM client_hypertide_subscriptions chs
+                  WHERE chs.client_id = w.client_id
+              )
               AND d.is_legacy = FALSE
               AND d.hypertide_record_id IS NULL
         """

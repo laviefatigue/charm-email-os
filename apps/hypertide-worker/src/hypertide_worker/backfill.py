@@ -74,13 +74,18 @@ async def run_backfill(
     revert_records = await ht.verify_revert_per_subscription(sub_ids)
     revert_by_id = {r["recordId"]: r for r in revert_records}
 
-    # Existing in-scope DB rows (workspace must be HT-managed).
+    # Existing in-scope DB rows (workspace's client must be HT-tracked).
+    # Per step 10 of the data-model plan: HT scope is "client has any chs row"
+    # rather than the per-workspace manages_via_hypertide flag.
     existing = await conn.fetch(
         """
         SELECT d.id, d.domain_name, d.workspace_id, d.hypertide_record_id, d.is_legacy
         FROM domains d
         JOIN workspaces w ON w.id = d.workspace_id
-        WHERE w.manages_via_hypertide = TRUE
+        WHERE EXISTS (
+            SELECT 1 FROM client_hypertide_subscriptions chs
+            WHERE chs.client_id = w.client_id
+        )
         """
     )
     existing_by_name: dict[str, asyncpg.Record] = {r["domain_name"].lower(): r for r in existing}
@@ -88,8 +93,11 @@ async def run_backfill(
     # Workspace catalog for assignment heuristics.
     workspaces = await conn.fetch(
         """
-        SELECT id, workspace_name FROM workspaces
-        WHERE manages_via_hypertide = TRUE
+        SELECT w.id, w.workspace_name FROM workspaces w
+        WHERE EXISTS (
+            SELECT 1 FROM client_hypertide_subscriptions chs
+            WHERE chs.client_id = w.client_id
+        )
         """
     )
     ws_by_name = {w["workspace_name"]: w["id"] for w in workspaces}

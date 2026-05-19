@@ -497,7 +497,10 @@ async def report_hypertide_drift(
             FROM domains d
             LEFT JOIN workspaces w ON w.id = d.workspace_id
             WHERE w.is_active = TRUE
-              AND w.manages_via_hypertide = TRUE
+              AND EXISTS (
+                  SELECT 1 FROM client_hypertide_subscriptions chs
+                  WHERE chs.client_id = w.client_id
+              )
               AND d.pool_status IS DISTINCT FROM 'cancelled'
         )
         SELECT

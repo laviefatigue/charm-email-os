@@ -110,15 +110,21 @@ What the numbers mean:
 ## Manual interventions
 
 **A workspace was added that has HT-managed domains:**
-1. Confirm `workspaces.manages_via_hypertide = TRUE` for it (default)
+1. Confirm the workspace's parent client has at least one `client_hypertide_subscriptions` row (HT-tracked client). New HT subs auto-create one via the worker's first-sync branch.
 2. Run `hypertide-worker backfill` to bind matching domains
 3. Verify via `hypertide-worker audit` — drift count should drop
 
-**A workspace shouldn't be HT-tracked (friend occupancy):**
+**A client shouldn't be HT-tracked (friend occupancy):**
 ```sql
-UPDATE workspaces SET manages_via_hypertide = FALSE WHERE workspace_name = 'X';
+UPDATE clients SET client_status = 'friends_and_family' WHERE id = '...';
 ```
-Subsequent audits skip it.
+The audit still records the client's chs binding (so change-tracking remains), but the v_operational_* views exclude it from operational reads.
+
+**Drop a client from HT tracking entirely (rare — only if billing relationship ends):**
+```sql
+DELETE FROM client_hypertide_subscriptions WHERE client_id = '...';
+```
+Subsequent audits skip the client's workspaces from the HT-scope query.
 
 **A specific domain shows wrong state:**
 ```bash

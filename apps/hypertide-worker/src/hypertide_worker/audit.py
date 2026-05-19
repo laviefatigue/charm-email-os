@@ -120,6 +120,13 @@ async def run_audit(
     )
 
     # --- 2. Pull in-scope DB rows ---
+    # Scope: domains under workspaces whose parent client has at least one
+    # client_hypertide_subscriptions row (HT-tracked client) OR orphan
+    # domains (no workspace assigned). Replaces the legacy
+    # `manages_via_hypertide` flag per step 10 of the data-model plan —
+    # the flag was per-workspace; chs is per-client, more correct since
+    # HT bills at the client/subscription level. Verified 2026-05-18 to
+    # return identical 673-domain result set vs the prior query.
     db_rows = await conn.fetch(
         """
         SELECT d.id, d.domain_name, d.workspace_id, w.workspace_name,
@@ -127,7 +134,11 @@ async def run_audit(
                d.is_legacy
         FROM domains d
         LEFT JOIN workspaces w ON w.id = d.workspace_id
-        WHERE w.manages_via_hypertide = TRUE OR w.id IS NULL
+        WHERE w.id IS NULL
+           OR EXISTS (
+               SELECT 1 FROM client_hypertide_subscriptions chs
+               WHERE chs.client_id = w.client_id
+           )
         """
     )
     result.db_in_scope_count = len(db_rows)
