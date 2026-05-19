@@ -149,14 +149,13 @@ class WorkspaceWriteOrchestrator:
                 p.target_live_count        AS package_live_target,
                 p.target_reserve_count     AS package_reserve_minimum,
                 wak.key_token
-            FROM workspaces w
+            FROM v_operational_workspaces w
             JOIN workspace_api_keys wak
                 ON wak.workspace_id = w.id
                 AND wak.is_active = TRUE
             LEFT JOIN workspace_packages p
                 ON p.id = w.package_id
-            WHERE w.is_active = TRUE
-              AND w.emailbison_workspace_id IS NOT NULL
+            WHERE w.emailbison_workspace_id IS NOT NULL
             ORDER BY w.workspace_name
         """)
 

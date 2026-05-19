@@ -96,9 +96,8 @@ class LifecycleTagSyncModule:
 
         workspaces = await self.db.fetch("""
             SELECT id, workspace_name, emailbison_workspace_id
-            FROM workspaces
+            FROM v_operational_workspaces
             WHERE emailbison_workspace_id IS NOT NULL
-            AND is_active = TRUE
         """)
 
         print(f"[LifecycleTagSync] Processing {len(workspaces)} workspaces")

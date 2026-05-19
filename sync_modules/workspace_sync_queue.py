@@ -161,14 +161,13 @@ class WorkspaceSyncQueue:
             result = await self.db.execute(f"""
                 INSERT INTO workspace_sync_queue (workspace_id, sync_type, priority)
                 SELECT w.id, '{sync_type}', $1
-                FROM workspaces w
+                FROM v_operational_workspaces w
                 -- Only workspaces with an active workspace-scoped API key
                 JOIN workspace_api_keys wak
                     ON wak.workspace_id = w.id
                     AND wak.is_active = TRUE
-                -- Only active workspaces with an EmailBison workspace ID
-                WHERE w.is_active = TRUE
-                  AND w.emailbison_workspace_id IS NOT NULL
+                -- Only workspaces with an EmailBison workspace ID
+                WHERE w.emailbison_workspace_id IS NOT NULL
                   -- Check last successful sync time
                   AND NOT EXISTS (
                       SELECT 1 FROM sync_status ss
@@ -650,9 +649,8 @@ class WorkspaceSyncQueue:
         """
         missing = await self.db.fetch("""
             SELECT w.workspace_name, w.emailbison_workspace_id
-            FROM workspaces w
-            WHERE w.is_active = TRUE
-              AND w.emailbison_workspace_id IS NOT NULL
+            FROM v_operational_workspaces w
+            WHERE w.emailbison_workspace_id IS NOT NULL
               AND NOT EXISTS (
                   SELECT 1 FROM workspace_api_keys wak
                   WHERE wak.workspace_id = w.id

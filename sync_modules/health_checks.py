@@ -244,8 +244,7 @@ class HealthCheckModule:
 
             workspaces = await self.db.fetch("""
                 SELECT id, workspace_name
-                FROM workspaces
-                WHERE is_active = TRUE
+                FROM v_operational_workspaces
             """)
 
             total_triggers = 0

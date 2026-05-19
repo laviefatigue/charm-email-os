@@ -133,9 +133,8 @@ class SetTagSyncModule:
         workspaces = await self.db.fetch("""
             SELECT id, workspace_name, emailbison_workspace_id,
                    a_set_tag_name, b_set_tag_name
-            FROM workspaces
+            FROM v_operational_workspaces
             WHERE emailbison_workspace_id IS NOT NULL
-            AND is_active = TRUE
         """)
 
         print(f"[SetTagSync] Processing {len(workspaces)} workspaces")

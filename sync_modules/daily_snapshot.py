@@ -245,10 +245,13 @@ class DailySnapshotModule:
         logger.info(f"Starting daily snapshot for all workspaces (date: {snapshot_date})")
 
         async with self.db.acquire() as conn:
-            # Get all workspaces that have sender accounts
+            # Get all operational workspaces that have sender accounts.
+            # v_operational_workspaces filters out F&F + inactive parent clients
+            # AND workspaces with is_active=FALSE — keeps snapshot scoped to
+            # the active operational fleet only.
             workspaces = await conn.fetch("""
                 SELECT DISTINCT w.id, w.workspace_name
-                FROM workspaces w
+                FROM v_operational_workspaces w
                 INNER JOIN sender_accounts sa ON sa.workspace_id = w.id
             """)
 

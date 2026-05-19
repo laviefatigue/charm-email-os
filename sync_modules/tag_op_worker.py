@@ -170,12 +170,11 @@ class TagOpWorker:
                 w.workspace_name,
                 w.emailbison_workspace_id,
                 wak.key_token
-            FROM workspaces w
+            FROM v_operational_workspaces w
             JOIN workspace_api_keys wak
                 ON wak.workspace_id = w.id
                 AND wak.is_active = TRUE
-            WHERE w.is_active = TRUE
-              AND w.emailbison_workspace_id IS NOT NULL
+            WHERE w.emailbison_workspace_id IS NOT NULL
             ORDER BY w.workspace_name
         """)
 

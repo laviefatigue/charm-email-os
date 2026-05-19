@@ -71,10 +71,9 @@ async def get_per_workspace_summary(db: asyncpg.Pool) -> List[Dict[str, Any]]:
                   AND sa.is_active = TRUE
                   AND COALESCE(sa.warmup_started_at, sa.created_at) < NOW() - INTERVAL '14 days'
             ) AS stuck_incubation
-        FROM workspaces w
+        FROM v_operational_workspaces w
         LEFT JOIN sender_accounts sa ON sa.workspace_id = w.id
         LEFT JOIN domains d ON sa.domain_id = d.id
-        WHERE w.is_active = TRUE
         GROUP BY w.id, w.workspace_name
         HAVING COUNT(sa.id) > 0
         ORDER BY w.workspace_name
