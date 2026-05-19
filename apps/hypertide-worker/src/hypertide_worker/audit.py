@@ -21,6 +21,7 @@ from typing import Any
 
 import asyncpg
 
+from .chs_sync import ChsSyncResult, ensure_chs_rows
 from .classifier import Classification, HTState, classify, expected_inbox_count
 from .ht_client import HypertideClient
 
@@ -30,17 +31,22 @@ logger = logging.getLogger(__name__)
 @dataclass
 class AuditResult:
     """
-    Parity model: our DB is source of truth for which domains we manage.
-    HT records without a DB match are friends-and-family (vendor-side),
-    NOT drift. The parity number is "of our N managed domains, how many
-    are linked to HT and synced."
+    Per the revised parity model (step 5 / DECISION 1+5 of the data-model plan):
+    chs is now the binding source-of-truth, not domain_name match. Every HT
+    subscription gets a chs row classified by sending_tool; F&F is a positive
+    tag at the client level, not absence-of-DB-evidence.
+
+    The matched/db_only/ht_friends_and_family counters below are kept for
+    operational reporting at the per-record level (each HT order → one domain
+    row); they're computed by joining HT records to domains by domain_name as
+    before. The new ChsSyncResult covers subscription-level reconciliation.
     """
     ht_active_count: int = 0                # total in /orders/active (includes friends-and-family)
     ht_pending_count: int = 0
     db_in_scope_count: int = 0              # OUR universe — what we manage
     matched: int = 0                        # subset linked to a known HT record
     db_only: int = 0                        # DB rows without an HT match (legacy or pre-HT)
-    ht_friends_and_family: int = 0          # HT-only, status Done — vendor-side, informational
+    ht_no_db_row: int = 0                   # HT-only, status Done — no DB domain match (F&F or Instantly-pending)
     ht_incoming_count: int = 0             # HT-only, status Todo/In progress — domains we ordered, provisioning
     ht_incoming_examples: list[dict[str, Any]] = field(default_factory=list)
     drift_to_be_cancelled: int = 0
@@ -51,6 +57,7 @@ class AuditResult:
     drift_examples: list[dict[str, Any]] = field(default_factory=list)   # representative rows
     rows_updated: int = 0
     skipped_workspaces: list[str] = field(default_factory=list)
+    chs_sync: ChsSyncResult = field(default_factory=ChsSyncResult)
 
     @property
     def parity_pct(self) -> float:
@@ -88,6 +95,14 @@ async def run_audit(
     revert_records = await ht.verify_revert_per_subscription(sub_ids)
     revert_by_id = {r["recordId"]: r for r in revert_records}
 
+    # --- 1b. chs reconciliation (subscription-keyed sync; step 5 of plan) ---
+    # Walk every sub in /orders/active and ensure a chs row exists. New subs
+    # get classified by sending_tool per DECISION 5 (revised); known subs get
+    # last_seen_at touched. This is what enables the change tracker (step 9)
+    # to detect cancellations by absence on subsequent passes.
+    logger.info("chs sync across %d subscriptions...", len(sub_ids))
+    result.chs_sync = await ensure_chs_rows(conn, active, apply=apply)
+
     # --- 2. Pull in-scope DB rows ---
     db_rows = await conn.fetch(
         """
@@ -124,8 +139,9 @@ async def run_audit(
     #     ordered, still in the 24-48h provisioning window. Not yet in our DB
     #     because EmailBison hasn't seen its inboxes land. Surfacing these
     #     gives HT-side visibility during the gap before EB discovery.
-    #   - friends-and-family: status Done, no DB row. Vendor-side
-    #     subscriptions outside our GTM work. Genuinely ignored.
+    #   - no_db_row: status Done, no domain row. Subscription-level
+    #     classification (F&F vs operational-pending-extraction) is on the
+    #     chs row at result.chs_sync — this counter is per-record only.
     for entry in ht_only_records:
         if entry["cls"].state is HTState.IN_FLIGHT:
             result.ht_incoming_count += 1
@@ -138,7 +154,7 @@ async def run_audit(
                 "created_at": ht_rec.get("createdAt"),
             })
         else:
-            result.ht_friends_and_family += 1
+            result.ht_no_db_row += 1
 
     # --- 4. Per-workspace tallies + drift counts ---
     for db_row, _ht_rec, cls in matched_records:
@@ -369,7 +385,7 @@ def _to_metadata_json(result: AuditResult) -> str:
             "matched": result.matched,
             "parity_pct": result.parity_pct,
             "db_only": result.db_only,
-            "ht_friends_and_family": result.ht_friends_and_family,
+            "ht_no_db_row": result.ht_no_db_row,
             "ht_incoming_count": result.ht_incoming_count,
             "ht_incoming_examples": result.ht_incoming_examples,
             "drift_to_be_cancelled": result.drift_to_be_cancelled,
@@ -378,5 +394,13 @@ def _to_metadata_json(result: AuditResult) -> str:
             "drift_ht_cancelled_still_sending": result.drift_ht_cancelled_still_sending,
             "drift_examples": result.drift_examples,
             "by_workspace": result.by_workspace,
+            "chs_sync": {
+                "subs_seen": result.chs_sync.subs_seen,
+                "already_bound": result.chs_sync.already_bound,
+                "last_seen_touched": result.chs_sync.last_seen_touched,
+                "org_name_refreshed": result.chs_sync.org_name_refreshed,
+                "new_clients_client_status": result.chs_sync.new_clients_client_status,
+                "new_clients_fnf": result.chs_sync.new_clients_fnf,
+            },
         }
     )

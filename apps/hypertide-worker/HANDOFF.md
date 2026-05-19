@@ -1,13 +1,14 @@
 # hypertide-worker — Operator Handoff
 
-> Phase 1 lives. Phase 2+ (cancellation, order placement, web UI) deferred per [docs/architecture/hypertide-service.md](../../docs/architecture/hypertide-service.md).
+> Phase 1 lives. Step 5 of [docs/plans/hypertide-data-model-and-change-tracking.md](../../docs/plans/hypertide-data-model-and-change-tracking.md) shipped 2026-05-18 — ingest is now subscription-keyed via `client_hypertide_subscriptions`. Phase 2+ (cancellation, order placement, web UI) deferred per [docs/architecture/hypertide-service.md](../../docs/architecture/hypertide-service.md).
 
 ## What this service owns
 
-- **Source of truth for HT state in our DB.** Populates `domains.hypertide_*` columns from HT API.
-- **Drift detection.** Logs gaps between HT (`/orders/active`, `verify-revert`) and `domains` table to `sync_audit_log`.
-- **Legacy classification.** Flags domains in HT-managed workspaces with no matching HT record as `is_legacy=TRUE`.
-- **New domain row creation.** When HT shows a record we don't have, INSERTs a new `domains` row with `domain_source='hypertide'`.
+- **Subscription-keyed binding (chs sync).** Every HT subscription in `/orders/active` gets a row in `client_hypertide_subscriptions` per audit pass. Last-seen-at touched; first-sight subs auto-classified by `sending_tool` per DECISION 5 (revised): Email Bison / Instantly.ai → `client_status='client'`, Smartlead.ai / unknown → `friends_and_family`. New `clients` rows are created on demand for unknown HT subscriptions.
+- **Source of truth for HT state in our DB.** Populates `domains.hypertide_*` columns from HT API (per-record snapshot UPDATE; uses `domain_name` join for the record-to-domain link).
+- **Drift detection.** Logs gaps between HT (`/orders/active`, `verify-revert`) and `domains` table to `sync_audit_log`. Also detects HT-cancelled-but-EB-still-connected (the money-leaking case).
+- **Legacy classification.** Flags domains in HT-managed workspaces with no matching HT record as `is_legacy=TRUE` (semantic = "acquired outside HT pipeline", per Concern C in the plan).
+- **New domain row creation.** Only via explicit `backfill --onboard-workspace 'X'` operator flag. Default audit does NOT auto-INSERT domains.
 
 ## What this service does NOT own (Phase 2+)
 
@@ -57,7 +58,10 @@ SELECT (metadata->>'parity_pct')                       AS parity_pct,
        records_updated,
        (metadata->>'drift_ht_cancelled_inboxes_connected') AS drift_cancelled_connected,
        (metadata->>'ht_incoming_count')                AS incoming,
-       (metadata->>'ht_friends_and_family')            AS friends_family,
+       (metadata->>'ht_no_db_row')                     AS ht_no_db_row,
+       (metadata->'chs_sync'->>'subs_seen')            AS subs_seen,
+       (metadata->'chs_sync'->>'new_clients_client_status') AS new_client_subs,
+       (metadata->'chs_sync'->>'new_clients_fnf')      AS new_fnf_subs,
        started_at
 FROM sync_audit_log
 WHERE sync_type = 'hypertide_audit'
@@ -77,9 +81,15 @@ What the numbers mean:
   Domains we ordered, still in the 24-48h provisioning window before
   EmailBison sees their inboxes. Expected to be non-zero when actively
   ordering; should clear as inboxes land.
-- **friends_family** — HT records (status Done) with no DB row. Vendor-side
-  subscriptions outside our GTM work. Informational; we deliberately do not
-  mirror these.
+- **ht_no_db_row** — per-record count of HT orders (status Done) whose domain
+  isn't in our `domains` table. Includes both F&F and Instantly-extraction-pending.
+  Subscription-level classification is on the `chs.client_status` column —
+  this counter is per-record diagnostic only.
+- **new_client_subs / new_fnf_subs** — newly-discovered HT subscriptions
+  classified into `clients` rows this audit (DECISION 5 dispatch). A non-zero
+  number on a steady-state audit means an HT sub got created since the prior
+  pass. Operator should sanity-check `clients` for the auto-created row and
+  promote/demote `client_status` if the auto-classification is wrong.
 
 ## Manual interventions
 

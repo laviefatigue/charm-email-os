@@ -24,15 +24,19 @@ async def run() -> None:
         async with HypertideClient(cfg.hypertide_api_url, cfg.hypertide_api_key) as ht:
             result = await run_audit(conn, ht, apply=True)
         logger.info(
-            "audit_drift complete: matched=%d (%.1f%%) friends_family=%d incoming=%d "
-            "db_only=%d to_be_cancelled=%d ht_cancelled_eb_connected=%d",
+            "audit_drift complete: matched=%d (%.1f%%) ht_no_db_row=%d incoming=%d "
+            "db_only=%d to_be_cancelled=%d ht_cancelled_eb_connected=%d "
+            "chs[seen=%d new_client=%d new_fnf=%d]",
             result.matched,
             result.parity_pct,
-            result.ht_friends_and_family,
+            result.ht_no_db_row,
             result.ht_incoming_count,
             result.db_only,
             result.drift_to_be_cancelled,
             result.drift_ht_cancelled_inboxes_connected,
+            result.chs_sync.subs_seen,
+            result.chs_sync.new_clients_client_status,
+            result.chs_sync.new_clients_fnf,
         )
     finally:
         await conn.close()
