@@ -1290,7 +1290,10 @@ class KillProcessor:
                     elif action == 'burned_reserve':
                         print(f"    [DOMAIN KILL] Burned reserve domain {domain_name} (no promotion needed)")
             except Exception as e:
-                # Function may not exist yet - fall back to manual update
+                # Function may not exist yet - fall back to manual update.
+                # Writes the DECISION 6 verdict columns in lockstep with the
+                # burn so the change tracker has the same audit trail whether
+                # the SQL function or the fallback fired.
                 print(f"    [DOMAIN KILL] burn_domain_and_promote not available: {e}")
                 await self.db.execute("""
                     UPDATE domains
@@ -1298,6 +1301,8 @@ class KillProcessor:
                         pool_status = 'burned',
                         burned_at = NOW(),
                         burn_trigger = $2,
+                        qualifies_for_cancellation_at = NOW(),
+                        qualifies_for_cancellation_reason = $2,
                         updated_at = NOW()
                     WHERE id = $1
                     AND pool_status IN ('live', 'reserve')
