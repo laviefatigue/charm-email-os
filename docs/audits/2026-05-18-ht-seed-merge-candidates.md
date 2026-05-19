@@ -7,9 +7,20 @@ tags: [hypertide, seed, merge, operator-action]
 
 # HT Seed — Post-Seed Variant Merge Candidates
 
-**Applied state (2026-05-18):** merges 1-3 below ran cleanly. Clients went 61 → 54; chs row count unchanged at 211 (no data lost). Ink'd consolidated to 11 chs subs, Root Access to 12, Sammy to 19. No duplicate names remain. `v_operational_clients` returns 28 (= 54 total - 26 F&F).
+**Applied state (2026-05-18):** all 4 merges + all operator reviews done.
 
-Item 4 (`Stone Products Unlimited → SPUI`) is intentionally **not applied** — needs operator verification that they're the same Stripe customer.
+| Step | Result |
+|---|---|
+| Merge 1: Ink'd family (4 → 1) | Ink'd now has 11 chs subs |
+| Merge 2: Root Access dupe | Root Access now has 12 chs subs |
+| Merge 3: Sammy + Sammy AI | Sammy now has 19 chs subs |
+| Merge 4: Stone Products Unlimited → SPUI | SPUI now has 4 chs subs (operator confirmed same customer) |
+| Operator review: 397 Digital + Bridge | flipped to `friends_and_family` (not real customers) |
+| Operator review: Estrada / EventPanda / Neon / Test Workspace | flipped to `client_status='inactive'` (no current HT activity) |
+
+**Final production counts**: 53 clients (21 `'client'` + 28 `'friends_and_family'` + 4 `'inactive'`); 211 chs rows; `v_operational_clients`=21 / `v_operational_workspaces`=15 / `v_operational_domains`=673.
+
+⚠️ The 39 domains under the 4 inactive clients are now excluded from `v_operational_*`. No operational impact until step 6 (read-path migration) lands, but reads that flip to the views post-step-6 will skip them — confirm Estrada/EventPanda/Neon really should be hidden from ops (Test Workspace clearly should).
 
 The 2026-05-18 seed of `client_hypertide_subscriptions` (per migration 123 + 124, scripted in [scripts/seed_client_hypertide_subscriptions.py](../../scripts/seed_client_hypertide_subscriptions.py)) deliberately **did not fuzzy-match** organization names. That avoided the failure mode where a wrong auto-merge silently buries a real new customer under an existing client. Result: a small number of duplicated client rows by design, listed below for one operator-driven cleanup pass.
 
