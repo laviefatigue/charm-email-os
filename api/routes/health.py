@@ -3370,6 +3370,9 @@ async def analyze_domain_capacity_impact():
 
     try:
         # Domain lifespan by ESP - rolled up from inbox data
+        # v_operational_domains scopes to active workspaces under operational
+        # parent clients only — capacity-impact dashboard shouldn't include
+        # F&F / inactive domains.
         domain_lifespan = await fetch_all("""
             WITH domain_stats AS (
                 SELECT
@@ -3386,7 +3389,7 @@ async def analyze_domain_capacity_impact():
                     COUNT(*) FILTER (WHERE sa.inbox_state = 'dead') as dead_inboxes,
                     COUNT(*) FILTER (WHERE sa.inbox_state = 'live') as live_inboxes,
                     COUNT(*) FILTER (WHERE sa.kill_trigger::text IN ('spam_complaint', 'provider_block')) as domain_killing_count
-                FROM domains d
+                FROM v_operational_domains d
                 JOIN sender_accounts sa ON sa.domain_id = d.id
                 GROUP BY d.id, d.domain_name, COALESCE(sa.esp::text, 'unknown')
             )
@@ -3422,7 +3425,7 @@ async def analyze_domain_capacity_impact():
                         WHEN LOWER(COALESCE(sa.esp::text, 'unknown')) = 'gmail' THEN 20
                         ELSE 2
                     END as emails_per_inbox
-                FROM domains d
+                FROM v_operational_domains d
                 JOIN sender_accounts sa ON sa.domain_id = d.id
                 GROUP BY d.id, COALESCE(sa.esp::text, 'unknown')
             )
@@ -3482,7 +3485,7 @@ async def analyze_domain_capacity_impact():
                     COUNT(*) FILTER (WHERE sa.inbox_state = 'live') as live,
                     EXTRACT(day FROM (MAX(sa.killed_at) - MIN(sa.warmup_started_at)))::int as lifespan_days,
                     array_agg(DISTINCT sa.kill_trigger::text) FILTER (WHERE sa.kill_trigger IS NOT NULL) as triggers
-                FROM domains d
+                FROM v_operational_domains d
                 JOIN sender_accounts sa ON sa.domain_id = d.id
                 GROUP BY d.domain_name, COALESCE(sa.esp::text, 'unknown')
             )
