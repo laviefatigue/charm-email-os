@@ -5,6 +5,7 @@
 ## What this service owns
 
 - **Subscription-keyed binding (chs sync).** Every HT subscription in `/orders/active` gets a row in `client_hypertide_subscriptions` per audit pass. Last-seen-at touched; first-sight subs auto-classified by `sending_tool` per DECISION 5 (revised): Email Bison / Instantly.ai → `client_status='client'`, Smartlead.ai / unknown → `friends_and_family`. New `clients` rows are created on demand for unknown HT subscriptions.
+- **Change tracking (step 9 / DECISION 4).** After chs sync, detects subs that disappeared from `/orders/active` since the prior audit and writes `hypertide_status_events` rows (`event_type='cancelled'`). Each cancellation carries a verdict joining `domains.qualifies_for_cancellation_*` within the last 90 days: `justified` (we burned it first), `unjustified` (HT/operator acted out-of-band — flag for operator review), `pending` (no domain-level evidence yet, common for Instantly-only clients). Reappearances written as `event_type='reappeared'`.
 - **Source of truth for HT state in our DB.** Populates `domains.hypertide_*` columns from HT API (per-record snapshot UPDATE; uses `domain_name` join for the record-to-domain link).
 - **Drift detection.** Logs gaps between HT (`/orders/active`, `verify-revert`) and `domains` table to `sync_audit_log`. Also detects HT-cancelled-but-EB-still-connected (the money-leaking case).
 - **Legacy classification.** Flags domains in HT-managed workspaces with no matching HT record as `is_legacy=TRUE` (semantic = "acquired outside HT pipeline", per Concern C in the plan).
@@ -62,11 +63,26 @@ SELECT (metadata->>'parity_pct')                       AS parity_pct,
        (metadata->'chs_sync'->>'subs_seen')            AS subs_seen,
        (metadata->'chs_sync'->>'new_clients_client_status') AS new_client_subs,
        (metadata->'chs_sync'->>'new_clients_fnf')      AS new_fnf_subs,
+       (metadata->'change_detector'->>'cancelled_events_written') AS new_cancellations,
+       (metadata->'change_detector'->>'verdict_unjustified')      AS unjustified_cancellations,
+       (metadata->'change_detector'->>'reappeared_events_written') AS reappearances,
        started_at
 FROM sync_audit_log
 WHERE sync_type = 'hypertide_audit'
 ORDER BY created_at DESC
 LIMIT 7;
+```
+
+Tail of recent unjustified cancellations (where HT or operator cancelled without our kill-trigger firing first — worth a review):
+
+```sql
+SELECT e.event_at, c.name AS client_name, e.subscription_id,
+       e.verdict, e.affected_domain_count, e.notes
+FROM hypertide_status_events e
+JOIN clients c ON c.id = e.client_id
+WHERE e.event_type = 'cancelled' AND e.verdict = 'unjustified'
+ORDER BY e.event_at DESC
+LIMIT 20;
 ```
 
 What the numbers mean:
