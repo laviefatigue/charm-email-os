@@ -21,6 +21,7 @@ from typing import Any
 
 import asyncpg
 
+from .change_detector import ChangeDetectorResult, detect_status_changes
 from .chs_sync import ChsSyncResult, ensure_chs_rows
 from .classifier import Classification, HTState, classify, expected_inbox_count
 from .ht_client import HypertideClient
@@ -58,6 +59,7 @@ class AuditResult:
     rows_updated: int = 0
     skipped_workspaces: list[str] = field(default_factory=list)
     chs_sync: ChsSyncResult = field(default_factory=ChsSyncResult)
+    change_detector: ChangeDetectorResult = field(default_factory=ChangeDetectorResult)
 
     @property
     def parity_pct(self) -> float:
@@ -102,6 +104,20 @@ async def run_audit(
     # to detect cancellations by absence on subsequent passes.
     logger.info("chs sync across %d subscriptions...", len(sub_ids))
     result.chs_sync = await ensure_chs_rows(conn, active, apply=apply)
+
+    # --- 1c. change detection (step 9 / DECISION 4) ---
+    # After chs_sync has bumped last_seen_at for every sub appearing in this
+    # pass, walk chs rows whose last_seen_at is older than this_audit_started_at
+    # — those are subs that disappeared from /orders/active. Emit a 'cancelled'
+    # event for each with a verdict joining domains.qualifies_for_cancellation_*
+    # (set by the kill-trigger evaluator per DECISION 6, see migration 125).
+    active_sub_id_set = set(sub_ids)
+    result.change_detector = await detect_status_changes(
+        conn,
+        this_audit_started_at=sync_started_at,
+        active_sub_ids=active_sub_id_set,
+        apply=apply,
+    )
 
     # --- 2. Pull in-scope DB rows ---
     db_rows = await conn.fetch(
@@ -401,6 +417,16 @@ def _to_metadata_json(result: AuditResult) -> str:
                 "org_name_refreshed": result.chs_sync.org_name_refreshed,
                 "new_clients_client_status": result.chs_sync.new_clients_client_status,
                 "new_clients_fnf": result.chs_sync.new_clients_fnf,
+            },
+            "change_detector": {
+                "candidates_examined": result.change_detector.candidates_examined,
+                "cancelled_events_written": result.change_detector.cancelled_events_written,
+                "reappeared_events_written": result.change_detector.reappeared_events_written,
+                "skipped_already_tracked": result.change_detector.skipped_already_tracked,
+                "verdict_justified": result.change_detector.verdict_justified,
+                "verdict_unjustified": result.change_detector.verdict_unjustified,
+                "verdict_pending": result.change_detector.verdict_pending,
+                "unjustified_examples": result.change_detector.unjustified_examples,
             },
         }
     )

@@ -189,6 +189,22 @@ def _print_audit_result(r: AuditResult, applied: bool) -> None:
     click.echo(f"   ├─ first-sight → new F&F:       {r.chs_sync.new_clients_fnf}")
     click.echo(f"   └─ org name refreshed:          {r.chs_sync.org_name_refreshed}")
     click.echo("")
+    click.echo("  --- change detection (cancellations + reappearances) ---")
+    click.echo(f"  chs candidates not in this pass: {r.change_detector.candidates_examined}")
+    click.echo(f"   ├─ cancelled events written:    {r.change_detector.cancelled_events_written}   <-- new this run")
+    click.echo(f"   │   ├─ verdict justified:       {r.change_detector.verdict_justified}")
+    click.echo(f"   │   ├─ verdict UNJUSTIFIED:     {r.change_detector.verdict_unjustified}   <-- review")
+    click.echo(f"   │   └─ verdict pending:         {r.change_detector.verdict_pending}")
+    click.echo(f"   ├─ reappeared events written:   {r.change_detector.reappeared_events_written}")
+    click.echo(f"   └─ already-tracked (skipped):   {r.change_detector.skipped_already_tracked}")
+    if r.change_detector.unjustified_examples:
+        click.echo("  Unjustified cancellations (HT or operator acted out-of-band):")
+        for ex in r.change_detector.unjustified_examples[:10]:
+            click.echo(
+                f"    {ex['sub_id']}  client={ex['client_name']!r:24}  "
+                f"affected_domains={ex['affected_domains']}"
+            )
+    click.echo("")
     click.echo("  --- per-record (HT order ↔ domain row) ---")
     click.echo(f"  DB in-scope rows (our universe): {r.db_in_scope_count}")
     click.echo(f"  Matched to HT:                   {r.matched}  ({r.parity_pct}%)")
