@@ -2,7 +2,7 @@
 title: Hypertide Data Model and Change Tracking
 created: 2026-05-18
 updated: 2026-05-18
-status: shipped (steps 3-9 in prod; only step 10 cleanup pending)
+status: shipped (steps 3-9 + 10a in prod; only 10b clients.workspace_id drop pending)
 tags: [hypertide, data-model, change-tracking, plan, schema-migration]
 ---
 
@@ -445,7 +445,13 @@ Recommend a follow-up migration to drop `manages_via_hypertide` after the new fi
 7. ~~Add `domains.qualifies_for_cancellation_at` + `_reason` columns~~ — **shipped 2026-05-18 in migration 123** (combined with the schema rework).
 8. ~~Wire kill-trigger evaluator to write the verdict columns~~ — **shipped 2026-05-18**. [`migrations/125_burn_writes_qualifies_for_cancellation.sql`](../../migrations/125_burn_writes_qualifies_for_cancellation.sql) updates the `burn_domain_and_promote()` SQL function to write the verdict atomically with `pool_status='burned'`. Python fallback in [`sync_modules/kill_processor.py`](../../sync_modules/kill_processor.py) mirrored. 32 historical pre-migration burns stay NULL; from-now-forward burns populate. Revert path (operator NULLs columns on resurrection) intentionally manual.
 9. ~~Ship change-tracking trigger + `hypertide_status_events` table~~ — **shipped 2026-05-18**. [`migrations/126_hypertide_status_events.sql`](../../migrations/126_hypertide_status_events.sql) creates the event log; [`apps/hypertide-worker/src/hypertide_worker/change_detector.py`](../../apps/hypertide-worker/src/hypertide_worker/change_detector.py) detects cancellations + reappearances per audit pass. Verdict joins `domains.qualifies_for_cancellation_*` within last 90 days. "Worker-side detection" instead of PG trigger because triggers can't see external HT state. 8 new tests for verdict classifier.
-10. Cleanup: drop `workspaces.manages_via_hypertide` and `clients.workspace_id` after the hypertide-worker audit migrates off the `manages_via_hypertide` filter. **Currently the only remaining consumer**: [`apps/hypertide-worker/src/hypertide_worker/audit.py`](../../apps/hypertide-worker/src/hypertide_worker/audit.py#L130) line 130. Migration path: change `WHERE w.manages_via_hypertide = TRUE OR w.id IS NULL` to a query that explicitly enumerates HT-tracked workspaces (likely via the `client_hypertide_subscriptions` join — workspaces whose parent client has at least one chs row). Then drop the column. **Keep `domains.is_legacy`** per Concern C; just add a comment redefining its semantic.
+10. Cleanup:
+    - **10a — drop `workspaces.manages_via_hypertide`** — **shipped 2026-05-18** via [`migrations/133_drop_legacy_ht_columns.sql`](../../migrations/133_drop_legacy_ht_columns.sql) + commit. 4 worker code sites + 1 report query migrated from the per-workspace flag to a per-client `client_hypertide_subscriptions` EXISTS check (HT bills at the client/sub level — chs is more correct than the workspace flag). Views recreated to break the SELECT w.* dependency. Verified identical 673-domain audit scope pre/post.
+    - **10b — drop `clients.workspace_id`** — **deferred to a focused follow-up session**. Six remaining call sites need migration first:
+      - [`api/database.py`](../../api/database.py#L745-L850) `_backfill_charm_purchase_record` — 5 SQL reads of `c.workspace_id`; one-shot startup backfill for activatecharm.com, currently try/except wrapped (safe if column drops but rots silently). Migrate or delete.
+      - [`api/routes/clients.py:278`](../../api/routes/clients.py#L278) — `workspace_id = client.workspace_id` reads the Pydantic field during client creation.
+      - [`api/models/client.py`](../../api/models/client.py) — `Client`/`ClientCreate`/`ClientUpdate` Pydantic field. Needs to expose the new `workspaces` list relationship instead.
+    - **Keep `domains.is_legacy`** per Concern C; its "acquired outside the HT pipeline" semantic still applies.
 
 **Instantly extraction (OPEN #3)** is a separate workstream. If parallelized, can land between steps 5-9. If serial, the change-tracker ships with Ink'd verdicts labeled `'evaluator_unavailable'` until Instantly lands.
 
