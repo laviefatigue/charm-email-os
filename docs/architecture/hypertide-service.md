@@ -1,8 +1,8 @@
 ---
 title: Hypertide Service — Architecture & Phased Plan
 created: 2026-05-07
-updated: 2026-05-07
-status: planning
+updated: 2026-05-19
+status: shipped (Phase 1 + data-model rework; Phases 2-4 still planning)
 tags: [architecture, hypertide, integration, plan, service]
 ---
 
@@ -11,9 +11,27 @@ tags: [architecture, hypertide, integration, plan, service]
 > **Canonical plan document** for building the Hypertide micro-service inside Charm OS. Captures the architectural shift, bounded responsibilities, schema design, and phased delivery.
 >
 > Related:
+> - **Data-model rework + change tracking**: [[hypertide-data-model-and-change-tracking]] — supersedes the parity model and friends-and-family sections of this doc (see "2026-05-19 revision" below)
 > - API reference: [[hypertide-api]] — the canonical doc for what HT actually returns
 > - Operator runbook: [apps/hypertide-worker/HANDOFF.md](../../apps/hypertide-worker/HANDOFF.md) — how the freshness-timer runs, what the audit metrics mean, manual interventions
 > - Domain pipeline (legacy purchase flow): [[domain-purchase-pipeline]]
+
+## 2026-05-19 revision — data-model rework shipped
+
+Steps 3-9 + 10a of [[hypertide-data-model-and-change-tracking]] are in prod. **The parity model and friends-and-family treatment described below are superseded**; both flowed from the assumption that HT exposes no stable identifier and that F&F = "no DB row". Reality: HT's Stripe `subscriptionId` IS stable, and F&F is now a positive tag at the client level (`client_status='friends_and_family'`).
+
+**What changed:**
+- **Binding**: `client_hypertide_subscriptions` table maps Stripe subscription_id → CharmOS client (added migration 123). Replaces `domain_name`-match as the source of truth for "is this sub ours."
+- **F&F classification**: positive tag on `clients.client_status` (one of `client | friends_and_family | prospect | inactive`). Worker auto-classifies new subs by `sending_tool` per DECISION 5: Email Bison / Instantly.ai → 'client', Smartlead.ai / unknown → 'friends_and_family'.
+- **Operational views**: `v_operational_clients` / `_workspaces` / `_domains` filter out F&F + inactive so operational reads can opt-IN to seeing them rather than remembering to filter them out.
+- **Change tracking**: `hypertide_status_events` table + worker-side `change_detector` (migration 126, code in `apps/hypertide-worker/src/hypertide_worker/change_detector.py`) records cancellation events with a verdict joining `domains.qualifies_for_cancellation_*` (set by the kill-trigger evaluator per migration 125 / DECISION 6) — labels HT cancellations as `justified` (we burned it first), `unjustified` (HT/operator acted out-of-band), or `pending`.
+- **Worker layout**: `chs_sync.py` (subscription-keyed ingest + first-sync auto-classification) and `change_detector.py` (cancellation/reappearance detection) added alongside the original audit/backfill/classifier modules.
+- **Dropped**: `workspaces.manages_via_hypertide` (migration 133); the per-workspace flag was replaced by per-client chs binding which matches how HT bills.
+
+**Still pending** (small):
+- Step 10b — drop `clients.workspace_id`. Needs migration of ~58 SQL sites + Pydantic model + 3 frontend components first. Hygiene-only; the column is harmless sitting there.
+
+The sections below preserve the historical framing for context. Read [[hypertide-data-model-and-change-tracking]] for current authoritative semantics.
 
 ## TL;DR
 
@@ -276,29 +294,40 @@ Deferred to Phase 2. Job queue is not needed for read-only collection.
 
 ## Phased delivery
 
-### Phase 1 — Data collection — SHIPPED 2026-05-14
+### Phase 1 — Data collection — SHIPPED 2026-05-14 + DATA-MODEL REWORK 2026-05-18/19
 
 **Goal:** Hypertide records mirrored into `domains` table. Drift observable. No HT writes.
 
-**What shipped** (commits `29f734e` → `aab29d4` on `feature/event-driven-architecture`):
+**Original Phase 1 ship** (commits `29f734e` → `aab29d4` on `feature/event-driven-architecture`):
 
-1. **Migration 110** — `workspaces.manages_via_hypertide` / `occupancy_only`, `domains.hypertide_*` columns + `is_legacy`, 4 indexes. Applied to production 2026-05-12.
-2. **`apps/hypertide-worker/`** — Coolify app, replaces the legacy `hypertide-worker`. Actual package layout:
-   - `src/hypertide_worker/classifier.py` — decision tree, single source of truth (lives in the app package, not a shared lib)
+1. **Migration 110** — `workspaces.manages_via_hypertide` / `occupancy_only` (manages_via_hypertide later DROPPED in migration 133), `domains.hypertide_*` columns + `is_legacy`, 4 indexes. Applied to production 2026-05-12.
+2. **`apps/hypertide-worker/`** — Coolify app, replaces the legacy `hypertide-worker`. Original modules:
+   - `src/hypertide_worker/classifier.py` — HT-record decision tree (live/cancelled/scheduled/drift/etc)
    - `src/hypertide_worker/ht_client.py` — async HT API client (own implementation, no curl)
    - `src/hypertide_worker/audit.py` — full-fleet reconcile, drift detection
    - `src/hypertide_worker/backfill.py` — `is_legacy` flagging + gated `--onboard-workspace` INSERT path
    - `src/hypertide_worker/cli.py` — `audit`, `backfill`, `inspect-domain`, `mark-legacy`
    - `src/hypertide_worker/jobs/audit_drift.py` — cron-entrypoint wrapper around `run_audit(apply=True)`
    - `src/hypertide_worker/config.py`, `db.py` — env config + asyncpg connection
-   - **No `worker.py`** — there is no daemon in Phase 1. Scheduling is the Dockerfile CMD (see below).
-3. **Backfill** — `audit --apply` populated `hypertide_*` on 512 of 673 in-scope domains on first prod run; remainder flagged `is_legacy` or are friends-and-family.
-4. **Workspace flags** — `manages_via_hypertide=FALSE` set on Estrada, Neon, EventPanda, Test Workspace, Deprecate.
-5. **Scheduling** — Dockerfile CMD is a **24h freshness-timer loop** (`run audit --apply → sleep 24h → repeat`). Not a Coolify cron, not the Phase 2 job daemon. See [HANDOFF.md](../../apps/hypertide-worker/HANDOFF.md) for the optional Coolify scheduled-task layer.
-6. **CI** — `.github/workflows/hypertide-worker.yml` runs ruff + mypy --strict + pytest + docker-build smoke-test, scoped to `apps/hypertide-worker/**`.
-7. **Drift detection** — `audit` surfaces `drift_ht_cancelled_inboxes_connected` (HT cancelled but EB still connected — found 43 on first prod run, 27 still sending) and the `ht_incoming` / `ht_friends_and_family` split.
+3. **Backfill** — `audit --apply` populated `hypertide_*` on 512 of 673 in-scope domains on first prod run.
+4. **Scheduling** — Dockerfile CMD is a **24h freshness-timer loop** (`run audit --apply → sleep 24h → repeat`).
+5. **CI** — `.github/workflows/hypertide-worker.yml` runs ruff + mypy --strict + pytest + docker-build smoke-test.
+6. **Drift detection** — `audit` surfaces `drift_ht_cancelled_inboxes_connected` (HT cancelled but EB still connected — found 43 on first prod run, 27 still sending).
 
-**State at ship:** parity 76% (512/673 in-scope domains linked to HT). Tests: 33 passing — classifier has full branch coverage; `audit.py`/`backfill.py` orchestration loops covered at the helper layer (full integration harness deferred to the Phase 2 PR, per the CI workflow's note).
+**Data-model rework ship 2026-05-18/19** (per [[hypertide-data-model-and-change-tracking]]):
+
+7. **Migration 123** — schema rework: `clients.client_status` + `primary_hypertide_organization_name`, `workspaces.client_id` (1:many FK) + `provider` (emailbison|instantly) + `forwarding_domain_pattern`, `client_hypertide_subscriptions` table, `v_operational_clients` / `_workspaces` / `_domains` views, `domains.qualifies_for_cancellation_at` + `_reason`.
+8. **Migration 124** — `client_hypertide_subscriptions.subscription_created_at` (HT createdAt anchor).
+9. **Operator seed + cleanup** — 19 → 53 clients (21 operational + 28 F&F + 4 inactive); 211 chs rows. Variant merges (Ink'd/Sammy/Root Access) shipped.
+10. **`apps/hypertide-worker/src/hypertide_worker/chs_sync.py`** — subscription-keyed ingest. Per audit pass, touches `last_seen_at` for every sub in `/orders/active`; first-sight subs auto-classified by `sending_tool` per DECISION 5 (Email Bison / Instantly.ai → 'client', Smartlead.ai / unknown → 'friends_and_family').
+11. **Migration 125** — `burn_domain_and_promote()` SQL function writes `qualifies_for_cancellation_at` + `_reason` atomically with `pool_status='burned'`. Verdict source for the change tracker.
+12. **Migration 126** — `hypertide_status_events` table. Lifecycle log per subscription (cancelled / reappeared / organization_renamed).
+13. **`apps/hypertide-worker/src/hypertide_worker/change_detector.py`** — worker-side cancellation/reappearance detection per audit pass; verdict joins `domains.qualifies_for_cancellation_*` within 90-day window.
+14. **Migration 132** — `v_operational_workspaces` tightened to also filter `is_active=TRUE`, matching existing sync_modules pattern.
+15. **Step 6 sync_modules + health.py** — 9 sync_modules + 1 api/routes/health.py dashboard migrated to `v_operational_*` views.
+16. **Migration 133** — `workspaces.manages_via_hypertide` DROPPED. Worker + reports migrated to per-client chs `EXISTS` check.
+
+**State 2026-05-19:** parity 76% (512/673 in-scope domains linked to HT). 211 chs rows, all with subscription_created_at populated (Nov 2024 → May 2026). hypertide_status_events empty (no cancellations to detect yet). Tests: 68 passing (35 new tests added for chs_sync + change_detector); ruff + mypy --strict clean.
 
 **Out of scope (Phase 1) — confirmed not done:**
 - Web UI / charm-frontend changes

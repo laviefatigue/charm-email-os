@@ -1,13 +1,132 @@
 ---
 title: Database Schema
 created: 2026-01-16
-updated: 2026-03-05
-tags: [database, schema, postgresql, health, warmup, metrics, daily-volume, audit, users]
+updated: 2026-05-19
+tags: [database, schema, postgresql, health, warmup, metrics, daily-volume, audit, users, hypertide]
 ---
 
 # Database Schema
 
 Complete schema documentation for Charm Email OS.
+
+> **Currency note (2026-05-19)**: this doc is partially stale below — the schema has grown substantially since March 2026 (clients/workspaces/domains all evolved). The "Hypertide-related additions" section below is current. For the authoritative live schema use `pg_dump --schema-only` or query `information_schema.columns` directly.
+
+## Hypertide-related additions (2026-05-18/19)
+
+Per [[hypertide-data-model-and-change-tracking]] — migrations 123-126 + 132-133.
+
+### clients — new columns (migration 123)
+
+```sql
+ALTER TABLE clients
+    ADD COLUMN client_status VARCHAR(24) NOT NULL DEFAULT 'client',
+    ADD COLUMN primary_hypertide_organization_name TEXT;
+```
+
+| Column | Type | Description |
+|---|---|---|
+| client_status | VARCHAR(24) | `client` \| `friends_and_family` \| `prospect` \| `inactive`. Default `client` for existing rows; hypertide-worker classifies new subs by `sending_tool` per DECISION 5 (Email Bison/Instantly → `client`, Smartlead/unknown → `friends_and_family`). Operational reads via `v_operational_clients`. |
+| primary_hypertide_organization_name | TEXT | Human label from HT's `organizationName`. NOT unique — HT has multiple variants per real client (Hello Hero has 5 variants, Charm 6, Stable Kernel 4). |
+
+`clients.workspace_id` (the legacy 1:1 FK to workspaces) is **deprecated** but still present pending step 10b drop. Use `workspaces.client_id` (1:many) instead.
+
+### workspaces — new columns (migration 123) + dropped column (migration 133)
+
+```sql
+ALTER TABLE workspaces
+    ADD COLUMN client_id UUID REFERENCES clients(id),
+    ADD COLUMN provider VARCHAR(16) NOT NULL DEFAULT 'emailbison'
+        CHECK (provider IN ('emailbison', 'instantly')),
+    ADD COLUMN forwarding_domain_pattern TEXT;
+
+-- DROPPED in migration 133:
+-- ALTER TABLE workspaces DROP COLUMN manages_via_hypertide;
+```
+
+| Column | Type | Description |
+|---|---|---|
+| client_id | UUID | Parent client. 1:many — multiple workspaces per client (Stable Kernel has 2 EB workspaces; Ink'd has 1 EB + 1 Instantly). |
+| provider | VARCHAR(16) | `emailbison` or `instantly` — inbox-infrastructure platform for this workspace. |
+| forwarding_domain_pattern | TEXT | Optional disambiguator for routing HT records to a specific workspace under a multi-workspace client. NULL = no pattern. |
+
+### client_hypertide_subscriptions (migrations 123 + 124)
+
+Maps Stripe subscription_id (HT's stable billing id) to CharmOS client. One sub = one client; one client can have many subs.
+
+```sql
+CREATE TABLE client_hypertide_subscriptions (
+    subscription_id           TEXT PRIMARY KEY,
+    client_id                 UUID NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
+    first_seen_at             TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    last_seen_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    organization_name         TEXT,
+    notes                     TEXT,
+    subscription_created_at   DATE              -- HT createdAt anchor (historical)
+);
+```
+
+Touched by `apps/hypertide-worker/chs_sync.py` on every audit pass: `last_seen_at` bumps for existing subs; first-sight subs get a new chs row + a new `clients` row classified by `sending_tool`.
+
+### domains — new columns (migration 123)
+
+```sql
+ALTER TABLE domains
+    ADD COLUMN qualifies_for_cancellation_at     TIMESTAMPTZ,
+    ADD COLUMN qualifies_for_cancellation_reason TEXT;
+```
+
+Written atomically with `pool_status='burned'` by the `burn_domain_and_promote()` SQL function (revised in migration 125). The kill-trigger evaluator's verdict that the change tracker reads to label HT cancellations as `justified` (we burned it first), `unjustified` (HT/operator acted out-of-band), or `pending` (no kill-trigger evidence).
+
+### hypertide_status_events (migration 126)
+
+Lifecycle event log per subscription, written by `apps/hypertide-worker/change_detector.py` on each audit pass.
+
+```sql
+CREATE TABLE hypertide_status_events (
+    id                    UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    subscription_id       TEXT NOT NULL REFERENCES client_hypertide_subscriptions(subscription_id) ON DELETE CASCADE,
+    client_id             UUID NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
+    event_type            VARCHAR(32) NOT NULL
+        CHECK (event_type IN ('cancelled','reappeared','organization_renamed')),
+    event_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    detected_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    prior_last_seen_at    TIMESTAMPTZ,
+    verdict               VARCHAR(24)
+        CHECK (verdict IS NULL OR verdict IN ('justified','unjustified','pending')),
+    verdict_reasons       TEXT[],
+    affected_domain_count INTEGER,
+    notes                 TEXT
+);
+```
+
+Detection happens worker-side (no PG trigger — triggers can't see external HT state). For each chs row whose `last_seen_at` is older than the current audit's `started_at`, the worker checks for an existing `cancelled` event since that timestamp; if none, INSERTs a new event with verdict joining `domains.qualifies_for_cancellation_*` within the last 90 days.
+
+### v_operational_* views (migrations 123 + 132 + 133)
+
+Default read API for operational CharmOS code (kill triggers, rotation, dashboards, health monitoring, GTM-scoped reports). Filters out friends_and_family + inactive clients automatically, AND `is_active=FALSE` workspaces transitively.
+
+```sql
+CREATE OR REPLACE VIEW v_operational_clients AS
+    SELECT * FROM clients
+    WHERE client_status NOT IN ('friends_and_family', 'inactive');
+
+CREATE OR REPLACE VIEW v_operational_workspaces AS
+    SELECT w.* FROM workspaces w
+    JOIN v_operational_clients c ON c.id = w.client_id
+    WHERE w.is_active = TRUE;
+
+CREATE OR REPLACE VIEW v_operational_domains AS
+    SELECT d.* FROM domains d
+    JOIN v_operational_workspaces w ON w.id = d.workspace_id;
+```
+
+Inverts the failure mode: operational code reads these by default; reports + audit + change tracker that need the full picture (including F&F) read the base tables explicitly.
+
+### Migration 110 reference (Phase 1 — kept current state)
+
+`workspaces.occupancy_only` (optional companion flag), `domains.hypertide_*` columns + `is_legacy` + `expected_inbox_count`. `manages_via_hypertide` was dropped in migration 133. `domains.is_legacy` keeps its "acquired outside the HT pipeline" semantic per Concern C of the data-model plan.
+
+---
 
 ## Core Tables
 
@@ -625,7 +744,9 @@ CREATE INDEX idx_revisions_processed ON strategy_revision_requests(processed);
 
 ### daily_volume_snapshots
 
-Historical sending volume per workspace for client dashboard charts.
+End-of-day snapshot of cumulative campaign sends + inbox capacity per workspace, used by the Infrastructure dashboard chart.
+
+> **READ THIS FIRST.** Despite the table name, `emails_sent` and related volume columns are **cumulative-to-date** (lifetime totals from EmailBison's per-campaign counters, summed across campaigns), NOT daily deltas. Consumers must diff consecutive days to derive a true daily figure. See [docs/architecture/daily-volume-semantics.md](../architecture/daily-volume-semantics.md) for the full contract — older descriptions of this table are superseded by that doc.
 
 ```sql
 CREATE TABLE daily_volume_snapshots (
@@ -633,20 +754,25 @@ CREATE TABLE daily_volume_snapshots (
     workspace_id UUID NOT NULL REFERENCES workspaces(id),
     snapshot_date DATE NOT NULL,
 
-    -- Volume metrics (from EmailBison campaign stats)
+    -- Volume metrics — CUMULATIVE-TO-DATE, not daily deltas.
+    -- Sourced from campaign_snapshots (per-campaign EB lifetime counter, latest
+    -- snapshot per campaign per day, then SUMed across campaigns).
     emails_sent INTEGER NOT NULL DEFAULT 0,
     emails_delivered INTEGER NOT NULL DEFAULT 0,
     emails_bounced INTEGER NOT NULL DEFAULT 0,
     emails_complained INTEGER NOT NULL DEFAULT 0,
 
-    -- Capacity metrics (snapshot as of end of day)
+    -- Capacity metrics — snapshot as of end of day, NOT cumulative.
+    -- daily_capacity_available includes incubating inboxes whose quota is
+    -- largely consumed by warmup automation; see semantics doc for the
+    -- production-only ceiling formula.
     live_inboxes INTEGER NOT NULL DEFAULT 0,
     incubating_inboxes INTEGER NOT NULL DEFAULT 0,
     dead_inboxes INTEGER NOT NULL DEFAULT 0,
     daily_capacity_available INTEGER NOT NULL DEFAULT 0,
 
     -- Derived metrics
-    capacity_utilization_pct DECIMAL(5,2),
+    capacity_utilization_pct DECIMAL(5,2),  -- BROKEN, do not use; see notes below
     kills_that_day INTEGER NOT NULL DEFAULT 0,
 
     created_at TIMESTAMPTZ DEFAULT NOW(),
@@ -662,16 +788,37 @@ CREATE INDEX idx_daily_volume_date ON daily_volume_snapshots(snapshot_date DESC)
 | Column | Type | Description |
 |--------|------|-------------|
 | workspace_id | UUID | Workspace this snapshot belongs to |
-| snapshot_date | DATE | Date of this snapshot |
-| emails_sent | INTEGER | Total emails sent across all campaigns |
-| emails_bounced | INTEGER | Total bounced emails |
-| daily_capacity_available | INTEGER | SUM(daily_limit) for all live inboxes |
-| capacity_utilization_pct | DECIMAL | (emails_sent / daily_capacity) * 100 |
-| kills_that_day | INTEGER | Inboxes killed on this date |
+| snapshot_date | DATE | End-of-day this row represents |
+| emails_sent | INTEGER | **Cumulative-to-date** total campaign sends as of `snapshot_date`. Diff consecutive rows for a daily figure. Warmup volume NOT included. |
+| emails_delivered | INTEGER | Cumulative deliveries. Same diffing rule. |
+| emails_bounced | INTEGER | Cumulative bounces. Same diffing rule. |
+| emails_complained | INTEGER | Cumulative complaints. Currently always 0 (not populated). |
+| live_inboxes | INTEGER | End-of-day count of `inbox_state='live'` inboxes (active + incubating). |
+| incubating_inboxes | INTEGER | End-of-day count of inboxes with `lifecycle_status='incubating'`. |
+| dead_inboxes | INTEGER | End-of-day count of `inbox_state='dead'`. |
+| daily_capacity_available | INTEGER | SUM(daily_limit) WHERE `inbox_state='live'` AND `status='Connected'`. Includes incubating inboxes whose quota mostly goes to warmup — OVERSTATES production capacity. |
+| capacity_utilization_pct | DECIMAL | ⚠ **BROKEN** — computed as `cumulative / per-day-cap`, climbs monotonically past 100% (capped at 999.99). Ignore this column; compute your own from deltas. |
+| kills_that_day | INTEGER | True daily count of `killed_at::DATE = snapshot_date`. Only delta-like column on this table. |
 
-**Data Source**: Backfilled from EmailBison API via `scripts/backfill_daily_volume.py`. Daily updates via sync worker's `run_daily_snapshot()`.
+**Data Source**: Daily writes from `sync_modules/daily_snapshot.py` at 00:05 UTC. Historical backfill via `scripts/backfill_daily_volume.py`. Volume sourced from `campaign_snapshots`; capacity from `sender_accounts.daily_limit`.
 
 **Initial Backfill (2026-02-23)**: 54,716 emails across 7 workspaces, covering Nov 25, 2025 - Feb 22, 2026.
+
+**Reading this data correctly**:
+
+```sql
+-- Daily sends on a given day:
+SELECT GREATEST(0, today.emails_sent - COALESCE(yesterday.emails_sent, 0)) AS daily_sends
+FROM daily_volume_snapshots today
+LEFT JOIN daily_volume_snapshots yesterday
+  ON yesterday.workspace_id = today.workspace_id
+  AND yesterday.snapshot_date = today.snapshot_date - INTERVAL '1 day'
+WHERE today.workspace_id = $1 AND today.snapshot_date = $2;
+```
+
+See [docs/architecture/daily-volume-semantics.md](../architecture/daily-volume-semantics.md) for production-vs-total-capacity distinction and warmup-volume blindspot details.
+
+**Authoritative column comments**: Migration [041_daily_volume_snapshots.sql](../../migrations/041_daily_volume_snapshots.sql) originally wrote misleading COMMENTs; [133_daily_volume_semantic_comments.sql](../../migrations/133_daily_volume_semantic_comments.sql) rewrites them to match reality.
 
 ## User & Activity Tables
 

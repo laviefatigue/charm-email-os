@@ -2,13 +2,31 @@
 
 Hypertide reconciliation service. Single source of truth for HT-side state and the bridge into our `domains` table.
 
-**See:** [docs/architecture/hypertide-service.md](../../docs/architecture/hypertide-service.md) for the architectural plan and phased roadmap. [docs/integrations/hypertide-api.md](../../docs/integrations/hypertide-api.md) for HT API specifics.
+**See:** [docs/architecture/hypertide-service.md](../../docs/architecture/hypertide-service.md) for the architectural plan and phased roadmap. [docs/integrations/hypertide-api.md](../../docs/integrations/hypertide-api.md) for HT API specifics. [docs/plans/hypertide-data-model-and-change-tracking.md](../../docs/plans/hypertide-data-model-and-change-tracking.md) for the 2026-05 data-model rework (chs binding, change tracking, verdict columns) — superseded the original parity model.
 
-## Phase 1 scope (current)
+## Current scope (Phase 1 + data-model rework, 2026-05-19)
 
-Read-only data collection. Pulls `/orders/active` + `verify-revert`, matches to `domains` rows by `domain_name`, populates `hypertide_*` columns. INSERTs new rows for HT records that don't match any DB row in an HT-managed workspace. Flags unmatched in-scope domains as `is_legacy=TRUE`.
+Read-only HT data collection + subscription-keyed binding + change tracking. Pulls `/orders/active` + `verify-revert` per audit pass and:
+
+1. **chs sync** (`chs_sync.py`) — for every HT sub, ensures a `client_hypertide_subscriptions` row exists. Touches `last_seen_at` for existing; first-sight subs get auto-classified by `sending_tool` (Email Bison / Instantly.ai → `client_status='client'`, Smartlead / unknown → `friends_and_family`) and a new `clients` row created on demand.
+2. **change detection** (`change_detector.py`) — chs rows whose `last_seen_at` predates the current audit's start = subs that disappeared from `/orders/active`. INSERTs a `hypertide_status_events` row with verdict joining `domains.qualifies_for_cancellation_*` (set by kill-trigger evaluator per migration 125): `justified` (we burned it first), `unjustified` (HT/operator acted out-of-band), `pending` (no kill evidence).
+3. **per-record snapshot** (`audit.py`) — matches HT records to `domains` rows by `domain_name`, populates `hypertide_*` columns. Drift detection (HT cancelled but EB still connected) surfaced.
 
 **No writes to Hypertide.** Cancel/order flows are Phase 2/3.
+
+## Module layout
+
+```
+src/hypertide_worker/
+├── ht_client.py        # async HT API client (httpx, no curl)
+├── classifier.py       # HT-record decision tree (live/cancelled/scheduled/drift)
+├── chs_sync.py         # subscription-keyed binding + first-sync auto-classification
+├── change_detector.py  # cancellation / reappearance detection per audit pass
+├── audit.py            # orchestration: pull HT → chs_sync → change_detector → per-record UPDATEs
+├── backfill.py         # is_legacy flagging + gated --onboard-workspace INSERT
+├── cli.py              # audit | backfill | inspect-domain | mark-legacy
+└── jobs/audit_drift.py # cron-entrypoint wrapper around run_audit(apply=True)
+```
 
 ## Commands
 

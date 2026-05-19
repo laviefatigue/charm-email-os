@@ -56,10 +56,12 @@ The kill processor uses rate-based classification to decide domain-level action 
 **A domain burn condemns ALL inboxes on that domain.** The reserve pool operates at the **domain level**, not the inbox level. You cannot split inboxes from the same domain and selectively keep some.
 
 When a domain burns:
-1. `burn_domain_and_promote()` sets `pool_status = 'burned'` on the domain
+1. `burn_domain_and_promote()` sets `pool_status = 'burned'` on the domain AND writes the verdict — `qualifies_for_cancellation_at = NOW()` + `qualifies_for_cancellation_reason = <trigger_type>` — atomically with the burn (per migration 125 / DECISION 6 of [[hypertide-data-model-and-change-tracking]]). The Hypertide change tracker reads this verdict to label HT cancellations as `justified` (we burned it first) vs `unjustified` (HT/operator acted out-of-band).
 2. ALL inboxes on that domain are condemned — even healthy ones
 3. A reserve **domain** (with all its inboxes) is promoted to replace it
 4. If no reserve domain exists → Slack alert: "URGENT: Order replacement domains via HyperTide"
+
+**Revert path** (operator resurrects a falsely-burned domain): also NULL `qualifies_for_cancellation_at` + `_reason`. A NULL verdict reads correctly through the change tracker as "no, we did not justify this cancellation." Not wired automatically; operator-driven via [scripts/resurrect_false_positive_kills.py](../scripts/resurrect_false_positive_kills.py) or manual UPDATE.
 
 **Blast radius by ESP** (set by vendor HyperTide, not configurable):
 
@@ -121,5 +123,8 @@ The **21-day incubation period** starts at `warmup_started_at`. During this peri
 | `sync_modules/health_checks.py` | Threshold definitions, `evaluate_inbox_health()`, domain state |
 | `sync_modules/kill_processor.py` | Queue processing, domain burn decision, reserve promotion |
 | `sync_modules/sync_events.py` | Bounce classification from EmailBison responses |
-| `migrations/076_domain_level_ab_sets.sql` | `burn_domain_and_promote()` SQL function |
+| `migrations/076_domain_level_ab_sets.sql` | `burn_domain_and_promote()` original SQL function |
+| `migrations/088_fix_domain_burn_functions.sql` | Reserve-burn handling + no-reserve action codes |
+| `migrations/125_burn_writes_qualifies_for_cancellation.sql` | Adds `qualifies_for_cancellation_at` + `_reason` writes to the burn UPDATE (DECISION 6) |
+| `apps/hypertide-worker/src/hypertide_worker/change_detector.py` | Reads the verdict columns when labeling HT cancellation events |
 | `api/routes/health.py` | Analysis endpoints |
