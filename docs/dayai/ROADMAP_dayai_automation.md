@@ -20,14 +20,14 @@
 | `HireCharm/client-sammy` enrichment | ✅ proof-of-concept | Manual one-off via `scripts/dayai/synthesize_client_repo.py` |
 | `client.md` frontmatter contract (v0.4) | ✅ defined, NOT yet on template | Lives only in `client-sammy` so far; template promotion pending |
 | `HireCharm/client-template` v0.3 -> v0.4 | ⬜ pending | Promote the shape; backfill existing client repos against new template |
-| `app_credentials` table + `github_app.py` helper | ⬜ pending | New Tier 1.0 — keystone for every downstream worker + the charm-email-os frontend |
+| `secrets` table + `github_app.py` helper | ⬜ pending | New Tier 1.0 — keystone for every downstream worker + the charm-email-os frontend |
 | `client-repo-reconciler` worker (Option C) | ⬜ pending | Replaces the un-built `/api/clients/pending-from-dayai` endpoint. Doubles as backfill tool |
 | Bulk repo creation for the 13 onboarded=true clients | ⬜ pending | Scope decided 2026-05-18 |
 | charm-email-os Context + Assets UI pages | ⬜ pending | Per-client tabs reading + writing the repo directly via the GitHub App helper |
 
 **Architectural decisions logged 2026-05-18** (see HANDOFF §9):
 - Watcher wiring = Option C (reconciler worker, not API endpoint)
-- PEM moves to DB (`app_credentials` table)
+- PEM moves to DB (`secrets` table)
 - charm-email-os reads/writes the repo directly, no mirror table
 - First bulk scope = `onboarding_complete=true` clients
 
@@ -43,17 +43,17 @@
 > only needs 1.0 + 1.3.
 
 ### 1.0 PEM-in-DB + `github_app.py` helper — **keystone**
-**Status:** designed in `SPEC_app_credentials.md`; not built.
+**Status:** designed in `SPEC_secrets.md`; not built.
 
 **What it does**
-Lands the `app_credentials` table + `api/services/credentials.py` +
+Lands the `secrets` table + `api/services/credentials.py` +
 `api/services/github_app.py`. Migrates the Charm Onboarder PEM from
 local file to one DB row. Every downstream worker AND the charm-email-os
 backend uses the `gh_client(pool)` helper for GitHub access — no more
 PEM env vars.
 
 **Writes to**
-- `migrations/112_app_credentials.sql`
+- `migrations/136_secrets.sql`
 - `api/services/credentials.py` (~20 lines)
 - `api/services/github_app.py` (~80 lines)
 - One-time SQL INSERT to seed the PEM
@@ -192,32 +192,57 @@ overwrite (for content drift, like an updated summary).
 
 **Effort estimate** — 4-6 hrs to ship and validate.
 
-### 1.6 charm-email-os Context + Assets UI
-**Status:** designed in `SPEC_charm_os_repo_access.md`; not built.
+### 1.6 charm-email-os Context tab → implement the canonical sync spec
+**Status:** Architecture canonical at
+[`docs/architecture/client-context-sync.md`](../architecture/client-context-sync.md).
+UI stub already exists at
+[`app/workspaces/[id]/context/page.tsx`](../../charm-email-os/app/workspaces/[id]/context/page.tsx);
+backend not built.
 
 **What it does**
-Adds two new tabs to `app/clients/[clientId]/` in charm-email-os:
-- **Context** — file-explorer of markdown content in the client repo,
-  with markdown preview + frontmatter sidebar
-- **Assets** — grid of asset files with upload dropzone and soft-delete
-  (move to `assets/.archived/`)
+Implements the full canonical client-context-sync.md spec, in the
+phases that doc's §Implementation Roadmap describes:
 
-Backend routes per `SPEC_charm_os_repo_access.md` §3. Reads + writes
-GitHub directly via the Tier 1.0 helper. No mirror table, no sync
-worker. Caching deferred per spec §8.
+| Sub-phase | Scope |
+|---|---|
+| **1.6a** | GitHub App registration (already exists as Charm Onboarder). Seed `github_app_private_key` + `github_webhook_secret` rows in `secrets` (Tier 1.0 table). |
+| **1.6b** | DB migrations: `workspace_context_repos`, `workspace_context_documents`, `workspace_context_links`, `workspace_context_syncs`. Migration numbers in the 130s+ range. |
+| **1.6c** | Sync worker: JWT mint → installation token (via Tier 1.0 helper) → shallow clone → frontmatter parse → upsert into `workspace_context_documents`. Poll-only trigger first. |
+| **1.6d** | Context-query API: `/search`, `/document`, `/recent`, `/client-card`, `/graph` under `/api/v1/workspaces/{workspaceId}/context/...`. |
+| **1.6e** | GitHub webhook at `/api/v1/webhooks/github/context-sync` with HMAC verification. Drops poll latency from ~hour to seconds. |
+| **1.6f** | Wire the existing Context stub page to the search + document endpoints. Render markdown body, frontmatter sidebar, backlinks panel. Read-only v1. |
+| **1.6g** | Auto-binding flow: on `installation` webhook for a new repo added under HireCharm, prompt operator to bind to a workspace. |
+
+**Out of scope for 1.6** (deferred to future tiers):
+- Vector embeddings (pgvector) — Phase 7 of canonical spec
+- Asset binary handling (PDFs/images in `assets/`) — explicitly out of
+  scope v1 per canonical spec §Open Questions #2
+- Backlink graph UI rendering — canonical spec Phase 6, separate work
+- Cross-repo references — Phase v2
 
 **Writes to**
-- `migrations/113_clients_context_repo.sql` (add `context_repo` column)
-- `api/services/client_repo.py` (~150 lines)
-- `api/routes/client_repo.py` (~120 lines)
-- `charm-email-os/app/clients/[clientId]/context/` (frontend pages)
-- `charm-email-os/app/clients/[clientId]/assets/` (frontend pages)
+- 4 new migrations (numbers TBD after the in-flight feature/event-driven branch lands)
+- `api/services/context_sync.py` (sync worker, ~300 LOC)
+- `api/services/context_parser.py` (frontmatter + wiki-link parser, ~150 LOC)
+- `api/routes/workspace_context.py` (query API, ~250 LOC)
+- `api/routes/webhooks/github_context_sync.py` (webhook, ~100 LOC)
+- `apps/context-sync-poller/` (Coolify worker for the poll-trigger fallback)
+- Frontend wiring in `app/workspaces/[id]/context/page.tsx` (replace stub)
 
-**Unblocks** — operators can browse client context inside the
-dashboard they already use. Assets created in the UI flow into the
-same repo workers write to.
+**Unblocks** — operators browse per-client context in the workspace
+dashboard; analyst agents consume context via the query API; the
+`ContextFreshnessPill` already in `app/workspaces/[id]/layout.tsx`
+finally has live data behind it.
 
-**Effort estimate** — 8-12 hrs (backend ~4, frontend ~6).
+**Effort estimate** — substantial: 30-50 hrs across the seven
+sub-phases. Treat each sub-phase as its own PR.
+
+**Coordination note** — The canonical spec was written by elliott on
+2026-05-15 (predates the dayai/ work). Before starting Tier 1.6,
+re-confirm with the spec owner that the design hasn't drifted in the
+intervening time, and that sub-phase sequencing still makes sense
+given everything else in flight (event-driven branch, agent runtime
+Phase 1).
 
 ---
 
@@ -446,7 +471,7 @@ This is only possible because:
 The new order, optimized for operationalizing across all clients (not
 just proving on Sammy):
 
-1. **Tier 1.0** — `app_credentials` + `github_app.py` (3-4 hrs) ✦ keystone
+1. **Tier 1.0** — `secrets` + `github_app.py` (3-4 hrs) ✦ keystone
 2. **Tier 1.1** — Promote template to v0.4 (1-2 hrs)
 3. **Tier 1.2** — Productionize scripts → `apps/client-repo-reconciler/` (4-6 hrs)
 4. **Tier 1.3** — Bulk create the 13 onboarded=true client repos (2-3 hrs)

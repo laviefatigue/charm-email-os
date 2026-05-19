@@ -3,11 +3,14 @@
 Smoke test for api/services/github_app.py.
 
 Mints a Charm Onboarder installation token from the PEM stored in
-app_credentials, then hits a known repo (HireCharm/client-sammy)
+the `secrets` table, then hits a known repo (HireCharm/client-sammy)
 to confirm the token works.
 
 Run from a host with charm-email-os DB access AFTER the PEM seed
-INSERT has been performed. See PR body / SPEC_app_credentials.md §2.
+INSERT has been performed. See PR body / SPEC_secrets.md §2.
+
+Requires PyJWT installed (`pip install PyJWT[crypto]`). Not yet in
+api/requirements.txt — added when this module's first consumer ships.
 
 Usage:
     POSTGRES_HOST=...

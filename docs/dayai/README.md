@@ -17,18 +17,25 @@ GitHub repo pipeline.
    system, daily/weekly workflows, the never-delete discipline. Read
    this before designing new automations that touch client repos.
 
-3. **`SPEC_app_credentials.md`** — the auth keystone. `app_credentials`
+3. **`SPEC_secrets.md`** — the auth keystone. `secrets`
    table + `api/services/github_app.py` helper. Every worker and API
-   route that talks to GitHub uses this. Read before building anything
-   that touches GitHub.
+   route that talks to GitHub uses this. Implementation companion to
+   the canonical spec's §Security Model. Read before building
+   anything that touches GitHub.
 
-4. **`SPEC_charm_os_repo_access.md`** — how charm-email-os's backend
-   reads from and writes to client repos to power the Context + Assets
-   UI tabs. Direct GitHub access, no mirror table. Read before
-   building backend routes or frontend pages that interact with client
-   repo content.
+4. **`../architecture/client-context-sync.md`** — **canonical**
+   architecture for how charm-email-os reads + writes per-client repo
+   content (workspace_context_* tables, sync worker, context-query
+   API, GitHub App webhook). Read this before touching the workspace
+   Context tab or the consumption-side pipeline. *Lives under
+   `docs/architecture/`, not `docs/dayai/`, because it predates this
+   folder and is owned by the broader charm-email-os architecture
+   sweep.*
 
-5. **`ROADMAP_dayai_automation.md`** — future automations built on top of
+5. **`SPEC_charm_os_repo_access.md`** — **superseded** by
+   client-context-sync.md (above). Kept as a redirect stub.
+
+6. **`ROADMAP_dayai_automation.md`** — future automations built on top of
    the `dayai/` package and per-client repos. Concrete catalog of
    workers, syncs, triggers, and agents — with dependencies + sequencing.
    Use this to pick the next thing to build.

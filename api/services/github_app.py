@@ -2,7 +2,7 @@
 Charm Onboarder GitHub App authentication.
 
 Mints short-lived installation tokens for the Charm Onboarder App from
-the PEM stored in app_credentials (migration 112). Caches tokens
+the PEM stored in the `secrets` table (migration 136). Caches tokens
 in-process for ~55 minutes (GitHub installation tokens expire after 60).
 
 Every charm-email-os service that talks to HireCharm/* uses this
@@ -18,7 +18,13 @@ Usage:
         resp.raise_for_status()
         ...
 
-See docs/dayai/SPEC_app_credentials.md for the design.
+Canonical auth flow reference: docs/architecture/client-context-sync.md
+§Security Model. Design notes: docs/dayai/SPEC_secrets.md.
+
+NOTE: PyJWT is required for RS256 signing but is not yet in
+api/requirements.txt — it gets added in the PR that ships the first
+consumer of this module (sync worker / reconciler worker), to keep
+master's dependency footprint minimal while this code is dormant.
 """
 
 from __future__ import annotations
@@ -38,7 +44,10 @@ logger = logging.getLogger(__name__)
 # Public-ish identifiers — not secrets, but kept here as single source of truth.
 CHARM_ONBOARDER_APP_ID = "3480661"
 CHARM_ONBOARDER_INSTALL_ID = "126503394"
-PEM_CREDENTIAL_NAME = "charm_onboarder_github_app_pem"
+
+# `secrets` row name. Matches the canonical naming in
+# docs/architecture/client-context-sync.md §Security Model.
+PEM_CREDENTIAL_NAME = "github_app_private_key"
 
 # JWT lifetime constraints from GitHub:
 #   - JWT used to mint installation tokens: max 10 min from iat

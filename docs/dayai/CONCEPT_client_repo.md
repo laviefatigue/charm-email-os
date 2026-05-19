@@ -160,38 +160,34 @@ The charm-email-os frontend renders a per-client **Context** tab and
 Charm team browses client context inside the dashboard they already use,
 without cloning a repo or opening VS Code.
 
-Direction is **bidirectional**:
+**Read path: DB-mirror, not direct GitHub access.** charm-email-os
+runs a sync worker that pulls each per-client repo into Postgres
+tables (`workspace_context_documents`, `workspace_context_links`,
+`workspace_context_syncs`) on webhook + poll. The Context tab queries
+those mirror tables, not GitHub. This gives full-text search,
+backlink graphs, and freshness indicators with predictable latency.
+The architecture is specified in
+[`docs/architecture/client-context-sync.md`](../architecture/client-context-sync.md).
 
-- **Read**: frontend calls `GET /api/clients/{id}/context` and
-  `GET /api/clients/{id}/assets`, charm-email-os backend reads
-  from GitHub using the Charm Onboarder App, renders markdown +
-  asset previews.
-- **Write**: when an AE uploads a file via the Assets tab or saves a
-  note from the Context tab, `POST /api/clients/{id}/assets` (or the
-  context equivalent) commits the change into the client repo. The
-  repo stays the source of truth; the frontend is a thin operator
-  surface over it.
-
-Architectural constraint: charm-email-os does NOT mirror the repo
-into its own database. The first version reads from GitHub on demand
-(via the Charm Onboarder App's installation token, which is minted from
-the PEM stored in `app_credentials`). Caching gets added when — and
-only when — a real rate-limit or latency problem appears. Premature
-caching is the failure mode to avoid; the repo IS the database.
+**Write path:** for AE-authored content (notes, decisions, feedback),
+the operator commits via VS Code + git as today. The charm-email-os
+UI is read-only v1; inline edit + asset upload via the UI is a future
+extension that, when added, will commit through the Charm Onboarder
+App using the `secrets`-stored PEM (Tier 1.0 auth helper).
 
 Why this audience matters for design:
-- **The frontend is a write path now**, not just a read path. Files
-  authored via the UI land in the repo via API, alongside files written
-  by AEs in VS Code and by automation workers. All three writers share
-  the same file conventions (frontmatter, naming, locations).
-- **Latency budget is interactive**, not batch. A page load with N
-  repo reads needs to feel like a normal page load. Keeps the data
-  shape simple, no deeply-nested directory walks per render.
-- **Asset uploads need a path through this layer.** Drop-zone in the
-  UI → multipart upload → API → repo commit. See
-  `SPEC_charm_os_repo_access.md` for the route shape.
+- **The repo is canonical, the DB mirror is a cache.** Always read
+  the DB; never reach to GitHub on the request path. Sync handles the
+  refresh.
+- **Freshness is operator-visible.** The
+  [`ContextFreshnessPill`](../../charm-email-os/components/charm/index.ts)
+  in the workspace header shows "Context: 47m fresh" / "drift detected"
+  so AEs know whether what they're reading is current.
+- **Agents are the second consumer of the same tables.** Analyst
+  agents read context via the same query API, with `context_freshness`
+  baked into every response (see canonical spec §Context-Query API).
 
-See `SPEC_charm_os_repo_access.md` for the full direct-access pattern
+See [`docs/architecture/client-context-sync.md`](../architecture/client-context-sync.md) for the full canonical spec
 (API routes, `clients.context_repo` column, helper module).
 
 ---
@@ -217,28 +213,34 @@ the source (AE notes, decisions, feedback) or caches a snapshot pointing
 at the source (Day.AI status, DB IDs, EB metrics). Never duplicate
 without specifying which copy wins on conflict.
 
-### Read path: charm-email-os does NOT mirror the repo
+### Read path: DB-mirror via sync worker
 
-The charm-email-os frontend (Audience D) reads the client repo **on
-demand** via the GitHub API — there is no `client_repo_content`
-mirror table, no sync worker pulling files into Postgres. The repo is
-the storage layer; charm-email-os is a thin operator surface over it.
+The charm-email-os frontend (Audience D) reads from a **Postgres
+mirror** of each per-client repo, not from GitHub directly. A sync
+worker pulls every `.md` file into `workspace_context_documents`,
+extracts wiki-links into `workspace_context_links`, and audits each
+run in `workspace_context_syncs`.
 
-This is a deliberate trade-off:
-- **+** Zero sync complexity. No "is the cache stale?" questions. No
-  webhook plumbing. No reconciliation jobs.
-- **+** The repo's git history IS the audit trail — no separate event
-  log needed.
-- **-** Page renders cost N GitHub API calls (one per file shown).
-- **-** GitHub rate limit (5,000 req/hr per installation) is the
-  ceiling. With ~20 active clients and modest browse traffic, that's
-  multiple orders of magnitude of headroom — but it's a finite budget.
+Architecture is fully specified in
+[`docs/architecture/client-context-sync.md`](../architecture/client-context-sync.md).
 
-Caching gets added **only when** we observe rate-limit pressure or
-unacceptable page latency in production. The default is direct access.
+Why DB-mirror:
+- **Full-text search** over all client context via Postgres FTS — not
+  feasible against the GitHub Contents API
+- **Backlink graphs** computable in SQL (the `workspace_context_links`
+  table is built for this), supporting Foam-style navigation in the UI
+- **Predictable latency** — page renders hit local Postgres, not
+  transatlantic GitHub calls
+- **Freshness signal** — every response includes
+  `context_freshness.last_synced_at` + `minutes_since_sync` so AEs
+  and agents both know how stale their view is
+- **Agent integration** — analyst agents query the same mirror
+  through the context-query API; same data source, same freshness
+  semantics
 
-If/when caching is needed, the pattern is documented in
-`SPEC_charm_os_repo_access.md` §"When to add caching."
+Sync triggers: GitHub App webhook (push events) for fast updates;
+hourly poll fallback for misses. See client-context-sync.md
+§Sync Architecture for the worker shape.
 
 ---
 
@@ -384,7 +386,7 @@ these flows easier?
 
 The `<====>` line is the charm-email-os ↔ repo connection: backend
 reads + writes via the Charm Onboarder App (PEM stored in
-`app_credentials` table). Every other writer also goes through that
+`secrets` table). Every other writer also goes through that
 same helper. **One credential, one helper, every service.**
 
 Three layers, separated by role:

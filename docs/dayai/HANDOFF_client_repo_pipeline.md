@@ -8,7 +8,7 @@
 > **2026-05-18 update — load-bearing decisions made:**
 >
 > 1. Charm Onboarder GitHub App PEM moves from local file to a new
->    `app_credentials` DB table. Spec: `SPEC_app_credentials.md`.
+>    `secrets` DB table. Spec: `SPEC_secrets.md`.
 > 2. Watcher wiring approach is **Option C** (separate reconciler
 >    worker) — *not* Option A's charm-api endpoint as the original
 >    text below suggests. See §6 for the updated rationale.
@@ -19,7 +19,7 @@
 >    (~13). Day.AI data populates for the 4 with matching opps; null
 >    for the rest. See `ROADMAP` Tier 1.3.
 >
-> **Next concrete step:** ship `app_credentials` + `github_app.py`
+> **Next concrete step:** ship `secrets` + `github_app.py`
 > (ROADMAP Tier 1.0). Without it, no Coolify worker and no
 > charm-email-os route can talk to GitHub. After that: template v0.4
 > promotion, then productionize the synthesizer/onboarder into
@@ -520,7 +520,7 @@ beyond logging. Three options were on the table:
 `DETECT_ONLY=true` stays as-is permanently. The watcher's "post to
 charm-api" code path becomes dead code we can remove in a follow-up.
 
-Implementation lands as ROADMAP Tier 1.4. See `SPEC_app_credentials.md`
+Implementation lands as ROADMAP Tier 1.4. See `SPEC_secrets.md`
 for the auth primitive the reconciler depends on.
 
 ### Bulk rollout for existing clients
@@ -559,12 +559,12 @@ template version. Currently no enforcement — flag for future.
 - Permissions: `administration: write`, `contents: write`, `members: write`,
   `organization_administration: write`, `pull_requests: write`
 - PEM (current location): `d:/Work/Charm/.secrets/charm-onboarder.pem`
-- PEM (target location after Tier 1.0 ships): `app_credentials` row
+- PEM (target location after Tier 1.0 ships): `secrets` row
   with `name = 'charm_onboarder_github_app_pem'`
 - All scopes needed for repo creation, file commits, and team management
 
 Migration plan:
-1. Ship `migrations/112_app_credentials.sql`
+1. Ship `migrations/136_secrets.sql`
 2. INSERT the PEM as one row (manual one-time from a trusted host)
 3. Ship `api/services/credentials.py` + `api/services/github_app.py`
 4. Every new service consuming GitHub uses the `gh_client(pool)`
@@ -572,7 +572,7 @@ Migration plan:
 5. Local file at `d:/Work/Charm/.secrets/charm-onboarder.pem` becomes
    the offline backup; not used by any service
 
-See `SPEC_app_credentials.md` for the full design (security trade-offs,
+See `SPEC_secrets.md` for the full design (security trade-offs,
 rotation procedure, future credentials that migrate here).
 
 ### Coolify Web Terminal limitation
@@ -595,7 +595,7 @@ path for migrations).
 | `migrations/093_dayai_watcher_state.sql` | Schema (applied to prod) |
 | `docs/dayai/HANDOFF_client_repo_pipeline.md` | This file |
 | `docs/dayai/CONCEPT_client_repo.md` | Vision: per-client repos as context engines + four audiences |
-| `docs/dayai/SPEC_app_credentials.md` | DB-stored PEM + `github_app.py` helper |
+| `docs/dayai/SPEC_secrets.md` | DB-stored PEM + `github_app.py` helper |
 | `docs/dayai/SPEC_charm_os_repo_access.md` | charm-email-os Context/Assets UI direct access pattern |
 | `docs/dayai/ROADMAP_dayai_automation.md` | Tiered build catalog |
 | `scripts/dayai/synthesize_client_repo.py` | Reference: parameterize Sammy synthesizer |
@@ -686,7 +686,7 @@ Mutation tools (anything `create_*`, `update_*`, `delete_*`, `send_*`,
 | Pending | Promote v0.4 client.md shape to HireCharm/client-template | Done currently only on client-sammy; not yet in the template itself |
 | 2026-05-18 | Watcher wiring = Option C (separate reconciler worker) | Avoids coupling client-row creation to synchronous GitHub commit in API layer; watcher stays a pure detector; reconciler doubles as backfill tool for the 14 existing opps |
 | 2026-05-18 | Bulk rollout scope = all `onboarding_complete=true` clients (~13) | Day.AI data populates for the 4 with matching opps; null for the rest. Establishes the repos as the spine without forcing field-invention for missing-side cases |
-| 2026-05-18 | Move Charm Onboarder PEM to `app_credentials` DB table | Enables Coolify workers AND charm-email-os backend to mint installation tokens from a single source; matches the modular-micro-SaaS-sharing-one-DB pattern; precedent set by `workspace_api_keys` table |
+| 2026-05-18 | Move Charm Onboarder PEM to `secrets` DB table | Enables Coolify workers AND charm-email-os backend to mint installation tokens from a single source; matches the modular-micro-SaaS-sharing-one-DB pattern; precedent set by `workspace_api_keys` table |
 | 2026-05-18 | charm-email-os Context + Assets UI reads/writes repo directly (no cache) | Repo is source of truth; charm-email-os is a thin operator surface. GitHub rate limit (5k/hr) has plenty of headroom for internal AE traffic. Caching layer documented in `SPEC_charm_os_repo_access.md` §8 as future work if pressure appears |
 | 2026-05-18 | EmailBison report-to-repo cron designed now, built after Tier 1 | Performance metrics + conversations need to live side-by-side in the repo for the "marry them" agent flow, but Tier 1 (repos exist + populated) must ship first |
 
